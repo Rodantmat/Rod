@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.69.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.70.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -280,53 +280,36 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
 
-  async function fetchGeminiBatch(rows, hooks = {}) {
-    const batch = Array.isArray(rows) ? rows : [];
-    if (!batch.length) return null;
-    if (!GEMINI_API_KEY) {
-      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Systematic Extraction payload unavailable.', level: 'warning' });
-      return null;
-    }
-
+  async function fetchGeminiBatch(batch) {
+    if (!Array.isArray(batch) || !batch.length || !GEMINI_API_KEY) return null;
     const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
-
-    // REPLACE internal logic in fetchGeminiBatch:
-    const prompt = `Perform a Systematic Extraction for ${batch.length} Subjects.
-Mapping: ${batch.map((r, i) => `Index ${i}: ${r.parsedPlayer}`).join(', ')}.
-Return a strictly valid JSON object containing a "subjects" array. 
-Each object in the array MUST contain:
-- "index": integer (verbatim index from 0 to ${batch.length - 1})
-- "metric_group_a": { "a01": float, ..., "a20": float }
-- "metric_group_b": { "b01": float, ..., "b18": float }
-- "metric_group_c": { "c01": float, ..., "c12": float }
-- "metric_group_d": { "d01": float, ..., "d10": float }
-- "variance_projections": { "p01": float, "p02": float, "p03": float, "p04": float, "p05": float }
-
-NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
+    const playersStr = batch.map((r, i) => `Index ${i}: ${r.parsedPlayer} (${r.team})`).join(', ');
+    const prompt = `Perform a Systematic Extraction for ${batch.length} Subjects. 
+Mapping: ${playersStr}.
+Return a strictly valid JSON object with a "subjects" array. Each object MUST have:
+"index": integer, "metric_group_a": { "a01": float... }, "metric_group_b": { "b01": float... }, "metric_group_c": { "c01": float... }, "metric_group_d": { "d01": float... }, "variance_projections": { "p01": float... }.
+NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
 
     try {
       const response = await fetch(`${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY
+        },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+          generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
         })
       });
 
       const data = await response.json();
       const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      try {
-        const start = raw.indexOf('{');
-        const end = raw.lastIndexOf('}');
-        return JSON.parse(raw.substring(start, end + 1));
-      } catch (e) {
-        console.error('[OXYGEN] Extraction Void:', e);
-        hooks.onBranch?.({ text: `[OXYGEN] Extraction Void: ${e.message}`, level: 'warning' });
-        return null;
-      }
-    } catch (error) {
-      hooks.onBranch?.({ text: `[OXYGEN-COBALT] Systematic Extraction failed: ${error.message}`, level: 'warning' });
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
+      return JSON.parse(raw.substring(start, end + 1));
+    } catch (e) {
+      console.error("[OXYGEN] API ERROR:", e);
       return null;
     }
   }
@@ -432,76 +415,61 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
       vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
 
       // Inside streamingIngress, REPLACE the Batch-to-Vault hydration loop:
-      const subject = subjectPool.find((s) => parseInt(s?.index) === rowIndex);
+      const subject = subjectPool.find(s => parseInt(s.index) === rowIndex);
 
       if (subject) {
         const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
-
         Object.entries(map).forEach(([apiGroup, branchKey]) => {
           if (subject[apiGroup]) {
-            Object.entries(subject[apiGroup]).forEach(([factorKey, value]) => {
-              const num = Number(value);
+            Object.entries(subject[apiGroup]).forEach(([fKey, val]) => {
+              const num = Number(val);
               if (!isNaN(num) && num !== 0) {
-                vault.branches[branchKey].parsed[factorKey] = safeNumber(num);
+                vault.branches[branchKey].parsed[fKey] = num;
                 vault.branches[branchKey].status = 'SUCCESS';
-                if (vault.branches[branchKey].factorMeta?.[factorKey]) {
-                  vault.branches[branchKey].factorMeta[factorKey].status = 'REAL';
-                  vault.branches[branchKey].factorMeta[factorKey].source = 'SYSTEMATIC_EXTRACTION';
-                  vault.branches[branchKey].factorMeta[factorKey].value = safeNumber(num);
+                if (vault.branches[branchKey].factorMeta?.[fKey]) {
+                  vault.branches[branchKey].factorMeta[fKey].status = 'REAL';
+                  vault.branches[branchKey].factorMeta[fKey].source = 'SYSTEMATIC_EXTRACTION';
+                  vault.branches[branchKey].factorMeta[fKey].value = num;
                 }
               }
             });
           }
-          updateBranchMeta(vault.branches[branchKey]);
         });
 
         if (subject.variance_projections) {
           const pMap = { p01: 'FanDuel', p02: 'DraftKings', p03: 'OddsJam', p04: 'Pinnacle', p05: 'Bet365' };
-          Object.entries(pMap).forEach(([pKey, provider]) => {
+          Object.entries(pMap).forEach(([pKey, prov]) => {
             const pVal = Number(subject.variance_projections[pKey]);
             if (!isNaN(pVal) && pVal !== 0) {
-              vault.branches.E.providerMap[provider] = safeNumber(pVal);
+              vault.branches.E.providerMap[prov] = pVal;
               vault.branches.E.status = 'SUCCESS';
             }
           });
         }
       }
 
+      Object.keys(vault.branches || {}).forEach((branchKey) => updateBranchMeta(vault.branches[branchKey]));
       PROVIDERS.forEach((provider) => {
         if (!Number.isFinite(Number(vault.branches.E.providerMap[provider]))) vault.branches.E.providerMap[provider] = 0;
       });
 
-      updateBranchMeta(vault.branches.E);
-
+      // Calculate real metrics found
       const realCount = Object.values(vault.branches).reduce((acc, br) => 
         acc + Object.values(br.parsed || {}).filter(v => v !== 0).length, 0);
 
+      const hydrationResult = {
+        vault,
+        row,
+        analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'PHYSICS_NULL_EXPOSURE',
+        logs: [{ 
+          level: realCount > 0 ? 'success' : 'warning', 
+          text: realCount > 0 ? `[OXYGEN] HYDRATED: ${row.parsedPlayer}` : `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
+        }]
+      };
+
       if (realCount === 0) {
-        appendConsole({ level: 'warning', text: `[OXYGEN] PHYSICS_NULL_EXPOSURE for ${row.parsedPlayer}` });
-        hooks.onBranch?.({
-          row,
-          rowIndex,
-          totalRows,
-          completedProbes,
-          totalProbes,
-          branchKey: 'VERIFY',
-          vault: JSON.parse(JSON.stringify(vault)),
-          shield: computeShieldFromVault(vault),
-          logs: [{ level: 'warning', text: `[OXYGEN] PHYSICS_NULL_EXPOSURE for ${row.parsedPlayer}` }]
-        });
-      } else {
-        appendConsole({ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (Index:${rowIndex})` });
-        hooks.onBranch?.({
-          row,
-          rowIndex,
-          totalRows,
-          completedProbes,
-          totalProbes,
-          branchKey: 'VERIFY',
-          vault: JSON.parse(JSON.stringify(vault)),
-          shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (Index:${rowIndex})` }]
-        });
+        console.warn('ASYNC_INGRESS_VOID');
+        appendConsole({ level: 'warning', text: 'ASYNC_INGRESS_VOID' });
       }
 
       if (stateRef && typeof stateRef === 'object') {
@@ -513,7 +481,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      vault.terminalState = realCount === 0 ? 'SUBJECTIVE_VARIANCE_NULL_EXPOSURE' : 'SUBJECT_HYDRATED';
+      vault.terminalState = hydrationResult.analysisHint;
       commitVault(stateRef, row, vault);
 
       completedProbes += 1;
@@ -530,8 +498,8 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
         logs: [{
           level: realCount === 0 ? 'warning' : 'success',
           text: realCount === 0
-            ? `[OXYGEN-COBALT] SUBJECTIVE_VARIANCE_NULL_EXPOSURE for ${row.parsedPlayer || row.LEG_ID}.`
-            : `[OXYGEN-COBALT] SUBJECT_HYDRATED for ${row.parsedPlayer || row.LEG_ID}.`
+            ? `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
+            : `[OXYGEN] HYDRATED: ${row.parsedPlayer}`
         }]
       });
       await yieldToUi();
@@ -554,8 +522,8 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
         logs: [{
           level: realCount === 0 ? 'warning' : 'success',
           text: realCount === 0
-            ? `[OXYGEN-COBALT] SUBJECTIVE_VARIANCE_NULL_EXPOSURE for ${row.parsedPlayer || row.LEG_ID}.`
-            : `[OXYGEN-COBALT] SUBJECT_HYDRATED for ${row.parsedPlayer || row.LEG_ID}.`
+            ? `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
+            : `[OXYGEN] HYDRATED: ${row.parsedPlayer}`
         }]
       };
       results.push(result);

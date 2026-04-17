@@ -1,6 +1,6 @@
-OXYGEN-COBALT v13.69.0 FIX LOG
-- Version lock advanced to v13.69.0 (OXYGEN-COBALT).
+OXYGEN-COBALT v13.70.0 FIX LOG
+- Version lock advanced to v13.70.0 (OXYGEN-COBALT).
 - fetchGeminiBatch replaced with the Indexed Extraction Protocol.
 - streamingIngress hydration loop replaced with Index-Locked positional mapping.
-- buildAnalysisCopyText reduced to the v13.69.0 payload format.
+- buildAnalysisCopyText reduced to the v13.70.0 payload format.
 - Full project repackaged as oxygen_cobalt_v13_69_0_fix.zip.
