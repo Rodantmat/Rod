@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.66.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.67.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -173,7 +173,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         ].join('\n')
       : [
           'Extract 72 discrete data points for the following subjects.',
-          'Categorize the data as Predictive Physics Factors and Grounded Metrics.',
+          'Categorize the data as Systematic Extraction metrics.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Required schema:',
@@ -284,74 +284,47 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const safeRows = Array.isArray(rows) ? rows : [];
     if (!safeRows.length) return null;
     if (!GEMINI_API_KEY) {
-      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Batch payload unavailable.', level: 'warning' });
+      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Subjective Variance payload unavailable.', level: 'warning' });
       return null;
     }
 
     const playersStr = safeRows.map((r) => `${r.parsedPlayer} (${r.team} vs ${r.opponent})`).join(', ');
-    const prompt = `Perform a high-density extraction of 72 Predictive Physics Factors for these subjects: ${playersStr}.
+    const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
+    const prompt = `Perform a Systematic Extraction for the following Subjects: ${playersStr}.
+Return a strictly valid JSON object containing a "subjects" array. 
+Each subject must follow this nested schema:
+- "id": String (verbatim name)
+- "metric_group_a": { "a01": float, ..., "a20": float }
+- "metric_group_b": { "b01": float, ..., "b18": float }
+- "metric_group_c": { "c01": float, ..., "c12": float }
+- "metric_group_d": { "d01": float, ..., "d10": float }
+- "variance_projections": { "p01": float, "p02": float, "p03": float, "p04": float, "p05": float }
 
-Return a strictly valid JSON object.
-Root key: "subjects".
-Subject keys: Normalized alphanumeric names only.
-
-Factor Mapping:
-- Factors a01 thru a20: Grounded Impulse Metrics
-- Factors b01 thru b18: Contextual Velocity Metrics
-- Factors c01 thru c12: Structural Alignment Metrics
-- Factors d01 thru d10: Stability Variance Metrics
-- market01 thru market05: Market Flux Projections (Mandatory Numeric Only)
-
-NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?alt=json`;
+NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
 
     try {
-      const response = await fetch(`${url}&key=${encodeURIComponent(GEMINI_API_KEY)}`, {
+      const response = await fetch(`${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
-          safetySettings: [
-            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
-          ]
+          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
         })
       });
 
-      let data = null;
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini response JSON decode failed: ${jsonError.message}`, level: 'warning' });
-        return null;
-      }
-
-      if (!response.ok) {
-        hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: API_${response.status}`, level: 'warning' });
-      }
-
-      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (!raw) {
-        hooks.onBranch?.({ text: '[OXYGEN-COBALT] Handshake returned empty content.', level: 'warning' });
-        return null;
-      }
-
+      const data = await response.json();
+      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       try {
         const start = raw.indexOf('{');
         const end = raw.lastIndexOf('}');
-        const parsed = JSON.parse(raw.substring(start, end + 1));
-        console.log('[OXYGEN] Handshake established: Predictive Physics Path active.');
-        hooks.onBranch?.({ text: '[OXYGEN] Handshake established: Predictive Physics Path active.', level: 'success' });
-        return parsed;
+        return JSON.parse(raw.substring(start, end + 1));
       } catch (e) {
-        console.error('[OXYGEN] Handshake Void:', e);
-        hooks.onBranch?.({ text: `[OXYGEN-COBALT] Handshake Void: ${e.message}`, level: 'warning' });
+        console.error('[OXYGEN] Extraction Void:', e);
+        hooks.onBranch?.({ text: `[OXYGEN] Extraction Void: ${e.message}`, level: 'warning' });
         return null;
       }
     } catch (error) {
-      hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: ${error.message}`, level: 'warning' });
+      hooks.onBranch?.({ text: `[OXYGEN-COBALT] Systematic Extraction failed: ${error.message}`, level: 'warning' });
       return null;
     }
   }
@@ -408,12 +381,16 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
     let completedProbes = 0;
     const results = [];
 
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      const rawRow = rows[rowIndex] || {};
-      const row = Object.assign({}, rawRow, {
-        LEG_ID: rawRow.LEG_ID || `LEG-${rawRow.idx || rowIndex + 1}`,
-        idx: Number(rawRow.idx || rowIndex + 1)
-      });
+    const batch = rows.map((rawRow, rowIndex) => Object.assign({}, rawRow, {
+      LEG_ID: rawRow?.LEG_ID || `LEG-${rawRow?.idx || rowIndex + 1}`,
+      idx: Number(rawRow?.idx || rowIndex + 1)
+    }));
+
+    const payload = await fetchGeminiBatch(batch, hooks);
+    const subjectPool = payload?.subjects || [];
+
+    for (let rowIndex = 0; rowIndex < batch.length; rowIndex += 1) {
+      const row = batch[rowIndex];
 
       hooks.onRowStart?.({ row, rowIndex, totalRows });
       const vault = createZeroVault(row);
@@ -449,14 +426,49 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      const payload = await fetchGeminiBatch([row], hooks);
-      const normKey = normalizeName(row.parsedPlayer);
-      const subjectData = payload?.subjects?.[normKey];
+      vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Nested Property Hydrator active');
+      vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
 
-      vault.branches.A = seedBranch('A', 'Gemini Funnel', 'WARNING', 'Grounded extraction active');
-      vault.branches.E = seedBranch('E', 'Market Providers', 'WARNING', 'Market provider extraction active');
+      const rowNorm = normalizeName(row.parsedPlayer);
+      const subject = subjectPool.find((s) => normalizeName(s?.id).includes(rowNorm));
 
-      if (subjectData) {
+      if (subject) {
+        const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
+
+        Object.entries(map).forEach(([apiGroup, branchKey]) => {
+          if (subject[apiGroup]) {
+            Object.entries(subject[apiGroup]).forEach(([factorKey, value]) => {
+              const num = Number(value);
+              if (!isNaN(num) && num !== 0) {
+                vault.branches[branchKey].parsed[factorKey] = safeNumber(num);
+                vault.branches[branchKey].status = 'SUCCESS';
+                if (vault.branches[branchKey].factorMeta?.[factorKey]) {
+                  vault.branches[branchKey].factorMeta[factorKey].status = 'REAL';
+                  vault.branches[branchKey].factorMeta[factorKey].source = 'SYSTEMATIC_EXTRACTION';
+                  vault.branches[branchKey].factorMeta[factorKey].value = safeNumber(num);
+                }
+              }
+            });
+          }
+          updateBranchMeta(vault.branches[branchKey]);
+        });
+
+        if (subject.variance_projections) {
+          const pMap = { p01: 'FanDuel', p02: 'DraftKings', p03: 'OddsJam', p04: 'Pinnacle', p05: 'Bet365' };
+          Object.entries(pMap).forEach(([pKey, provider]) => {
+            const pVal = Number(subject.variance_projections[pKey]);
+            if (!isNaN(pVal) && pVal !== 0) {
+              vault.branches.E.providerMap[provider] = safeNumber(pVal);
+              vault.branches.E.status = 'SUCCESS';
+            }
+            if (vault.branches.E.factorMeta?.[pKey]) {
+              vault.branches.E.factorMeta[pKey].status = !isNaN(pVal) && pVal !== 0 ? 'REAL' : vault.branches.E.factorMeta[pKey].status;
+              vault.branches.E.factorMeta[pKey].source = !isNaN(pVal) && pVal !== 0 ? 'SUBJECTIVE_VARIANCE' : vault.branches.E.factorMeta[pKey].source;
+              vault.branches.E.factorMeta[pKey].value = !isNaN(pVal) && pVal !== 0 ? safeNumber(pVal) : vault.branches.E.factorMeta[pKey].value;
+            }
+          });
+        }
+
         hooks.onBranch?.({
           row,
           rowIndex,
@@ -466,39 +478,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] DATA RECOVERY SUCCESS: ${row.parsedPlayer} | Factors Hydrated: ${Object.keys(subjectData).length}` }]
-        });
-
-        const marketMap = { market01: 'FanDuel', market02: 'DraftKings', market03: 'OddsJam', market04: 'Pinnacle', market05: 'Bet365' };
-        Object.entries(marketMap).forEach(([mask, real]) => {
-          const val = Number(subjectData[mask]);
-          if (!isNaN(val) && val !== 0) {
-            vault.branches.E.providerMap[real] = safeNumber(val);
-            vault.branches.E.status = 'SUCCESS';
-            if (vault.branches.E.factorMeta[mask]) {
-              vault.branches.E.factorMeta[mask].status = 'REAL';
-              vault.branches.E.factorMeta[mask].source = 'GEMINI_REAL';
-              vault.branches.E.factorMeta[mask].value = safeNumber(val);
-            }
-          }
-        });
-
-        ['A', 'B', 'C', 'D'].forEach((br) => {
-          const targets = { A: 20, B: 18, C: 12, D: 10 };
-          for (let i = 1; i <= targets[br]; i += 1) {
-            const key = `${br.toLowerCase()}${String(i).padStart(2, '0')}`;
-            const val = Number(subjectData[key]);
-            if (!isNaN(val) && val !== 0) {
-              vault.branches[br].parsed[key] = safeNumber(val);
-              vault.branches[br].status = 'SUCCESS';
-              if (vault.branches[br].factorMeta[key]) {
-                vault.branches[br].factorMeta[key].status = 'REAL';
-                vault.branches[br].factorMeta[key].source = 'GEMINI_REAL';
-                vault.branches[br].factorMeta[key].value = safeNumber(val);
-              }
-            }
-          }
-          updateBranchMeta(vault.branches[br]);
+          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATION_READY: ${row.parsedPlayer}` }]
         });
       } else {
         hooks.onBranch?.({
@@ -510,7 +490,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'failed', text: `[OXYGEN] DATA RECOVERY FAILED: ${row.parsedPlayer}. Predictive Physics payload missing.` }]
+          logs: [{ level: 'warning', text: `[OXYGEN] SUBJECT_NOT_FOUND: ${row.parsedPlayer}` }]
         });
       }
 
@@ -518,21 +498,45 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
         if (!Number.isFinite(Number(vault.branches.E.providerMap[provider]))) vault.branches.E.providerMap[provider] = 0;
       });
 
-      vault.branches.E.note = 'Market flux table hydrated inside Branch E container.';
-      vault.branches.A.note = 'Linear +0.1 increments deleted and replaced by extraction variables.';
       updateBranchMeta(vault.branches.E);
 
-      const realFactors = Object.values(vault.branches.A.parsed).filter((v) => Number(v) !== 0).length;
-      vault.branches.A.saturation = safeNumber((realFactors / 20) * 100);
+      const realCount = Object.values(vault.branches).reduce((acc, br) =>
+        acc + Object.values(br.parsed || {}).filter((v) => v !== 0).length, 0);
 
+      if (realCount === 0) {
+        hooks.onBranch?.({
+          row,
+          rowIndex,
+          totalRows,
+          completedProbes,
+          totalProbes,
+          branchKey: 'VERIFY',
+          vault: JSON.parse(JSON.stringify(vault)),
+          shield: computeShieldFromVault(vault),
+          logs: [{ level: 'warning', text: `[OXYGEN] PHYSICS_NULL_EXPOSURE for ${row.parsedPlayer}` }]
+        });
+      } else {
+        hooks.onBranch?.({
+          row,
+          rowIndex,
+          totalRows,
+          completedProbes,
+          totalProbes,
+          branchKey: 'VERIFY',
+          vault: JSON.parse(JSON.stringify(vault)),
+          shield: computeShieldFromVault(vault),
+          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (${realCount} factors)` }]
+        });
+      }
+
+      stateRef.miningVault[row.idx] = vault;
       commitVault(stateRef, row, vault);
 
       completedProbes += 1;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      const terminalLabel = realFactors > 0 ? 'Atomic Matrix Saturated' : (payload?.error === 'SAFETY_LOCKOUT' ? 'OXYGEN_RESTORE_FAILURE: SAFETY_LOCKOUT' : 'OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD');
-      vault.terminalState = terminalLabel;
+      vault.terminalState = realCount === 0 ? 'SUBJECTIVE_VARIANCE_NULL_EXPOSURE' : 'SUBJECT_HYDRATED';
       commitVault(stateRef, row, vault);
 
       completedProbes += 1;
@@ -547,10 +551,10 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
         vault: JSON.parse(JSON.stringify(vault)),
         shield,
         logs: [{
-          level: realFactors > 0 ? 'success' : 'warning',
-          text: realFactors > 0
-            ? `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}. Predictive Physics Path active.`
-            : `[OXYGEN-COBALT] OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD for ${row.parsedPlayer || row.LEG_ID}. Predictive Physics Path inactive.`
+          level: realCount === 0 ? 'warning' : 'success',
+          text: realCount === 0
+            ? `[OXYGEN-COBALT] SUBJECTIVE_VARIANCE_NULL_EXPOSURE for ${row.parsedPlayer || row.LEG_ID}.`
+            : `[OXYGEN-COBALT] SUBJECT_HYDRATED for ${row.parsedPlayer || row.LEG_ID}.`
         }]
       });
       await yieldToUi();
@@ -560,7 +564,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
         vault: JSON.parse(JSON.stringify(vault)),
         vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
         shield,
-        analysisHint: terminalLabel,
+        analysisHint: vault.terminalState,
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: rowIndex + 1,
@@ -571,10 +575,10 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
           branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key].status]))
         },
         logs: [{
-          level: realFactors > 0 ? 'success' : 'warning',
-          text: realFactors > 0
-            ? `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}.`
-            : `[OXYGEN-COBALT] OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD for ${row.parsedPlayer || row.LEG_ID}.`
+          level: realCount === 0 ? 'warning' : 'success',
+          text: realCount === 0
+            ? `[OXYGEN-COBALT] SUBJECTIVE_VARIANCE_NULL_EXPOSURE for ${row.parsedPlayer || row.LEG_ID}.`
+            : `[OXYGEN-COBALT] SUBJECT_HYDRATED for ${row.parsedPlayer || row.LEG_ID}.`
         }]
       };
       results.push(result);
