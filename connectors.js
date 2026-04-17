@@ -81,7 +81,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function createZeroVault(row = {}) {
-    const normalizedRow = typeof row === 'string' ? { LEG_ID: row, idx: 0 } : (row || {});
+    const normalizedRow = typeof row === 'string'
+      ? { LEG_ID: row, idx: 0 }
+      : (row || {});
     const branches = {};
     BRANCH_KEYS.forEach((key) => { branches[key] = seedBranch(key); });
     return {
@@ -282,8 +284,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
 
   async function fetchGeminiBatch(batch) {
-    if (!Array.isArray(batch) || !batch.length || !GEMINI_API_KEY) return null;
-    const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
     const playersStr = batch.map((r, i) => `Subject ${i}: ${r.parsedPlayer} (${r.team})`).join(', ');
     const prompt = `Act as a Systematic Data Provider. For these ${batch.length} Subjects (${playersStr}), return a strictly valid JSON object with a "data" array.
   Each entry in the array must be:
@@ -383,29 +383,20 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     for (let i = 0; i < batch.length; i++) {
       const row = batch[i];
       const vault = createZeroVault(row.LEG_ID);
-      vault.idx = Number(row.idx || i + 1);
       vault.LEG_ID = row.LEG_ID;
+      vault.idx = row.idx;
       const entry = stream.find(s => parseInt(s.index) === i);
 
       if (entry && Array.isArray(entry.values)) {
         const v = entry.values;
-        const setBranchValue = (branchKey, factorKeyValue, rawValue) => {
-          const num = Number(rawValue || 0);
-          vault.branches[branchKey].parsed[factorKeyValue] = num;
-          if (vault.branches[branchKey].factorMeta?.[factorKeyValue]) {
-            vault.branches[branchKey].factorMeta[factorKeyValue].value = num;
-            vault.branches[branchKey].factorMeta[factorKeyValue].status = num !== 0 ? 'REAL' : 'WARNING';
-            vault.branches[branchKey].factorMeta[factorKeyValue].source = 'RAW_STREAM_PROTOCOL';
-          }
-        };
         // Map 0-19 to A
-        for(let j=0; j<20; j++) setBranchValue('A', `a${String(j+1).padStart(2,'0')}`, v[j]);
+        for(let j=0; j<20; j++) vault.branches.A.parsed[`a${String(j+1).padStart(2,'0')}`] = Number(v[j] || 0);
         // Map 20-37 to B
-        for(let j=0; j<18; j++) setBranchValue('B', `b${String(j+1).padStart(2,'0')}`, v[20+j]);
+        for(let j=0; j<18; j++) vault.branches.B.parsed[`b${String(j+1).padStart(2,'0')}`] = Number(v[20+j] || 0);
         // Map 38-49 to C
-        for(let j=0; j<12; j++) setBranchValue('C', `c${String(j+1).padStart(2,'0')}`, v[38+j]);
+        for(let j=0; j<12; j++) vault.branches.C.parsed[`c${String(j+1).padStart(2,'0')}`] = Number(v[38+j] || 0);
         // Map 50-59 to D
-        for(let j=0; j<10; j++) setBranchValue('D', `d${String(j+1).padStart(2,'0')}`, v[50+j]);
+        for(let j=0; j<10; j++) vault.branches.D.parsed[`d${String(j+1).padStart(2,'0')}`] = Number(v[50+j] || 0);
         // Map 60-64 to E (Market Projections)
         const providers = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
         providers.forEach((p, idx) => {
@@ -415,15 +406,24 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         vault.branches.A.status = vault.branches.B.status = vault.branches.C.status = vault.branches.D.status = vault.branches.E.status = 'SUCCESS';
       }
 
-      Object.keys(vault.branches || {}).forEach((branchKey) => updateBranchMeta(vault.branches[branchKey]));
-      PROVIDERS.forEach((provider) => {
-        if (!Number.isFinite(Number(vault.branches.E.providerMap[provider]))) vault.branches.E.providerMap[provider] = 0;
-      });
-
       const realCount = entry ? entry.values.filter(val => Number(val) !== 0).length : 0;
+      vault.terminalState = realCount > 0 ? 'Atomic Matrix Saturated' : 'STREAM_EMPTY';
+      const shield = computeShieldFromVault(vault);
       const result = {
-        vault, row,
+        vault,
+        row,
+        vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
+        shield,
         analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'STREAM_EMPTY',
+        connectorState: {
+          version: SYSTEM_VERSION,
+          completedRows: i + 1,
+          completedProbes: i + 1,
+          totalProbes: batch.length,
+          liveBranches: ['A','B','C','D','E'].filter((key) => vault.branches[key]?.status === 'SUCCESS').length,
+          derivedBranches: ['A','B','C','D','E'].filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
+          branchStatus: Object.fromEntries(['A','B','C','D','E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
+        },
         logs: [{ 
           level: realCount > 0 ? 'success' : 'warning', 
           text: `[OXYGEN] ${realCount > 0 ? 'STREAM_ACTIVE' : 'STREAM_EMPTY'}: ${row.parsedPlayer}` 
@@ -431,18 +431,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       };
 
       results.push(result);
-      if (stateRef && typeof stateRef === 'object') {
-        stateRef.miningVault = stateRef.miningVault || {};
-        stateRef.miningVault[row.idx] = vault;
-      }
+      stateRef.miningVault[row.idx] = vault;
       commitVault(stateRef, row, vault);
-      completedProbes += 5;
-
+      
       if (window.PickCalcUI && window.PickCalcUI.appendConsole) {
         window.PickCalcUI.appendConsole(result.logs[0]);
       }
-
-      hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes, totalProbes });
+      
+      hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes: i + 1, totalProbes: batch.length });
     }
 
     const lastResult = results[results.length - 1] || null;

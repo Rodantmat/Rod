@@ -180,8 +180,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       `v13.72.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
-    ].join('
-');
+    ].join('\n');
   }
 
 

@@ -1,1 +1,6 @@
-v13.72.0 OXYGEN-COBALT Flat-Stream Positional Hydrator applied.
+OXYGEN-COBALT v13.72.0
+- Version lock applied across index.html, parser.js, connectors.js, ui-engine.js, and core.js.
+- fetchGeminiBatch replaced with Raw Stream Protocol.
+- streamingIngress replaced with Flat-Stream Positional Hydrator using strict index mapping and Group E v[60+idx].
+- buildAnalysisCopyText replaced with reduced payload reporting.
+- createZeroVault hardened to safely accept a LEG_ID string from the new positional loop.
