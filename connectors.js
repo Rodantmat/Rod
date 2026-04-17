@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.73.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.74.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -295,39 +295,20 @@ Mapping: 0-19(A), 20-37(B), 38-49(C), 50-59(D), 60-64(E).`;
       const response = await fetch(`${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': GEMINI_API_KEY
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.1,
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "object",
-              properties: {
-                data: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      i: { type: "integer" },
-                      v: { type: "array", items: { type: "number" }, minItems: 72, maxItems: 72 }
-                    },
-                    required: ["i", "v"]
-                  }
-                }
-              },
-              required: ["data"]
-            }
+            responseMimeType: "application/json"
           }
         })
       });
 
       const json = await response.json();
-      return json.candidates?.[0]?.content?.parts?.[0]?.text
-        ? JSON.parse(json.candidates[0].content.parts[0].text)
-        : null;
+      const raw = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const start = raw.indexOf('{'); const end = raw.lastIndexOf('}'); return JSON.parse(raw.substring(start, end + 1));
     } catch (e) {
       console.error('[OXYGEN] Handshake Failure:', e);
       return null;
@@ -393,6 +374,7 @@ Mapping: 0-19(A), 20-37(B), 38-49(C), 50-59(D), 60-64(E).`;
 
     const payload = await fetchGeminiBatch(batch);
     const stream = payload?.data || [];
+    const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
 
     for (let i = 0; i < batch.length; i++) {
       const row = batch[i];
@@ -443,6 +425,7 @@ Mapping: 0-19(A), 20-37(B), 38-49(C), 50-59(D), 60-64(E).`;
       if (stateRef?.miningVault) stateRef.miningVault[row.idx] = vault;
       commitVault(stateRef, row, vault);
       if (window.PickCalcUI?.appendConsole) window.PickCalcUI.appendConsole(result.logs[0]);
+      else logger(result.logs[0]);
       hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes: i + 1, totalProbes: batch.length });
     }
 
