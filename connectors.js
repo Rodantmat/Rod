@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.67.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.68.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -429,8 +429,11 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
       vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Nested Property Hydrator active');
       vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
 
-      const rowNorm = normalizeName(row.parsedPlayer);
-      const subject = subjectPool.find((s) => normalizeName(s?.id).includes(rowNorm));
+      const searchToken = normalizeName(row.parsedPlayer);
+      const subject = subjectPool.find((s) => {
+        const apiId = normalizeName(s?.id || '');
+        return apiId.includes(searchToken) || searchToken.includes(apiId);
+      });
 
       if (subject) {
         const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
@@ -478,9 +481,10 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATION_READY: ${row.parsedPlayer}` }]
+          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer}` }]
         });
       } else {
+        const availableIds = subjectPool.map((s) => s?.id).filter(Boolean).join(', ');
         hooks.onBranch?.({
           row,
           rowIndex,
@@ -490,7 +494,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'warning', text: `[OXYGEN] SUBJECT_NOT_FOUND: ${row.parsedPlayer}` }]
+          logs: [{ level: 'warning', text: `[OXYGEN] MATCH_FAIL: ${row.parsedPlayer} not found in [${availableIds}]` }]
         });
       }
 

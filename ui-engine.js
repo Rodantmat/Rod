@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.67.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.68.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -177,7 +177,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     }).join('|');
 
     return [
-      `v13.67.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.68.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');

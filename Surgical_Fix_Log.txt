@@ -1,6 +1,5 @@
-OXYGEN-COBALT v13.67.0 FIX LOG
-
-- fetchGeminiBatch updated to the Deterministic Extraction Protocol with JSON-array subject output.
-- streamingIngress updated with the Nested Property Hydrator and Subjective Variance mapping.
-- buildAnalysisCopyText updated to reduced payload SATURATION / PROJECTIONS format.
-- Version increment applied across index.html, parser.js, connectors.js, ui-engine.js, and core.js.
+OXYGEN-COBALT v13.68.0 FIX LOG
+- Version lock advanced to v13.68.0 (OXYGEN-COBALT).
+- connectors.js hydration loop replaced with fuzzy identifier matching.
+- Systematic Extraction and Subjective Variance protocol preserved.
+- Full project repackaged as oxygen_cobalt_v13_68_0_fix.zip.
