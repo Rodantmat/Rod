@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PickCalc Multi-Sport Engine • v13.74.0 (OXYGEN-COBALT)</title>
+  <title>PickCalc Multi-Sport Engine • v13.75.0 (OXYGEN-COBALT)</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <section id="intakeScreen" style="display: none !important;">
       <header class="hero">
-        <h1 id="intakeTitle">PickCalc Multi-Sport Engine <span class="version-pill">v13.74.0 (OXYGEN-COBALT)</span></h1>
+        <h1 id="intakeTitle">PickCalc Multi-Sport Engine <span class="version-pill">v13.75.0 (OXYGEN-COBALT)</span></h1>
         <p>Paste board chunks, ingest MLB/NHL props, track feed status, then run the clean pool.</p>
       </header>
 
@@ -59,8 +59,8 @@
     <section id="analysisScreen" class="hidden">
       <header class="hero hero-inline">
         <div>
-          <h1 id="analysisTitle">Run Analysis v13.74.0 (OXYGEN-COBALT)</h1>
-          <p id="analysisVersion">Version: v13.74.0 (OXYGEN-COBALT)</p>
+          <h1 id="analysisTitle">Run Analysis v13.75.0 (OXYGEN-COBALT)</h1>
+          <p id="analysisVersion">Version: v13.75.0 (OXYGEN-COBALT)</p>
         </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
@@ -99,7 +99,7 @@
       </section>
 
       <section class="card">
-        <h2 id="shieldTitle">Alpha Shield v13.74.0 (OXYGEN-COBALT)</h2>
+        <h2 id="shieldTitle">Alpha Shield v13.75.0 (OXYGEN-COBALT)</h2>
         <div id="shieldPanel" class="shield-grid"></div>
       </section>
 
@@ -122,6 +122,14 @@
             </thead>
             <tbody id="analysisResultsBody"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>API Configuration</h2>
+        <div class="flex-row" style="display:flex; gap:10px; align-items:center;">
+          <input type="password" id="apiKeyInput" placeholder="Paste Gemini API Key Here" style="flex:1; padding:10px; border-radius:8px; border:1px solid var(--border); background:#09101d; color:white;">
+          <button id="saveKeyBtn" class="btn-primary" style="padding:10px 20px;">Save Key</button>
         </div>
       </section>
 

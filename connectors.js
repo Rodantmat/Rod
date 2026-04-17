@@ -1,12 +1,15 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.74.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.75.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
   const GEMINI_MODEL = 'gemini-1.5-flash';
-  const GEMINI_API_KEY = (window.__OXYGEN_GEMINI_KEY || localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+  const GEMINI_API_KEY = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+if (!GEMINI_API_KEY) {
+  console.warn("[OXYGEN] KEY_MISSING: Please enter your key in the API Configuration box.");
+}
   const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
   const FACTOR_NAMES = {

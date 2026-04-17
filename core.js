@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.74.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.75.0 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -128,6 +128,17 @@ window.PickCalcCore = window.PickCalcCore || {};
   }
 
   function bindEvents() {
+    document.getElementById('saveKeyBtn').addEventListener('click', () => {
+      const key = document.getElementById('apiKeyInput').value.trim();
+      if (key) {
+        localStorage.setItem('OXYGEN_GEMINI_KEY', key);
+        alert('Key Saved! Refreshing...');
+        window.location.reload();
+      }
+    });
+    // Initialize input value if key exists
+    const savedKey = localStorage.getItem('OXYGEN_GEMINI_KEY');
+    if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
     UI.el('runKeyLabBtn')?.addEventListener('click', () => handleMiningClick(true));
