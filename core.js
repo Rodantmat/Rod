@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.64.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.65.0 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -117,7 +117,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             lastResult.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
-            UI.updateProgressBar(rows.length * 5, rows.length * 5, 'Atomic Matrix Saturated');
+            UI.updateProgressBar(rows.length * 5, rows.length * 5, lastResult?.analysisHint || 'Atomic Matrix Saturated');
           }
         }
       });
@@ -143,7 +143,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       refreshIntake();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
-      const payload = UI.buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault });
+      const payload = UI.buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
     });
     document.querySelectorAll('#leagueChecklist input[type="checkbox"]').forEach((input) => {
