@@ -1,12 +1,13 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.72.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.73.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
   const GEMINI_MODEL = 'gemini-1.5-flash';
   const GEMINI_API_KEY = (window.__OXYGEN_GEMINI_KEY || localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+  const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
   const FACTOR_NAMES = {
     A: Array.from({ length: 20 }, (_, i) => `A${String(i + 1).padStart(2, '0')} Grounded Metric`),
@@ -284,38 +285,51 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
 
   async function fetchGeminiBatch(batch) {
-    const playersStr = batch.map((r, i) => `Subject ${i}: ${r.parsedPlayer} (${r.team})`).join(', ');
-    const prompt = `Act as a Systematic Data Provider. For these ${batch.length} Subjects (${playersStr}), return a strictly valid JSON object with a "data" array.
-  Each entry in the array must be:
-  {
-    "index": integer,
-    "values": [72 floats]
-  }
-  Value Index Mapping (Total 72):
-  - 0-19: Group A factors
-  - 20-37: Group B factors
-  - 38-49: Group C factors
-  - 50-59: Group D factors
-  - 60-64: Group E variance
-  NO PROSE. NO MARKDOWN. NO LABELS. ONLY NUMBERS.`;
+    const playersStr = batch.map((r, i) => `[${i}]: ${r.parsedPlayer}`).join(', ');
+    const prompt = `Task: Extract 72 numeric variables for ${batch.length} subjects.
+Subjects: ${playersStr}.
+Constraint: Return exactly 72 floats per subject in the 'v' array.
+Mapping: 0-19(A), 20-37(B), 38-49(C), 50-59(D), 60-64(E).`;
 
     try {
       const response = await fetch(`${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY
+        },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: "object",
+              properties: {
+                data: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      i: { type: "integer" },
+                      v: { type: "array", items: { type: "number" }, minItems: 72, maxItems: 72 }
+                    },
+                    required: ["i", "v"]
+                  }
+                }
+              },
+              required: ["data"]
+            }
+          }
         })
       });
 
       const json = await response.json();
-      const raw = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const start = raw.indexOf('{');
-      const end = raw.lastIndexOf('}');
-      return JSON.parse(raw.substring(start, end + 1));
+      return json.candidates?.[0]?.content?.parts?.[0]?.text
+        ? JSON.parse(json.candidates[0].content.parts[0].text)
+        : null;
     } catch (e) {
-      console.error("[OXYGEN] Handshake Failure:", e);
+      console.error('[OXYGEN] Handshake Failure:', e);
       return null;
     }
   }
@@ -385,36 +399,31 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const vault = createZeroVault(row.LEG_ID);
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
-      const entry = stream.find(s => parseInt(s.index) === i);
+      const entry = stream.find(s => Number(s.i) === i);
 
-      if (entry && Array.isArray(entry.values)) {
-        const v = entry.values;
-        // Map 0-19 to A
-        for(let j=0; j<20; j++) vault.branches.A.parsed[`a${String(j+1).padStart(2,'0')}`] = Number(v[j] || 0);
-        // Map 20-37 to B
-        for(let j=0; j<18; j++) vault.branches.B.parsed[`b${String(j+1).padStart(2,'0')}`] = Number(v[20+j] || 0);
-        // Map 38-49 to C
-        for(let j=0; j<12; j++) vault.branches.C.parsed[`c${String(j+1).padStart(2,'0')}`] = Number(v[38+j] || 0);
-        // Map 50-59 to D
-        for(let j=0; j<10; j++) vault.branches.D.parsed[`d${String(j+1).padStart(2,'0')}`] = Number(v[50+j] || 0);
-        // Map 60-64 to E (Market Projections)
+      if (entry && Array.isArray(entry.v)) {
+        const vals = entry.v;
+        for(let j=0; j<20; j++) vault.branches.A.parsed[`a${String(j+1).padStart(2,'0')}`] = Number(vals[j] || 0);
+        for(let j=0; j<18; j++) vault.branches.B.parsed[`b${String(j+1).padStart(2,'0')}`] = Number(vals[20+j] || 0);
+        for(let j=0; j<12; j++) vault.branches.C.parsed[`c${String(j+1).padStart(2,'0')}`] = Number(vals[38+j] || 0);
+        for(let j=0; j<10; j++) vault.branches.D.parsed[`d${String(j+1).padStart(2,'0')}`] = Number(vals[50+j] || 0);
         const providers = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
         providers.forEach((p, idx) => {
-          vault.branches.E.providerMap[p] = Number(v[60+idx] || 0);
+          vault.branches.E.providerMap[p] = Number(vals[60+idx] || 0);
         });
-        
-        vault.branches.A.status = vault.branches.B.status = vault.branches.C.status = vault.branches.D.status = vault.branches.E.status = 'SUCCESS';
+
+        ['A','B','C','D','E'].forEach(k => vault.branches[k].status = 'SUCCESS');
       }
 
-      const realCount = entry ? entry.values.filter(val => Number(val) !== 0).length : 0;
-      vault.terminalState = realCount > 0 ? 'Atomic Matrix Saturated' : 'STREAM_EMPTY';
+      const found = entry ? entry.v.filter(n => Number(n) !== 0).length : 0;
+      vault.terminalState = found > 0 ? 'Atomic Matrix Saturated' : 'SCHEMA_EMPTY';
       const shield = computeShieldFromVault(vault);
       const result = {
         vault,
         row,
         vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
         shield,
-        analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'STREAM_EMPTY',
+        analysisHint: found > 0 ? 'Atomic Matrix Saturated' : 'SCHEMA_EMPTY',
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: i + 1,
@@ -424,20 +433,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           derivedBranches: ['A','B','C','D','E'].filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           branchStatus: Object.fromEntries(['A','B','C','D','E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
         },
-        logs: [{ 
-          level: realCount > 0 ? 'success' : 'warning', 
-          text: `[OXYGEN] ${realCount > 0 ? 'STREAM_ACTIVE' : 'STREAM_EMPTY'}: ${row.parsedPlayer}` 
+        logs: [{
+          level: found > 0 ? 'success' : 'warning',
+          text: `[OXYGEN] ${found > 0 ? 'SCHEMA_MATCH' : 'SCHEMA_FAIL'}: ${row.parsedPlayer} (${found} units)`
         }]
       };
 
       results.push(result);
-      stateRef.miningVault[row.idx] = vault;
+      if (stateRef?.miningVault) stateRef.miningVault[row.idx] = vault;
       commitVault(stateRef, row, vault);
-      
-      if (window.PickCalcUI && window.PickCalcUI.appendConsole) {
-        window.PickCalcUI.appendConsole(result.logs[0]);
-      }
-      
+      if (window.PickCalcUI?.appendConsole) window.PickCalcUI.appendConsole(result.logs[0]);
       hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes: i + 1, totalProbes: batch.length });
     }
 
