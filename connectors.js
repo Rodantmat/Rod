@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.63.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.64.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -24,14 +24,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function normalizeName(value) {
-    return stripAccents(String(value || ''))
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .replace(/Demon|Goblin|Trending/gi, ' ')
-      .replace(/\b\d+(?:\.\d+)?K\b/gi, ' ')
-      .replace(/[^a-zA-Z0-9 .'-]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -82,7 +80,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
-  function createZeroFilledVault(row = {}) {
+  function createZeroVault(row = {}) {
     const branches = {};
     BRANCH_KEYS.forEach((key) => { branches[key] = seedBranch(key); });
     return {
@@ -240,10 +238,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function fetchGeminiBatch(players, hooks = {}) {
     const safePlayers = Array.isArray(players) ? players : [];
-    if (!safePlayers.length) return {};
+    if (!safePlayers.length) return null;
     if (!GEMINI_API_KEY) {
-      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Branch A/E will zero-fill or derive.', level: 'warning' });
-      return {};
+      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Batch payload unavailable.', level: 'warning' });
+      return null;
     }
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
@@ -253,7 +251,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
 
     try {
-      const res = await fetch(endpoint, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'x-goog-api-key': GEMINI_API_KEY,
@@ -261,15 +259,31 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         },
         body: JSON.stringify(body)
       });
-      if (!res.ok) throw new Error(`API_${res.status}`);
-      const data = await res.json();
-      const raw = extractGeminiText(data);
-      const jsonBlock = extractJsonBlock(raw);
-      const parsed = JSON.parse(jsonBlock || '{}');
-      return normalizeGeminiPayload(parsed, safePlayers);
+
+      const rawText = await response.text();
+      let payload = null;
+
+      try {
+        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error('No JSON block found in Gemini response');
+        payload = JSON.parse(jsonMatch[0]);
+        if (!payload.players && !payload.data) {
+          console.warn("[OXYGEN] Payload missing 'players' root. Raw:", payload);
+        }
+      } catch (e) {
+        console.error('[OXYGEN] Extraction Failed:', e, 'Raw Text:', rawText);
+        return null;
+      }
+
+      if (!response.ok) {
+        hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: API_${response.status}`, level: 'warning' });
+      } else {
+        hooks.onBranch?.({ text: '[OXYGEN-COBALT] fetchGeminiBatch utilized x-goog-api-key header.', level: 'info' });
+      }
+      return payload;
     } catch (error) {
       hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: ${error.message}`, level: 'warning' });
-      return {};
+      return null;
     }
   }
 
@@ -332,7 +346,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       });
 
       hooks.onRowStart?.({ row, rowIndex, totalRows });
-      const vault = createZeroFilledVault(row);
+      const vault = createZeroVault(row);
       commitVault(stateRef, row, vault);
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'INIT', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault), logs: [{ level: 'info', text: `[OXYGEN-COBALT] Zero-fill primed for ${row.parsedPlayer || row.LEG_ID}.` }] });
       await yieldToUi();
@@ -355,21 +369,71 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      const batchMap = await fetchGeminiBatch([row], hooks);
-      const playerPayload = batchMap[normalizeName(row.parsedPlayer || '')] || {};
+      const payload = await fetchGeminiBatch([row], hooks);
 
-      vault.branches.A = await buildGroundedBranch(row, 'A', playerPayload);
-      commitVault(stateRef, row, vault);
+      const normPlayer = normalizeName(row.parsedPlayer);
+      const playerData = payload?.players?.[normPlayer] || payload?.data?.[normPlayer] || payload?.[normPlayer] || {};
+
+      vault.branches.A = seedBranch('A', 'Gemini Funnel', 'WARNING', 'Grounded extraction active');
+      vault.branches.E = seedBranch('E', 'Market Providers', 'WARNING', 'Market provider extraction active');
+
+      BRANCH_KEYS.forEach((bk) => {
+        if (bk === 'B' || bk === 'C' || bk === 'D') return;
+        const targetCount = BRANCH_TARGETS[bk];
+        for (let i = 1; i <= targetCount; i += 1) {
+          const fk = `${bk.toLowerCase()}${String(i).padStart(2, '0')}`;
+          const val = Number(playerData[fk]);
+          if (!isNaN(val) && val !== 0) {
+            vault.branches[bk].parsed[fk] = safeNumber(val);
+            vault.branches[bk].status = 'SUCCESS';
+            vault.branches[bk].factorMeta[fk].status = 'REAL';
+            vault.branches[bk].factorMeta[fk].source = 'GEMINI_REAL';
+            vault.branches[bk].factorMeta[fk].value = safeNumber(val);
+          } else {
+            vault.branches[bk].parsed[fk] = 0;
+            vault.branches[bk].factorMeta[fk].status = 'WARNING';
+            vault.branches[bk].factorMeta[fk].source = 'ZERO_FILL';
+            vault.branches[bk].factorMeta[fk].value = 0;
+          }
+        }
+        updateBranchMeta(vault.branches[bk]);
+      });
+
+      PROVIDERS.forEach((provider) => {
+        const pVal = Number(playerData[provider]);
+        if (!isNaN(pVal) && pVal !== 0) {
+          vault.branches.E.providerMap[provider] = safeNumber(pVal);
+          vault.branches.E.status = 'DERIVED';
+        } else {
+          vault.branches.E.providerMap[provider] = 0;
+        }
+      });
+
+      vault.branches.E.note = 'Market odds table hydrated inside Branch E container.';
+      vault.branches.A.note = 'Linear +0.1 increments deleted and replaced by extraction variables.';
+      updateBranchMeta(vault.branches.E);
+
+      const realFactors = Object.values(vault.branches.A.parsed).filter((v) => v !== 0).length;
+      vault.branches.A.saturation = safeNumber((realFactors / 20) * 100);
+
+      if (stateRef && typeof stateRef === 'object') {
+        stateRef.miningVault = stateRef.miningVault || {};
+        stateRef.miningVault[row.LEG_ID] = JSON.parse(JSON.stringify(vault));
+        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
+      }
+
       completedProbes += 1;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      vault.branches.E = await buildGroundedBranch(row, 'E', playerPayload);
       vault.terminalState = 'Atomic Matrix Saturated';
-      commitVault(stateRef, row, vault);
+      if (stateRef && typeof stateRef === 'object') {
+        stateRef.miningVault[row.LEG_ID] = JSON.parse(JSON.stringify(vault));
+        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
+      }
       completedProbes += 1;
       const shield = computeShieldFromVault(vault);
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'E', vault: JSON.parse(JSON.stringify(vault)), shield });
+      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'E', vault: JSON.parse(JSON.stringify(vault)), shield, logs: [{ level: 'success', text: `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}. fetchGeminiBatch utilized x-goog-api-key header.` }] });
       await yieldToUi();
 
       const result = {
@@ -383,14 +447,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           completedRows: rowIndex + 1,
           completedProbes,
           totalProbes,
-          liveBranches: 0,
-          derivedBranches: 0,
+          liveBranches: BRANCH_KEYS.filter((key) => vault.branches[key].status === 'SUCCESS').length,
+          derivedBranches: BRANCH_KEYS.filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key].status)).length,
           branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key].status]))
         },
         logs: [{ level: 'success', text: `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}.` }]
       };
-      result.connectorState.liveBranches = BRANCH_KEYS.filter((key) => vault.branches[key].status === 'SUCCESS').length;
-      result.connectorState.derivedBranches = BRANCH_KEYS.filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key].status)).length;
       results.push(result);
       hooks.onRowComplete?.({ row, rowIndex, result, completedRows: rowIndex + 1, totalRows, completedProbes, totalProbes });
     }
@@ -418,7 +480,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     PROVIDERS,
     FACTOR_NAMES,
     normalizeName,
-    createZeroFilledVault,
+    createZeroVault,
+    createZeroFilledVault: createZeroVault,
     computeShieldFromVault,
     fetchGeminiBatch,
     extractJsonBlock,

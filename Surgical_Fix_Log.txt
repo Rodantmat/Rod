@@ -1,8 +1,6 @@
-OXYGEN-COBALT v13.63.0 Surgical Fix Log
-- Version lock upgraded across runtime headers and core files.
-- Linear +0.1 factor loop removed from grounded mining flow.
-- fetchGeminiBatch rebuilt for dual-handshake Gemini calls with JSON-only extraction.
-- streamingIngress rebuilt for sequential 7-row processing with LEG_ID vault locking.
-- Branch E providerMap hydration rendered inline with FanDuel / DraftKings / OddsJam / Pinnacle / Bet365.
-- Integrity scoring now weighs REAL vs DERIVED vs SIMULATED.
-- Dense player layout restored for Screen 2.
+OXYGEN-COBALT v13.64.0 Surgical Fix Log
+- Version lock advanced to v13.64.0 (OXYGEN-COBALT) across connectors.js, core.js, ui-engine.js, parser.js, styles.css, and index.html.
+- fetchGeminiBatch hardened with greedy JSON extraction and x-goog-api-key handshake logging.
+- normalizeName replaced with atomic normalization for strict key matching.
+- streamingIngress remapped to payload.players/payload.data with REAL assignment and ZERO_FILL fallback.
+- Terminal state preserved as Atomic Matrix Saturated.

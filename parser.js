@@ -1,6 +1,6 @@
 
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.63.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.64.0 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -67,10 +67,12 @@ window.PickCalcParser = (() => {
   }
 
   function normalizeName(value) {
-    return cleanWhitespace(stripAccents(String(value || ''))
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .replace(/[^A-Za-z'.\-\s]/g, ' '))
-      .toLowerCase();
+    return String(value || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
   }
 
   function cleanWhitespace(value) {
