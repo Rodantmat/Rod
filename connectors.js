@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.70.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.71.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -374,15 +374,15 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
     const payload = await fetchGeminiBatch(batch, hooks);
     const subjectPool = payload?.subjects || [];
 
-    for (let rowIndex = 0; rowIndex < batch.length; rowIndex += 1) {
-      const row = batch[rowIndex];
+    for (let i = 0; i < batch.length; i++) {
+      const row = batch[i];
 
-      hooks.onRowStart?.({ row, rowIndex, totalRows });
+      hooks.onRowStart?.({ row, rowIndex: i, totalRows });
       const vault = createZeroVault(row);
       commitVault(stateRef, row, vault);
       hooks.onBranch?.({
         row,
-        rowIndex,
+        rowIndex: i,
         totalRows,
         completedProbes,
         totalProbes,
@@ -396,26 +396,25 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
       vault.branches.B = buildDerivedBranch(row, 'B', 'Local Memory');
       commitVault(stateRef, row, vault);
       completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'B', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
+      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'B', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
       vault.branches.C = buildDerivedBranch(row, 'C', 'Local Memory');
       commitVault(stateRef, row, vault);
       completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'C', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
+      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'C', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
       vault.branches.D = buildDerivedBranch(row, 'D', 'neutronSearch');
       commitVault(stateRef, row, vault);
       completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
+      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
       vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Index-Locked Ingress active');
       vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
 
-      // Inside streamingIngress, REPLACE the Batch-to-Vault hydration loop:
-      const subject = subjectPool.find(s => parseInt(s.index) === rowIndex);
+      const subject = subjectPool.find(s => parseInt(s.index) === i);
 
       if (subject) {
         const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
@@ -457,38 +456,33 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
       const realCount = Object.values(vault.branches).reduce((acc, br) => 
         acc + Object.values(br.parsed || {}).filter(v => v !== 0).length, 0);
 
-      const hydrationResult = {
+      const result = {
         vault,
         row,
         analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'PHYSICS_NULL_EXPOSURE',
         logs: [{ 
           level: realCount > 0 ? 'success' : 'warning', 
-          text: realCount > 0 ? `[OXYGEN] HYDRATED: ${row.parsedPlayer}` : `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
+          text: `[OXYGEN] ${realCount > 0 ? 'HYDRATED' : 'NULL'}: ${row.parsedPlayer}`
         }]
       };
 
-      if (realCount === 0) {
-        console.warn('ASYNC_INGRESS_VOID');
-        appendConsole({ level: 'warning', text: 'ASYNC_INGRESS_VOID' });
-      }
-
       if (stateRef && typeof stateRef === 'object') {
         stateRef.miningVault = stateRef.miningVault || {};
-        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
+        stateRef.miningVault[row.idx] = vault;
       }
       commitVault(stateRef, row, vault);
       completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
+      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      vault.terminalState = hydrationResult.analysisHint;
+      vault.terminalState = result.analysisHint;
       commitVault(stateRef, row, vault);
 
       completedProbes += 1;
       const shield = computeShieldFromVault(vault);
       hooks.onBranch?.({
         row,
-        rowIndex,
+        rowIndex: i,
         totalRows,
         completedProbes,
         totalProbes,
@@ -504,7 +498,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
       });
       await yieldToUi();
 
-      const result = {
+      const finalResult = {
         row,
         vault: JSON.parse(JSON.stringify(vault)),
         vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
@@ -512,7 +506,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
         analysisHint: vault.terminalState,
         connectorState: {
           version: SYSTEM_VERSION,
-          completedRows: rowIndex + 1,
+          completedRows: i + 1,
           completedProbes,
           totalProbes,
           liveBranches: BRANCH_KEYS.filter((key) => vault.branches[key].status === 'SUCCESS').length,
@@ -526,8 +520,11 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
             : `[OXYGEN] HYDRATED: ${row.parsedPlayer}`
         }]
       };
-      results.push(result);
-      hooks.onRowComplete?.({ row, rowIndex, result, completedRows: rowIndex + 1, totalRows, completedProbes, totalProbes });
+      results.push(finalResult);
+      if (window.PickCalcUI && window.PickCalcUI.appendConsole) {
+        window.PickCalcUI.appendConsole(result.logs[0]);
+      }
+      hooks.onRowComplete?.({ row, rowIndex: i, result: finalResult, completedRows: i + 1, totalRows, completedProbes, totalProbes });
     }
 
     const lastResult = results[results.length - 1] || null;
