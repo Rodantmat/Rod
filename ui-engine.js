@@ -170,21 +170,16 @@ window.PickCalcUI = window.PickCalcUI || {};
   function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
   function buildAnalysisCopyText(context = {}) {
     const v = context.result?.vault || {};
-    const b = v.branches || {};
-    const row = context.result?.row || {};
-
-    const stats = Object.keys(b).map((k) => {
-      const success = Object.values(b[k]?.parsed || {}).filter((val) => val !== 0).length;
-      return `${k}:${success}/${context.BRANCH_TARGETS?.[k] || BRANCH_TARGETS?.[k] || 0}`;
-    }).join(' | ');
+    const r = context.result?.row || {};
+    const stats = Object.keys(v.branches || {}).map((k) => {
+      const count = Object.values(v.branches[k]?.parsed || {}).filter((n) => n !== 0).length;
+      return `${k}:${count}`;
+    }).join('|');
 
     return [
-      `=== OXYGEN REPORT v13.66.0 ===`,
-      `ID: ${row.LEG_ID} | PLAYER: ${row.parsedPlayer}`,
-      `MATCH: ${row.team} vs ${row.opponent} | PROP: ${row.prop} ${row.line}`,
+      `v13.66.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `DENSITY: ${stats}`,
-      `STATUS: ${context.result?.analysisHint || 'PROCESSING'}`,
-      `RAW_DATA: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
+      `FLUX: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');
   }
 
