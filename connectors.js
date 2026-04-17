@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.68.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.69.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -281,19 +281,21 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
 
   async function fetchGeminiBatch(rows, hooks = {}) {
-    const safeRows = Array.isArray(rows) ? rows : [];
-    if (!safeRows.length) return null;
+    const batch = Array.isArray(rows) ? rows : [];
+    if (!batch.length) return null;
     if (!GEMINI_API_KEY) {
-      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Subjective Variance payload unavailable.', level: 'warning' });
+      hooks.onBranch?.({ text: '[OXYGEN-COBALT] Gemini key missing. Systematic Extraction payload unavailable.', level: 'warning' });
       return null;
     }
 
-    const playersStr = safeRows.map((r) => `${r.parsedPlayer} (${r.team} vs ${r.opponent})`).join(', ');
     const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
-    const prompt = `Perform a Systematic Extraction for the following Subjects: ${playersStr}.
+
+    // REPLACE internal logic in fetchGeminiBatch:
+    const prompt = `Perform a Systematic Extraction for ${batch.length} Subjects.
+Mapping: ${batch.map((r, i) => `Index ${i}: ${r.parsedPlayer}`).join(', ')}.
 Return a strictly valid JSON object containing a "subjects" array. 
-Each subject must follow this nested schema:
-- "id": String (verbatim name)
+Each object in the array MUST contain:
+- "index": integer (verbatim index from 0 to ${batch.length - 1})
 - "metric_group_a": { "a01": float, ..., "a20": float }
 - "metric_group_b": { "b01": float, ..., "b18": float }
 - "metric_group_c": { "c01": float, ..., "c12": float }
@@ -426,14 +428,11 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Nested Property Hydrator active');
+      vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Index-Locked Ingress active');
       vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
 
-      const searchToken = normalizeName(row.parsedPlayer);
-      const subject = subjectPool.find((s) => {
-        const apiId = normalizeName(s?.id || '');
-        return apiId.includes(searchToken) || searchToken.includes(apiId);
-      });
+      // Inside streamingIngress, REPLACE the Batch-to-Vault hydration loop:
+      const subject = subjectPool.find((s) => parseInt(s?.index) === rowIndex);
 
       if (subject) {
         const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
@@ -464,38 +463,8 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
               vault.branches.E.providerMap[provider] = safeNumber(pVal);
               vault.branches.E.status = 'SUCCESS';
             }
-            if (vault.branches.E.factorMeta?.[pKey]) {
-              vault.branches.E.factorMeta[pKey].status = !isNaN(pVal) && pVal !== 0 ? 'REAL' : vault.branches.E.factorMeta[pKey].status;
-              vault.branches.E.factorMeta[pKey].source = !isNaN(pVal) && pVal !== 0 ? 'SUBJECTIVE_VARIANCE' : vault.branches.E.factorMeta[pKey].source;
-              vault.branches.E.factorMeta[pKey].value = !isNaN(pVal) && pVal !== 0 ? safeNumber(pVal) : vault.branches.E.factorMeta[pKey].value;
-            }
           });
         }
-
-        hooks.onBranch?.({
-          row,
-          rowIndex,
-          totalRows,
-          completedProbes,
-          totalProbes,
-          branchKey: 'MAP',
-          vault: JSON.parse(JSON.stringify(vault)),
-          shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer}` }]
-        });
-      } else {
-        const availableIds = subjectPool.map((s) => s?.id).filter(Boolean).join(', ');
-        hooks.onBranch?.({
-          row,
-          rowIndex,
-          totalRows,
-          completedProbes,
-          totalProbes,
-          branchKey: 'MAP',
-          vault: JSON.parse(JSON.stringify(vault)),
-          shield: computeShieldFromVault(vault),
-          logs: [{ level: 'warning', text: `[OXYGEN] MATCH_FAIL: ${row.parsedPlayer} not found in [${availableIds}]` }]
-        });
       }
 
       PROVIDERS.forEach((provider) => {
@@ -504,10 +473,11 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
 
       updateBranchMeta(vault.branches.E);
 
-      const realCount = Object.values(vault.branches).reduce((acc, br) =>
-        acc + Object.values(br.parsed || {}).filter((v) => v !== 0).length, 0);
+      const realCount = Object.values(vault.branches).reduce((acc, br) => 
+        acc + Object.values(br.parsed || {}).filter(v => v !== 0).length, 0);
 
       if (realCount === 0) {
+        appendConsole({ level: 'warning', text: `[OXYGEN] PHYSICS_NULL_EXPOSURE for ${row.parsedPlayer}` });
         hooks.onBranch?.({
           row,
           rowIndex,
@@ -520,6 +490,7 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
           logs: [{ level: 'warning', text: `[OXYGEN] PHYSICS_NULL_EXPOSURE for ${row.parsedPlayer}` }]
         });
       } else {
+        appendConsole({ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (Index:${rowIndex})` });
         hooks.onBranch?.({
           row,
           rowIndex,
@@ -529,13 +500,15 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS. Initialize unavailable values as 0.0.`;
           branchKey: 'VERIFY',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (${realCount} factors)` }]
+          logs: [{ level: 'success', text: `[OXYGEN] SUBJECT_HYDRATED: ${row.parsedPlayer} (Index:${rowIndex})` }]
         });
       }
 
-      stateRef.miningVault[row.idx] = vault;
+      if (stateRef && typeof stateRef === 'object') {
+        stateRef.miningVault = stateRef.miningVault || {};
+        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
+      }
       commitVault(stateRef, row, vault);
-
       completedProbes += 1;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
