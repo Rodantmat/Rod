@@ -1,7 +1,7 @@
 
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.1.0 (FIXED-IGNITION)';
+  const SYSTEM_VERSION = 'v13.61.0 (OXYGEN-ATOMIC)';
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
   const BRANCH_TOTAL = 72;
   const missing = '[NOT_IN_STATSAPI]';
@@ -32,16 +32,29 @@ window.PickCalcUI = window.PickCalcUI || {};
     mount.innerHTML = `<div class="status-panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Sport</th><th>League</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th><th>Type</th></tr></thead><tbody>${rows.map(row => `<tr><td>${row.idx}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.league)}</td><td><div>${escapeHtml(row.parsedPlayer)}</div><div style="margin-top:8px;">${copyVaultButton(row.idx)}</div></td><td>${escapeHtml(row.team||'')}</td><td>${escapeHtml(row.opponent||'')}</td><td>${escapeHtml(row.prop)}</td><td>${escapeHtml(row.line)}</td><td>${escapeHtml(row.gameTimeText||'')}</td><td>${escapeHtml(row.type)}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
+  function safeVal(value) {
+    return (value !== undefined && value !== null && value !== '[N/A]' && value !== 0) ? value : '[N/A]';
+  }
+
+  const renderVal = (v) => {
+    if (v === undefined || v === null || v === '[N/A]' || v === 0) return '[N/A]';
+    return typeof v === 'number' ? v.toFixed(3).replace(/\.000$/, '') : v;
+  };
+
+  function statStyle(value) {
+    return safeVal(value) !== '[N/A]' ? 'status-live' : 'status-muted';
+  }
+
   function factorLine(label, value) {
     if (value === null || value === undefined || value === '') return '';
-    return `<div class="mini-muted"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`;
+    return `<div class="${statStyle(value)}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(renderVal(value))}</div>`;
   }
 
   function summarizeBranchFactors(key, parsed) {
     if (!parsed) return '<div class="mini-muted">No parsed factors.</div>';
     const order = {
       A:['personId','resolvedName','identityMode','seasonAvg','l5','l10','l20','careerBaseline','standardDeviation','restDays','velocityAvg','velocityDelta','hardHitPct','whiffPct','avgExitVelocity','kRate','bbRate','hrPer9','groundBallPct','flyBallPct','inZoneSwingPct','pitchesPerInning','hitRateOverLine','samples'],
-      B:['teamObp15','teamOps15','teamAvg15','teamKRate15','teamBbRate15','opponentAvgVsL','opponentAvgVsR','opponentOpsVsL','opponentOpsVsR','opponentIsoVsL','opponentIsoVsR','teamSlug15','teamRunsPerGame15','bullpenEra3','catcherPopTime','battingOrderVolatility','lineupStability','roleIso','rangeStart','rangeEnd'],
+      B:['splitLabel','status','sourceMode','teamObp','teamOps','teamObp15','teamOps15','teamAvg15','teamKRate15','teamBbRate15','opponentAvgVsL','opponentAvgVsR','opponentOpsVsL','opponentOpsVsR','opponentIsoVsL','opponentIsoVsR','teamSlug15','teamRunsPerGame15','bullpenEra3','catcherPopTime','battingOrderVolatility','lineupStability','roleIso','rangeStart','rangeEnd'],
       C:['venueName','venueId','city','lat','lon','alt','hrFactor','runFactor','lf','cf','rf','surface'],
       D:['tempF','humidity','windSpeedMph','windDirectionDeg','pressureInHg','cloudCoverPct','dewPointF','visibilityMiles','densityAltitude','precipProbPct'],
       E:['openingLine','currentLine','lineDeltaPct','openingTotal','currentTotal','impliedTeamTotal','sharpActionBias','overJuice','underJuice','spread','marketConsensusBooks','steamDirection','bookmaker']
@@ -49,8 +62,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     return order.map(label => factorLine(label, parsed[label])).join('') || '<div class="mini-muted">No parsed factors.</div>';
   }
 
+  function isActuallyLive(branch) {
+    return branch && (branch.status === 'SUCCESS' || Number(parseFloat(branch.teamObp || branch?.parsed?.teamObp || 0)) > 0);
+  }
+
   function branchTone(branch) {
-    if (branch?.status === 'SUCCESS' || branch?.status === 'LIVE DATA' || branch?.sourceMode === 'LIVE DATA') return { card: 'support live-data', badge: 'live', status: 'ready', label: 'LIVE', icon: '✅' };
+    if (isActuallyLive(branch) || branch?.status === 'LIVE DATA' || branch?.sourceMode === 'LIVE DATA') return { card: 'support live-data', badge: 'live', status: 'ready', label: 'LIVE', icon: '✅' };
     if (branch?.status === 'DERIVED' || branch?.sourceMode === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', status: 'loading', label: 'DERIVED', icon: '🟨' };
     if (branch?.status === 'PENDING') return { card: 'status-pending', badge: 'heuristic', status: 'waiting', label: 'MINING...', icon: '⏳' };
     return { card: 'warning', badge: 'heuristic', status: 'failed', label: 'INTERRUPTED', icon: '❌' };
@@ -130,8 +147,17 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderConsole(logs) {
-    const mount = el('systemConsole'); if (!mount) return;
-    mount.innerHTML = (logs || []).map(entry => `<div class="console-line ${escapeHtml(entry.level || 'success')}">${escapeHtml(entry.text)}</div>`).join('');
+    const mount = document.getElementById('systemConsole');
+    if (!mount) return;
+    (logs || []).forEach(log => {
+      const div = document.createElement('div');
+      div.className = `console-line ${log.level || 'info'}`;
+      const rawText = String(log.text || '');
+      const text = rawText.includes('SCAN') || rawText.includes('BURST') ? `🌀 ${rawText}` : rawText;
+      div.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+      mount.prepend(div);
+    });
+    while (mount.children.length > 50) mount.lastChild.remove();
   }
 
   function renderMiningGrid(rowsOrRow, vault = { branches: {} }) {
@@ -166,29 +192,37 @@ window.PickCalcUI = window.PickCalcUI || {};
     updateProgressBar(completedRows, totalRows, label);
   }
 
-  function updateProgressBar(completedRows = 0, totalRows = 1, label = '') {
+  function updateProgressBar(index = 0, total = 1, message = '') {
     const mount = el('progressBar');
     if (!mount) return;
-    const safeTotal = Math.max(1, Number(totalRows) || 1);
-    const safeCompleted = Math.max(0, Math.min(safeTotal, Number(completedRows) || 0));
-    const pct = Math.max(0, Math.min(100, Math.round((safeCompleted / safeTotal) * 100)));
-    const resolvedLabel = typeof label === 'string' ? label : String(label?.text || label?.subText || 'Streaming ingress active.');
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const safeIndex = Math.max(0, Math.min(safeTotal, Number(index) || 0));
+    const pct = Math.floor((safeIndex / safeTotal) * 100);
+    const resolvedMessage = typeof message === 'string' ? message : String(message?.text || message?.subText || 'Fusion recovery active.');
+
     let shell = mount.querySelector('.progress-bar-shell');
     let fill = mount.querySelector('.progress-bar-fill');
     let meta = mount.querySelector('.progress-bar-meta');
     if (!shell || !fill || !meta) {
-      mount.innerHTML = `<div class="progress-bar-shell"><div class="progress-bar-fill"></div></div><div class="progress-bar-meta"><strong>0%</strong><span>Preparing stream...</span><span>0/0 rows</span></div>`;
+      mount.innerHTML = `<div class="progress-bar-shell"><div class="progress-bar-fill"></div></div><div class="progress-bar-meta"><strong>0%</strong><span>Preparing fusion stream...</span><span>0/0 rows</span></div>`;
       shell = mount.querySelector('.progress-bar-shell');
       fill = mount.querySelector('.progress-bar-fill');
       meta = mount.querySelector('.progress-bar-meta');
     }
-    if (shell) shell.style.setProperty('--progress', `${pct}%`);
-    if (fill) fill.style.width = `${pct}%`;
-    const strong = meta?.querySelector('strong');
-    const spans = meta?.querySelectorAll('span') || [];
-    if (strong) strong.textContent = `${pct}%`;
-    if (spans[0]) spans[0].textContent = resolvedLabel || 'Streaming ingress active.';
-    if (spans[1]) spans[1].textContent = `${safeCompleted}/${safeTotal} rows`;
+
+    window.requestAnimationFrame(() => {
+      if (shell) shell.style.setProperty('--progress', `${pct}%`);
+      const icon = resolvedMessage.includes('FUSION') || resolvedMessage.includes('Fusion') ? '🧪 ' : '📡 ';
+      if (fill) {
+        fill.style.width = `${pct}%`;
+        fill.innerHTML = `<div class="progress-inner"><span>${icon}${pct}% | ${escapeHtml(resolvedMessage)}</span></div>`;
+      }
+      const strong = meta?.querySelector('strong');
+      const spans = meta?.querySelectorAll('span') || [];
+      if (strong) strong.textContent = `${pct}%`;
+      if (spans[0]) spans[0].textContent = `${icon}${resolvedMessage}`;
+      if (spans[1]) spans[1].textContent = `${safeIndex}/${safeTotal} rows`;
+    });
   }
 
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
@@ -197,8 +231,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       completedRows: Number(meta.completedRows || 0)
     });
     patched.analysisHint = meta.branchKey && meta.branchKey !== 'DONE'
-      ? `Background streaming active — Branch ${meta.branchKey} resolved for ${patched.row?.parsedPlayer || 'current row'}.`
-      : `Background streaming active — ${Number(meta.completedRows || 0)}/${Math.max(1, Number(meta.totalRows || 1))} row(s) completed.`;
+      ? `Deep Saturating: Branch ${meta.branchKey} for ${patched.row?.parsedPlayer || 'current row'}.`
+      : `Deep Saturating: ${Number(meta.completedRows || 0)}/${Math.max(1, Number(meta.totalRows || 1))} row(s) completed.`;
     if (!el('analysisSummary')?.innerHTML) renderAnalysisShell(patched, rows, version);
     const progressCompleted = Number(meta.completedProbes ?? meta.completedRows ?? 0);
     const progressTotal = Math.max(1, Number(meta.totalProbes ?? meta.totalRows ?? (Array.isArray(rows) ? rows.length : 1)));
@@ -226,7 +260,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const intake = el('intakeScreen');
     const analysis = el('analysisScreen');
     if (analysis) analysis.classList.add('hidden');
-    if (intake) { intake.classList.remove('hidden'); intake.style.display = 'none'; }
+    if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; intake.style.visibility = 'visible'; intake.style.opacity = '1'; }
   }
   function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
 
@@ -271,9 +305,9 @@ window.PickCalcUI = window.PickCalcUI || {};
       `BRANCH A L10: ${value(safeParsed('A').l10)}`,
       '',
       `BRANCH B STATUS: ${value(safeBranch('B').status)}`,
-      `BRANCH B SPLIT: ${value(safeParsed('B').matchedSplit, safeParsed('B').splitDisplayName)}`,
-      `BRANCH B TEAM OBP: ${value(safeParsed('B').teamObp15)}`,
-      `BRANCH B TEAM OPS: ${value(safeParsed('B').teamOps15)}`,
+      `BRANCH B SPLIT: ${value(vault.splitLabel, safeParsed('B').splitLabel, safeParsed('B').matchedSplit, safeParsed('B').splitDisplayName)}`,
+      `BRANCH B TEAM OBP: ${value(safeParsed('B').teamObp, safeParsed('B').teamObp15)}`,
+      `BRANCH B TEAM OPS: ${value(safeParsed('B').teamOps, safeParsed('B').teamOps15)}`,
       '',
       `BRANCH C STATUS: ${value(safeBranch('C').status)}`,
       `BRANCH C VENUE: ${value(safeParsed('C').venueName)}`,

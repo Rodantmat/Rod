@@ -4,7 +4,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.1.0 (FIXED-IGNITION)';
+  const SYSTEM_VERSION = 'v13.61.0 (OXYGEN-ATOMIC)';
   const LAB_BOOT_ROWS = [
     { idx: 1, sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
     { idx: 2, sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
@@ -105,23 +105,23 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (!rows.length) { UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.'; return; }
     const starter = {
       row: rows[0] || {},
-      shield: { integrityScore: 0, label: verbose ? 'KEY-LAB INITIALIZING' : 'STREAMING INGRESS' },
+      shield: { integrityScore: 0, label: verbose ? 'KEY-LAB INITIALIZING' : 'SIGNAL SYNC' },
       connectorState: { liveBranches: 0, derivedBranches: 0 },
       vault: { branches: {} },
-      logs: [{ level: 'success', text: verbose ? `[LAB] Racing Connectors for ${rows[0]?.parsedPlayer || 'queued row'}...` : `[OMNI-MINER] Streaming ingress initialized for ${rows.length} row(s).` }]
+      logs: [{ level: 'success', text: verbose ? `[LAB] Racing Connectors for ${rows[0]?.parsedPlayer || 'queued row'}...` : `[OXYGEN] Streaming ingress initialized for ${rows.length} row(s).` }]
     };
     state.verboseMode = Boolean(verbose);
     state.lastResult = starter;
     UI.showAnalysisScreen();
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
-    UI.initProgressBar(0, rows.length, verbose ? 'Surgically Mining queued players...' : 'Surgically Mining queued players...');
+    UI.initProgressBar(0, rows.length, verbose ? 'OXYGEN pulse booting...' : 'OXYGEN pulse booting...');
     UI.renderConsole([...(state.ingestLogs || []), ...(starter.logs || [])]);
     await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     try {
       const stream = await Connectors.streamingIngress(rows, state, {
         verbose,
         onRowStart: ({ row, rowIndex, totalRows }) => {
-          UI.updateProgressBar(rowIndex, totalRows, `Mining ${row?.parsedPlayer || 'row'}: swarm start`);
+          UI.updateProgressBar(rowIndex, totalRows, `OXYGEN start: ${row?.parsedPlayer || 'row'}`);
         },
         onBranch: ({ row, rowIndex, totalRows, completedRows, completedProbes, totalProbes, branchKey, vault, shield, logs }) => {
           const partialResult = {
@@ -156,7 +156,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             totalProbes,
             branchKey,
             rowIndex,
-            label: `Mining ${row?.parsedPlayer || 'row'}: Branch ${branchKey}`
+            label: `FUSION mining ${row?.parsedPlayer || 'row'}: Branch ${branchKey}`
           });
         },
         onRowComplete: ({ result, completedRows, totalRows, completedProbes, totalProbes }) => {
@@ -191,24 +191,48 @@ window.PickCalcCore = window.PickCalcCore || {};
   async function handleMiningClick(isVerbose = false) {
     state.verboseMode = Boolean(isVerbose);
     const rows = filteredRows(state.rows);
+    if (!rows.length) {
+      UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.';
+      return;
+    }
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, Math.max(1, rows.length), isVerbose ? 'Surgically Mining queued players...' : 'Surgically Mining queued players...');
+    UI.initProgressBar(0, Math.max(1, rows.length), 'Firing Atomic Ingress...');
     UI.renderConsole([
-      { level: 'success', text: isVerbose ? '[LAB] Key-Lab button armed. Preparing unified swarm ingress...' : '[OMNI-MINER] Preparing unified swarm ingress...' },
+      { level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' },
       ...(state.ingestLogs || [])
     ]);
-    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-    let heartbeat = null;
+    const starter = {
+      row: rows[0] || {},
+      shield: { integrityScore: 0, label: 'ATOMIC INITIALIZING' },
+      connectorState: { liveBranches: 0, derivedBranches: 0 },
+      vault: { branches: {} },
+      logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]
+    };
+    state.lastResult = starter;
+    UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
     try {
-      heartbeat = setInterval(() => {
-        UI.renderConsole([
-          { level: 'success', text: `[HEARTBEAT] Swarm ingress alive for ${rows[0]?.parsedPlayer || 'queue'}...` },
-          ...(state.lastResult?.logs || state.ingestLogs || [])
-        ]);
-      }, 500);
-      await unifiedIngress(isVerbose);
-    } finally {
-      if (heartbeat) clearInterval(heartbeat);
+      await Connectors.streamingIngress(rows, state, {
+        verbose: isVerbose,
+        onRowStart: ({ row, rowIndex, totalRows }) => {
+          UI.updateProgressBar(rowIndex, totalRows, `Atomic ingress: ${row?.parsedPlayer || 'row'}`);
+        },
+        onRowComplete: (data) => {
+          state.lastResult = data.result;
+          UI.renderStreamUpdate(data.result.row, data.result.vault, data.result.shield, data.result.logs);
+          UI.updateProgressBar(data.completedRows, data.totalRows, `Atomic mapped ${data.completedRows}/${data.totalRows}`);
+        },
+        onBranch: (msg) => {
+          UI.renderConsole(msg);
+        },
+        onComplete: ({ totalRows, lastResult }) => {
+          if (lastResult) state.lastResult = lastResult;
+          UI.renderConsole({ level: 'success', text: '[SYSTEM] Atomic Matrix Saturated.' });
+          UI.updateProgressBar(totalRows, totalRows, 'Atomic Matrix Saturated.');
+        }
+      });
+    } catch (err) {
+      UI.renderConsole({ level: 'failed', text: `[FATAL] Ingress Aborted: ${err.message}` });
+      UI.updateProgressBar(0, Math.max(1, rows.length), `Ingress Aborted: ${err.message}`);
     }
   }
 
@@ -304,9 +328,9 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.showAnalysisScreen();
     UI.renderRunSummary(state.rows, state.auditRows, state.lastIngestMeta);
     UI.renderPoolTable(state.rows);
-    UI.renderAnalysisShell({ row: state.rows[0], shield: { integrityScore: 0, label: 'LAB READY' }, connectorState: { liveBranches: 0, derivedBranches: 0 }, vault: { branches: {} }, logs: [{ level: 'success', text: '[LAB] Fixed ignition armed.' }] }, state.rows, state.version);
+    UI.renderAnalysisShell({ row: state.rows[0], shield: { integrityScore: 0, label: 'ATOMIC READY' }, connectorState: { liveBranches: 0, derivedBranches: 0 }, vault: { branches: {} }, logs: [{ level: 'success', text: '[ATOMIC] Oxygen-Atomic ignition armed.' }] }, state.rows, state.version);
     UI.renderMiningGrid(state.rows, { branches: {} });
-    UI.updateProgressBar(0, state.rows.length, 'Lab boot ready.');
+    UI.updateProgressBar(0, state.rows.length, 'Oxygen-Atomic boot ready.');
   }
 
   Object.assign(window.PickCalcCore, { init, state, getDayScopeValue, copyRawVault, handleMiningClick, copyDebug, LAB_BOOT_ROWS });

@@ -1,0 +1,9 @@
+Surgical Fix Log
+- VERSION LOCK upgraded to v13.61.0 (OXYGEN-ATOMIC) across parser, index, connectors, ui, and core
+- Oxygen-Atomic connector hard-locked to hydrated AQ key with dual-handshake authentication using URL key + x-goog-api-key header
+- GEMINI_MODEL stabilized at gemini-1.5-flash for atomic Gemini Funnel ingress
+- Funnel prompt explicitly mandates FanDuel, DraftKings, OddsJam, Pinnacle, and Bet365 market coverage
+- fetchGeminiBatch now performs dual-handshake funnel retrieval and extracts grounded JSON payloads for exact player-name mapping
+- streamingIngress now performs atomic batch mapping from parsedPlayer into stateRef.miningVault with branch A-E saturation
+- Core mining flow locked to Atomic Ingress with row-complete stream hydration and Atomic Matrix Saturated terminal state
+- v13.31.0 visual baseline preserved by retaining existing layout and stylesheet structure
