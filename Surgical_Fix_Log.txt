@@ -1,6 +1,6 @@
-OXYGEN-COBALT v13.66.0 FIX LOG
-- Version increment applied across index.html, parser.js, connectors.js, ui-engine.js, core.js, and styles.css.
-- fetchGeminiBatch updated with x-goog-api-key handshake, JSON mode, and safety overrides.
-- Brute-force JSON sanitization integrated for Gemini candidate text extraction.
-- streamingIngress hardened with explicit null-payload failure state and verbose hydration logging.
-- buildAnalysisCopyText reduced to compact report output.
+OXYGEN-COBALT v13.67.0 FIX LOG
+
+- fetchGeminiBatch updated to the Deterministic Extraction Protocol with JSON-array subject output.
+- streamingIngress updated with the Nested Property Hydrator and Subjective Variance mapping.
+- buildAnalysisCopyText updated to reduced payload SATURATION / PROJECTIONS format.
+- Version increment applied across index.html, parser.js, connectors.js, ui-engine.js, and core.js.
