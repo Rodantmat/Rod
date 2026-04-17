@@ -1,4 +1,4 @@
-OXYGEN-COBALT v13.65.0 FIX LOG
+OXYGEN-COBALT v13.66.0 FIX LOG
 - Version increment applied across index.html, parser.js, connectors.js, ui-engine.js, core.js, and styles.css.
 - fetchGeminiBatch updated with x-goog-api-key handshake, JSON mode, and safety overrides.
 - Brute-force JSON sanitization integrated for Gemini candidate text extraction.

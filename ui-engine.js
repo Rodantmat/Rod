@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.65.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.66.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -123,7 +123,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const summary = el('analysisSummary');
     if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">REAL: ${escapeHtml(shield.real)}</div>`,`<div class="pill">SIMULATED: ${escapeHtml(shield.simulated)}</div>`].join('');
     const hint = el('analysisHint');
-    if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT grounding active.';
+    if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT recovery active.';
     const rowCard = el('analysisRowCard');
     if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')}</div></div>`;
     const kpis = el('analysisKpis');
@@ -151,10 +151,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     window.requestAnimationFrame(() => {
       if (fill) {
         fill.style.width = `${pct}%`;
-        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'OXYGEN-COBALT active.')}</span></div>`;
+        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'OXYGEN-COBALT recovery active.')}</span></div>`;
       }
       if (strong) strong.textContent = `${pct}%`;
-      if (spans[0]) spans[0].textContent = `📡 ${message || 'OXYGEN-COBALT active.'}`;
+      if (spans[0]) spans[0].textContent = `📡 ${message || 'OXYGEN-COBALT recovery active.'}`;
       if (spans[1]) spans[1].textContent = `${safeIndex}/${safeTotal} probes`;
     });
   }
@@ -179,7 +179,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     }).join(' | ');
 
     return [
-      `=== OXYGEN REPORT v13.65.0 ===`,
+      `=== OXYGEN REPORT v13.66.0 ===`,
       `ID: ${row.LEG_ID} | PLAYER: ${row.parsedPlayer}`,
       `MATCH: ${row.team} vs ${row.opponent} | PROP: ${row.prop} ${row.line}`,
       `DENSITY: ${stats}`,

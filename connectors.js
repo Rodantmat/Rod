@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.65.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.66.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -27,8 +27,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return String(value || '')
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
       .toLowerCase()
-      .replace(/[^a-z0-9]/g, '')
       .trim();
   }
 
@@ -147,28 +147,42 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return '';
   }
 
-  function buildGeminiPrompt(players) {
+  function buildGeminiPrompt(players, mode = 'primary') {
     const compact = (players || []).map((row) => ({
-      LEG_ID: row.LEG_ID,
+      id: row.LEG_ID,
       idx: row.idx,
-      player: row.parsedPlayer,
+      subject: row.parsedPlayer,
       team: row.team,
       opponent: row.opponent,
       gameTime: row.gameTimeText || row.gameTime || '',
-      propFamily: row.prop,
+      metricFamily: row.prop,
       line: row.line,
       direction: row.direction || '',
       type: row.type || ''
     }));
-    return [
-      'Return JSON only. No prose. No markdown.',
-      'For each player use normalized player name as the top-level key.',
-      'For every player return exactly these objects: branchA, branchE, providers.',
-      'branchA must contain numeric values a01-a20. branchE must contain numeric values e01-e12.',
-      'providers must include numeric values for FanDuel, DraftKings, OddsJam, Pinnacle, Bet365.',
-      'If a value is unavailable return null, not text.',
-      JSON.stringify(compact)
-    ].join('\n');
+
+    const instructions = mode === 'fallback'
+      ? [
+          'Extract discrete Grounded Metrics and Market Projections for the following subjects.',
+          'Strictly return one JSON object only.',
+          'Each subject key must be the normalized alphanumeric subject name.',
+          'Schema:',
+          '{"players":{"normalizedname":{"a01":0.0,"a02":0.0,"a03":0.0,"a04":0.0,"a05":0.0,"a06":0.0,"a07":0.0,"a08":0.0,"a09":0.0,"a10":0.0,"a11":0.0,"a12":0.0,"a13":0.0,"a14":0.0,"a15":0.0,"a16":0.0,"a17":0.0,"a18":0.0,"a19":0.0,"a20":0.0,"b01":0.0,"b02":0.0,"b03":0.0,"b04":0.0,"b05":0.0,"b06":0.0,"b07":0.0,"b08":0.0,"b09":0.0,"b10":0.0,"b11":0.0,"b12":0.0,"b13":0.0,"b14":0.0,"b15":0.0,"b16":0.0,"b17":0.0,"b18":0.0,"c01":0.0,"c02":0.0,"c03":0.0,"c04":0.0,"c05":0.0,"c06":0.0,"c07":0.0,"c08":0.0,"c09":0.0,"c10":0.0,"c11":0.0,"c12":0.0,"d01":0.0,"d02":0.0,"d03":0.0,"d04":0.0,"d05":0.0,"d06":0.0,"d07":0.0,"d08":0.0,"d09":0.0,"d10":0.0,"market01":0.0,"market02":0.0,"market03":0.0,"market04":0.0,"market05":0.0}}}',
+          'Do not include prose, code fences, headings, or commentary.',
+          'Use 0.0 only when data is physically unavailable.'
+        ].join('\n')
+      : [
+          'Extract 72 discrete data points for the following subjects.',
+          'Categorize the data as Predictive Physics Factors and Grounded Metrics.',
+          'Strictly return one JSON object only.',
+          'Each subject key must be the normalized alphanumeric subject name.',
+          'Required schema:',
+          '{"players":{"normalizedname":{"a01":0.0,"a02":0.0,"a03":0.0,"a04":0.0,"a05":0.0,"a06":0.0,"a07":0.0,"a08":0.0,"a09":0.0,"a10":0.0,"a11":0.0,"a12":0.0,"a13":0.0,"a14":0.0,"a15":0.0,"a16":0.0,"a17":0.0,"a18":0.0,"a19":0.0,"a20":0.0,"b01":0.0,"b02":0.0,"b03":0.0,"b04":0.0,"b05":0.0,"b06":0.0,"b07":0.0,"b08":0.0,"b09":0.0,"b10":0.0,"b11":0.0,"b12":0.0,"b13":0.0,"b14":0.0,"b15":0.0,"b16":0.0,"b17":0.0,"b18":0.0,"c01":0.0,"c02":0.0,"c03":0.0,"c04":0.0,"c05":0.0,"c06":0.0,"c07":0.0,"c08":0.0,"c09":0.0,"c10":0.0,"c11":0.0,"c12":0.0,"d01":0.0,"d02":0.0,"d03":0.0,"d04":0.0,"d05":0.0,"d06":0.0,"d07":0.0,"d08":0.0,"d09":0.0,"d10":0.0,"market01":0.0,"market02":0.0,"market03":0.0,"market04":0.0,"market05":0.0}}}',
+          'Do not include prose, markdown headers, or explanations.',
+          'Use 0.0 only if data is physically unavailable.'
+        ].join('\n');
+
+    return `${instructions}\n${JSON.stringify(compact)}`;
   }
 
   function normalizeGeminiPayload(parsed, players = []) {
@@ -178,6 +192,35 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       normalized[key] = parsed?.[key] || parsed?.players?.[key] || {};
     });
     return normalized;
+  }
+
+  function remapProviderAliases(payload = {}) {
+    const safe = Object.assign({}, payload || {});
+    const aliasMap = {
+      FanDuel: ['FanDuel', 'fanduel', 'market01', 'provider01', 'projection01'],
+      DraftKings: ['DraftKings', 'draftkings', 'market02', 'provider02', 'projection02'],
+      OddsJam: ['OddsJam', 'oddsjam', 'market03', 'provider03', 'projection03'],
+      Pinnacle: ['Pinnacle', 'pinnacle', 'market04', 'provider04', 'projection04'],
+      Bet365: ['Bet365', 'bet365', 'market05', 'provider05', 'projection05']
+    };
+    safe.providers = Object.assign({}, safe.providers || {});
+    Object.entries(aliasMap).forEach(([provider, aliases]) => {
+      for (const alias of aliases) {
+        const direct = safe?.[alias];
+        const nested = safe.providers?.[alias];
+        if (Number.isFinite(Number(direct))) {
+          safe[provider] = safeNumber(direct);
+          safe.providers[provider] = safeNumber(direct);
+          break;
+        }
+        if (Number.isFinite(Number(nested))) {
+          safe[provider] = safeNumber(nested);
+          safe.providers[provider] = safeNumber(nested);
+          break;
+        }
+      }
+    });
+    return safe;
   }
 
   function localMetricBase(row = {}) {
@@ -246,9 +289,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?alt=json`;
-    const prompt = buildGeminiPrompt(safePlayers);
 
-    try {
+    const executePrompt = async (mode = 'primary') => {
+      const prompt = buildGeminiPrompt(safePlayers, mode);
       const response = await fetch(`${url}&key=${encodeURIComponent(GEMINI_API_KEY)}`, {
         method: 'POST',
         headers: {
@@ -258,9 +301,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: 0.1,
+            temperature: mode === 'fallback' ? 0.0 : 0.1,
             topP: 0.95,
-            maxOutputTokens: 2048,
+            maxOutputTokens: 3072,
             responseMimeType: 'application/json'
           },
           safetySettings: [
@@ -277,31 +320,51 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         data = await response.json();
       } catch (jsonError) {
         hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini response JSON decode failed: ${jsonError.message}`, level: 'warning' });
-        return null;
+        return { error: 'JSON_DECODE_FAILURE', raw: null };
       }
 
-      const rawOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
+      const candidate = data?.candidates?.[0] || null;
       if (!response.ok) {
         hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: API_${response.status}`, level: 'warning' });
       } else {
         hooks.onBranch?.({ text: '[OXYGEN-COBALT] fetchGeminiBatch utilized x-goog-api-key header.', level: 'info' });
       }
 
-      if (!rawOutput) {
-        console.error('[OXYGEN] API returned empty content. Possible safety block.');
-        return null;
+      if (!candidate || candidate.finishReason === 'SAFETY') {
+        console.error(`[OXYGEN] CRITICAL: Built-in Safety Block triggered for ${GEMINI_MODEL}.`);
+        hooks.onBranch?.({ text: `[OXYGEN-COBALT] CRITICAL: Built-in Safety Block triggered for ${GEMINI_MODEL}.`, level: 'warning' });
+        return { error: 'SAFETY_LOCKOUT', raw: data };
       }
 
+      const rawOutput = candidate?.content?.parts?.[0]?.text || '';
+      if (!rawOutput) return { error: 'EMPTY_CONTENT', raw: data };
+
+      const cleanJson = rawOutput.replace(/```json|```/gi, '').trim();
       try {
-        const startIdx = rawOutput.indexOf('{');
-        const endIdx = rawOutput.lastIndexOf('}');
-        if (startIdx === -1 || endIdx === -1) throw new Error('No JSON boundaries');
-        return JSON.parse(rawOutput.substring(startIdx, endIdx + 1));
+        return JSON.parse(cleanJson);
       } catch (e) {
-        console.error('[OXYGEN] JSON Brute-Force Parse Failed:', e, 'Raw:', rawOutput);
-        return null;
+        try {
+          const start = cleanJson.indexOf('{');
+          const end = cleanJson.lastIndexOf('}');
+          if (start === -1 || end === -1) throw e;
+          return JSON.parse(cleanJson.substring(start, end + 1));
+        } catch (boundaryError) {
+          hooks.onBranch?.({ text: `[OXYGEN-COBALT] JSON boundary recovery failed: ${boundaryError.message}`, level: 'warning' });
+          return { error: 'JSON_PARSE_FAILURE', raw: data };
+        }
       }
+    };
+
+    try {
+      const primary = await executePrompt('primary');
+      if (!primary?.error) return primary;
+      if (primary.error === 'SAFETY_LOCKOUT') {
+        hooks.onBranch?.({ text: '[OXYGEN-COBALT] Retrying with softened Predictive Physics schema.', level: 'warning' });
+        const fallback = await executePrompt('fallback');
+        if (!fallback?.error) return fallback;
+        return fallback;
+      }
+      return primary;
     } catch (error) {
       hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: ${error.message}`, level: 'warning' });
       return null;
@@ -403,12 +466,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
       const payload = await fetchGeminiBatch([row], hooks);
       const normPlayer = normalizeName(row.parsedPlayer);
-      const playerData = payload?.players?.[normPlayer] || payload?.data?.[normPlayer] || payload?.[normPlayer] || null;
+      const normalizedPayload = normalizeGeminiPayload(payload, [row]);
+      const rawPlayerData = normalizedPayload?.[normPlayer] || payload?.players?.[normPlayer] || payload?.data?.[normPlayer] || payload?.[normPlayer] || null;
+      const playerData = remapProviderAliases(rawPlayerData || {});
 
       vault.branches.A = seedBranch('A', 'Gemini Funnel', 'WARNING', 'Grounded extraction active');
       vault.branches.E = seedBranch('E', 'Market Providers', 'WARNING', 'Market provider extraction active');
 
-      if (!playerData) {
+      if (playerData && Object.keys(playerData).length > 0) {
         hooks.onBranch?.({
           row,
           rowIndex,
@@ -418,7 +483,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'warning', text: `[OXYGEN] NO DATA FOUND FOR: ${row.parsedPlayer}. Mapping skipped.` }]
+          logs: [{ level: 'success', text: `[OXYGEN] DATA RECOVERY SUCCESS: ${row.parsedPlayer} | Factors Hydrated: ${Object.keys(playerData).length}` }]
         });
       } else {
         hooks.onBranch?.({
@@ -430,7 +495,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           branchKey: 'MAP',
           vault: JSON.parse(JSON.stringify(vault)),
           shield: computeShieldFromVault(vault),
-          logs: [{ level: 'success', text: `[OXYGEN] HYDRATED: ${row.parsedPlayer} (A:${Object.keys(playerData).length} factors)` }]
+          logs: [{ level: 'failed', text: `[OXYGEN] DATA RECOVERY FAILED: ${row.parsedPlayer}. Check API Safety Logs.` }]
         });
       }
 
@@ -474,7 +539,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      const terminalLabel = realFactors > 0 ? 'Atomic Matrix Saturated' : 'OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD';
+      const terminalLabel = realFactors > 0 ? 'Atomic Matrix Saturated' : (payload?.error === 'SAFETY_LOCKOUT' ? 'OXYGEN_RESTORE_FAILURE: SAFETY_LOCKOUT' : 'OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD');
       vault.terminalState = terminalLabel;
       commitVault(stateRef, row, vault);
 
