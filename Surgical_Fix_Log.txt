@@ -1,6 +1,6 @@
-OXYGEN-COBALT v13.64.0 Surgical Fix Log
-- Version lock advanced to v13.64.0 (OXYGEN-COBALT) across connectors.js, core.js, ui-engine.js, parser.js, styles.css, and index.html.
-- fetchGeminiBatch hardened with greedy JSON extraction and x-goog-api-key handshake logging.
-- normalizeName replaced with atomic normalization for strict key matching.
-- streamingIngress remapped to payload.players/payload.data with REAL assignment and ZERO_FILL fallback.
-- Terminal state preserved as Atomic Matrix Saturated.
+OXYGEN-COBALT v13.65.0 FIX LOG
+- Version increment applied across index.html, parser.js, connectors.js, ui-engine.js, core.js, and styles.css.
+- fetchGeminiBatch updated with x-goog-api-key handshake, JSON mode, and safety overrides.
+- Brute-force JSON sanitization integrated for Gemini candidate text extraction.
+- streamingIngress hardened with explicit null-payload failure state and verbose hydration logging.
+- buildAnalysisCopyText reduced to compact report output.

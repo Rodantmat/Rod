@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.64.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.65.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -168,7 +168,25 @@ window.PickCalcUI = window.PickCalcUI || {};
   function showOverlay(title, body) { if (el('runOverlay')) el('runOverlay').classList.remove('hidden'); if (el('overlaySub')) el('overlaySub').textContent = title; if (el('overlayBody')) el('overlayBody').textContent = body; }
   function hideOverlay() { if (el('runOverlay')) el('runOverlay').classList.add('hidden'); }
   function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
-  function buildAnalysisCopyText(context = {}) { return JSON.stringify(context, null, 2); }
+  function buildAnalysisCopyText(context = {}) {
+    const v = context.result?.vault || {};
+    const b = v.branches || {};
+    const row = context.result?.row || {};
+
+    const stats = Object.keys(b).map((k) => {
+      const success = Object.values(b[k]?.parsed || {}).filter((val) => val !== 0).length;
+      return `${k}:${success}/${context.BRANCH_TARGETS?.[k] || BRANCH_TARGETS?.[k] || 0}`;
+    }).join(' | ');
+
+    return [
+      `=== OXYGEN REPORT v13.65.0 ===`,
+      `ID: ${row.LEG_ID} | PLAYER: ${row.parsedPlayer}`,
+      `MATCH: ${row.team} vs ${row.opponent} | PROP: ${row.prop} ${row.line}`,
+      `DENSITY: ${stats}`,
+      `STATUS: ${context.result?.analysisHint || 'PROCESSING'}`,
+      `RAW_DATA: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
+    ].join('\n');
+  }
 
   Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };

@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.64.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.65.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -236,6 +236,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { value: derived.value, isReal: false, source: derived.source, derived: derived.status === 'DERIVED' };
   }
 
+
   async function fetchGeminiBatch(players, hooks = {}) {
     const safePlayers = Array.isArray(players) ? players : [];
     if (!safePlayers.length) return null;
@@ -244,43 +245,63 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       return null;
     }
 
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-    const body = {
-      contents: [{ parts: [{ text: buildGeminiPrompt(safePlayers) }] }],
-      generationConfig: { responseMimeType: 'application/json' }
-    };
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?alt=json`;
+    const prompt = buildGeminiPrompt(safePlayers);
 
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetch(`${url}&key=${encodeURIComponent(GEMINI_API_KEY)}`, {
         method: 'POST',
         headers: {
-          'x-goog-api-key': GEMINI_API_KEY,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            topP: 0.95,
+            maxOutputTokens: 2048,
+            responseMimeType: 'application/json'
+          },
+          safetySettings: [
+            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+          ]
+        })
       });
 
-      const rawText = await response.text();
-      let payload = null;
-
+      let data = null;
       try {
-        const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error('No JSON block found in Gemini response');
-        payload = JSON.parse(jsonMatch[0]);
-        if (!payload.players && !payload.data) {
-          console.warn("[OXYGEN] Payload missing 'players' root. Raw:", payload);
-        }
-      } catch (e) {
-        console.error('[OXYGEN] Extraction Failed:', e, 'Raw Text:', rawText);
+        data = await response.json();
+      } catch (jsonError) {
+        hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini response JSON decode failed: ${jsonError.message}`, level: 'warning' });
         return null;
       }
+
+      const rawOutput = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
       if (!response.ok) {
         hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: API_${response.status}`, level: 'warning' });
       } else {
         hooks.onBranch?.({ text: '[OXYGEN-COBALT] fetchGeminiBatch utilized x-goog-api-key header.', level: 'info' });
       }
-      return payload;
+
+      if (!rawOutput) {
+        console.error('[OXYGEN] API returned empty content. Possible safety block.');
+        return null;
+      }
+
+      try {
+        const startIdx = rawOutput.indexOf('{');
+        const endIdx = rawOutput.lastIndexOf('}');
+        if (startIdx === -1 || endIdx === -1) throw new Error('No JSON boundaries');
+        return JSON.parse(rawOutput.substring(startIdx, endIdx + 1));
+      } catch (e) {
+        console.error('[OXYGEN] JSON Brute-Force Parse Failed:', e, 'Raw:', rawOutput);
+        return null;
+      }
     } catch (error) {
       hooks.onBranch?.({ text: `[OXYGEN-COBALT] Gemini fetch failed: ${error.message}`, level: 'warning' });
       return null;
@@ -331,6 +352,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     stateRef.miningVault[row.LEG_ID] = JSON.parse(JSON.stringify(vault));
   }
 
+
   async function streamingIngress(pool, stateRef = null, hooks = {}) {
     const rows = Array.isArray(pool) ? pool.slice(0, 7) : [];
     const totalRows = rows.length;
@@ -348,7 +370,17 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       hooks.onRowStart?.({ row, rowIndex, totalRows });
       const vault = createZeroVault(row);
       commitVault(stateRef, row, vault);
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'INIT', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault), logs: [{ level: 'info', text: `[OXYGEN-COBALT] Zero-fill primed for ${row.parsedPlayer || row.LEG_ID}.` }] });
+      hooks.onBranch?.({
+        row,
+        rowIndex,
+        totalRows,
+        completedProbes,
+        totalProbes,
+        branchKey: 'INIT',
+        vault: JSON.parse(JSON.stringify(vault)),
+        shield: computeShieldFromVault(vault),
+        logs: [{ level: 'info', text: `[OXYGEN-COBALT] Zero-fill primed for ${row.parsedPlayer || row.LEG_ID}.` }]
+      });
       await yieldToUi();
 
       vault.branches.B = buildDerivedBranch(row, 'B', 'Local Memory');
@@ -370,37 +402,57 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       await yieldToUi();
 
       const payload = await fetchGeminiBatch([row], hooks);
-
       const normPlayer = normalizeName(row.parsedPlayer);
-      const playerData = payload?.players?.[normPlayer] || payload?.data?.[normPlayer] || payload?.[normPlayer] || {};
+      const playerData = payload?.players?.[normPlayer] || payload?.data?.[normPlayer] || payload?.[normPlayer] || null;
 
       vault.branches.A = seedBranch('A', 'Gemini Funnel', 'WARNING', 'Grounded extraction active');
       vault.branches.E = seedBranch('E', 'Market Providers', 'WARNING', 'Market provider extraction active');
+
+      if (!playerData) {
+        hooks.onBranch?.({
+          row,
+          rowIndex,
+          totalRows,
+          completedProbes,
+          totalProbes,
+          branchKey: 'MAP',
+          vault: JSON.parse(JSON.stringify(vault)),
+          shield: computeShieldFromVault(vault),
+          logs: [{ level: 'warning', text: `[OXYGEN] NO DATA FOUND FOR: ${row.parsedPlayer}. Mapping skipped.` }]
+        });
+      } else {
+        hooks.onBranch?.({
+          row,
+          rowIndex,
+          totalRows,
+          completedProbes,
+          totalProbes,
+          branchKey: 'MAP',
+          vault: JSON.parse(JSON.stringify(vault)),
+          shield: computeShieldFromVault(vault),
+          logs: [{ level: 'success', text: `[OXYGEN] HYDRATED: ${row.parsedPlayer} (A:${Object.keys(playerData).length} factors)` }]
+        });
+      }
 
       BRANCH_KEYS.forEach((bk) => {
         if (bk === 'B' || bk === 'C' || bk === 'D') return;
         const targetCount = BRANCH_TARGETS[bk];
         for (let i = 1; i <= targetCount; i += 1) {
           const fk = `${bk.toLowerCase()}${String(i).padStart(2, '0')}`;
-          const val = Number(playerData[fk]);
+          const val = Number(playerData?.[fk]);
           if (!isNaN(val) && val !== 0) {
             vault.branches[bk].parsed[fk] = safeNumber(val);
             vault.branches[bk].status = 'SUCCESS';
             vault.branches[bk].factorMeta[fk].status = 'REAL';
             vault.branches[bk].factorMeta[fk].source = 'GEMINI_REAL';
             vault.branches[bk].factorMeta[fk].value = safeNumber(val);
-          } else {
-            vault.branches[bk].parsed[fk] = 0;
-            vault.branches[bk].factorMeta[fk].status = 'WARNING';
-            vault.branches[bk].factorMeta[fk].source = 'ZERO_FILL';
-            vault.branches[bk].factorMeta[fk].value = 0;
           }
         }
         updateBranchMeta(vault.branches[bk]);
       });
 
       PROVIDERS.forEach((provider) => {
-        const pVal = Number(playerData[provider]);
+        const pVal = Number(playerData?.[provider]);
         if (!isNaN(pVal) && pVal !== 0) {
           vault.branches.E.providerMap[provider] = safeNumber(pVal);
           vault.branches.E.status = 'DERIVED';
@@ -413,27 +465,37 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       vault.branches.A.note = 'Linear +0.1 increments deleted and replaced by extraction variables.';
       updateBranchMeta(vault.branches.E);
 
-      const realFactors = Object.values(vault.branches.A.parsed).filter((v) => v !== 0).length;
+      const realFactors = Object.values(vault.branches.A.parsed).filter((v) => Number(v) !== 0).length;
       vault.branches.A.saturation = safeNumber((realFactors / 20) * 100);
 
-      if (stateRef && typeof stateRef === 'object') {
-        stateRef.miningVault = stateRef.miningVault || {};
-        stateRef.miningVault[row.LEG_ID] = JSON.parse(JSON.stringify(vault));
-        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
-      }
+      commitVault(stateRef, row, vault);
 
       completedProbes += 1;
       hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
       await yieldToUi();
 
-      vault.terminalState = 'Atomic Matrix Saturated';
-      if (stateRef && typeof stateRef === 'object') {
-        stateRef.miningVault[row.LEG_ID] = JSON.parse(JSON.stringify(vault));
-        stateRef.miningVault[row.idx] = JSON.parse(JSON.stringify(vault));
-      }
+      const terminalLabel = realFactors > 0 ? 'Atomic Matrix Saturated' : 'OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD';
+      vault.terminalState = terminalLabel;
+      commitVault(stateRef, row, vault);
+
       completedProbes += 1;
       const shield = computeShieldFromVault(vault);
-      hooks.onBranch?.({ row, rowIndex, totalRows, completedProbes, totalProbes, branchKey: 'E', vault: JSON.parse(JSON.stringify(vault)), shield, logs: [{ level: 'success', text: `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}. fetchGeminiBatch utilized x-goog-api-key header.` }] });
+      hooks.onBranch?.({
+        row,
+        rowIndex,
+        totalRows,
+        completedProbes,
+        totalProbes,
+        branchKey: 'E',
+        vault: JSON.parse(JSON.stringify(vault)),
+        shield,
+        logs: [{
+          level: realFactors > 0 ? 'success' : 'warning',
+          text: realFactors > 0
+            ? `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}. fetchGeminiBatch utilized x-goog-api-key header.`
+            : `[OXYGEN-COBALT] OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD for ${row.parsedPlayer || row.LEG_ID}. fetchGeminiBatch utilized x-goog-api-key header.`
+        }]
+      });
       await yieldToUi();
 
       const result = {
@@ -441,7 +503,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         vault: JSON.parse(JSON.stringify(vault)),
         vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
         shield,
-        analysisHint: 'Atomic Matrix Saturated',
+        analysisHint: terminalLabel,
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: rowIndex + 1,
@@ -451,7 +513,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           derivedBranches: BRANCH_KEYS.filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key].status)).length,
           branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key].status]))
         },
-        logs: [{ level: 'success', text: `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}.` }]
+        logs: [{
+          level: realFactors > 0 ? 'success' : 'warning',
+          text: realFactors > 0
+            ? `[OXYGEN-COBALT] Atomic Matrix Saturated for ${row.parsedPlayer || row.LEG_ID}.`
+            : `[OXYGEN-COBALT] OXYGEN_RESTORE_FAILURE: NULL_PAYLOAD for ${row.parsedPlayer || row.LEG_ID}.`
+        }]
       };
       results.push(result);
       hooks.onRowComplete?.({ row, rowIndex, result, completedRows: rowIndex + 1, totalRows, completedProbes, totalProbes });
@@ -461,6 +528,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     hooks.onComplete?.({ results, totalRows, lastResult });
     return { results, lastResult };
   }
+
 
   async function analyzeRow(row, stateRef = null) {
     const res = await streamingIngress([row], stateRef, {});
