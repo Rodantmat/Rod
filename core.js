@@ -27,10 +27,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     verboseMode: false
   };
 
-  function getDayScopeValue() {
-    return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today';
-  }
-
+  function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
 
   function applyHardTimeGate(row, now = new Date()) {
@@ -46,12 +43,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   function filteredAuditRows(rows) { return (rows || []).filter(row => !row.sport || state.selectedLeagues.has(row.sport)); }
 
   function buildIngestLogs(auditRows) {
-    return (auditRows || []).filter(item => !item.accepted).map(item => {
-      const name = item.parsedPlayer || item.cleanedRawText || item.rawText || 'Unknown row';
-      if (item.timeFilter?.code === 'UNDER_20') return { level: 'warning', text: `[Time Filter] Discarded: ${name} (Starts in < 20 mins).` };
-      if (item.timeFilter?.code === 'STARTED') return { level: 'warning', text: `[Time Filter] Discarded: ${name} (Game already started).` };
-      return { level: 'warning', text: `INGEST REJECTED #${item.idx}: ${name} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` };
-    });
+    return (auditRows || []).filter(item => !item.accepted).map(item => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }));
   }
 
   function refreshIntake() {
@@ -81,186 +73,80 @@ window.PickCalcCore = window.PickCalcCore || {};
         }
       }
     });
-    state.rows = acceptedRows;
+    state.rows = acceptedRows.slice(0, 7);
     state.auditRows = adjustedAudit;
     state.ingestLogs = buildIngestLogs(adjustedAudit);
-    state.lastIngestMeta = {
-      acceptedCount: acceptedRows.length,
-      totalAnchors: adjustedAudit.length,
-      rejectedCount: adjustedAudit.filter(item => !item.accepted).length,
-      dayScope,
-      timestamp: new Date().toISOString(),
-      parseYear: Parser.PARSE_YEAR,
-      twentyMinuteRule: true,
-      parserMode: 'Block-Cluster',
-      phase: 'HARD-LOCK'
-    };
-    const rejected = adjustedAudit.filter(item => !item.accepted).length;
-    UI.el('ingestMessage').textContent = adjustedAudit.length ? `Accepted ${acceptedRows.length} of ${adjustedAudit.length} cluster(s). Rejected ${rejected}. HARD-LOCK ingest active.` : 'No valid MLB/NHL anchors found.';
+    state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: adjustedAudit.length, rejectedCount: adjustedAudit.filter(item => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR, twentyMinuteRule: true };
+    UI.el('ingestMessage').textContent = adjustedAudit.length ? `Accepted ${state.rows.length} of ${adjustedAudit.length} cluster(s). Rejected ${adjustedAudit.filter(item => !item.accepted).length}. HARD-LOCK ingest active.` : 'No valid MLB/NHL anchors found.';
     refreshIntake();
   }
 
-  async function unifiedIngress(verbose = false) {
-    const rows = filteredRows(state.rows);
-    if (!rows.length) { UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.'; return; }
-    const starter = {
-      row: rows[0] || {},
-      shield: { integrityScore: 0, label: verbose ? 'KEY-LAB INITIALIZING' : 'SIGNAL SYNC' },
-      connectorState: { liveBranches: 0, derivedBranches: 0 },
-      vault: { branches: {} },
-      logs: [{ level: 'success', text: verbose ? `[LAB] Racing Connectors for ${rows[0]?.parsedPlayer || 'queued row'}...` : `[OXYGEN] Streaming ingress initialized for ${rows.length} row(s).` }]
-    };
-    state.verboseMode = Boolean(verbose);
-    state.lastResult = starter;
+  async function handleMiningClick(isVerbose = false) {
+    state.verboseMode = Boolean(isVerbose);
+    const rows = filteredRows(state.rows).slice(0, 7);
+    if (!rows.length) {
+      UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.';
+      return;
+    }
     UI.showAnalysisScreen();
+    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
+    UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }, ...(state.ingestLogs || [])]);
+
+    const starter = { row: rows[0] || {}, shield: { integrityScore: 0, label: 'ATOMIC INITIALIZING', purityScore: 0, confidenceAvg: 0 }, connectorState: { liveBranches: 0, derivedBranches: 0 }, vault: { branches: {} }, logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }] };
+    state.lastResult = starter;
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
-    UI.initProgressBar(0, rows.length, verbose ? 'OXYGEN pulse booting...' : 'OXYGEN pulse booting...');
-    UI.renderConsole([...(state.ingestLogs || []), ...(starter.logs || [])]);
-    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+
     try {
-      const stream = await Connectors.streamingIngress(rows, state, {
-        verbose,
+      await Connectors.streamingIngress(rows, state, {
+        verbose: isVerbose,
         onRowStart: ({ row, rowIndex, totalRows }) => {
-          UI.updateProgressBar(rowIndex, totalRows, `OXYGEN start: ${row?.parsedPlayer || 'row'}`);
+          UI.renderConsole({ level: 'info', text: `[SYSTEM] Streaming ${row?.parsedPlayer || 'row'} (${rowIndex + 1}/${totalRows})...` });
         },
         onBranch: ({ row, rowIndex, totalRows, completedRows, completedProbes, totalProbes, branchKey, vault, shield, logs }) => {
           const partialResult = {
             row,
             vault,
             shield,
-            logs,
+            logs: [...(state.ingestLogs || []), ...(logs || [])],
             connectorState: {
               version: SYSTEM_VERSION,
+              completedRows,
               branchStatus: Object.fromEntries(Object.entries(vault?.branches || {}).map(([k, v]) => [k, v?.status || 'PENDING'])),
               liveBranches: Object.values(vault?.branches || {}).filter(b => b?.sourceMode === 'LIVE DATA').length,
               derivedBranches: Object.values(vault?.branches || {}).filter(b => b?.sourceMode === 'DERIVED').length
             }
           };
           state.lastResult = partialResult;
-          if (state.verboseMode && ['A','B'].includes(branchKey)) {
-            const branchObj = vault?.branches?.[branchKey] || {};
-            const hollow = [branchObj?.parsed?.avgExitVelocity, branchObj?.parsed?.xwoba, branchObj?.parsed?.barrelPct].some(v => Number(v) === 0) || branchObj?.note?.includes?.('[NOT_IN_STATSAPI]');
-            if (hollow || branchObj?.status === 'MINING_INTERRUPTED') {
-              UI.renderConsole([
-                { level: 'warning', text: `[LAB] Racing Connectors for ${row?.parsedPlayer || 'row'}...` },
-                { level: 'warning', text: `[KEY-LAB] Branch ${branchKey} hollow or failed. Raw payload length: ${branchObj?.rawResponseLength || 0}` },
-                { level: 'warning', text: `${JSON.stringify(branchObj?.verbosePayload || branchObj?.apiPayload || {}, null, 2).slice(0, 3000)}` },
-                ...(logs || [])
-              ]);
-            }
-          }
-          UI.renderStreamUpdate(rows, state.auditRows, partialResult, state.version, {
-            completedRows,
-            totalRows,
-            completedProbes,
-            totalProbes,
-            branchKey,
-            rowIndex,
-            label: `FUSION mining ${row?.parsedPlayer || 'row'}: Branch ${branchKey}`
-          });
+          UI.renderStreamUpdate(rows, state.auditRows, partialResult, state.version, { completedRows, totalRows, completedProbes, totalProbes, branchKey, rowIndex });
         },
         onRowComplete: ({ result, completedRows, totalRows, completedProbes, totalProbes }) => {
-          result.logs = [...(state.ingestLogs || []), ...(result.logs || [])];
-          result.connectorState = Object.assign({}, result.connectorState || {}, { parseYear: Parser.PARSE_YEAR, twentyMinuteRule: true, dayScope: getDayScopeValue(), parserMode: 'Block-Cluster', phase: verbose ? 'OXY-LAB' : 'OXY-STREAM' });
           state.lastResult = result;
-          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, {
-            completedRows,
-            totalRows,
-            completedProbes,
-            totalProbes,
-            branchKey: 'DONE'
-          });
-        }
-      });
-      if (stream?.lastResult) {
-        stream.lastResult.logs = [...(state.ingestLogs || []), ...(stream.lastResult.logs || [])];
-        stream.lastResult.connectorState = Object.assign({}, stream.lastResult.connectorState || {}, { parseYear: Parser.PARSE_YEAR, twentyMinuteRule: true, dayScope: getDayScopeValue(), parserMode: 'Block-Cluster', phase: verbose ? 'OXY-LAB' : 'OXY-STREAM' });
-        state.lastResult = stream.lastResult;
-        UI.renderAnalysisResults(rows, state.auditRows, stream.lastResult, state.version);
-      }
-      UI.updateProgressBar(rows.length, rows.length, verbose ? '🔬 KEY-LAB complete.' : 'Streaming ingress complete.');
-    } catch (error) {
-      UI.renderConsole([{ level: 'warning', text: `Unified ingress failed: ${error?.message || error}` }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-      UI.updateProgressBar(0, rows.length, verbose ? '🔬 KEY-LAB halted.' : 'Streaming ingress halted.');
-    } finally {
-      UI.hideOverlay();
-    }
-  }
-
-
-  async function handleMiningClick(isVerbose = false) {
-    state.verboseMode = Boolean(isVerbose);
-    const rows = filteredRows(state.rows);
-    if (!rows.length) {
-      UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.';
-      return;
-    }
-    UI.showAnalysisScreen();
-    UI.initProgressBar(0, Math.max(1, rows.length), 'Firing Atomic Ingress...');
-    UI.renderConsole([
-      { level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' },
-      ...(state.ingestLogs || [])
-    ]);
-    const starter = {
-      row: rows[0] || {},
-      shield: { integrityScore: 0, label: 'ATOMIC INITIALIZING' },
-      connectorState: { liveBranches: 0, derivedBranches: 0 },
-      vault: { branches: {} },
-      logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]
-    };
-    state.lastResult = starter;
-    UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
-    try {
-      await Connectors.streamingIngress(rows, state, {
-        verbose: isVerbose,
-        onRowStart: ({ row, rowIndex, totalRows }) => {
-          UI.updateProgressBar(rowIndex, totalRows, `Atomic ingress: ${row?.parsedPlayer || 'row'}`);
-        },
-        onRowComplete: (data) => {
-          state.lastResult = data.result;
-          UI.renderStreamUpdate(data.result.row, data.result.vault, data.result.shield, data.result.logs);
-          UI.updateProgressBar(data.completedRows, data.totalRows, `Atomic mapped ${data.completedRows}/${data.totalRows}`);
-        },
-        onBranch: (msg) => {
-          UI.renderConsole(msg);
+          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, totalRows, completedProbes, totalProbes, branchKey: 'DONE' });
         },
         onComplete: ({ totalRows, lastResult }) => {
           if (lastResult) state.lastResult = lastResult;
           UI.renderConsole({ level: 'success', text: '[SYSTEM] Atomic Matrix Saturated.' });
-          UI.updateProgressBar(totalRows, totalRows, 'Atomic Matrix Saturated.');
+          UI.updateProgressBar(totalRows * 5, totalRows * 5, 'Atomic Matrix Saturated.');
         }
       });
     } catch (err) {
       UI.renderConsole({ level: 'failed', text: `[FATAL] Ingress Aborted: ${err.message}` });
-      UI.updateProgressBar(0, Math.max(1, rows.length), `Ingress Aborted: ${err.message}`);
+      UI.updateProgressBar(0, Math.max(1, rows.length * 5), `Ingress Aborted: ${err.message}`);
     }
   }
 
   async function copyDebug() {
-    const hasVault = state.miningVault && Object.keys(state.miningVault).length > 0;
-    const text = hasVault
-      ? UI.buildAnalysisCopyText({ version: state.version, ingestMeta: state.lastIngestMeta, auditRows: filteredAuditRows(state.auditRows), rows: filteredRows(state.rows), result: state.lastResult })
-      : ['=== PICKCALC STATE REPORT ===', `VERSION: ${state.version}`, JSON.stringify({ rows: state.rows, auditRows: state.auditRows, lastIngestMeta: state.lastIngestMeta }, null, 2)].join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      UI.renderConsole([{ level: 'success', text: hasVault ? 'Analysis report copied to clipboard.' : 'State report copied to clipboard.' }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-    } catch (error) {
-      UI.renderConsole([{ level: 'warning', text: `Clipboard permission blocked: ${error?.message || error}` }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-      try { console.log(text); } catch (_) {}
-    }
+    const text = UI.buildAnalysisCopyText({ version: state.version, auditRows: filteredAuditRows(state.auditRows), rows: filteredRows(state.rows), result: state.lastResult });
+    try { await navigator.clipboard.writeText(text); UI.renderConsole({ level: 'success', text: 'Analysis report copied to clipboard.' }); }
+    catch (error) { UI.renderConsole({ level: 'warning', text: `Clipboard permission blocked: ${error?.message || error}` }); }
   }
 
   async function copyRawVault(idx) {
-    try {
-      const vault = state.miningVault?.[idx] || null;
-      if (!vault) { UI.renderConsole([{ level: 'warning', text: `No vault available for row #${idx}.` }, ...(state.lastResult?.logs || state.ingestLogs || [])]); return; }
-      const report = UI.buildAnalysisCopyText({ result: state.lastResult || { row: state.rows?.find?.(r => r.idx === idx) || {}, vault, shield: vault?.shield || {} }, timestamp: new Date().toISOString() });
-      await navigator.clipboard.writeText(report);
-      UI.renderConsole([{ level: 'success', text: `Plain-text vault copied for row #${idx}.` }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-    } catch (error) {
-      UI.renderConsole([{ level: 'warning', text: `Clipboard blocked or report generation failed for row #${idx}: ${error?.message || error}` }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-      try { console.log(UI.buildAnalysisCopyText({ result: state.lastResult || {}, timestamp: new Date().toISOString() })); } catch {}
-    }
+    const vault = state.miningVault?.[idx] || null;
+    if (!vault) { UI.renderConsole({ level: 'warning', text: `No vault available for row #${idx}.` }); return; }
+    const report = UI.buildAnalysisCopyText({ result: state.lastResult || { row: state.rows?.find?.(r => r.idx === idx) || {}, vault }, timestamp: new Date().toISOString() });
+    try { await navigator.clipboard.writeText(report); UI.renderConsole({ level: 'success', text: `Plain-text vault copied for row #${idx}.` }); }
+    catch (error) { UI.renderConsole({ level: 'warning', text: `Clipboard blocked for row #${idx}: ${error?.message || error}` }); }
   }
 
   function bindLeagueToggles() {
@@ -283,24 +169,13 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.el('backBtn')?.addEventListener('click', UI.backToIntake);
     UI.el('copyBtn')?.addEventListener('click', copyDebug);
     document.addEventListener('click', event => {
-      const runBtn = event.target?.closest?.('#runBtn');
-      if (runBtn) { event.preventDefault(); handleMiningClick(false); return; }
-      const runLabBtn = event.target?.closest?.('#runKeyLabBtn, #runLabBtn');
-      if (runLabBtn) { event.preventDefault(); handleMiningClick(true); return; }
+      if (event.target?.closest?.('#runBtn')) { event.preventDefault(); handleMiningClick(false); return; }
+      if (event.target?.closest?.('#runKeyLabBtn, #runLabBtn')) { event.preventDefault(); handleMiningClick(true); return; }
       const btn = event.target?.closest?.('.copy-raw-vault-btn');
       if (!btn) return;
       const idx = Number(btn.dataset.rowIdx);
-      if (Number.isFinite(idx)) {
-        (async () => {
-          try { await copyRawVault(idx); }
-          catch (error) {
-            UI.renderConsole([{ level: 'warning', text: `Copy Raw Vault failed: ${error?.message || error}` }, ...(state.lastResult?.logs || state.ingestLogs || [])]);
-          }
-        })();
-      }
+      if (Number.isFinite(idx)) copyRawVault(idx);
     });
-    const dayScope = UI.el('dayScope');
-    if (dayScope) dayScope.addEventListener('change', () => { if (state.auditRows.length || state.rows.length) ingestBoard(); else refreshIntake(); });
   }
 
   function applyVersionLock() {
@@ -328,24 +203,11 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.showAnalysisScreen();
     UI.renderRunSummary(state.rows, state.auditRows, state.lastIngestMeta);
     UI.renderPoolTable(state.rows);
-    UI.renderAnalysisShell({ row: state.rows[0], shield: { integrityScore: 0, label: 'ATOMIC READY' }, connectorState: { liveBranches: 0, derivedBranches: 0 }, vault: { branches: {} }, logs: [{ level: 'success', text: '[ATOMIC] Oxygen-Atomic ignition armed.' }] }, state.rows, state.version);
+    UI.renderAnalysisShell({ row: state.rows[0], shield: { integrityScore: 0, label: 'ATOMIC READY', purityScore: 0, confidenceAvg: 0 }, connectorState: { liveBranches: 0, derivedBranches: 0 }, vault: { branches: {} }, logs: [{ level: 'success', text: '[ATOMIC] Oxygen-Atomic ignition armed.' }] }, state.rows, state.version);
     UI.renderMiningGrid(state.rows, { branches: {} });
-    UI.updateProgressBar(0, state.rows.length, 'Oxygen-Atomic boot ready.');
+    UI.updateProgressBar(0, state.rows.length * 5, 'Oxygen-Atomic boot ready.');
   }
 
   Object.assign(window.PickCalcCore, { init, state, getDayScopeValue, copyRawVault, handleMiningClick, copyDebug, LAB_BOOT_ROWS });
-
-  const ignite = () => {
-    const grid = document.getElementById('miningGrid');
-    if (!grid || !window.PickCalcUI || !window.PickCalcConnectors || !window.PickCalcCore) {
-      setTimeout(ignite, 50);
-      return;
-    }
-    window.PickCalcCore.init();
-    window.PickCalcCore.state.rows = LAB_BOOT_ROWS.map(row => ({ ...row }));
-    window.PickCalcUI.showAnalysisScreen();
-    window.PickCalcUI.renderMiningGrid(window.PickCalcCore.state.rows, { branches: {} });
-    window.PickCalcCore.handleMiningClick(true);
-  };
-  window.addEventListener('load', ignite);
+  window.addEventListener('load', init);
 })();
