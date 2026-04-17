@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.71.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.72.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -172,15 +172,16 @@ window.PickCalcUI = window.PickCalcUI || {};
     const v = context.result?.vault || {};
     const r = context.result?.row || {};
     const summary = Object.keys(v.branches || {}).map(k => {
-      const active = Object.values(v.branches[k]?.parsed || {}).filter(val => val !== 0).length;
+      const active = Object.values(v.branches[k]?.parsed || {}).filter(val => Number(val) !== 0).length;
       return `${k}:${active}`;
     }).join('|');
 
     return [
-      `v13.71.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.72.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
-    ].join('\n');
+    ].join('
+');
   }
 
 

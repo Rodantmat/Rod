@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.71.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.72.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -81,11 +81,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function createZeroVault(row = {}) {
+    const normalizedRow = typeof row === 'string' ? { LEG_ID: row, idx: 0 } : (row || {});
     const branches = {};
     BRANCH_KEYS.forEach((key) => { branches[key] = seedBranch(key); });
     return {
-      LEG_ID: row.LEG_ID || `LEG-${row.idx || 0}`,
-      idx: row.idx || 0,
+      LEG_ID: normalizedRow.LEG_ID || `LEG-${normalizedRow.idx || 0}`,
+      idx: normalizedRow.idx || 0,
       version: SYSTEM_VERSION,
       timestamp: new Date().toISOString(),
       branches,
@@ -283,33 +284,38 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   async function fetchGeminiBatch(batch) {
     if (!Array.isArray(batch) || !batch.length || !GEMINI_API_KEY) return null;
     const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent`;
-    const playersStr = batch.map((r, i) => `Index ${i}: ${r.parsedPlayer} (${r.team})`).join(', ');
-    const prompt = `Perform a Systematic Extraction for ${batch.length} Subjects. 
-Mapping: ${playersStr}.
-Return a strictly valid JSON object with a "subjects" array. Each object MUST have:
-"index": integer, "metric_group_a": { "a01": float... }, "metric_group_b": { "b01": float... }, "metric_group_c": { "c01": float... }, "metric_group_d": { "d01": float... }, "variance_projections": { "p01": float... }.
-NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
+    const playersStr = batch.map((r, i) => `Subject ${i}: ${r.parsedPlayer} (${r.team})`).join(', ');
+    const prompt = `Act as a Systematic Data Provider. For these ${batch.length} Subjects (${playersStr}), return a strictly valid JSON object with a "data" array.
+  Each entry in the array must be:
+  {
+    "index": integer,
+    "values": [72 floats]
+  }
+  Value Index Mapping (Total 72):
+  - 0-19: Group A factors
+  - 20-37: Group B factors
+  - 38-49: Group C factors
+  - 50-59: Group D factors
+  - 60-64: Group E variance
+  NO PROSE. NO MARKDOWN. NO LABELS. ONLY NUMBERS.`;
 
     try {
       const response = await fetch(`${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': GEMINI_API_KEY
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
         })
       });
 
-      const data = await response.json();
-      const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const json = await response.json();
+      const raw = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
       const start = raw.indexOf('{');
       const end = raw.lastIndexOf('}');
       return JSON.parse(raw.substring(start, end + 1));
     } catch (e) {
-      console.error("[OXYGEN] API ERROR:", e);
+      console.error("[OXYGEN] Handshake Failure:", e);
       return null;
     }
   }
@@ -371,80 +377,42 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
       idx: Number(rawRow?.idx || rowIndex + 1)
     }));
 
-    const payload = await fetchGeminiBatch(batch, hooks);
-    const subjectPool = payload?.subjects || [];
+    const payload = await fetchGeminiBatch(batch);
+    const stream = payload?.data || [];
 
     for (let i = 0; i < batch.length; i++) {
       const row = batch[i];
+      const vault = createZeroVault(row.LEG_ID);
+      vault.idx = Number(row.idx || i + 1);
+      vault.LEG_ID = row.LEG_ID;
+      const entry = stream.find(s => parseInt(s.index) === i);
 
-      hooks.onRowStart?.({ row, rowIndex: i, totalRows });
-      const vault = createZeroVault(row);
-      commitVault(stateRef, row, vault);
-      hooks.onBranch?.({
-        row,
-        rowIndex: i,
-        totalRows,
-        completedProbes,
-        totalProbes,
-        branchKey: 'INIT',
-        vault: JSON.parse(JSON.stringify(vault)),
-        shield: computeShieldFromVault(vault),
-        logs: [{ level: 'info', text: `[OXYGEN-COBALT] Zero-fill primed for ${row.parsedPlayer || row.LEG_ID}.` }]
-      });
-      await yieldToUi();
-
-      vault.branches.B = buildDerivedBranch(row, 'B', 'Local Memory');
-      commitVault(stateRef, row, vault);
-      completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'B', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
-      await yieldToUi();
-
-      vault.branches.C = buildDerivedBranch(row, 'C', 'Local Memory');
-      commitVault(stateRef, row, vault);
-      completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'C', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
-      await yieldToUi();
-
-      vault.branches.D = buildDerivedBranch(row, 'D', 'neutronSearch');
-      commitVault(stateRef, row, vault);
-      completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'D', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
-      await yieldToUi();
-
-      vault.branches.A = seedBranch('A', 'Systematic Extraction', 'WARNING', 'Index-Locked Ingress active');
-      vault.branches.E = seedBranch('E', 'Subjective Variance', 'WARNING', 'Variance projection hydration active');
-
-      const subject = subjectPool.find(s => parseInt(s.index) === i);
-
-      if (subject) {
-        const map = { metric_group_a: 'A', metric_group_b: 'B', metric_group_c: 'C', metric_group_d: 'D' };
-        Object.entries(map).forEach(([apiGroup, branchKey]) => {
-          if (subject[apiGroup]) {
-            Object.entries(subject[apiGroup]).forEach(([fKey, val]) => {
-              const num = Number(val);
-              if (!isNaN(num) && num !== 0) {
-                vault.branches[branchKey].parsed[fKey] = num;
-                vault.branches[branchKey].status = 'SUCCESS';
-                if (vault.branches[branchKey].factorMeta?.[fKey]) {
-                  vault.branches[branchKey].factorMeta[fKey].status = 'REAL';
-                  vault.branches[branchKey].factorMeta[fKey].source = 'SYSTEMATIC_EXTRACTION';
-                  vault.branches[branchKey].factorMeta[fKey].value = num;
-                }
-              }
-            });
+      if (entry && Array.isArray(entry.values)) {
+        const v = entry.values;
+        const setBranchValue = (branchKey, factorKeyValue, rawValue) => {
+          const num = Number(rawValue || 0);
+          vault.branches[branchKey].parsed[factorKeyValue] = num;
+          if (vault.branches[branchKey].factorMeta?.[factorKeyValue]) {
+            vault.branches[branchKey].factorMeta[factorKeyValue].value = num;
+            vault.branches[branchKey].factorMeta[factorKeyValue].status = num !== 0 ? 'REAL' : 'WARNING';
+            vault.branches[branchKey].factorMeta[factorKeyValue].source = 'RAW_STREAM_PROTOCOL';
           }
+        };
+        // Map 0-19 to A
+        for(let j=0; j<20; j++) setBranchValue('A', `a${String(j+1).padStart(2,'0')}`, v[j]);
+        // Map 20-37 to B
+        for(let j=0; j<18; j++) setBranchValue('B', `b${String(j+1).padStart(2,'0')}`, v[20+j]);
+        // Map 38-49 to C
+        for(let j=0; j<12; j++) setBranchValue('C', `c${String(j+1).padStart(2,'0')}`, v[38+j]);
+        // Map 50-59 to D
+        for(let j=0; j<10; j++) setBranchValue('D', `d${String(j+1).padStart(2,'0')}`, v[50+j]);
+        // Map 60-64 to E (Market Projections)
+        const providers = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
+        providers.forEach((p, idx) => {
+          vault.branches.E.providerMap[p] = Number(v[60+idx] || 0);
         });
-
-        if (subject.variance_projections) {
-          const pMap = { p01: 'FanDuel', p02: 'DraftKings', p03: 'OddsJam', p04: 'Pinnacle', p05: 'Bet365' };
-          Object.entries(pMap).forEach(([pKey, prov]) => {
-            const pVal = Number(subject.variance_projections[pKey]);
-            if (!isNaN(pVal) && pVal !== 0) {
-              vault.branches.E.providerMap[prov] = pVal;
-              vault.branches.E.status = 'SUCCESS';
-            }
-          });
-        }
+        
+        vault.branches.A.status = vault.branches.B.status = vault.branches.C.status = vault.branches.D.status = vault.branches.E.status = 'SUCCESS';
       }
 
       Object.keys(vault.branches || {}).forEach((branchKey) => updateBranchMeta(vault.branches[branchKey]));
@@ -452,79 +420,29 @@ NO PROSE. NO MARKDOWN. NO EXPLANATIONS.`;
         if (!Number.isFinite(Number(vault.branches.E.providerMap[provider]))) vault.branches.E.providerMap[provider] = 0;
       });
 
-      // Calculate real metrics found
-      const realCount = Object.values(vault.branches).reduce((acc, br) => 
-        acc + Object.values(br.parsed || {}).filter(v => v !== 0).length, 0);
-
+      const realCount = entry ? entry.values.filter(val => Number(val) !== 0).length : 0;
       const result = {
-        vault,
-        row,
-        analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'PHYSICS_NULL_EXPOSURE',
+        vault, row,
+        analysisHint: realCount > 0 ? 'Atomic Matrix Saturated' : 'STREAM_EMPTY',
         logs: [{ 
           level: realCount > 0 ? 'success' : 'warning', 
-          text: `[OXYGEN] ${realCount > 0 ? 'HYDRATED' : 'NULL'}: ${row.parsedPlayer}`
+          text: `[OXYGEN] ${realCount > 0 ? 'STREAM_ACTIVE' : 'STREAM_EMPTY'}: ${row.parsedPlayer}` 
         }]
       };
 
+      results.push(result);
       if (stateRef && typeof stateRef === 'object') {
         stateRef.miningVault = stateRef.miningVault || {};
         stateRef.miningVault[row.idx] = vault;
       }
       commitVault(stateRef, row, vault);
-      completedProbes += 1;
-      hooks.onBranch?.({ row, rowIndex: i, totalRows, completedProbes, totalProbes, branchKey: 'A', vault: JSON.parse(JSON.stringify(vault)), shield: computeShieldFromVault(vault) });
-      await yieldToUi();
+      completedProbes += 5;
 
-      vault.terminalState = result.analysisHint;
-      commitVault(stateRef, row, vault);
-
-      completedProbes += 1;
-      const shield = computeShieldFromVault(vault);
-      hooks.onBranch?.({
-        row,
-        rowIndex: i,
-        totalRows,
-        completedProbes,
-        totalProbes,
-        branchKey: 'E',
-        vault: JSON.parse(JSON.stringify(vault)),
-        shield,
-        logs: [{
-          level: realCount === 0 ? 'warning' : 'success',
-          text: realCount === 0
-            ? `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
-            : `[OXYGEN] HYDRATED: ${row.parsedPlayer}`
-        }]
-      });
-      await yieldToUi();
-
-      const finalResult = {
-        row,
-        vault: JSON.parse(JSON.stringify(vault)),
-        vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
-        shield,
-        analysisHint: vault.terminalState,
-        connectorState: {
-          version: SYSTEM_VERSION,
-          completedRows: i + 1,
-          completedProbes,
-          totalProbes,
-          liveBranches: BRANCH_KEYS.filter((key) => vault.branches[key].status === 'SUCCESS').length,
-          derivedBranches: BRANCH_KEYS.filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key].status)).length,
-          branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key].status]))
-        },
-        logs: [{
-          level: realCount === 0 ? 'warning' : 'success',
-          text: realCount === 0
-            ? `[OXYGEN] NULL EXPOSURE: ${row.parsedPlayer}`
-            : `[OXYGEN] HYDRATED: ${row.parsedPlayer}`
-        }]
-      };
-      results.push(finalResult);
       if (window.PickCalcUI && window.PickCalcUI.appendConsole) {
         window.PickCalcUI.appendConsole(result.logs[0]);
       }
-      hooks.onRowComplete?.({ row, rowIndex: i, result: finalResult, completedRows: i + 1, totalRows, completedProbes, totalProbes });
+
+      hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes, totalProbes });
     }
 
     const lastResult = results[results.length - 1] || null;
