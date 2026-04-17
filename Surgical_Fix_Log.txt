@@ -1,13 +1,8 @@
-Surgical Fix Log
-- VERSION LOCK upgraded to v13.62.0 (OXYGEN-COBALT) across parser, index, connectors, ui, and core
-- streamingIngress rebuilt as strict sequential atomic hydration with zero-fill vault priming before live requests
-- Vault now pre-initializes all 72 slots (A20 B18 C12 D10 E12) to eliminate Integrity 0 flicker
-- Branches B, C, and D now hydrate immediately from local memory / neutronSearch before Gemini funnel execution
-- neutronSearch depth limit hard-locked to 5
-- fetchGeminiBatch hard-locks dual-handshake structure with x-goog-api-key header + URL key param
-- Provider extraction normalized for FanDuel, DraftKings, OddsJam, Pinnacle, and Bet365
-- Progress bar now uses completedProbes / (totalRows * 5)
-- UI mining grid now iterates the full 72-slot matrix and Alpha Shield uses weighted branch saturation formulas
-- window.onerror mounted to systemConsole for Oxygen Restore handshake logging
-- v13.31.0 visual baseline retained through existing dark gradient layout and standard progress bar
-- Terminal state locked to Atomic Matrix Saturated with final full UI re-render
+OXYGEN-COBALT v13.63.0 Surgical Fix Log
+- Version lock upgraded across runtime headers and core files.
+- Linear +0.1 factor loop removed from grounded mining flow.
+- fetchGeminiBatch rebuilt for dual-handshake Gemini calls with JSON-only extraction.
+- streamingIngress rebuilt for sequential 7-row processing with LEG_ID vault locking.
+- Branch E providerMap hydration rendered inline with FanDuel / DraftKings / OddsJam / Pinnacle / Bet365.
+- Integrity scoring now weighs REAL vs DERIVED vs SIMULATED.
+- Dense player layout restored for Screen 2.

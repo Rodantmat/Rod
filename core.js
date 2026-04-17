@@ -3,16 +3,16 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.62.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.63.0 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
-    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
-    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
-    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
-    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
+    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
+    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
+    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', gameTimeText: 'Fri 7:05 PM', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
+    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', gameTimeText: 'Fri 7:05 PM', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', gameTimeText: 'Fri 7:15 PM', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', gameTimeText: 'Fri 7:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
   ];
 
   const state = {
@@ -29,13 +29,9 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
-
   function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
-
-  function buildIngestLogs(auditRows) {
-    return (auditRows || []).filter((item) => !item.accepted).map((item) => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }));
-  }
+  function buildIngestLogs(auditRows) { return (auditRows || []).filter((item) => !item.accepted).map((item) => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` })); }
 
   function refreshIntake() {
     const rows = filteredRows(state.rows);
@@ -76,6 +72,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       return;
     }
 
+    state.miningVault = {};
     UI.showAnalysisScreen();
     UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
@@ -86,6 +83,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       shield: { integrityScore: 0, purityScore: 0, confidenceAvg: 0, label: 'ATOMIC INITIALIZING' },
       connectorState: { liveBranches: 0, derivedBranches: 0, completedRows: 0, completedProbes: 0, totalProbes: rows.length * 5 },
       vault: starterVault,
+      vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
       analysisHint: 'Firing Atomic Ingress...'
     };
@@ -95,13 +93,12 @@ window.PickCalcCore = window.PickCalcCore || {};
     try {
       const response = await Connectors.streamingIngress(rows, state, {
         verbose: isVerbose,
-        onRowStart: ({ row }) => {
-          UI.renderConsole([{ level: 'info', text: `[SYSTEM] Streaming ${row?.parsedPlayer || row?.LEG_ID}...` }]);
-        },
+        onRowStart: ({ row }) => { UI.renderConsole([{ level: 'info', text: `[SYSTEM] Streaming ${row?.parsedPlayer || row?.LEG_ID}...` }]); },
         onBranch: ({ row, vault, shield, completedProbes, totalProbes, branchKey, logs }) => {
           const payload = {
             row,
             vault,
+            vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
             shield,
             analysisHint: branchKey === 'INIT' ? 'Zero-fill vault primed.' : `Streaming Branch ${branchKey} for ${row?.parsedPlayer || row?.LEG_ID}.`,
             connectorState: { completedRows: 0, completedProbes, totalProbes },
@@ -111,11 +108,13 @@ window.PickCalcCore = window.PickCalcCore || {};
           UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, branchKey });
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
+          result.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
           state.lastResult = result;
           UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
         },
         onComplete: ({ lastResult }) => {
           if (lastResult) {
+            lastResult.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
             UI.updateProgressBar(rows.length * 5, rows.length * 5, 'Atomic Matrix Saturated');

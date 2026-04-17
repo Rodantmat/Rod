@@ -1,10 +1,10 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.62.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.63.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
-  const BRANCH_WEIGHTS = { A: 0.28, B: 0.22, C: 0.18, D: 0.14, E: 0.18 };
+  const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
 
   function el(id) { return document.getElementById(id); }
@@ -27,7 +27,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const active = new Set((rows || []).filter((r) => r.sport === 'MLB').map((r) => String(r.prop || '').trim()));
     const mount = el('feedStatus');
     if (!mount) return;
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${auditRows.some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${(auditRows || []).some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
   }
 
   function renderPoolTable(rows) {
@@ -37,82 +37,45 @@ window.PickCalcUI = window.PickCalcUI || {};
     mount.innerHTML = `<div class="status-panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Sport</th><th>League</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th><th>Type</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.idx)}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.league)}</td><td>${escapeHtml(row.parsedPlayer)}</td><td>${escapeHtml(row.team || '')}</td><td>${escapeHtml(row.opponent || '')}</td><td>${escapeHtml(row.prop || '')}</td><td>${escapeHtml(row.line || '')}</td><td>${escapeHtml(row.gameTimeText || '')}</td><td>${escapeHtml(row.type || '')}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
-  function factorKeysForBranch(branchKey) {
-    return Array.from({ length: BRANCH_TARGETS[branchKey] || 0 }, (_, idx) => `${branchKey.toLowerCase()}${String(idx + 1).padStart(2, '0')}`);
-  }
-
   function branchTone(branch) {
-    if (branch?.status === 'SUCCESS') return { card: 'support live-data', badge: 'live', status: 'ready', label: 'LIVE', icon: '✅' };
-    if (branch?.status === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', status: 'loading', label: 'DERIVED', icon: '🟨' };
-    if (branch?.status === 'PENDING') return { card: 'status-pending', badge: 'heuristic', status: 'waiting', label: 'MINING...', icon: '⏳' };
-    return { card: 'warning', badge: 'heuristic', status: 'failed', label: 'INTERRUPTED', icon: '❌' };
+    if (branch?.status === 'SUCCESS') return { card: 'support live-data', badge: 'live', label: 'REAL' };
+    if (branch?.status === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'DERIVED' };
+    if (branch?.status === 'SIMULATED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'SIMULATED' };
+    if (branch?.status === 'WARNING') return { card: 'status-pending', badge: 'heuristic', label: 'WARNING' };
+    return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
   }
 
-  function buildFactorSlots(branchKey, parsed = {}) {
-    const keys = factorKeysForBranch(branchKey);
-    return keys.map((label) => `<div class="shield-cell"><strong>${escapeHtml(label)}</strong><div>${escapeHtml(Number(parsed[label] ?? 0).toFixed ? Number(parsed[label] ?? 0).toFixed(2) : parsed[label] ?? 0)}</div></div>`).join('');
+  function formatValue(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(2) : '0.00';
   }
 
-  function miningCardMarkup(branchKey, branch = {}) {
-    const tone = branchTone(branch);
-    const pct = Math.max(0, Math.min(100, Math.round((Number(branch.factorsFound || 0) / Math.max(1, Number(branch.factorsTarget || BRANCH_TARGETS[branchKey] || 1))) * 100)));
-    return `<article class="mining-card ${tone.card}" data-branch-key="${escapeHtml(branchKey)}"><div class="factor-top"><h3 style="margin:0;">Branch ${escapeHtml(branchKey)}</h3><span class="card-type-tag ${tone.badge}">${tone.label}</span></div><div class="mining-status ${tone.status}">${tone.icon} ${escapeHtml(branch.status || 'PENDING')}</div><div class="factor-top"><div class="factor-delta">${escapeHtml(branch.factorsFound || 0)}/${escapeHtml(branch.factorsTarget || BRANCH_TARGETS[branchKey])}</div><div class="mini-muted">${escapeHtml(branch.source || '')}</div></div><div class="conf-bar"><div class="conf-fill" style="width:${pct}%"></div></div><div class="detail-box"><strong>Note</strong><div>${escapeHtml(branch.note || '')}</div></div><div class="shield-grid branch-factor-body" style="margin-top:12px;">${buildFactorSlots(branchKey, branch.parsed || {})}</div></article>`;
+  function renderFactorLine(meta = {}) {
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
   }
 
-  function computeShield(vault = {}) {
-    let integrityScore = 0;
-    let purityScore = 0;
-    let confidenceAvg = 0;
-    BRANCH_KEYS.forEach((key) => {
-      const branch = vault?.branches?.[key] || { status: 'PENDING', factorsFound: 0, factorsTarget: BRANCH_TARGETS[key] };
-      const saturation = (Number(branch.factorsFound || 0) / Math.max(1, Number(branch.factorsTarget || 1))) * 100;
-      const weight = BRANCH_WEIGHTS[key] || 0;
-      integrityScore += saturation * weight;
-      purityScore += (branch.status === 'SUCCESS' ? 100 : branch.status === 'DERIVED' ? 70 : 0) * weight;
-      confidenceAvg += ((saturation + (branch.status === 'SUCCESS' ? 100 : branch.status === 'DERIVED' ? 65 : 0)) / 2) * weight;
-    });
-    return {
-      integrityScore: Number(integrityScore.toFixed(2)),
-      purityScore: Number(purityScore.toFixed(2)),
-      confidenceAvg: Number(confidenceAvg.toFixed(2))
-    };
+  function renderMarketProviders(providerMap = {}) {
+    return `<div class="market-providers"><strong>Market Projections/Odds:</strong><div>FanDuel: ${escapeHtml(formatValue(providerMap.FanDuel || 0))} | DraftKings: ${escapeHtml(formatValue(providerMap.DraftKings || 0))} | OddsJam: ${escapeHtml(formatValue(providerMap.OddsJam || 0))} | Pinnacle: ${escapeHtml(formatValue(providerMap.Pinnacle || 0))} | Bet365: ${escapeHtml(formatValue(providerMap.Bet365 || 0))}</div></div>`;
   }
 
-  function renderMiningGrid(row = {}, vault = {}) {
+  function renderPlayerMiningCard(row = {}, vault = {}) {
+    const branches = vault?.branches || {};
+    const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
+    const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
+      const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
+      const tone = branchTone(branch);
+      const factorMeta = Object.values(branch.factorMeta || {});
+      return `<section class="branch-block ${tone.card}"><div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
+    }).join('')}</article>`;
+  }
+
+  function renderMiningGrid(rows = [], vaultCollection = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
-    const branches = vault?.branches || {};
-    const totalFound = BRANCH_KEYS.reduce((sum, key) => sum + Number(branches[key]?.factorsFound || 0), 0);
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Mining Matrix</strong><div class="mini-muted">Branch readiness with exact 72-slot saturation. Overall: <span id="matrixFactorTotal">${totalFound}/${BRANCH_TOTAL}</span> factors.</div></div><button id="viewVaultBtn" class="secondary">VIEW RAW VAULT</button></div><div class="mining-grid-inner mining-grid">${BRANCH_KEYS.map((key) => miningCardMarkup(key, branches[key] || { status: 'PENDING', factorsTarget: BRANCH_TARGETS[key], parsed: {} })).join('')}</div></div>`;
-    const btn = document.getElementById('viewVaultBtn');
-    if (btn) btn.onclick = () => console.log(vault);
-  }
-
-  function updateMatrixIcon(branchKey, branch = {}, vault = {}) {
-    const root = el('miningGrid');
-    if (!root) return;
-    const card = root.querySelector(`[data-branch-key="${branchKey}"]`);
-    if (!card) { renderMiningGrid({}, vault); return; }
-    const tone = branchTone(branch);
-    const pct = Math.max(0, Math.min(100, Math.round((Number(branch.factorsFound || 0) / Math.max(1, Number(branch.factorsTarget || BRANCH_TARGETS[branchKey] || 1))) * 100)));
-    card.className = `mining-card ${tone.card}`;
-    const status = card.querySelector('.mining-status');
-    const badge = card.querySelector('.card-type-tag');
-    const delta = card.querySelector('.factor-delta');
-    const source = card.querySelector('.mini-muted');
-    const fill = card.querySelector('.conf-fill');
-    const detail = card.querySelector('.detail-box div');
-    const body = card.querySelector('.branch-factor-body');
-    if (status) { status.className = `mining-status ${tone.status}`; status.textContent = `${tone.icon} ${branch.status || 'PENDING'}`; }
-    if (badge) { badge.className = `card-type-tag ${tone.badge}`; badge.textContent = tone.label; }
-    if (delta) delta.textContent = `${branch.factorsFound || 0}/${branch.factorsTarget || BRANCH_TARGETS[branchKey]}`;
-    if (source) source.textContent = branch.source || '';
-    if (fill) fill.style.width = `${pct}%`;
-    if (detail) detail.textContent = branch.note || '';
-    if (body) body.innerHTML = buildFactorSlots(branchKey, branch.parsed || {});
-    const total = BRANCH_KEYS.reduce((sum, key) => sum + Number(vault?.branches?.[key]?.factorsFound || 0), 0);
-    const totalNode = document.getElementById('matrixFactorTotal');
-    if (totalNode) totalNode.textContent = `${total}/${BRANCH_TOTAL}`;
+    const safeRows = asArray(rows);
+    const cards = safeRows.map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Verbatim Density Layout</strong><div class="mini-muted">7-player sequential shell. Player / Team / Matchup / Time header locked. Branch E market providers rendered inline.</div></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || '<div class="mini-muted">Awaiting rows.</div>'}</div></div>`;
   }
 
   function renderConsole(logs) {
@@ -132,26 +95,42 @@ window.PickCalcUI = window.PickCalcUI || {};
     mount.prepend(line);
   }
 
+  function summarizeShield(vaultCollection = {}) {
+    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0;
+    Object.values(vaultCollection || {}).forEach((vault) => {
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        real += Number(branch.realCount || 0);
+        derived += Number(branch.derivedCount || 0);
+        simulated += Number(branch.simulatedCount || 0);
+        warnings += Number(branch.warningCount || 0);
+        total += Number(branch.factorsTarget || 0);
+      });
+    });
+    const integrityScore = total ? (((real + (derived * 0.55)) / total) * 100).toFixed(2) : '0.00';
+    const purityScore = total ? ((real / total) * 100).toFixed(2) : '0.00';
+    const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
+    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
+  }
+
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {
     if (el('analysisTitle')) el('analysisTitle').textContent = `Run Analysis ${version}`;
     if (el('analysisVersion')) el('analysisVersion').textContent = `Version: ${version}`;
+    if (el('shieldTitle')) el('shieldTitle').textContent = `Alpha Shield ${version}`;
+
     const row = result?.row || rows[0] || {};
-    const vault = result?.vault || { branches: {} };
-    const shield = Object.assign(computeShield(vault), result?.shield || {});
+    const vaultCollection = result?.vaultCollection || (row?.LEG_ID && result?.vault ? { [row.LEG_ID]: result.vault } : {});
+    const shield = summarizeShield(vaultCollection);
     const summary = el('analysisSummary');
-    if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`].join('');
+    if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">REAL: ${escapeHtml(shield.real)}</div>`,`<div class="pill">SIMULATED: ${escapeHtml(shield.simulated)}</div>`].join('');
     const hint = el('analysisHint');
-    if (hint) hint.textContent = result?.analysisHint || 'Oxygen Restore active.';
+    if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT grounding active.';
     const rowCard = el('analysisRowCard');
-    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(row.parsedPlayer || '')}</strong></div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')} • idx: ${escapeHtml(row.idx || '')}</div><div class="mini-muted">${escapeHtml(row.team || '')} vs ${escapeHtml(row.opponent || '')} • ${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')}</div></div>`;
+    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')}</div></div>`;
     const kpis = el('analysisKpis');
-    if (kpis) kpis.innerHTML = BRANCH_KEYS.map((key) => {
-      const branch = vault?.branches?.[key] || {};
-      return `<div class="pill">${key}: ${escapeHtml(branch.factorsFound || 0)}/${escapeHtml(branch.factorsTarget || BRANCH_TARGETS[key])}</div>`;
-    }).join('');
-    renderMiningGrid(row, vault);
+    if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
+    renderMiningGrid(rows, vaultCollection);
     const shieldPanel = el('shieldPanel');
-    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>Terminal State</strong><div>${escapeHtml(vault.terminalState || 'INITIALIZING')}</div></div>`].join('');
+    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>REAL / DERIVED / SIMULATED / WARNING</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
     const body = el('analysisResultsBody');
     if (body) body.innerHTML = rows.map((item) => `<tr><td>${escapeHtml(item.idx)}</td><td>${escapeHtml(item.sport)}</td><td>${escapeHtml(item.league)}</td><td>${escapeHtml(item.parsedPlayer)}</td><td>${escapeHtml(item.team || '')}</td><td>${escapeHtml(item.opponent || '')}</td><td>${escapeHtml(item.prop || '')}</td><td>${escapeHtml(item.line || '')}</td><td>${escapeHtml(item.type || '')}</td></tr>`).join('');
     renderConsole(result.logs || []);
@@ -172,74 +151,25 @@ window.PickCalcUI = window.PickCalcUI || {};
     window.requestAnimationFrame(() => {
       if (fill) {
         fill.style.width = `${pct}%`;
-        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'Oxygen Restore active.')}</span></div>`;
+        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'OXYGEN-COBALT active.')}</span></div>`;
       }
       if (strong) strong.textContent = `${pct}%`;
-      if (spans[0]) spans[0].textContent = `📡 ${message || 'Oxygen Restore active.'}`;
+      if (spans[0]) spans[0].textContent = `📡 ${message || 'OXYGEN-COBALT active.'}`;
       if (spans[1]) spans[1].textContent = `${safeIndex}/${safeTotal} probes`;
     });
   }
 
-  function initProgressBar(completedRows = 0, totalRows = 1, label = 'Initializing stream...') {
-    updateProgressBar(completedRows, totalRows, label);
-  }
+  function initProgressBar(completedRows = 0, totalRows = 1, label = 'Initializing stream...') { updateProgressBar(completedRows, totalRows, label); }
+  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) { renderAnalysisShell(result, rows, version); }
+  function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) { renderAnalysisShell(result, rows, version); updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.'); }
 
-  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) {
-    renderAnalysisShell(result, rows, version);
-  }
-
-  function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
-    renderAnalysisShell(result, rows, version);
-    updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.');
-    if (meta.branchKey && result?.vault?.branches?.[meta.branchKey]) updateMatrixIcon(meta.branchKey, result.vault.branches[meta.branchKey], result.vault);
-  }
-
-  function showAnalysisScreen() {
-    const intake = el('intakeScreen');
-    const analysis = el('analysisScreen');
-    if (intake) { intake.classList.add('hidden'); intake.style.display = 'none'; }
-    if (analysis) { analysis.classList.remove('hidden'); analysis.style.display = 'block'; }
-  }
-  function backToIntake() {
-    const intake = el('intakeScreen');
-    const analysis = el('analysisScreen');
-    if (analysis) analysis.classList.add('hidden');
-    if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
-  }
+  function showAnalysisScreen() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (intake) { intake.classList.add('hidden'); intake.style.display = 'none'; } if (analysis) { analysis.classList.remove('hidden'); analysis.style.display = 'block'; } }
+  function backToIntake() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (analysis) analysis.classList.add('hidden'); if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; } }
   function showOverlay(title, body) { if (el('runOverlay')) el('runOverlay').classList.remove('hidden'); if (el('overlaySub')) el('overlaySub').textContent = title; if (el('overlayBody')) el('overlayBody').textContent = body; }
   function hideOverlay() { if (el('runOverlay')) el('runOverlay').classList.add('hidden'); }
   function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
   function buildAnalysisCopyText(context = {}) { return JSON.stringify(context, null, 2); }
 
-  Object.assign(window.PickCalcUI, {
-    MLB_FEED_MATRIX,
-    el,
-    renderLeagueChecklist,
-    renderRunSummary,
-    renderFeedStatus,
-    renderPoolTable,
-    renderAnalysisShell,
-    renderAnalysisResults,
-    renderStreamUpdate,
-    renderConsole,
-    appendConsole,
-    showOverlay,
-    hideOverlay,
-    backToIntake,
-    showAnalysisScreen,
-    bindResizeRedraw,
-    buildAnalysisCopyText,
-    initProgressBar,
-    updateProgressBar,
-    updateMatrixIcon,
-    renderMiningGrid,
-    computeShield
-  });
-
-  window.onerror = function(message, source, lineno, colno) {
-    try {
-      appendConsole({ level: 'warning', text: `[OXYGEN RESTORE] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` });
-    } catch (_) {}
-    return false;
-  };
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid });
+  window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();

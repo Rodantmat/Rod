@@ -30,3 +30,5 @@ th,td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top
 .radio-row label,.league-grid label{display:inline-flex;gap:8px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#121c34}
 input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 @media (max-width:800px){.app-shell{padding:12px}.card{padding:14px}.hero-inline{flex-direction:column}}
+
+.dense-player-grid{display:grid;grid-template-columns:1fr;gap:14px}.player-mining-card{border:1px solid var(--border);background:#0f1730;border-radius:14px;padding:14px}.player-header-line{margin-bottom:6px}.branch-block{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:#0d1529}.branch-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}.factor-line{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);overflow-wrap:anywhere}.factor-line:last-child{border-bottom:0}.factor-name{font-weight:700}.factor-status{color:var(--muted)}.market-providers{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
