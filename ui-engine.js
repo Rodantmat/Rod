@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.19 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.20 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -278,14 +278,17 @@ window.PickCalcUI = window.PickCalcUI || {};
     const scoreMeta = resolveCobaltScore(vault, row);
     const score = Number(scoreMeta?.score || 0);
     const scoreEmoji = resolveScoreEmoji(score);
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')}${pickTypeMarkup} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
+    const matrixMarkup = BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
-      const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
-      const branchHeader = branchKey === 'E' ? '<div class="branch-title"><strong>Market</strong></div>' : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+      const branchHeader = branchKey === 'E'
+        ? '<div class="branch-title"><strong>Market</strong></div>'
+        : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
       return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
-    }).join('')}</article>`;
+    }).join('');
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')}${pickTypeMarkup} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -296,7 +299,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const hasVaultData = Object.keys(safeVaults).length > 0;
     const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
     const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Mining Matrix</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Ingested Leg Pool</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
 
   function renderConsole(logs) {
@@ -372,7 +375,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const hint = el('analysisHint');
     if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT recovery active.';
     const rowCard = el('analysisRowCard');
-    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')}${renderPickTypeBadge(row.pickType || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')} - Score: ${escapeHtml(String(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}/100 ${escapeHtml(resolveScoreEmoji(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')}</div></div>`;
+    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')}${renderPickTypeBadge(row.pickType || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')} - Score: ${escapeHtml(String(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}/100 ${escapeHtml(resolveScoreEmoji(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
     const kpis = el('analysisKpis');
     if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
     renderMiningGrid(rows, vaultCollection);

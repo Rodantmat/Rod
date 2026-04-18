@@ -31,9 +31,19 @@ th,td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top
 input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 @media (max-width:800px){.app-shell{padding:12px}.card{padding:14px}.hero-inline{flex-direction:column}}
 
-.dense-player-grid{display:grid;grid-template-columns:1fr;gap:14px}.player-mining-card{border:1px solid var(--border);background:#0f1730;border-radius:14px;padding:14px}.player-header-line{margin-bottom:6px}.branch-block{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:#0d1529}.branch-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}.factor-line{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);overflow-wrap:anywhere}.factor-line:last-child{border-bottom:0}.factor-name{font-weight:700}.factor-status{color:var(--muted)}.market-providers{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.dense-player-grid{display:grid;grid-template-columns:1fr;gap:14px}.player-mining-card{border:1px solid var(--border);background:#0f1730;border-radius:14px;padding:14px}.player-header-line{margin-bottom:6px}.player-header-line strong{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.branch-block{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:12px;background:#0d1529}.branch-title{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}.factor-line{padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);overflow-wrap:anywhere}.factor-line:last-child{border-bottom:0}.factor-name{font-weight:700}.factor-status{color:var(--muted)}.market-providers{margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
 
 .metric-zero{color:#ff4d4d !important;font-weight:800;}
 
 
 .pick-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:bold;text-transform:uppercase;margin-left:10px}.pick-badge.demon{background:#ff4d4d;color:white}.pick-badge.goblin{background:#00ff88;color:#0b1020}.pick-badge.taco{background:#ffa500;color:white}.pick-badge.free-pick{background:#5da8ff;color:white}
+
+
+.matrix-collapsible{margin-top:10px}
+.matrix-collapsible summary{list-style:none}
+.matrix-collapsible summary::-webkit-details-marker{display:none}
+.collapsible-trigger{cursor:pointer;user-select:none;padding:10px;background:rgba(255,255,255,0.03);border-radius:8px;margin-top:5px;font-size:12px;color:var(--accent);display:flex;align-items:center;gap:8px}
+.collapsible-trigger:hover{background:rgba(255,255,255,0.08)}
+.collapsible-content{padding:15px;border-left:2px solid var(--border);margin-left:10px}
+.collapsible-arrow{display:inline-block;transition:transform .15s ease}
+.matrix-collapsible[open] .collapsible-arrow{transform:rotate(90deg)}
