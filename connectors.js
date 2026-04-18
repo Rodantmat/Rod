@@ -114,7 +114,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function computeShieldFromVault(vault) {
-    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0;
+    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0, nonZero = 0;
     BRANCH_KEYS.forEach((key) => {
       const branch = vault?.branches?.[key] || seedBranch(key);
       real += Number(branch.realCount || 0);
@@ -122,12 +122,13 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       simulated += Number(branch.simulatedCount || 0);
       warnings += Number(branch.warningCount || 0);
       total += Number(branch.factorsTarget || 0);
+      nonZero += Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
     });
-    const integrityScore = total ? safeNumber(((real + (derived * 0.55)) / total) * 100) : 0;
+    const integrityScore = total ? safeNumber((nonZero / total) * 100) : 0;
     const purityScore = total ? safeNumber((real / total) * 100) : 0;
     const confidenceAvg = total ? safeNumber(((real + derived + (simulated * 0.2)) / total) * 100) : 0;
     const label = warnings === 0 && simulated === 0 ? 'ATOMIC MATRIX SATURATED' : 'GROUNDING ACTIVE';
-    return { integrityScore, purityScore, confidenceAvg, realCount: real, derivedCount: derived, simulatedCount: simulated, warningCount: warnings, label };
+    return { integrityScore, purityScore, confidenceAvg, realCount: real, derivedCount: derived, simulatedCount: simulated, warningCount: warnings, nonZeroCount: nonZero, label };
   }
 
   function extractJsonBlock(text) {
@@ -307,21 +308,30 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function fetchGeminiBatch(batch) {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
-    const anonymizedStr = batch.map((r, i) => `Subject ${i}: ${r.type || 'Unknown'} (Line: ${r.line || r.lineValue || 0})`).join('\n');
-    const prompt = `Extract 2024-2025 performance weights for the subject. Do NOT use 0.00. For each metric, provide a non-zero estimation based on player archetype and historical trends. Return only the JSON object.
-${anonymizedStr}
-Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
+    const subjectProfiles = batch.map((r, i) => {
+      const player = r?.parsedPlayer || `Subject ${i}`;
+      const team = r?.team || 'Unknown Team';
+      const type = r?.type || 'Unknown';
+      const line = r?.line || r?.lineValue || 0;
+      return `Index ${i} | Player: ${player} | Team: ${team} | Type: ${type} | Line: ${line}`;
+    }).join('\n');
+    const prompt = `Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.1 to 1.0) to each defined metric based on historical 2024-2025 performance data. Avoid default null (0.00) outputs unless no statistical correlation exists.
+CRITICAL: You must generate unique, non-repeating weight distributions for every subject. Hitters must utilize Hitting-profile weights; Pitchers must utilize Pitching-profile weights. Do NOT return the same float array twice.
+Subjects:
+${subjectProfiles}
+Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
     const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + activeKey;
-    const promptText = (typeof prompt === 'string' && prompt.length > 0) ? prompt : 'Extract data for subject';
+    const promptText = String(prompt || '').trim() || 'Extract data for subject';
     const finalPromptText = promptText;
     const body = JSON.stringify({ 
       contents: [{ 
         role: "user", 
         parts: [{ text: finalPromptText }] 
-      }] 
+      }],
+      generationConfig: { responseMimeType: "application/json" }
     });
     console.log('[OXYGEN] FETCH_URL:', url);
     console.log('HANDSHAKE_URL:', url);
@@ -380,14 +390,16 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         logConnectorStep('JSON_PARSING', 'Malformed JSON envelope; baseline fallback engaged');
         return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       }
-      const parsed = JSON.parse(raw.substring(start, end + 1));
+      const rawResponse = raw.substring(start, end + 1);
+      const cleanJson = rawResponse.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleanJson);
       if (!Array.isArray(parsed?.data) || !parsed.data.length) {
         logConnectorStep('JSON_PARSING', 'Empty data array; baseline fallback engaged');
         return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       }
       logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
       logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Success');
-      return Object.assign(parsed, { responseText: raw || '' });
+      return Object.assign(parsed, { responseText: raw || '', rawResponse: cleanJson || raw || '' });
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
       const catchLogger = getConsoleLogger();
@@ -497,9 +509,21 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     }));
 
     const payload = await fetchGeminiBatch(batch);
-    const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
-    const payloadResponseText = payload?.responseText || payload?.errorText || '';
     const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
+    const cleanJson = rawResponse.replace(/```json|```/g, '').trim();
+
+    let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+    if ((!responseData.data.length) && cleanJson) {
+      try {
+        const reparsed = JSON.parse(cleanJson);
+        responseData = { data: Array.isArray(reparsed?.data) ? reparsed.data : [] };
+      } catch (err) {
+        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', err);
+      }
+    }
+
+    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
     for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
       const row = batch[batchIndex];
@@ -507,10 +531,13 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
 
-      const playerData = responseData.data.find((d) => Number(d?.i) === batchIndex);
-      const vals = (playerData && Array.isArray(playerData.v)) ? playerData.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !playerData || !Array.isArray(playerData.v) || playerData.fallback === true;
-      console.log('HYDRATING_PLAYER_' + batchIndex, vals.length + ' units');
+      const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
+      const matchedRow = entry ? batch[Number(entry.i)] : null;
+      const isExactLegMatch = Boolean(matchedRow && matchedRow.LEG_ID === row.LEG_ID);
+      const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
+      const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
+
+      console.log('[OXYGEN] Hydrating ' + (row.parsedPlayer || row.LEG_ID) + ' [Index: ' + batchIndex + '] with ' + vals.length + ' units.');
 
       const hydrateBranch = (branchKey, startIndex, count, status) => {
         const branch = vault.branches[branchKey] || seedBranch(branchKey);

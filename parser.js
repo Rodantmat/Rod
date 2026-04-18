@@ -401,9 +401,6 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
-    const normalizedAnchorLine = (!anchorLine || anchorLine == null)
-      ? '0.5'
-      : String(anchorLine);
 
     if (anchorLine && isNaN(parseFloat(anchorLine))) {
       console.warn(`[PARSER] FAILED_TO_EXTRACT_LINE_FOR: ${cluster[0]}`);

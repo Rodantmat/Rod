@@ -48,7 +48,7 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function formatValue(value) {
     const n = Number(value);
-    return Number.isFinite(n) ? n.toFixed(2) : '0.00';
+    return Number.isFinite(n) ? n.toFixed(3) : '0.000';
   }
 
   function renderFactorLine(meta = {}) {
@@ -144,11 +144,11 @@ window.PickCalcUI = window.PickCalcUI || {};
         real += Number(branch.realCount || 0);
         derived += Number(branch.derivedCount || 0);
         simulated += Number(branch.simulatedCount || 0);
-        warnings += Number(branch.warningCount || 0);
+        warnings += Object.values(branch.parsed || {}).filter((value) => Number(value) === 0).length;
         total += Number(branch.factorsTarget || 0);
       });
     });
-    const integrityScore = total ? (((real + (derived * 0.55)) / total) * 100).toFixed(2) : '0.00';
+    const integrityScore = total ? ((Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).reduce((inner, branch) => inner + Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length, 0), 0) / total) * 100).toFixed(2) : '0.00';
     const purityScore = total ? ((real / total) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
     return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
@@ -232,7 +232,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       const vault = vaultCollection[legId] || {};
       const branchKeys = ['A', 'B', 'C', 'D', 'E'];
       const summary = branchKeys.map((k) => {
-        const active = Object.values(vault.branches?.[k]?.parsed || {}).filter((val) => Number(val) > 0.1).length;
+        const active = Object.values(vault.branches?.[k]?.parsed || {}).filter((val) => Number(val) !== 0).length;
         return `${k}:${active}`;
       }).join('|');
       const matrixLines = branchKeys.map((k) => {
