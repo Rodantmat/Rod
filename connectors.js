@@ -5,7 +5,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
-  const GEMINI_MODEL = 'gemini-flash-latest';
+  const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -602,6 +602,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       vault.isReal = true;
       vault.source = 'real';
+      vault.timestamp = Date.now();
 
       const branchStatus = 'REAL';
       hydrateBranch('A', 0, 20, branchStatus);

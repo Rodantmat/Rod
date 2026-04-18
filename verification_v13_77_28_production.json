@@ -1,0 +1,18 @@
+{
+  "version_lock": "v13.77.28 (OXYGEN-COBALT)",
+  "gemini_model": "gemini-3.1-flash-lite-preview",
+  "fetch_url_contains": "/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=",
+  "parser_noise_filters": {
+    "trending_removed": true,
+    "popular_removed": true,
+    "k_badge_removed": true
+  },
+  "real_stamp_present": {
+    "isReal": true,
+    "source": true,
+    "timestamp": true
+  },
+  "ui_real_tally_checks_flag": true,
+  "core_dedupe_uses_blockIndex": true,
+  "parser_dedupe_uses_blockIndex": true
+}

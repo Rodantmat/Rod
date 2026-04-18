@@ -112,7 +112,7 @@ window.PickCalcParser = (() => {
       .map((line) => splitGluedTokens(stripAccents(line)))
       .map((line) => line.replace(/\b\d{2}:\d{2}:\d{2}\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
-      .map((line) => line.replace(/\bTrending\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
       .map((line) => line.replace(/[\t ]+/g, ' ').trim())
@@ -739,7 +739,8 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
-      sourceIndex: audit.idx
+      sourceIndex: audit.idx,
+      blockIndex: audit.idx
     }};
   }
 
@@ -754,7 +755,7 @@ window.PickCalcParser = (() => {
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
       if (!parsed.row) return;
-      const key = [String(parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0), normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
+      const key = [String(parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0), normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {

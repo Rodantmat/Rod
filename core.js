@@ -147,7 +147,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.lastResult = null;
     const rowMap = new Map();
     (parsed.rows || []).forEach((row) => {
-      const key = [String(row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
+      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
       const completeness = [
         row.pickType && row.pickType !== 'Regular Line',
         row.team,
