@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.11 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -240,7 +240,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
 
-    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
+    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar','runOverlay','overlaySub','overlayBody','miningGrid','connectorSvg'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       if ('value' in node) node.value = '';

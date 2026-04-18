@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.11 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -408,7 +408,7 @@ window.PickCalcParser = (() => {
     return '';
   }
 
-  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 5) {
+  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 12) {
     const cluster = [];
     const start = Math.max(0, anchorIndex - aboveRadius);
     const end = Math.min(lines.length - 1, anchorIndex + belowRadius);
@@ -422,38 +422,46 @@ window.PickCalcParser = (() => {
 
 
   function parseCluster(cluster) {
-    // 1. Clean noise but RETAIN line structure
-    const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi;
-    const lines = (cluster || []).map((item) => {
-      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(GLUED_NOISE_RX, '').trim();
+    const NOISE = /(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b|Less|More)/gi;
+    const lines = (cluster || [])
+      .map((item) => {
+        const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
+        return String(raw || '').replace(NOISE, '').trim();
+      })
+      .filter((entry) => entry.length > 0);
+
+    let player = '';
+    let team = '';
+    let prop = '';
+    let line = 0;
+    const TEAM_RX = /\b([A-Z]{2,3})\s*.?\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|G|D|LW|RW)\b/i;
+    const IGNORE_RX = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
+
+    lines.forEach((entry) => {
+      if (STANDALONE_NUMBER_RX.test(entry)) line = parseFloat(entry);
     });
 
-    let player = '', team = '', prop = '', line = 0;
-    // Enhanced Regex to catch ALL dash types and roles
-    const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*.?\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|G|D|LW|RW)\b/i;
-    const NOISE_STRINGS = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
-
-    // 2. Locate the Number Anchor
-    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
-
-    // 3. Find Team/Role and then hunt UPWARD for the Name
     for (let i = 0; i < lines.length; i += 1) {
-      if (TEAM_ROLE_RX.test(lines[i])) {
-        const match = lines[i].match(TEAM_ROLE_RX);
-        team = (match?.[1] || team || '').toUpperCase();
-        // Search UPWARD from the Team/Role line for the first valid string that isn't noise
-        for (let j = i - 1; j >= 0; j -= 1) {
-          const candidate = lines[j];
-          if (candidate.length > 3 && !TEAM_ROLE_RX.test(candidate) && !NOISE_STRINGS.test(candidate)) {
-            player = sanitizePlayerName(candidate);
-            break;
-          }
+      if (!TEAM_RX.test(lines[i])) continue;
+      const match = lines[i].match(TEAM_RX);
+      team = String(match?.[1] || team || '').toUpperCase();
+      const searchIndices = [i - 1, i + 1, i - 2, i + 2];
+      for (const idx of searchIndices) {
+        const candidate = lines[idx];
+        if (!candidate) continue;
+        if (candidate.length <= 3) continue;
+        if (TEAM_RX.test(candidate)) continue;
+        if (IGNORE_RX.test(candidate)) continue;
+        if (/^\d/.test(candidate)) continue;
+        const sanitized = sanitizePlayerName(candidate);
+        if (sanitized) {
+          player = sanitized;
+          break;
         }
       }
+      if (player) break;
     }
 
-    // 4. Global Prop Detection
     const blob = lines.join(' ');
     if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
     else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
@@ -461,9 +469,9 @@ window.PickCalcParser = (() => {
 
     return {
       parsedPlayer: player,
-      team: team,
+      team,
       prop: prop || 'MLB Prop',
-      line: line,
+      line,
       accepted: (player.length > 2 && line > 0 && !!team)
     };
   }
