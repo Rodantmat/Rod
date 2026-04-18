@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.76.9 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -315,7 +315,7 @@ No prose. No markdown. JSON only.`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
       });
 
       if (!response.ok) {
@@ -456,6 +456,14 @@ No prose. No markdown. JSON only.`;
       if (stateRef?.miningVault) stateRef.miningVault[row.idx] = vault;
       commitVault(stateRef, row, vault);
       logger(result.logs[0]);
+      if (window.PickCalcUI?.renderMiningGrid) {
+        try {
+          const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
+          window.PickCalcUI.renderMiningGrid(batch, currentVaults);
+        } catch (uiErr) {
+          console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr);
+        }
+      }
       hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes: i + 1, totalProbes: batch.length });
     }
 

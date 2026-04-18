@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.76.9 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.0 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -74,8 +74,11 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('miningGrid');
     if (!mount) return;
     const safeRows = asArray(rows);
-    const cards = safeRows.map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Verbatim Density Layout</strong><div class="mini-muted">7-player sequential shell. Player / Team / Matchup / Time header locked. Branch E market providers rendered inline.</div></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || '<div class="mini-muted">Awaiting rows.</div>'}</div></div>`;
+    const safeVaults = vaultCollection && typeof vaultCollection === 'object' ? vaultCollection : {};
+    const hasVaultData = Object.keys(safeVaults).length > 0;
+    const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
+    const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Verbatim Density Layout</strong><div class="mini-muted">7-player sequential shell. Player / Team / Matchup / Time header locked. Branch E market providers rendered inline.</div></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
 
   function renderConsole(logs) {
@@ -177,7 +180,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     }).join('|');
 
     return [
-      `v13.76.9 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.77.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');
