@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.9 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.10 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -489,7 +489,6 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     const rows = Array.isArray(pool) ? pool.slice(0, 7) : [];
     const totalRows = rows.length;
     const totalProbes = totalRows * 5;
-    let completedProbes = 0;
     const results = [];
 
     const batch = rows.map((rawRow, rowIndex) => Object.assign({}, rawRow, {
@@ -498,43 +497,64 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     }));
 
     const payload = await fetchGeminiBatch(batch);
-    const stream = payload?.data || [];
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
     const payloadResponseText = payload?.responseText || payload?.errorText || '';
     const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
 
-    for (let i = 0; i < batch.length; i++) {
-      const row = batch[i];
-      const vault = createZeroVault(row.LEG_ID);
+    for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
+      const row = batch[batchIndex];
+      const vault = createZeroVault(row);
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
-      const entry = stream.find(s => Number(s.i) === i);
-      const vals = entry && Array.isArray(entry.v) ? entry.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !entry || !Array.isArray(entry.v) || entry.fallback === true;
 
-      for (let j = 0; j < 20; j++) vault.branches.A.parsed[`a${String(j + 1).padStart(2, '0')}`] = Number(vals[j] ?? 0.5);
-      for (let j = 0; j < 18; j++) vault.branches.B.parsed[`b${String(j + 1).padStart(2, '0')}`] = Number(vals[20 + j] ?? 0.5);
-      for (let j = 0; j < 12; j++) vault.branches.C.parsed[`c${String(j + 1).padStart(2, '0')}`] = Number(vals[38 + j] ?? 0.5);
-      for (let j = 0; j < 10; j++) vault.branches.D.parsed[`d${String(j + 1).padStart(2, '0')}`] = Number(vals[50 + j] ?? 0.5);
-      const providers = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
-      providers.forEach((p, idx) => {
-        vault.branches.E.providerMap[p] = Number(vals[60 + idx] ?? 0.5);
+      const playerData = responseData.data.find((d) => Number(d?.i) === batchIndex);
+      const vals = (playerData && Array.isArray(playerData.v)) ? playerData.v : Array.from({ length: 72 }, () => 0.5);
+      const isFallback = !playerData || !Array.isArray(playerData.v) || playerData.fallback === true;
+      console.log('HYDRATING_PLAYER_' + batchIndex, vals.length + ' units');
+
+      const hydrateBranch = (branchKey, startIndex, count, status) => {
+        const branch = vault.branches[branchKey] || seedBranch(branchKey);
+        for (let j = 0; j < count; j += 1) {
+          const factorNumber = j + 1;
+          const factorName = FACTOR_NAMES[branchKey]?.[j] || `${branchKey}${String(factorNumber).padStart(2, '0')}`;
+          const factorValue = safeNumber(vals[startIndex + j], 0.5);
+          applyFactor(branch, factorKey(branchKey, factorNumber), factorName, factorValue, status, isFallback ? 'BASELINE_FALLBACK' : 'GEMINI_JSON');
+        }
+        branch.status = status;
+        updateBranchMeta(branch);
+      };
+
+      const branchStatus = isFallback ? 'DERIVED' : 'SUCCESS';
+      hydrateBranch('A', 0, 20, branchStatus);
+      hydrateBranch('B', 20, 18, branchStatus);
+      hydrateBranch('C', 38, 12, branchStatus);
+      hydrateBranch('D', 50, 10, branchStatus);
+      hydrateBranch('E', 60, 12, branchStatus);
+
+      PROVIDERS.forEach((provider, idx) => {
+        vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5);
       });
-
-      ['A', 'B', 'C', 'D', 'E'].forEach((k) => { vault.branches[k].status = isFallback ? 'DERIVED' : 'SUCCESS'; });
 
       const found = vals.filter((n) => Number(n) !== 0).length;
       vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated';
+
+      commitVault(stateRef, row, vault);
+      console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
+      if (logger === console.log) logger(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
+      else logger({ level: 'info', text: `[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}` });
+
       const shield = computeShieldFromVault(vault);
+      const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
       const result = {
         vault,
         row,
-        vaultCollection: JSON.parse(JSON.stringify(stateRef?.miningVault || { [row.LEG_ID]: vault })),
+        vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated',
         connectorState: {
           version: SYSTEM_VERSION,
-          completedRows: i + 1,
-          completedProbes: i + 1,
+          completedRows: batchIndex + 1,
+          completedProbes: batchIndex + 1,
           totalProbes: batch.length,
           liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => vault.branches[key]?.status === 'SUCCESS').length,
           derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
@@ -548,18 +568,15 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       };
 
       results.push(result);
-      if (stateRef?.miningVault) stateRef.miningVault[row.idx] = vault;
-      commitVault(stateRef, row, vault);
       logger(result.logs[0]);
       if (window.PickCalcUI?.renderMiningGrid) {
         try {
-          const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
-          window.PickCalcUI.renderMiningGrid(batch, currentVaults);
+          window.PickCalcUI.renderMiningGrid(batch, stateRef?.miningVault || currentVaults);
         } catch (uiErr) {
           console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr);
         }
       }
-      hooks.onRowComplete?.({ row, rowIndex: i, result, completedRows: i + 1, totalRows, completedProbes: i + 1, totalProbes: batch.length });
+      hooks.onRowComplete?.({ row, rowIndex: batchIndex, result, completedRows: batchIndex + 1, totalRows, completedProbes: batchIndex + 1, totalProbes: batch.length });
     }
 
     const lastResult = results[results.length - 1] || null;

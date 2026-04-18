@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.9 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.10 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -54,7 +54,8 @@ window.PickCalcUI = window.PickCalcUI || {};
   function renderFactorLine(meta = {}) {
     const numericValue = Number(meta.value);
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
-    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
+    const label = numericValue === 0 ? 'WARNING' : ((meta.status === 'SUCCESS' || meta.status === 'REAL') ? 'REAL' : 'DERIVED');
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(label)}</span></div>`;
   }
 
   function renderMarketProviders(providerMap = {}) {
