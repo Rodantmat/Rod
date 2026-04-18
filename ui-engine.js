@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.1 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -164,7 +164,13 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function initProgressBar(completedRows = 0, totalRows = 1, label = 'Initializing stream...') { updateProgressBar(completedRows, totalRows, label); }
   function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) { renderAnalysisShell(result, rows, version); }
-  function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) { renderAnalysisShell(result, rows, version); updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.'); }
+  function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
+    renderAnalysisShell(result, rows, version);
+    updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.');
+    if (Number(result?.errorStatus) === 400 && result?.errorText) {
+      appendConsole({ level: 'warning', text: `[SYSTEM] 400 GOOGLE_ERROR: ${result.errorText}` });
+    }
+  }
 
   function showAnalysisScreen() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (intake) { intake.classList.add('hidden'); intake.style.display = 'none'; } if (analysis) { analysis.classList.remove('hidden'); analysis.style.display = 'block'; } }
   function backToIntake() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (analysis) analysis.classList.add('hidden'); if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; } }
@@ -180,7 +186,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     }).join('|');
 
     return [
-      `v13.77.0 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.77.1 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');

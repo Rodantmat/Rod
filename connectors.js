@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.1 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -308,7 +308,7 @@ No prose. No markdown. JSON only.`;
 
     if (!GEMINI_API_KEY) return buildBaselinePayload(batch);
 
-    const url = `${GEMINI_BASE_URL}/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
     console.log('[OXYGEN] FETCH_URL:', url);
 
     try {
@@ -325,7 +325,7 @@ No prose. No markdown. JSON only.`;
           const authLogger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
           authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.' });
         }
-        return buildBaselinePayload(batch);
+        return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText });
       }
 
       const json = await response.json();
@@ -344,6 +344,33 @@ No prose. No markdown. JSON only.`;
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
       return buildBaselinePayload(batch);
+    }
+  }
+
+  async function debugConnection() {
+    const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+    if (!GEMINI_API_KEY) {
+      logger({ level: 'warning', text: '[SYSTEM] KEY_MISSING: Save an API key before debugging.' });
+      return { ok: false, status: 0, errorText: 'KEY_MISSING' };
+    }
+    const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: 'Connection test. Return JSON: {"ok":true}.' }] }] })
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger({ level: 'warning', text: `[SYSTEM] DEBUG_FAIL ${response.status}: ${errorText}` });
+        return { ok: false, status: response.status, errorText };
+      }
+      const json = await response.json();
+      logger({ level: 'info', text: '[SYSTEM] DEBUG_OK: Bridge handshake completed.' });
+      return { ok: true, status: response.status, json };
+    } catch (error) {
+      logger({ level: 'warning', text: `[SYSTEM] DEBUG_CONNECTION_FAIL: ${error.message}` });
+      return { ok: false, status: 0, errorText: error.message };
     }
   }
 
@@ -500,6 +527,7 @@ No prose. No markdown. JSON only.`;
     analyzeRow,
     minePlayer,
     neutronSearch,
-    performGroundedMining
+    performGroundedMining,
+    debugConnection
   });
 })();
