@@ -1,10 +1,11 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.4 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.5 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
+  const MODEL_ID = 'gemini-1.5-flash';
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
 
   function el(id) { return document.getElementById(id); }
@@ -52,8 +53,8 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderFactorLine(meta = {}) {
     const numericValue = Number(meta.value);
-    const zeroStyle = numericValue === 0 ? ' style="color:#ff4d4d; font-weight:bold;"' : '';
-    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value"${zeroStyle}>${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
+    const zeroClass = numericValue === 0 ? ' metric-zero' : '';
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
   }
 
   function renderMarketProviders(providerMap = {}) {
@@ -65,8 +66,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       ['Bet365', providerMap.Bet365 || 0]
     ].map(([label, value]) => {
       const numericValue = Number(value);
-      const zeroStyle = numericValue === 0 ? ' style="color:#ff4d4d; font-weight:bold;"' : '';
-      return `${label}: <span${zeroStyle}>${escapeHtml(formatValue(value))}</span>`;
+      const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
+      return `${label}: <span${zeroClass}>${escapeHtml(formatValue(value))}</span>`;
     }).join(' | ');
     return `<div class="market-providers"><strong>Market Projections/Odds:</strong><div>${providerLine}</div></div>`;
   }
@@ -107,7 +108,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (!mount) return;
     const line = document.createElement('div');
     line.className = 'console-line';
-    line.textContent = log?.text || log?.message || String(log);
+    const timestamp = new Date().toLocaleTimeString();
+    const modelId = log?.modelId || MODEL_ID;
+    const message = log?.text || log?.message || String(log);
+    line.textContent = `[${timestamp}] [${modelId}] ${message}`;
     mount.prepend(line);
   }
 
@@ -195,14 +199,23 @@ window.PickCalcUI = window.PickCalcUI || {};
   function buildAnalysisCopyText(context = {}) {
     const v = context.result?.vault || {};
     const r = context.result?.row || {};
-    const summary = Object.keys(v.branches || {}).map(k => {
-      const active = Object.values(v.branches[k]?.parsed || {}).filter(val => Number(val) > 0.1).length;
+    const branchKeys = ['A', 'B', 'C', 'D', 'E'];
+    const summary = branchKeys.map((k) => {
+      const active = Object.values(v.branches?.[k]?.parsed || {}).filter((val) => Number(val) > 0.1).length;
       return `${k}:${active}`;
     }).join('|');
+    const matrixLines = branchKeys.map((k) => {
+      const parsed = v.branches?.[k]?.parsed || {};
+      const parsedLine = Object.entries(parsed).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
+      if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
+      const providers = Object.entries(v.branches?.E?.providerMap || {}).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
+      return `BRANCH E: ${parsedLine}${providers ? ` | PROVIDERS: ${providers}` : ''}`;
+    });
 
     return [
-      `v13.77.4 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.77.5 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
+      ...matrixLines,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');
   }

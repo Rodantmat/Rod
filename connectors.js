@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.4 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.5 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -297,7 +297,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   async function fetchGeminiBatch(batch) {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
     const anonymizedStr = batch.map((r, i) => `Subject ${i}: ${r.type || 'Unknown'} (Line: ${r.line || r.lineValue || 0})`).join('\n');
-    const prompt = `Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.1 to 1.0) to each defined metric based on historical 2024-2025 performance data. Avoid default null (0.00) outputs unless no statistical correlation exists.
+    const prompt = `Extract 2024-2025 performance weights for the subject. Do NOT use 0.00. For each metric, provide a non-zero estimation based on player archetype and historical trends. Return only the JSON object.
 ${anonymizedStr}
 Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
@@ -305,6 +305,7 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
     console.log('[OXYGEN] FETCH_URL:', url);
+    console.log("RAW_PAYLOAD:", prompt);
 
     try {
       const response = await fetch(url, {
@@ -325,6 +326,7 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const json = await response.json();
       console.log("Full Google Response:", json);
+      console.log("RAW_RESPONSE:", json);
       const candidate = json?.candidates?.[0] || null;
       const finishReason = String(candidate?.finishReason || '').toUpperCase();
       const raw = candidate?.content?.parts?.[0]?.text || '';
