@@ -1,0 +1,116 @@
+{
+  "version": "v13.77.27 (OXYGEN-COBALT)",
+  "registryCount": 19,
+  "registry": [
+    "Doubles",
+    "Earned Runs Allowed",
+    "Hits",
+    "Hits Allowed",
+    "Hits+Runs+RBIs",
+    "Hitter Fantasy Score",
+    "Hitter Strikeouts",
+    "Home Runs",
+    "Pitcher Fantasy Score",
+    "Pitcher Strikeouts",
+    "Pitching Outs",
+    "RBIs",
+    "Runs",
+    "Singles",
+    "Stolen Bases",
+    "Total Bases",
+    "Triples",
+    "Walks",
+    "Walks Allowed"
+  ],
+  "mandatoryRows": 5,
+  "mandatoryCards": [
+    {
+      "player": "Ben Rice",
+      "prop": "Hits",
+      "line": "0.5",
+      "opponent": "KC",
+      "pickType": "Goblin"
+    },
+    {
+      "player": "Giancarlo Stanton",
+      "prop": "Hits+Runs+RBIs",
+      "line": "1.5",
+      "opponent": "KC",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Taj Bradley",
+      "prop": "Pitcher Strikeouts",
+      "line": "6.5",
+      "opponent": "CIN",
+      "pickType": "Demon"
+    },
+    {
+      "player": "Aaron Judge",
+      "prop": "Total Bases",
+      "line": "1.5",
+      "opponent": "KC",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Paul Skenes",
+      "prop": "Pitching Outs",
+      "line": "17.5",
+      "opponent": "TB",
+      "pickType": "Goblin"
+    }
+  ],
+  "cleanNameCheck": true,
+  "volumeStressRows": 16,
+  "volumeStressFirstFive": [
+    {
+      "player": "Alpha Bravo",
+      "prop": "Hits",
+      "opponent": "KC"
+    },
+    {
+      "player": "Charlie Delta",
+      "prop": "Pitcher Strikeouts",
+      "opponent": "TEX"
+    },
+    {
+      "player": "Echo Foxtrot",
+      "prop": "Hits+Runs+RBIs",
+      "opponent": "SD"
+    },
+    {
+      "player": "Golf Hotel",
+      "prop": "Home Runs",
+      "opponent": "PHI"
+    },
+    {
+      "player": "India Juliet",
+      "prop": "Pitching Outs",
+      "opponent": "MIA"
+    }
+  ],
+  "allMatricesClosedByDefault": true,
+  "scoreBadgePlacementVerified": true,
+  "versionFiles": [
+    {
+      "file": "parser.js",
+      "locked": true
+    },
+    {
+      "file": "core.js",
+      "locked": true
+    },
+    {
+      "file": "ui-engine.js",
+      "locked": true
+    },
+    {
+      "file": "connectors.js",
+      "locked": true
+    },
+    {
+      "file": "index.html",
+      "locked": true
+    }
+  ]
+}

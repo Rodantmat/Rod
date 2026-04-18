@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.25 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -23,19 +23,29 @@ window.PickCalcParser = (() => {
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
   const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
-  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Fantasy Score|PFS|Hitter Fantasy Score|HFS|Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|BB|Earned Runs|ER|Hits Allowed|HA|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|Home Runs?|HR)\b/i;
+  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|Hitter Strikeouts|Ks|K's|PO|Outs|BB|HA)\b/i;
 
   const MLB_PROP_ALIASES = {
-    'TB': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
-    'TOTAL BASES': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
-    'KS': { label: 'Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
-    "K'S": { label: 'Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
-    'K': { label: 'Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
-    'STRIKEOUTS': { label: 'Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
-    'PITCHER STRIKEOUTS': { label: 'Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
-    'PO': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
+    'PITCHER STRIKEOUTS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
+    'STRIKEOUTS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
+    'KS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
+    "K'S": { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
+    'K': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
     'PITCHING OUTS': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
+    'PO': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
     'OUTS': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
+    'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
+    'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
+    'WALKS ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
+    'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
+    'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
+    'HITS ALLOWED': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
+    'HA': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
+    'EARNED RUNS ALLOWED': { label: 'Earned Runs Allowed', key: 'earnedRuns', role: 'Pitcher' },
+    'EARNED RUNS': { label: 'Earned Runs Allowed', key: 'earnedRuns', role: 'Pitcher' },
+    'ER': { label: 'Earned Runs Allowed', key: 'earnedRuns', role: 'Pitcher' },
+    'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
+    'HFS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HITS+RUNS+RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS+RUNS+RBI': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS + RUNS + RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
@@ -44,29 +54,25 @@ window.PickCalcParser = (() => {
     'H+R+R': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HRR': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'H+R+RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
+    'TOTAL BASES': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
+    'TB': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
     'HITS': { label: 'Hits', key: 'hits', role: 'Batter' },
     'RUNS': { label: 'Runs', key: 'runs', role: 'Batter' },
     'RBIS': { label: 'RBIs', key: 'rbi', role: 'Batter' },
     'RBI': { label: 'RBIs', key: 'rbi', role: 'Batter' },
     'RUNS BATTED IN': { label: 'RBIs', key: 'rbi', role: 'Batter' },
-    'HR': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
     'HOME RUN': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
     'HOME RUNS': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
-    'ER': { label: 'Earned Runs', key: 'earnedRuns', role: 'Pitcher' },
-    'EARNED RUNS': { label: 'Earned Runs', key: 'earnedRuns', role: 'Pitcher' },
-    'WALKS ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
-    'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
-    'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
-    'HITS ALLOWED': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
-    'HA': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
-    'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
-    '1ST INNING RUNS ALLOWED': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
-    'NRFI': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
-    'FANTASY SCORE': { label: 'Fantasy Score', key: 'fantasyScore', role: 'Hitter' },
-    'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
-    'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
-    'HFS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' }
+    'HR': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
+    'SINGLES': { label: 'Singles', key: 'singles', role: 'Batter' },
+    'DOUBLES': { label: 'Doubles', key: 'doubles', role: 'Batter' },
+    'TRIPLES': { label: 'Triples', key: 'triples', role: 'Batter' },
+    'WALKS': { label: 'Walks', key: 'walks', role: 'Batter' },
+    'STOLEN BASES': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
+    'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' }
   };
+
+  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
   const NHL_PROP_ALIASES = {
     'SOG': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
@@ -95,15 +101,21 @@ window.PickCalcParser = (() => {
   }
 
   function preprocessBoardText(text) {
-    return String(text || '')
+    const normalized = String(text || '')
       .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
-      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2');
+
+    return normalized
       .split('\n')
-      .map((line) => splitGluedTokens(stripAccents(line)).trim())
-      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .map((line) => splitGluedTokens(stripAccents(line)))
+      .map((line) => line.replace(/\b\d{2}:\d{2}:\d{2}\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
+      .map((line) => line.replace(NOISE_WORD_RX, ' '))
+      .map((line) => line.replace(/[\t ]+/g, ' ').trim())
       .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
+      .replace(/\n{4,}/g, '\n\n\n')
       .split('\n');
   }
 
@@ -323,35 +335,47 @@ window.PickCalcParser = (() => {
 
   function isNoiseLine(line) {
     const clean = cleanWhitespace(line);
-    return !clean || COUNTDOWN_RX.test(clean) || LIVE_STATUS_RX.test(clean) || POPULARITY_BADGE_RX.test(clean) || /^\d+$/.test(clean);
+    return !clean || COUNTDOWN_RX.test(clean) || LIVE_STATUS_RX.test(clean) || POPULARITY_BADGE_RX.test(clean) || /^\d+$/.test(clean) || /^Block ingestion example:?$/i.test(clean);
   }
 
-  function collectBackwardCluster(lines, anchorIndex, maxLines = 5) {
+  function isAnchorBoundary(lines, index, currentAnchorIndex) {
+    if (index < 0 || index >= lines.length || index === currentAnchorIndex) return false;
+    const clean = cleanWhitespace(lines[index]);
+    if (!clean || isNoiseLine(clean)) return false;
+    if (isStandaloneAnchorLine(clean) && hasNearbyStatAlias(lines, index)) return true;
+    return Boolean(extractInlineAnchor(clean));
+  }
+
+  function collectBackwardCluster(lines, anchorIndex, maxLines = 12) {
     const cluster = [];
     let i = anchorIndex - 1;
-    while (i >= 0 && !cleanWhitespace(lines[i])) i -= 1;
-    while (i >= 0 && cleanWhitespace(lines[i]) && cluster.length < maxLines) {
+    while (i >= 0 && cluster.length < maxLines) {
+      const clean = cleanWhitespace(lines[i]);
+      if (!clean) { i -= 1; continue; }
+      if (isAnchorBoundary(lines, i, anchorIndex)) break;
       cluster.unshift(lines[i]);
       i -= 1;
     }
     return cluster;
   }
 
-  function collectForwardCluster(lines, anchorIndex, maxLines = 3) {
+  function collectForwardCluster(lines, anchorIndex, maxLines = 6) {
     const cluster = [];
     let i = anchorIndex + 1;
-    while (i < lines.length && !cleanWhitespace(lines[i])) i += 1;
-    while (i < lines.length && cleanWhitespace(lines[i]) && cluster.length < maxLines) {
+    while (i < lines.length && cluster.length < maxLines) {
+      const clean = cleanWhitespace(lines[i]);
+      if (!clean) { i += 1; continue; }
+      if (isAnchorBoundary(lines, i, anchorIndex)) break;
       cluster.push(lines[i]);
-      if (/^(more|less|higher|lower)$/i.test(cleanWhitespace(lines[i])) && cluster.length >= 2) break;
+      if (/^(more|less|higher|lower)$/i.test(clean) && cluster.length >= 2) break;
       i += 1;
     }
     return cluster;
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const backward = collectBackwardCluster(lines, anchorIndex, 5);
-    const forward = collectForwardCluster(lines, anchorIndex, 3);
+    const backward = collectBackwardCluster(lines, anchorIndex, 12);
+    const forward = collectForwardCluster(lines, anchorIndex, 6);
     const start = anchorIndex - backward.length;
     const context = backward.concat([lines[anchorIndex]], forward);
     return context.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
@@ -507,7 +531,7 @@ window.PickCalcParser = (() => {
     const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
-    const type = detectType(joined, propMeta);
+    const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
     const team = teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
@@ -645,7 +669,7 @@ window.PickCalcParser = (() => {
     const counts = {};
     playerCandidates.forEach((name) => { const clean = sanitizePlayerName(name); if (isLikelyPlayerName(clean)) counts[clean] = (counts[clean] || 0) + 1; });
     const parsedPlayer = Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
-    const type = detectType(joined, propMeta);
+    const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
     const team = teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
@@ -740,6 +764,7 @@ window.PickCalcParser = (() => {
     PARSE_YEAR,
     LEAGUES,
     MLB_PROP_ALIASES,
+    MLB_FEED_MATRIX,
     NHL_PROP_ALIASES,
     cleanWhitespace,
     extractTimeContext,

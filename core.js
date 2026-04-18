@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.25 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -53,20 +53,25 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     if (isPitcherFantasy) {
       const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
-      const efficiency = averageBranch('B', ['b01', 'b03', 'b04', 'b09', 'b10', 'b11', 'b14', 'b18']);
       const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
       const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
       const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
-      overScore = (kPulse * 0.45) + (environment * 0.30) + (leash * 0.20) + (market * 0.05);
-      underScore = ((1 - kPulse) * 0.45) + ((1 - environment) * 0.30) + ((1 - leash) * 0.20) + ((1 - market) * 0.05);
-    } else if (isHitterFantasy || isFantasy) {
+      overScore = (kPulse * 0.30) + (environment * 0.20) + (leash * 0.40) + (market * 0.10);
+      underScore = ((1 - kPulse) * 0.30) + ((1 - environment) * 0.20) + ((1 - leash) * 0.40) + ((1 - market) * 0.10);
+    } else if (isHitterFantasy || isFantasy || /hits\+runs\+rbis|hrr/.test(prop)) {
       const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
-      const risp = averageBranch('B', ['b01', 'b02', 'b05', 'b06', 'b09', 'b16', 'b17', 'b18']);
       const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
       const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
       const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
-      overScore = (clout * 0.45) + (setup * 0.30) + (upside * 0.20) + (market * 0.05);
-      underScore = ((1 - clout) * 0.45) + ((1 - setup) * 0.30) + ((1 - upside) * 0.20) + ((1 - market) * 0.05);
+      overScore = (clout * 0.30) + (setup * 0.20) + (upside * 0.40) + (market * 0.10);
+      underScore = ((1 - clout) * 0.30) + ((1 - setup) * 0.20) + ((1 - upside) * 0.40) + ((1 - market) * 0.10);
+    } else if (/home runs|triples|stolen bases/.test(prop)) {
+      const branchA = averageBranch('A');
+      const branchC = averageBranch('C');
+      const branchD = averageBranch('D');
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (branchA * 0.60) + (branchC * 0.20) + (branchD * 0.15) + (branchE * 0.05);
+      underScore = ((1 - branchA) * 0.60) + ((1 - branchC) * 0.20) + ((1 - branchD) * 0.15) + ((1 - branchE) * 0.05);
     } else {
       const branchA = averageBranch('A');
       const branchC = averageBranch('C');
