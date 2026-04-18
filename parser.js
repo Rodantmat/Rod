@@ -422,46 +422,53 @@ window.PickCalcParser = (() => {
 
 
   function parseCluster(cluster) {
+    const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi;
+    // Clean lines but preserve indices
     const lines = (cluster || []).map((item) => {
       const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi, '').trim();
+      return String(raw || '').replace(GLUED_NOISE_RX, '').trim();
     });
 
-    let player = '';
-    let team = '';
-    let prop = '';
-    let line = 0;
+    let player = '', team = '', prop = '', line = 0;
+    const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
 
+    // 1. Find the Number Anchor (Source of Truth)
     lines.forEach((l) => {
-      if (STANDALONE_NUMBER_RX.test(cleanWhitespace(l))) line = parseFloat(cleanWhitespace(l));
+      if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l);
     });
 
+    // 2. Identify Team and Player via Upward Search
     for (let i = 0; i < lines.length; i += 1) {
-      if (!TEAM_ROLE_RX.test(lines[i])) continue;
-      const match = lines[i].match(TEAM_ROLE_RX);
-      team = match?.[1]?.toUpperCase?.() || team;
-      for (let j = i - 1; j >= 0; j -= 1) {
-        const candidate = sanitizePlayerName(lines[j]);
-        if (!candidate || candidate.length <= 3) continue;
-        if (TEAM_ROLE_RX.test(lines[j])) continue;
-        if (/@|vs/i.test(lines[j])) continue;
-        if (!isLikelyPlayerName(candidate)) continue;
-        player = candidate;
-        break;
+      if (TEAM_ROLE_RX.test(lines[i])) {
+        team = (lines[i].match(TEAM_ROLE_RX)?.[1] || team || '').toUpperCase();
+        // Search UPWARD from the Team/Role line to find the first valid Player Name
+        for (let j = i - 1; j >= 0; j -= 1) {
+          const candidate = lines[j];
+          if (
+            candidate &&
+            candidate.length > 3 &&
+            !TEAM_ROLE_RX.test(candidate) &&
+            !/@|vs|Sat|Sun|Mon|Tue|Wed|Thu|Fri/i.test(candidate)
+          ) {
+            player = sanitizePlayerName(candidate);
+            break;
+          }
+        }
       }
-      if (player) break;
     }
 
-    const flatCluster = lines.join(' ');
-    const propMeta = resolvePropAlias(flatCluster, 'MLB');
-    if (propMeta?.label) prop = propMeta.label;
+    // 3. Robust Prop Detection
+    const blob = lines.join(' ');
+    if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
+    else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
+    else if (/Fantasy Score/i.test(blob)) prop = 'Pitcher Fantasy Score';
 
     return {
       parsedPlayer: player,
       team,
       prop: prop || 'MLB Prop',
       line,
-      accepted: Boolean(player.length > 2 && line > 0)
+      accepted: (player.length > 2 && line > 0)
     };
   }
 

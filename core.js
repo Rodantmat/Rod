@@ -121,64 +121,40 @@ window.PickCalcCore = window.PickCalcCore || {};
   }
 
   function ingestBoard() {
-    const text = UI.el('boardInput')?.value || '';
-    const dayScope = getDayScopeValue();
-    if (!text.trim()) {
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'Paste board text to ingest.';
-      refreshIntake();
-      return;
+    const input = UI.el('boardInput');
+    if (!input || !input.value.trim()) return;
+    const parsed = Parser.parseBoard(input.value);
+
+    if ((parsed.rows || []).length > 0) {
+      state.cleanPool = [...state.cleanPool, ...parsed.rows].slice(0, 16);
+      state.rows = state.cleanPool.slice(0, 16).map((row, index) => Object.assign({}, row, {
+        idx: Number(index + 1),
+        LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`,
+        pickType: row.pickType || 'Regular Line'
+      }));
+      state.cleanPool = state.rows.slice(0, 16);
+      state.auditRows = parsed.audit || [];
+      state.lastResult = null;
+      state.miningVault = {};
+      state.ingestLogs = buildIngestLogs(state.auditRows);
+      state.lastIngestMeta = {
+        acceptedCount: state.rows.length,
+        totalAnchors: state.auditRows.length,
+        rejectedCount: state.auditRows.filter((item) => !item.accepted).length,
+        dayScope: getDayScopeValue(),
+        timestamp: new Date().toISOString(),
+        parseYear: Parser.PARSE_YEAR
+      };
+      input.value = ''; // Auto-clear textarea
+      UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
+    } else {
+      state.auditRows = parsed.audit || [];
+      state.ingestLogs = buildIngestLogs(state.auditRows);
+      UI.showToast('No valid legs detected. Check board format.');
     }
-    const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
-    const parsedRows = parsed.rows || [];
-    const availableSlots = Math.max(0, 16 - state.rows.length);
-    const acceptedRows = parsedRows.slice(0, availableSlots);
-    const hitCap = parsedRows.length > acceptedRows.length;
-    if (!availableSlots && parsedRows.length) {
-      UI.showToast?.('16-leg hard cap reached. Additional legs were not ingested.');
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '16-leg limit reached. New lines were not added.';
-      return;
-    }
-
-
-    state.auditRows = parsed.audit || [];
-    state.lastResult = null;
-
-    const mergedRows = state.rows.concat(acceptedRows);
-    const rowMap = new Map();
-    mergedRows.forEach((row) => {
-      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
-      const completeness = [
-        row.pickType && row.pickType !== 'Regular Line',
-        row.team,
-        row.opponent,
-        row.gameTimeText,
-        row.direction,
-        row.type,
-        row.rawText,
-        row.line,
-        row.lineValue
-      ].filter(Boolean).length;
-      const existing = rowMap.get(key);
-      if (!existing || completeness > existing.__completeness || ((row.rawText || '').length > (existing.rawText || '').length)) {
-        rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
-      }
-    });
-
-    state.rows = Array.from(rowMap.values()).map((row, index) => {
-      const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
-      delete nextRow.__completeness;
-      return nextRow;
-    }).slice(0, 16).map((row, index) => Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}` }));
-    state.cleanPool = state.rows.slice(0, 16);
-    state.miningVault = {};
-    state.ingestLogs = buildIngestLogs(state.auditRows);
-    state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (acceptedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
-    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = acceptedRows.length > 0 ? `${acceptedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
-    if (acceptedRows.length > 0) UI.showToast?.(`Ingested ${acceptedRows.length} legs`);
-    else UI.showToast?.('No valid legs found. Check format.');
-    if (hitCap || state.rows.length >= 16) UI.showToast?.('16-leg hard cap reached. Additional legs were not ingested.');
-    refreshIntake();
+    UI.renderFeedStatus(state.cleanPool, parsed.audit);
+    UI.renderPoolTable(state.cleanPool);
+    UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }
 
   async function handleMiningClick(isVerbose = false) {
