@@ -1,9 +1,10 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
-    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true }
+    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true },
+    { id: 'NHL', label: 'NHL', sport: 'NHL', league: 'NHL', checked: true }
   ];
 
   const PICK_TYPE_RX = /\b(Goblin|Demon|Taco|Free Pick)\b/i;
@@ -15,15 +16,14 @@ window.PickCalcParser = (() => {
   const POPULARITY_BADGE_RX = /^\d+(?:\.\d+)?K$/i;
   const COUNTDOWN_RX = /^\d{2}:\d{2}:\d{2}$/;
   const LIVE_STATUS_RX = /^(?:LIVE|1st|2nd|3rd|Inning|Period)$/i;
-  const TIME_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,3}m(?:\s+\d{1,2}s)?\b|\b\d{1,2}:\d{2}:\d{2}\b)/i;
-  const INLINE_TIME_RX = TIME_RX;
+  const INLINE_TIME_RX = /\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
   const NOISE_WORD_RX = /\b(trending|popular|popularity|hot|boost|promo|specials?|insurance)\b/gi;
   const ROLE_ONLY_RX = /^(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i;
   const TEAM_ABBR_LIST = ['ARI','ATL','BAL','BOS','CHC','CIN','CLE','COL','CWS','DET','HOU','KC','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK','PHI','PIT','SD','SEA','SF','STL','TB','TEX','TOR','WSH','BUF','CAR','CBJ','CGY','CHI','COL','DAL','EDM','FLA','LAK','MIN','MTL','NJD','NSH','NYI','NYR','OTT','PHI','PIT','SEA','SJS','STL','TBL','TOR','UTA','VAN','VGK','WPG'];
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
   const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
-  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|Pitcher FS|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|Hitter FS|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|Hitter Strikeouts|Ks|K's|PO|Outs|BB|HA)\b/i;
+  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|Hitter Strikeouts|Ks|K's|PO|Outs|BB|HA)\b/i;
 
   const MLB_PROP_ALIASES = {
     'PITCHER STRIKEOUTS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
@@ -36,7 +36,6 @@ window.PickCalcParser = (() => {
     'OUTS': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
     'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
-    'PITCHER FS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'WALKS ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
@@ -47,7 +46,6 @@ window.PickCalcParser = (() => {
     'ER': { label: 'Earned Runs Allowed', key: 'earnedRuns', role: 'Pitcher' },
     'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HFS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
-    'HITTER FS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HITS+RUNS+RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS+RUNS+RBI': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS + RUNS + RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
@@ -76,6 +74,20 @@ window.PickCalcParser = (() => {
 
   const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
+  const NHL_PROP_ALIASES = {
+    'SOG': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
+    'SHOTS ON GOAL': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
+    'BLK': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
+    'BLOCKED SHOTS': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
+    'PTS': { label: 'Points', key: 'points', role: 'Skater' },
+    'POINTS': { label: 'Points', key: 'points', role: 'Skater' },
+    'AST': { label: 'Assists', key: 'assists', role: 'Skater' },
+    'ASSISTS': { label: 'Assists', key: 'assists', role: 'Skater' },
+    'GOALS': { label: 'Goals', key: 'goals', role: 'Skater' },
+    'SAVES': { label: 'Saves', key: 'saves', role: 'Goalie' },
+    'GA': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' },
+    'GOALS ALLOWED': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' }
+  };
 
   function pad2(value) { return String(value).padStart(2, '0'); }
   function cleanWhitespace(value) { return String(value || '').replace(/\u00a0/g, ' ').replace(/[|•]+/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -98,7 +110,7 @@ window.PickCalcParser = (() => {
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)))
-      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
+      .map((line) => line.replace(/\b\d{2}:\d{2}:\d{2}\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
@@ -108,17 +120,6 @@ window.PickCalcParser = (() => {
       .replace(/\n{4,}/g, '\n\n\n')
       .split('\n');
   }
-
-  function isRegisteredMlbProp(propLabel = '') {
-    return MLB_FEED_MATRIX.includes(String(propLabel || '').trim());
-  }
-
-  function pushRejectedLine(bucket, value) {
-    const line = cleanWhitespace(value);
-    if (!line) return;
-    if (!bucket.includes(line)) bucket.push(line);
-  }
-
   function normalizeDayScope(value) {
     const text = String(value || '').toLowerCase();
     if (text.includes('both') || (text.includes('today') && text.includes('tomorrow'))) return 'both';
@@ -187,11 +188,6 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b\d{1,3}m(?:\s+\d{1,2}s)?\b/i);
-    if (match) {
-      return { found: false, token: cleanWhitespace(match[0]), eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'Countdown timer ignored.' };
-    }
-
     match = source.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
     if (match) {
       const date = new Date(now);
@@ -221,20 +217,21 @@ window.PickCalcParser = (() => {
 
   function inferSportHint(lines = []) {
     const joined = lines.map((line) => typeof line === 'string' ? line : line.raw).join(' ').toUpperCase();
-    if (/\b(NBA|NHL|NFL|WNBA|SOCCER|TENNIS|GOLF|SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NON_MLB';
+    if (/\b(SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NHL';
     return 'MLB';
   }
 
   function resolvePropAlias(text, sportHint = 'MLB') {
-    if (sportHint !== 'MLB') return null;
     const raw = cleanWhitespace(text).toUpperCase();
     const normalized = raw.replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
-    const aliases = Object.entries(MLB_PROP_ALIASES).sort((a, b) => b[0].length - a[0].length);
-    for (const [alias, meta] of aliases) {
-      const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
-      const escaped = aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const rx = new RegExp(`(^|[^A-Z])${escaped}(?=$|[^A-Z])`, 'i');
-      if (rx.test(normalized)) return { ...meta, source: text };
+    const maps = sportHint === 'NHL' ? [NHL_PROP_ALIASES] : [MLB_PROP_ALIASES, NHL_PROP_ALIASES];
+    for (const dictionary of maps) {
+      const aliases = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
+      for (const [alias, meta] of aliases) {
+        const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
+        const rx = new RegExp(`(^|[^A-Z])${aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^A-Z])`, 'i');
+        if (rx.test(normalized)) return { ...meta, source: text };
+      }
     }
     return null;
   }
@@ -539,7 +536,7 @@ window.PickCalcParser = (() => {
     const context = candidate.context;
     const sportHint = inferSportHint(context);
     const joined = context.map((item) => item.raw).join('\n');
-    const pickType = extractPickType(joined);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
@@ -574,16 +571,12 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
-    if (sportHint !== 'MLB') {
-      audit.rejectionReason = 'Rejected: non-MLB content.';
-      return { audit, row: null };
-    }
     if (!candidate.anchorValue) {
       audit.rejectionReason = 'No numeric anchor found.';
       return { audit, row: null };
     }
-    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) {
-      audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.';
+    if (!propMeta?.label) {
+      audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.';
       return { audit, row: null };
     }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) {
@@ -671,7 +664,7 @@ window.PickCalcParser = (() => {
   function parseStructuredBlock(block = [], dayScope = 'today', now = new Date(), blockIndex = 0) {
     const joined = block.join('\n');
     const sportHint = inferSportHint(block);
-    const pickType = extractPickType(joined);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(block, teamRole.team);
@@ -716,9 +709,8 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR
     };
-    if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
-    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
+    if (!propMeta?.label) { audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
@@ -758,17 +750,11 @@ window.PickCalcParser = (() => {
     const lines = preprocessBoardText(text);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
-    audit.rejectedLines = [];
     const rowMap = new Map();
 
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
-      if (!parsed.row) {
-        if (parsed?.audit?.rejectionReason && /non-MLB|outside the 19 registered MLB props/i.test(parsed.audit.rejectionReason)) {
-          pushRejectedLine(audit.rejectedLines, parsed.audit.rawText || parsed.audit.cleanedRawText || parsed.audit.prop || parsed.audit.parsedPlayer || '');
-        }
-        return;
-      }
+      if (!parsed.row) return;
       const legId = String(parsed.row.legId || parsed.row.LEG_ID || parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0);
       const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
@@ -778,29 +764,8 @@ window.PickCalcParser = (() => {
       }
     };
 
-    const consumedAnchors = new Set();
-    const structuredOnly = blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1);
-    blocks.forEach((block, blockIndex) => {
-      if (!block.length) return;
-      if (countBlockAnchors(block) !== 1) return;
-      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        acceptParsed(parsed);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
-    });
-
-    if (!structuredOnly) {
-      const candidates = buildAnchorCandidates(lines);
-      candidates.forEach((candidate) => {
-      const parsed = parseCandidate(candidate, dayScope, now);
-      const signature = String(parsed?.row?.line || parsed?.audit?.line || '') + '|' + normalizeName(parsed?.row?.parsedPlayer || parsed?.audit?.parsedPlayer || '') + '|' + normalizeName(parsed?.row?.prop || parsed?.audit?.prop || '');
-      if (consumedAnchors.has(signature)) return;
-        acceptParsed(parsed);
-      });
-    }
+    const candidates = buildAnchorCandidates(lines);
+    candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
 
     const rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
@@ -818,6 +783,7 @@ window.PickCalcParser = (() => {
     LEAGUES,
     MLB_PROP_ALIASES,
     MLB_FEED_MATRIX,
+    NHL_PROP_ALIASES,
     cleanWhitespace,
     extractTimeContext,
     evaluateTimeFilter,

@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -178,24 +178,31 @@ window.PickCalcUI = window.PickCalcUI || {};
   function renderRunSummary(rows, auditRows = []) {
     const mount = el('runSummary');
     if (!mount) return;
-    mount.innerHTML = '';
+    const vaultCollection = window.PickCalcCore?.state?.miningVault || {};
+    let realUnits = 0;
+    let derivedUnits = 0;
+    Object.values(vaultCollection).forEach((vault) => {
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        const branchTotal = Number(branch?.factorsTarget || Object.keys(branch?.factorMeta || {}).length || 0);
+        if (vaultIsReal) realUnits += branchTotal;
+        else derivedUnits += Number(branch?.derivedCount || 0);
+      });
+    });
+    mount.innerHTML = [
+      `<div class="pill">Accepted: ${rows.length}</div>`,
+      `<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,
+      `<div class="pill">REAL Units: ${realUnits}</div>`,
+      `<div class="pill">DERIVED Units: ${derivedUnits}</div>`,
+      `<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`
+    ].join('');
   }
 
   function renderFeedStatus(rows, auditRows = []) {
+    const active = new Set((rows || []).filter((r) => r.sport === 'MLB').map((r) => String(r.prop || '').trim()));
     const mount = el('feedStatus');
     if (!mount) return;
-    const counts = new Map();
-    (rows || []).forEach((row) => {
-      if (row?.sport !== 'MLB') return;
-      const prop = String(row?.prop || '').trim();
-      if (!prop) return;
-      counts.set(prop, (counts.get(prop) || 0) + 1);
-    });
-    const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
-    const lines = ordered.map((prop) => `<div class="feed-line"><span>${escapeHtml(prop)}:</span><span>${counts.get(prop)}</span></div>`);
-    lines.push(`<div class="feed-line"><span>Rejected Lines:</span><span>${rejectedCount}</span></div>`);
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><strong>MLB ✅</strong></div><div class="feed-summary-list">${lines.join('')}</div></div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${(auditRows || []).some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
   }
 
   function renderPoolTable(rows) {
@@ -210,36 +217,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (branch?.status === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'DERIVED' };
     if (branch?.status === 'SIMULATED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'SIMULATED' };
     if (branch?.status === 'WARNING') return { card: 'status-pending', badge: 'heuristic', label: 'WARNING' };
-  
-  function showToast(message) {
-    let toast = document.getElementById('pcToast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'pcToast';
-      toast.style.position = 'fixed';
-      toast.style.right = '20px';
-      toast.style.bottom = '20px';
-      toast.style.zIndex = '9999';
-      toast.style.padding = '12px 16px';
-      toast.style.borderRadius = '10px';
-      toast.style.background = 'rgba(18,24,38,0.96)';
-      toast.style.color = '#fff';
-      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
-      toast.style.border = '1px solid rgba(255,255,255,0.12)';
-      toast.style.fontWeight = '600';
-      toast.style.opacity = '0';
-      toast.style.transition = 'opacity 180ms ease';
-      document.body.appendChild(toast);
-    }
-    toast.textContent = String(message || '');
-    toast.style.opacity = '1';
-    clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => {
-      toast.style.opacity = '0';
-    }, 4000);
-  }
-
-  return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
+    return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
   }
 
   function formatValue(value) {
@@ -254,36 +232,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     parsed = parsed.replace(/(Goblin|Demon|Taco|Free Pick)/gi, ' ').replace(/\s+/g, ' ').trim();
     if (/^[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i.test(raw)) parsed = '';
     const match = raw.match(/([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)/i);
-  
-  function showToast(message) {
-    let toast = document.getElementById('pcToast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'pcToast';
-      toast.style.position = 'fixed';
-      toast.style.right = '20px';
-      toast.style.bottom = '20px';
-      toast.style.zIndex = '9999';
-      toast.style.padding = '12px 16px';
-      toast.style.borderRadius = '10px';
-      toast.style.background = 'rgba(18,24,38,0.96)';
-      toast.style.color = '#fff';
-      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
-      toast.style.border = '1px solid rgba(255,255,255,0.12)';
-      toast.style.fontWeight = '600';
-      toast.style.opacity = '0';
-      toast.style.transition = 'opacity 180ms ease';
-      document.body.appendChild(toast);
-    }
-    toast.textContent = String(message || '');
-    toast.style.opacity = '1';
-    clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => {
-      toast.style.opacity = '0';
-    }, 4000);
-  }
-
-  return { playerName: parsed || String(row?.player || '').trim(), team: String(row?.team || match?.[1] || '').toUpperCase() };
+    return { playerName: parsed || String(row?.player || '').trim(), team: String(row?.team || match?.[1] || '').toUpperCase() };
   }
 
   function renderPickTypeBadge(pickType = '') {
@@ -429,36 +378,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status !== 'WARNING').length, 0);
     const purityScore = Object.keys(vaultCollection || {}).length ? ((purityUnits / (Object.keys(vaultCollection || {}).length * BRANCH_KEYS.length)) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
-  
-  function showToast(message) {
-    let toast = document.getElementById('pcToast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'pcToast';
-      toast.style.position = 'fixed';
-      toast.style.right = '20px';
-      toast.style.bottom = '20px';
-      toast.style.zIndex = '9999';
-      toast.style.padding = '12px 16px';
-      toast.style.borderRadius = '10px';
-      toast.style.background = 'rgba(18,24,38,0.96)';
-      toast.style.color = '#fff';
-      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
-      toast.style.border = '1px solid rgba(255,255,255,0.12)';
-      toast.style.fontWeight = '600';
-      toast.style.opacity = '0';
-      toast.style.transition = 'opacity 180ms ease';
-      document.body.appendChild(toast);
-    }
-    toast.textContent = String(message || '');
-    toast.style.opacity = '1';
-    clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => {
-      toast.style.opacity = '0';
-    }, 4000);
-  }
-
-  return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
+    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
   }
 
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {

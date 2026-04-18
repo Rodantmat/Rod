@@ -3,15 +3,23 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
 
+  const LAB_BOOT_ROWS = [
+    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
+    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
+    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', gameTimeText: 'Fri 7:05 PM', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
+    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', gameTimeText: 'Fri 7:05 PM', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', gameTimeText: 'Fri 7:15 PM', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', gameTimeText: 'Fri 7:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
+  ];
 
   const state = {
     version: SYSTEM_VERSION,
     rows: [],
-    cleanPool: [],
     auditRows: [],
-    selectedLeagues: ['MLB'],
+    selectedLeagues: new Set((window.PickCalcParser?.LEAGUES || []).filter((x) => x.checked).map((x) => x.id)),
     lastIngestMeta: null,
     lastResult: null,
     ingestLogs: [],
@@ -105,16 +113,16 @@ window.PickCalcCore = window.PickCalcCore || {};
     return UI.buildAnalysisCopyText(context);
   }
 
-  function getDayScopeValue() { return 'Today'; }
+  function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
-  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.includes(row.sport)); }
-  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.includes(row.sport)); }
+  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
+  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
-    state.cleanPool = state.rows.slice();
     const rows = filteredRows(state.rows);
     const auditRows = filteredAuditRows(state.auditRows);
+    UI.renderRunSummary(rows, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
     UI.renderFeedStatus(rows, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
@@ -124,26 +132,22 @@ window.PickCalcCore = window.PickCalcCore || {};
     const text = UI.el('boardInput')?.value || '';
     const dayScope = getDayScopeValue();
     if (!text.trim()) {
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'Paste board text to ingest.';
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
+      state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
       refreshIntake();
       return;
     }
     const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
-    const parsedRows = parsed.rows || [];
-    const nextTotal = state.rows.length + parsedRows.length;
-    if (nextTotal > 16) {
-      UI.showToast?.('You reached the 16 legs limit per run');
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '16-leg limit reached. New lines were not added.';
-      return;
-    }
-
-    state.auditRows = parsed.audit || [];
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
     state.lastResult = null;
-
-    const mergedRows = state.rows.concat(parsedRows);
     const rowMap = new Map();
-    mergedRows.forEach((row) => {
-      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
+    (parsed.rows || []).forEach((row) => {
+      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
       const completeness = [
         row.pickType && row.pickType !== 'Regular Line',
         row.team,
@@ -160,19 +164,15 @@ window.PickCalcCore = window.PickCalcCore || {};
         rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
       }
     });
-
     state.rows = Array.from(rowMap.values()).map((row, index) => {
       const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
       delete nextRow.__completeness;
       return nextRow;
     });
-    state.cleanPool = state.rows.slice();
-    state.miningVault = {};
+    state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (parsedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
-    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = parsedRows.length > 0 ? `${parsedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
-    if (state.rows.length >= 16) UI.showToast?.('You reached the 16 legs limit per run');
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
     refreshIntake();
   }
 
@@ -242,20 +242,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     }
   }
 
-
-  function handleResetAll() {
-    try { localStorage.clear(); } catch (_) {}
-    state.rows = [];
-    state.cleanPool = [];
-    state.auditRows = [];
-    state.miningVault = {};
-    state.lastResult = null;
-    state.lastIngestMeta = null;
-    state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
-    if (UI.el('boardInput')) UI.el('boardInput').value = '';
-    refreshIntake();
-  }
-
   function bindEvents() {
     document.getElementById('debugConnectionBtn')?.addEventListener('click', async () => {
       try {
@@ -268,7 +254,7 @@ window.PickCalcCore = window.PickCalcCore || {};
         logger({ level: 'warning', text: `[OXYGEN] DEBUG_CONNECTION_FAIL: ${error.message}` });
       }
     });
-    document.getElementById('saveKeyBtn')?.addEventListener('click', () => {
+    document.getElementById('saveKeyBtn').addEventListener('click', () => {
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
         localStorage.setItem('OXYGEN_GEMINI_KEY', key);
@@ -281,14 +267,28 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
+    UI.el('runKeyLabBtn')?.addEventListener('click', () => handleMiningClick(true));
     UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
-      handleResetAll();
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = [];
+      state.miningVault = {};
+      state.lastResult = null;
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
+      if (UI.el('boardInput')) UI.el('boardInput').value = '';
+      refreshIntake();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
       const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
+    });
+    document.querySelectorAll('#leagueChecklist input[type="checkbox"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const checked = new Set(Array.from(document.querySelectorAll('#leagueChecklist input[type="checkbox"]:checked')).map((node) => node.value));
+        state.selectedLeagues = checked;
+        refreshIntake();
+      });
     });
   }
 
@@ -301,12 +301,13 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
     if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
+    UI.renderLeagueChecklist(Parser.LEAGUES || []);
     refreshIntake();
     bindEvents();
     const intake = UI.el('intakeScreen');
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, handleResetAll, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, LAB_BOOT_ROWS, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();
