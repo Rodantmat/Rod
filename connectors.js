@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.76.8 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.76.9 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -308,30 +308,28 @@ No prose. No markdown. JSON only.`;
 
     if (!GEMINI_API_KEY) return buildBaselinePayload(batch);
 
-    const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + GEMINI_API_KEY;
+    const url = `${GEMINI_BASE_URL}/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     console.log('[OXYGEN] FETCH_URL:', url);
-    const requestInit = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          responseMimeType: "application/json"
-        }
-      })
-    };
 
     try {
-      const response = await fetch(url, requestInit);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("GOOGLE_REJECTION:", errorText);
+        if (response.status === 403) {
+          const authLogger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+          authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.' });
+        }
+        return buildBaselinePayload(batch);
+      }
+
       const json = await response.json();
       console.log("Full Google Response:", json);
-      if (response.status === 403) {
-        const authLogger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
-        authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.' });
-      }
       const candidate = json?.candidates?.[0] || null;
       const finishReason = String(candidate?.finishReason || '').toUpperCase();
       const raw = candidate?.content?.parts?.[0]?.text || '';
