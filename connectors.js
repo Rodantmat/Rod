@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.11 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.12 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -9,15 +9,49 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
-    A: Array.from({ length: 20 }, (_, i) => `A${String(i + 1).padStart(2, '0')} Grounded Metric`),
-    B: Array.from({ length: 18 }, (_, i) => `B${String(i + 1).padStart(2, '0')} Context Metric`),
-    C: Array.from({ length: 12 }, (_, i) => `C${String(i + 1).padStart(2, '0')} Matchup Metric`),
-    D: Array.from({ length: 10 }, (_, i) => `D${String(i + 1).padStart(2, '0')} Stability Metric`),
-    E: [
-      'FanDuel Projection','DraftKings Projection','OddsJam Projection','Pinnacle Projection','Bet365 Projection',
-      'Consensus Mean','Consensus Median','Consensus High','Consensus Low','Spread','Line Delta','Market Confidence'
-    ]
+    Pitcher: {
+      A: [
+        'Velocity Stability', 'Spin Rate Delta', 'Extension Efficiency', 'Vertical Break', 'Horizontal Movement',
+        'Command Grade', 'Location Heat', 'Tunneling Quality', 'Release Consistency', 'Zone Rate',
+        'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
+        'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
+      ],
+      B: Array.from({ length: 18 }, (_, i) => `Pitching Profile B${String(i + 1).padStart(2, '0')}`),
+      C: Array.from({ length: 12 }, (_, i) => `Pitching Profile C${String(i + 1).padStart(2, '0')}`),
+      D: Array.from({ length: 10 }, (_, i) => `Pitching Profile D${String(i + 1).padStart(2, '0')}`),
+      E: [
+        'FanDuel Projection','DraftKings Projection','OddsJam Projection','Pinnacle Projection','Bet365 Projection',
+        'Consensus Mean','Consensus Median','Consensus High','Consensus Low','Spread','Line Delta','Market Confidence'
+      ]
+    },
+    Hitter: {
+      A: [
+        'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
+        'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
+        'Hitting Profile A11', 'Hitting Profile A12', 'Hitting Profile A13', 'Hitting Profile A14', 'Hitting Profile A15',
+        'Hitting Profile A16', 'Hitting Profile A17', 'Hitting Profile A18', 'Hitting Profile A19', 'Hitting Profile A20'
+      ],
+      B: Array.from({ length: 18 }, (_, i) => `Hitting Profile B${String(i + 1).padStart(2, '0')}`),
+      C: Array.from({ length: 12 }, (_, i) => `Hitting Profile C${String(i + 1).padStart(2, '0')}`),
+      D: Array.from({ length: 10 }, (_, i) => `Hitting Profile D${String(i + 1).padStart(2, '0')}`),
+      E: [
+        'FanDuel Projection','DraftKings Projection','OddsJam Projection','Pinnacle Projection','Bet365 Projection',
+        'Consensus Mean','Consensus Median','Consensus High','Consensus Low','Spread','Line Delta','Market Confidence'
+      ]
+    }
   };
+
+  function resolveProfileType(row = {}) {
+    const raw = String(row?.type || '').toLowerCase();
+    if (raw.includes('pitch')) return 'Pitcher';
+    if (raw.includes('hit')) return 'Hitter';
+    return 'Hitter';
+  }
+
+  function getFactorName(branchKey, idx, row = {}) {
+    const profile = resolveProfileType(row);
+    return FACTOR_NAMES[profile]?.[branchKey]?.[idx - 1] || `${branchKey}${String(idx).padStart(2, '0')}`;
+  }
 
   function stripAccents(value) {
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -55,7 +89,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const meta = {};
     for (let i = 1; i <= count; i += 1) {
       const key = factorKey(branchKey, i);
-      meta[key] = { name: FACTOR_NAMES[branchKey]?.[i - 1] || `${branchKey}${String(i).padStart(2, '0')}`, value: 0, status: 'WARNING', source: 'ZERO_FILL' };
+      meta[key] = { name: `${branchKey}${String(i).padStart(2, '0')}`, value: 0, status: 'WARNING', source: 'ZERO_FILL' };
     }
     return meta;
   }
@@ -149,6 +183,25 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       for (const part of parts) if (typeof part?.text === 'string' && part.text.trim()) return part.text;
     }
     return '';
+  }
+
+
+  function sanitizeJsonText(raw) {
+    const text = String(raw || '').replace(/```json|```/gi, '').trim();
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    return (start >= 0 && end > start) ? text.slice(start, end + 1) : text;
+  }
+
+  function safeJsonParse(raw) {
+    const clean = sanitizeJsonText(raw)
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
+    try {
+      return { parsed: JSON.parse(clean), clean };
+    } catch (error) {
+      return { parsed: null, clean, error };
+    }
   }
 
   function buildGeminiPrompt(players, mode = 'primary') {
@@ -384,22 +437,19 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         logConnectorStep('JSON_PARSING', 'No parseable candidate payload; baseline fallback engaged');
         return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       }
-      const start = raw.indexOf('{');
-      const end = raw.lastIndexOf('}');
-      if (start < 0 || end <= start) {
+      const { parsed, clean, error } = safeJsonParse(raw);
+      if (!parsed) {
+        console.warn('[OXYGEN] JSON_PARSE_REPAIR_FAIL:', error);
         logConnectorStep('JSON_PARSING', 'Malformed JSON envelope; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
       }
-      const rawResponse = raw.substring(start, end + 1);
-      const cleanJson = rawResponse.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleanJson);
       if (!Array.isArray(parsed?.data) || !parsed.data.length) {
         logConnectorStep('JSON_PARSING', 'Empty data array; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
       }
       logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
       logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Success');
-      return Object.assign(parsed, { responseText: raw || '', rawResponse: cleanJson || raw || '' });
+      return Object.assign(parsed, { responseText: raw || '', rawResponse: clean || raw || '' });
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
       const catchLogger = getConsoleLogger();
@@ -458,7 +508,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     for (let i = 1; i <= total; i += 1) {
       const key = factorKey(branchKey, i);
       const derived = deriveBranchValue(row, branchKey, i);
-      applyFactor(branch, key, FACTOR_NAMES[branchKey]?.[i - 1] || key, derived.value, derived.status, derived.source);
+      applyFactor(branch, key, getFactorName(branchKey, i, row), derived.value, derived.status, derived.source);
     }
     branch.providerMap = { LocalMemory: total };
     return updateBranchMeta(branch);
@@ -475,7 +525,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       else if (extraction.derived) status = 'DERIVED';
       else if (extraction.source === 'MARKET_DERIVED') status = 'DERIVED';
       else if (Number(extraction.value) !== 0) status = 'SIMULATED';
-      applyFactor(branch, key, FACTOR_NAMES[branchKey]?.[i - 1] || key, extraction.value, status, extraction.source);
+      applyFactor(branch, key, getFactorName(branchKey, i, row), extraction.value, status, extraction.source);
     }
     if (branchKey === 'E') {
       branch.providerMap = {};
@@ -511,15 +561,15 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     const payload = await fetchGeminiBatch(batch);
     const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
     const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
-    const cleanJson = rawResponse.replace(/```json|```/g, '').trim();
+    const cleanJson = sanitizeJsonText(rawResponse);
 
     let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
     if ((!responseData.data.length) && cleanJson) {
-      try {
-        const reparsed = JSON.parse(cleanJson);
-        responseData = { data: Array.isArray(reparsed?.data) ? reparsed.data : [] };
-      } catch (err) {
-        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', err);
+      const repaired = safeJsonParse(cleanJson);
+      if (repaired.parsed) {
+        responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
+      } else {
+        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
       }
     }
 
@@ -544,7 +594,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         const branch = vault.branches[branchKey] || seedBranch(branchKey);
         for (let j = 0; j < count; j += 1) {
           const factorNumber = j + 1;
-          const factorName = FACTOR_NAMES[branchKey]?.[j] || `${branchKey}${String(factorNumber).padStart(2, '0')}`;
+          const factorName = getFactorName(branchKey, factorNumber, row);
           const factorValue = safeNumber(vals[startIndex + j], 0.5);
           applyFactor(branch, factorKey(branchKey, factorNumber), factorName, factorValue, status, isFallback ? 'BASELINE_FALLBACK' : 'GEMINI_JSON');
         }

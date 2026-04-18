@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.11 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.12 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -8,9 +8,42 @@ window.PickCalcUI = window.PickCalcUI || {};
   const MODEL_ID = 'gemini-flash-latest';
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
 
+  const PROFILE_FACTOR_NAMES = {
+    Pitcher: {
+      A: [
+        'Velocity Stability', 'Spin Rate Delta', 'Extension Efficiency', 'Vertical Break', 'Horizontal Movement',
+        'Command Grade', 'Location Heat', 'Tunneling Quality', 'Release Consistency', 'Zone Rate',
+        'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
+        'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
+      ]
+    },
+    Hitter: {
+      A: [
+        'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
+        'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
+        'Hitting Profile A11', 'Hitting Profile A12', 'Hitting Profile A13', 'Hitting Profile A14', 'Hitting Profile A15',
+        'Hitting Profile A16', 'Hitting Profile A17', 'Hitting Profile A18', 'Hitting Profile A19', 'Hitting Profile A20'
+      ]
+    }
+  };
+
   function el(id) { return document.getElementById(id); }
   function escapeHtml(value) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function asArray(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
+
+  function resolveProfileType(row = {}) {
+    const raw = String(row?.type || '').toLowerCase();
+    if (raw.includes('pitch')) return 'Pitcher';
+    if (raw.includes('hit')) return 'Hitter';
+    return 'Hitter';
+  }
+
+  function factorKey(branchKey, index) { return `${branchKey.toLowerCase()}${String(index).padStart(2, '0')}`; }
+
+  function resolveFactorName(row = {}, branchKey, index, meta = {}) {
+    const profile = resolveProfileType(row);
+    return PROFILE_FACTOR_NAMES[profile]?.[branchKey]?.[index - 1] || meta.name || `${branchKey}${String(index).padStart(2, '0')}`;
+  }
 
   function renderLeagueChecklist(leagues) {
     const mount = el('leagueChecklist');
@@ -87,8 +120,8 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
-      const factorMeta = Object.values(branch.factorMeta || {});
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
+      const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       return `<section class="branch-block ${tone.card}${warningClass}"><div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
     }).join('')}</article>`;
   }
@@ -158,7 +191,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       });
     });
     const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';
-    const purityScore = total ? ((real / total) * 100).toFixed(2) : '0.00';
+    const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status === 'REAL' || b.status === 'DERIVED').length, 0);
+    const purityScore = total ? ((purityUnits / total) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
     return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
   }
