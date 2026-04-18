@@ -1,6 +1,6 @@
 
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.3 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.4 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -432,7 +432,7 @@ window.PickCalcParser = (() => {
       propKey: propInfo.key,
       propFamily: propInfo.label,
       line: String(anchorLine),
-      lineValue: parseFloat(anchorLine),
+      lineValue: isNaN(parseFloat(anchorLine)) ? 0.5 : parseFloat(anchorLine),
       direction,
       team: matchup.team || teamRole.team || '',
       opponent: matchup.opponent || '',

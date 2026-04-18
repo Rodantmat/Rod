@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.3 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.4 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -51,11 +51,24 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderFactorLine(meta = {}) {
-    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
+    const numericValue = Number(meta.value);
+    const zeroStyle = numericValue === 0 ? ' style="color:#ff4d4d; font-weight:bold;"' : '';
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value"${zeroStyle}>${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(meta.status || 'WARNING')}</span></div>`;
   }
 
   function renderMarketProviders(providerMap = {}) {
-    return `<div class="market-providers"><strong>Market Projections/Odds:</strong><div>FanDuel: ${escapeHtml(formatValue(providerMap.FanDuel || 0))} | DraftKings: ${escapeHtml(formatValue(providerMap.DraftKings || 0))} | OddsJam: ${escapeHtml(formatValue(providerMap.OddsJam || 0))} | Pinnacle: ${escapeHtml(formatValue(providerMap.Pinnacle || 0))} | Bet365: ${escapeHtml(formatValue(providerMap.Bet365 || 0))}</div></div>`;
+    const providerLine = [
+      ['FanDuel', providerMap.FanDuel || 0],
+      ['DraftKings', providerMap.DraftKings || 0],
+      ['OddsJam', providerMap.OddsJam || 0],
+      ['Pinnacle', providerMap.Pinnacle || 0],
+      ['Bet365', providerMap.Bet365 || 0]
+    ].map(([label, value]) => {
+      const numericValue = Number(value);
+      const zeroStyle = numericValue === 0 ? ' style="color:#ff4d4d; font-weight:bold;"' : '';
+      return `${label}: <span${zeroStyle}>${escapeHtml(formatValue(value))}</span>`;
+    }).join(' | ');
+    return `<div class="market-providers"><strong>Market Projections/Odds:</strong><div>${providerLine}</div></div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -183,12 +196,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     const v = context.result?.vault || {};
     const r = context.result?.row || {};
     const summary = Object.keys(v.branches || {}).map(k => {
-      const active = Object.values(v.branches[k]?.parsed || {}).filter(val => Number(val) !== 0).length;
+      const active = Object.values(v.branches[k]?.parsed || {}).filter(val => Number(val) > 0.1).length;
       return `${k}:${active}`;
     }).join('|');
 
     return [
-      `v13.77.3 [${r.LEG_ID}] ${r.parsedPlayer}`,
+      `v13.77.4 [${r.LEG_ID}] ${r.parsedPlayer}`,
       `SATURATION: ${summary}`,
       `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
     ].join('\n');
