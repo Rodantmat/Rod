@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.76.4 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.76.5 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -309,6 +309,7 @@ No prose. No markdown. JSON only.`;
     if (!GEMINI_API_KEY) return buildBaselinePayload(batch);
 
     const requestUrl = `${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`;
+    console.log('[OXYGEN] FETCH_URL:', requestUrl);
     const requestInit = {
       method: 'POST',
       headers: {
@@ -338,10 +339,7 @@ No prose. No markdown. JSON only.`;
       if (!Array.isArray(parsed?.data) || !parsed.data.length) return buildBaselinePayload(batch);
       return parsed;
     } catch (e) {
-      console.error('[OXYGEN] BROWSER_BLOCK:', e);
-      try {
-        await fetch(requestUrl, { method: 'POST', mode: 'no-cors', body: requestInit.body, headers: requestInit.headers });
-      } catch (_) {}
+      console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
       return buildBaselinePayload(batch);
     }
   }
