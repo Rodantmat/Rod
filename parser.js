@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -11,12 +11,14 @@ window.PickCalcParser = (() => {
   const DIRECTION_RX = /\b(more|less|higher|lower)\b/i;
   const MATCHUP_RX = /\b(vs\.?|@)\s*([A-Z]{2,3})\b/i;
   const NAME_CANDIDATE_RX = /\b([A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})\b/g;
-  const STANDALONE_ANCHOR_RX = /^\d+(?:\.\d+)?$/;
+  const STANDALONE_NUMBER_RX = /^\d+(?:\.\d+)?$/;
+  const BADGE_RX = /\b\d+(?:\.\d+)?K\b/gi;
   const POPULARITY_BADGE_RX = /^\d+(?:\.\d+)?K$/i;
   const COUNTDOWN_RX = /^\d{2}:\d{2}:\d{2}$/;
   const LIVE_STATUS_RX = /^(?:LIVE|1st|2nd|3rd|Inning|Period)$/i;
   const TIME_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,3}m(?:\s+\d{1,2}s)?\b|\b\d{1,2}:\d{2}:\d{2}\b)/i;
   const INLINE_TIME_RX = TIME_RX;
+  const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Popularity|Hot|Boost|Promo|Specials?|Insurance)\b/gi;
   const NOISE_WORD_RX = /\b(trending|popular|popularity|hot|boost|promo|specials?|insurance)\b/gi;
   const ROLE_ONLY_RX = /^(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i;
   const TEAM_ABBR_LIST = ['ARI','ATL','BAL','BOS','CHC','CIN','CLE','COL','CWS','DET','HOU','KC','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK','PHI','PIT','SD','SEA','SF','STL','TB','TEX','TOR','WSH','BUF','CAR','CBJ','CGY','CHI','COL','DAL','EDM','FLA','LAK','MIN','MTL','NJD','NSH','NYI','NYR','OTT','PHI','PIT','SEA','SJS','STL','TBL','TOR','UTA','VAN','VGK','WPG'];
@@ -84,6 +86,7 @@ window.PickCalcParser = (() => {
   function splitGluedTokens(value) {
     return String(value || '')
       .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
+      .replace(GLUED_NOISE_RX, ' ')
       .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
       .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
@@ -97,11 +100,11 @@ window.PickCalcParser = (() => {
 
     return normalized
       .split('\n')
-      .map((line) => splitGluedTokens(stripAccents(line)))
+      .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
       .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
-      .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
+      .map((line) => line.replace(BADGE_RX, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
       .map((line) => line.replace(/[\t ]+/g, ' ').trim())
       .join('\n')
@@ -271,6 +274,7 @@ window.PickCalcParser = (() => {
     return cleanWhitespace(
       splitGluedTokens(String(value || ''))
         .replace(PICK_TYPE_RX, ' ')
+      .replace(GLUED_NOISE_RX, ' ')
         .replace(TEAM_ROLE_RX, ' ')
         .replace(MATCHUP_RX, ' ')
         .replace(INLINE_TIME_RX, ' ')
@@ -362,7 +366,7 @@ window.PickCalcParser = (() => {
     return Boolean(extractInlineAnchor(clean));
   }
 
-  function collectBackwardCluster(lines, anchorIndex, maxLines = 14) {
+  function collectBackwardCluster(lines, anchorIndex, maxLines = 7) {
     const cluster = [];
     let i = anchorIndex - 1;
     while (i >= 0 && cluster.length < maxLines) {
@@ -375,7 +379,7 @@ window.PickCalcParser = (() => {
     return cluster;
   }
 
-  function collectForwardCluster(lines, anchorIndex, maxLines = 6) {
+  function collectForwardCluster(lines, anchorIndex, maxLines = 5) {
     const cluster = [];
     let i = anchorIndex + 1;
     while (i < lines.length && cluster.length < maxLines) {
@@ -390,8 +394,8 @@ window.PickCalcParser = (() => {
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const backward = collectBackwardCluster(lines, anchorIndex, 14);
-    const forward = collectForwardCluster(lines, anchorIndex, 6);
+    const backward = collectBackwardCluster(lines, anchorIndex, 7);
+    const forward = collectForwardCluster(lines, anchorIndex, 5);
     const start = anchorIndex - backward.length;
     const context = backward.concat([lines[anchorIndex]], forward);
     return context.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
@@ -399,7 +403,7 @@ window.PickCalcParser = (() => {
 
   function isStandaloneAnchorLine(line) {
     const clean = cleanWhitespace(line);
-    if (!STANDALONE_ANCHOR_RX.test(clean)) return false;
+    if (!STANDALONE_NUMBER_RX.test(clean)) return false;
     const n = Number(clean);
     return Number.isFinite(n) && (clean.includes('.') || n <= 40);
   }
@@ -752,14 +756,30 @@ window.PickCalcParser = (() => {
     }};
   }
 
+
+  function splitPipeBlocks(text = '') {
+    return String(text || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => line.includes('|'))
+      .map((line) => preprocessBoardText(line).filter(Boolean));
+  }
+
+
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
     const dayScope = options.dayScope || 'today';
-    const lines = preprocessBoardText(text);
+    const pipeBlocks = splitPipeBlocks(text);
+    const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
+    const lines = preprocessBoardText(nonPipeText);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
     audit.rejectedLines = [];
     const rowMap = new Map();
+
 
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
@@ -779,7 +799,18 @@ window.PickCalcParser = (() => {
     };
 
     const consumedAnchors = new Set();
-    const structuredOnly = blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1);
+    pipeBlocks.forEach((block, blockIndex) => {
+      if (!block.length) return;
+      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
+      if (parsed?.row) {
+        acceptParsed(parsed);
+        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
+      } else if (parsed?.audit) {
+        acceptParsed(parsed);
+      }
+    });
+
+    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1));
     blocks.forEach((block, blockIndex) => {
       if (!block.length) return;
       if (countBlockAnchors(block) !== 1) return;

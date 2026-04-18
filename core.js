@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -130,17 +130,20 @@ window.PickCalcCore = window.PickCalcCore || {};
     }
     const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
     const parsedRows = parsed.rows || [];
-    const nextTotal = state.rows.length + parsedRows.length;
-    if (nextTotal > 16) {
+    const availableSlots = Math.max(0, 16 - state.rows.length);
+    const acceptedRows = parsedRows.slice(0, availableSlots);
+    const hitCap = parsedRows.length > acceptedRows.length;
+    if (!availableSlots && parsedRows.length) {
       UI.showToast?.('You reached the 16 legs limit per run');
       if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '16-leg limit reached. New lines were not added.';
       return;
     }
 
+
     state.auditRows = parsed.audit || [];
     state.lastResult = null;
 
-    const mergedRows = state.rows.concat(parsedRows);
+    const mergedRows = state.rows.concat(acceptedRows);
     const rowMap = new Map();
     mergedRows.forEach((row) => {
       const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
@@ -170,9 +173,9 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.miningVault = {};
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (parsedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
-    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = parsedRows.length > 0 ? `${parsedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
-    if (state.rows.length >= 16) UI.showToast?.('You reached the 16 legs limit per run');
+    if (acceptedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = acceptedRows.length > 0 ? `${acceptedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
+    if (hitCap || state.rows.length >= 16) UI.showToast?.('You reached the 16 legs limit per run');
     refreshIntake();
   }
 
@@ -249,6 +252,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.cleanPool = [];
     state.auditRows = [];
     state.miningVault = {};
+    state.selectedLeagues = ['MLB'];
     state.lastResult = null;
     state.lastIngestMeta = null;
     state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
