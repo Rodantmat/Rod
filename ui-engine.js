@@ -1,11 +1,11 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.8 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.9 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
-  const MODEL_ID = 'gemini-1.5-flash';
+  const MODEL_ID = 'gemini-flash-latest';
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
 
   function el(id) { return document.getElementById(id); }
@@ -208,10 +208,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     const responseText = result?.responseText || result?.errorText || '';
     console.log("RAW_MODEL_DATA:", responseText);
     if (result?.errorText) {
-      appendConsole({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${result.errorText}` });
+      appendConsole({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${result.errorText}`, pre: result.errorJson ? JSON.stringify(result.errorJson, null, 2) : (result.errorText || '') });
     }
     if (Number(result?.errorStatus) === 400 && result?.errorText) {
-      appendConsole({ level: 'warning', text: `[SYSTEM] 400 GOOGLE_ERROR: ${result.errorText}` });
+      appendConsole({ level: 'warning', text: `[SYSTEM] 400 GOOGLE_ERROR: ${result.errorText}`, pre: result.errorJson ? JSON.stringify(result.errorJson, null, 2) : (result.errorText || '') });
     }
   }
 
