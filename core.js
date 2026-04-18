@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.20 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.21 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -36,36 +36,54 @@ window.PickCalcCore = window.PickCalcCore || {};
       if (n <= 100) return Math.max(0, Math.min(1, n / 100));
       return 1;
     };
-    const averageBranch = (branchKey) => {
-      const parsed = Object.values(branches?.[branchKey]?.parsed || {});
-      if (!parsed.length) return 0;
-      return parsed.reduce((sum, value) => sum + clamp01(value), 0) / parsed.length;
+    const averageBranch = (branchKey, keys = null) => {
+      const parsed = branches?.[branchKey]?.parsed || {};
+      const values = Array.isArray(keys) && keys.length ? keys.map((key) => parsed?.[key]).filter((value) => value !== undefined) : Object.values(parsed);
+      if (!values.length) return 0;
+      return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
     };
     const metric = (branchKey, key) => clamp01(branches?.[branchKey]?.parsed?.[key]);
+    const prop = String(row?.prop || '').toLowerCase();
+    const type = String(row?.type || '').toLowerCase();
+    const pickType = String(row?.pickType || '').toLowerCase();
+    const direction = String(row?.direction || '').toLowerCase();
+    const isPitcherFantasy = /pitcher fantasy score|pfs/.test(prop);
+    const isHitterFantasy = /hitter fantasy score|hfs/.test(prop);
+    const isFantasy = isPitcherFantasy || isHitterFantasy;
 
-    const branchA = averageBranch('A');
-    const branchC = averageBranch('C');
-    const branchD = averageBranch('D');
-    const branchEDelta = clamp01(metric('E', 'market11') || averageBranch('E'));
+    let branchA = averageBranch('A');
+    if (isPitcherFantasy) {
+      branchA = averageBranch('A', ['a11', 'a15', 'a10', 'a14', 'a06']);
+    } else if (isHitterFantasy) {
+      branchA = averageBranch('A', ['a17', 'a04', 'a03', 'a01', 'a18']);
+    }
+
+    let branchC = averageBranch('C');
+    let branchD = averageBranch('D');
+    if (isPitcherFantasy) {
+      branchD = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
+    } else if (isHitterFantasy) {
+      branchD = averageBranch('D', ['d04', 'd06', 'd05', 'd10']);
+    }
+    const branchEDelta = clamp01(metric('E', 'e10') || metric('E', 'e11') || averageBranch('E'));
 
     const overScore = ((branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchEDelta * 0.05));
     const underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchEDelta) * 0.05);
-    const pickType = String(row?.pickType || '').toLowerCase();
-    const direction = String(row?.direction || '').toLowerCase();
 
     let chosenProbability = overScore;
-    let chosenSide = 'Over';
-    if (!(pickType === 'goblin' || pickType === 'demon')) {
-      if (direction === 'less' || direction === 'under') {
-        chosenProbability = underScore;
-        chosenSide = 'Under';
-      } else if (direction === 'more' || direction === 'over') {
-        chosenProbability = overScore;
-        chosenSide = 'Over';
-      } else if (underScore > overScore) {
-        chosenProbability = underScore;
-        chosenSide = 'Under';
-      }
+    let chosenSide = 'More';
+    if (pickType === 'goblin' || pickType === 'demon' || pickType === 'taco') {
+      chosenProbability = overScore;
+      chosenSide = 'More';
+    } else if (direction === 'less' || direction === 'under') {
+      chosenProbability = Math.max(overScore, underScore);
+      chosenSide = underScore >= overScore ? 'Less' : 'More';
+    } else if (direction === 'more' || direction === 'over') {
+      chosenProbability = Math.max(overScore, underScore);
+      chosenSide = overScore >= underScore ? 'More' : 'Less';
+    } else {
+      chosenProbability = Math.max(overScore, underScore);
+      chosenSide = underScore > overScore ? 'Less' : 'More';
     }
 
     const final = Math.max(0, Math.min(100, Math.round(chosenProbability * 100)));
@@ -82,6 +100,9 @@ window.PickCalcCore = window.PickCalcCore || {};
       branchC,
       branchD,
       branchEDelta,
+      isFantasy,
+      fantasyProfile: isPitcherFantasy ? 'Pitcher Fantasy Score' : (isHitterFantasy ? 'Hitter Fantasy Score' : ''),
+      profileType: type,
       player: row?.parsedPlayer || '',
       legId: row?.LEG_ID || ''
     };

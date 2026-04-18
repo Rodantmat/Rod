@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.20 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.21 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -354,7 +354,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const line = p?.line || p?.lineValue || 0;
       return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Type: ${type} | Line: ${line} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
     }).join('\n');
-    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
+    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. For Walks Allowed, prioritize Command and hitter Patience. For Fantasy Score, prioritize accumulation potential. 0.5 is the fail-state.
 Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
 CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
 CRITICAL SLOT MAP:

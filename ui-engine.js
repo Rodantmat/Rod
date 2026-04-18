@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.20 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.21 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -288,7 +288,8 @@ window.PickCalcUI = window.PickCalcUI || {};
         : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
       return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
     }).join('');
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')}${pickTypeMarkup} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
+    const sideSuffix = row.pickType && row.pickType !== 'Regular Line' ? '' : (scoreMeta?.side ? ` [${scoreMeta.side}]` : '');
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}${escapeHtml(sideSuffix)}${pickTypeMarkup}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
