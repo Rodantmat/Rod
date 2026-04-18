@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.5 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -294,6 +294,17 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
+  function getConsoleLogger() {
+    return (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+  }
+
+  function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
+    const logger = getConsoleLogger();
+    const text = `[SYSTEM] ${step}${detail ? `: ${detail}` : ''}`;
+    if (logger === console.log) console.log(text);
+    else logger({ level: 'info', text, modelId });
+  }
+
   async function fetchGeminiBatch(batch) {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
     const anonymizedStr = batch.map((r, i) => `Subject ${i}: ${r.type || 'Unknown'} (Line: ${r.line || r.lineValue || 0})`).join('\n');
@@ -304,26 +315,39 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     if (!activeKey) return buildBaselinePayload(batch);
 
     const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
+    const requestBody = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json" }
+    };
     console.log('[OXYGEN] FETCH_URL:', url);
+    console.log('HANDSHAKE_URL:', url);
+    console.log('HANDSHAKE_BODY:', JSON.stringify(requestBody));
     console.log("RAW_PAYLOAD:", prompt);
+    logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s)`);
 
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
+        body: JSON.stringify(requestBody)
       });
+
+      logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);
 
       if (!response.ok) {
         const errorText = await response.text();
         console.error("GOOGLE_REJECTION:", errorText);
+        alert("CRITICAL_API_FAIL: " + response.status + " - " + errorText);
         if (response.status === 403) {
-          const authLogger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
-          authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.' });
+          const authLogger = getConsoleLogger();
+          if (authLogger === console.log) console.log('[SYSTEM] AUTH_ERROR: Check API Key or Region.');
+          else authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.', modelId: GEMINI_MODEL });
         }
+        logConnectorStep('GOOGLE_PROCESSING', `Rejected with status ${response.status}`);
         return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText });
       }
 
+      logConnectorStep('GOOGLE_PROCESSING', 'Response received from model');
       const json = await response.json();
       console.log("Full Google Response:", json);
       console.log("RAW_RESPONSE:", json);
@@ -331,44 +355,64 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       const finishReason = String(candidate?.finishReason || '').toUpperCase();
       const raw = candidate?.content?.parts?.[0]?.text || '';
       const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-      if (blocked || !raw.trim()) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      if (blocked || !raw.trim()) {
+        logConnectorStep('JSON_PARSING', 'No parseable candidate payload; baseline fallback engaged');
+        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      }
       const start = raw.indexOf('{');
       const end = raw.lastIndexOf('}');
-      if (start < 0 || end <= start) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      if (start < 0 || end <= start) {
+        logConnectorStep('JSON_PARSING', 'Malformed JSON envelope; baseline fallback engaged');
+        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      }
       const parsed = JSON.parse(raw.substring(start, end + 1));
-      if (!Array.isArray(parsed?.data) || !parsed.data.length) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      if (!Array.isArray(parsed?.data) || !parsed.data.length) {
+        logConnectorStep('JSON_PARSING', 'Empty data array; baseline fallback engaged');
+        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      }
+      logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
       return Object.assign(parsed, { responseText: raw || '' });
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
+      alert('CRITICAL_API_FAIL: 0 - ' + (e?.message || 'Unknown fetch error'));
+      logConnectorStep('WORKER_HANDSHAKE', e?.message || 'Fetch failure');
       return buildBaselinePayload(batch);
     }
   }
 
   async function debugConnection() {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
-    const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+    const logger = getConsoleLogger();
     if (!activeKey) {
-      logger({ level: 'warning', text: '[SYSTEM] KEY_MISSING: Save an API key before debugging.' });
+      if (logger === console.log) console.log('[SYSTEM] KEY_MISSING: Save an API key before debugging.');
+      else logger({ level: 'warning', text: '[SYSTEM] KEY_MISSING: Save an API key before debugging.', modelId: GEMINI_MODEL });
       return { ok: false, status: 0, errorText: 'KEY_MISSING' };
     }
     const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
+    const body = { contents: [{ role: "user", parts: [{ text: 'Connection test. Return JSON: {"ok":true}.' }] }] };
+    console.log('HANDSHAKE_URL:', url);
+    console.log('HANDSHAKE_BODY:', JSON.stringify(body));
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: 'Connection test. Return JSON: {"ok":true}.' }] }] })
+        body: JSON.stringify(body)
       });
       if (!response.ok) {
         const err = await response.json();
-        alert('GOOGLE_ERROR: ' + (((err || {}).error || {}).message || 'Unknown error'));
-        logger({ level: 'warning', text: `[SYSTEM] DEBUG_FAIL ${response.status}: ${(((err || {}).error || {}).message || 'Unknown error')}` });
-        return { ok: false, status: response.status, errorText: (((err || {}).error || {}).message || 'Unknown error') };
+        const message = (((err || {}).error || {}).message || 'Unknown error');
+        alert('GOOGLE_ERROR: ' + message);
+        if (logger === console.log) console.log(`[SYSTEM] DEBUG_FAIL ${response.status}: ${message}`);
+        else logger({ level: 'warning', text: `[SYSTEM] DEBUG_FAIL ${response.status}: ${message}`, modelId: GEMINI_MODEL });
+        return { ok: false, status: response.status, errorText: message };
       }
       const json = await response.json();
-      logger({ level: 'info', text: '[SYSTEM] DEBUG_OK: Bridge handshake completed.' });
+      if (logger === console.log) console.log('[SYSTEM] DEBUG_OK: Bridge handshake completed.');
+      else logger({ level: 'info', text: '[SYSTEM] DEBUG_OK: Bridge handshake completed.', modelId: GEMINI_MODEL });
       return { ok: true, status: response.status, json };
     } catch (error) {
-      logger({ level: 'warning', text: `[SYSTEM] DEBUG_CONNECTION_FAIL: ${error.message}` });
+      if (logger === console.log) console.log(`[SYSTEM] DEBUG_CONNECTION_FAIL: ${error.message}`);
+      else logger({ level: 'warning', text: `[SYSTEM] DEBUG_CONNECTION_FAIL: ${error.message}`, modelId: GEMINI_MODEL });
       return { ok: false, status: 0, errorText: error.message };
     }
   }

@@ -1,6 +1,6 @@
 
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.5 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -401,7 +401,8 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
-    if (!anchorLine) {
+    if (!anchorLine || isNaN(parseFloat(anchorLine))) {
+      console.warn(`[PARSER] FAILED_TO_EXTRACT_LINE_FOR: ${cluster[0]}`);
       audit.rejectionReason = 'No numeric anchor found.';
       return { audit, row: null };
     }

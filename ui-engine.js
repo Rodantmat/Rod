@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.5 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -100,7 +100,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (!mount) return;
     const items = asArray(logs);
     if (!items.length) return;
-    mount.innerHTML = items.map((entry) => `<div class="console-line">${escapeHtml(entry.text || entry.message || String(entry))}</div>`).join('');
+    mount.innerHTML = items.map((entry) => {
+      const stamp = entry?.timestamp || new Date().toLocaleTimeString();
+      const modelId = entry?.modelId || MODEL_ID;
+      const message = entry?.text || entry?.message || String(entry);
+      return `<div class="console-line">${escapeHtml(`[${stamp}] [${modelId}] ${message}`)}</div>`;
+    }).join('');
   }
 
   function appendConsole(log) {
@@ -197,28 +202,40 @@ window.PickCalcUI = window.PickCalcUI || {};
   function hideOverlay() { if (el('runOverlay')) el('runOverlay').classList.add('hidden'); }
   function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
   function buildAnalysisCopyText(context = {}) {
-    const v = context.result?.vault || {};
-    const r = context.result?.row || {};
-    const branchKeys = ['A', 'B', 'C', 'D', 'E'];
-    const summary = branchKeys.map((k) => {
-      const active = Object.values(v.branches?.[k]?.parsed || {}).filter((val) => Number(val) > 0.1).length;
-      return `${k}:${active}`;
-    }).join('|');
-    const matrixLines = branchKeys.map((k) => {
-      const parsed = v.branches?.[k]?.parsed || {};
-      const parsedLine = Object.entries(parsed).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
-      if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
-      const providers = Object.entries(v.branches?.E?.providerMap || {}).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
-      return `BRANCH E: ${parsedLine}${providers ? ` | PROVIDERS: ${providers}` : ''}`;
+    const rows = asArray(context.rows);
+    const vaultCollection = (context.vault && typeof context.vault === 'object') ? context.vault : {};
+    const rowIndex = Object.fromEntries(rows.map((row, idx) => [row.LEG_ID, { row, idx }]));
+    const legIds = rows.length ? rows.map((row) => row.LEG_ID) : Object.keys(vaultCollection);
+
+    const sections = legIds.map((legId, index) => {
+      const row = rowIndex[legId]?.row || {};
+      const vault = vaultCollection[legId] || {};
+      const branchKeys = ['A', 'B', 'C', 'D', 'E'];
+      const summary = branchKeys.map((k) => {
+        const active = Object.values(vault.branches?.[k]?.parsed || {}).filter((val) => Number(val) > 0.1).length;
+        return `${k}:${active}`;
+      }).join('|');
+      const matrixLines = branchKeys.map((k) => {
+        const parsed = vault.branches?.[k]?.parsed || {};
+        const parsedLine = Object.entries(parsed).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
+        if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
+        const providers = Object.entries(vault.branches?.E?.providerMap || {}).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
+        return `BRANCH E: ${parsedLine}${providers ? ` | PROVIDERS: ${providers}` : ''}`;
+      });
+
+      return [
+        `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
+        `LEG_ID: ${legId}`,
+        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''}`,
+        `SATURATION: ${summary}`,
+        ...matrixLines,
+        `PROJECTIONS: ${JSON.stringify(vault.branches?.E?.providerMap || {})}`
+      ].join('\n');
     });
 
-    return [
-      `v13.77.5 [${r.LEG_ID}] ${r.parsedPlayer}`,
-      `SATURATION: ${summary}`,
-      ...matrixLines,
-      `PROJECTIONS: ${JSON.stringify(v.branches?.E?.providerMap || {})}`
-    ].join('\n');
+    return sections.join('\n\n');
   }
+
 
 
   Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid });
