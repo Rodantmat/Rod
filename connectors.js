@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.2 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.3 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -296,11 +296,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function fetchGeminiBatch(batch) {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
-    const anonymizedStr = batch.map((r, i) => `Analyze Subject ${i}: ${r.type || 'Unknown'} (Line: ${r.line || r.lineValue || 0}). Provide 72 performance metrics based on generalized league volatility for this profile type.`).join('\n');
-    const prompt = `${anonymizedStr}
-Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.
-Mapping: 0-19(A), 20-37(B), 38-49(C), 50-59(D), 60-64(E), 65-71(derived market support).
-No prose. No markdown. JSON only.`;
+    const anonymizedStr = batch.map((r, i) => `Subject ${i}: ${r.type || 'Unknown'} (Line: ${r.line || r.lineValue || 0})`).join('\n');
+    const prompt = `You are a data extractor. Return ONLY raw numbers. No text, no markdown.
+${anonymizedStr}
+Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
@@ -311,7 +310,7 @@ No prose. No markdown. JSON only.`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }] })
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } })
       });
 
       if (!response.ok) {
@@ -321,7 +320,7 @@ No prose. No markdown. JSON only.`;
           const authLogger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
           authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.' });
         }
-        return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText });
+        return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText });
       }
 
       const json = await response.json();
@@ -330,13 +329,13 @@ No prose. No markdown. JSON only.`;
       const finishReason = String(candidate?.finishReason || '').toUpperCase();
       const raw = candidate?.content?.parts?.[0]?.text || '';
       const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-      if (blocked || !raw.trim()) return buildBaselinePayload(batch);
+      if (blocked || !raw.trim()) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       const start = raw.indexOf('{');
       const end = raw.lastIndexOf('}');
-      if (start < 0 || end <= start) return buildBaselinePayload(batch);
+      if (start < 0 || end <= start) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       const parsed = JSON.parse(raw.substring(start, end + 1));
-      if (!Array.isArray(parsed?.data) || !parsed.data.length) return buildBaselinePayload(batch);
-      return parsed;
+      if (!Array.isArray(parsed?.data) || !parsed.data.length) return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+      return Object.assign(parsed, { responseText: raw || '' });
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
       return buildBaselinePayload(batch);
@@ -431,6 +430,7 @@ No prose. No markdown. JSON only.`;
 
     const payload = await fetchGeminiBatch(batch);
     const stream = payload?.data || [];
+    const payloadResponseText = payload?.responseText || payload?.errorText || '';
     const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
 
     for (let i = 0; i < batch.length; i++) {
@@ -471,6 +471,7 @@ No prose. No markdown. JSON only.`;
           derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           branchStatus: Object.fromEntries(['A', 'B', 'C', 'D', 'E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
         },
+        responseText: payloadResponseText,
         logs: [{
           level: isFallback ? 'warning' : 'success',
           text: `[OXYGEN] ${isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH'}: ${row.parsedPlayer} (${found} units)`
