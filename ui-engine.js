@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.10 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.11 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -21,7 +21,14 @@ window.PickCalcUI = window.PickCalcUI || {};
   function renderRunSummary(rows, auditRows = []) {
     const mount = el('runSummary');
     if (!mount) return;
-    mount.innerHTML = [`<div class="pill">Accepted: ${rows.length}</div>`,`<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,`<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`].join('');
+    const vaultCollection = window.PickCalcCore?.state?.miningVault || {};
+    let activeStatuses = 0;
+    Object.values(vaultCollection).forEach((vault) => {
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        activeStatuses += Object.values(branch?.factorMeta || {}).filter((meta) => ['DERIVED', 'REAL', 'SUCCESS'].includes(meta?.status)).length;
+      });
+    });
+    mount.innerHTML = [`<div class="pill">Accepted: ${rows.length}</div>`,`<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,`<div class="pill">Active Probes: ${activeStatuses}</div>`,`<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`].join('');
   }
 
   function renderFeedStatus(rows, auditRows = []) {
@@ -81,7 +88,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
       const factorMeta = Object.values(branch.factorMeta || {});
-      return `<section class="branch-block ${tone.card}"><div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
+      return `<section class="branch-block ${tone.card}${warningClass}"><div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
     }).join('')}</article>`;
   }
 
@@ -138,7 +146,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function summarizeShield(vaultCollection = {}) {
-    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0;
+    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0, nonZero = 0;
     Object.values(vaultCollection || {}).forEach((vault) => {
       Object.values(vault?.branches || {}).forEach((branch) => {
         real += Number(branch.realCount || 0);
@@ -146,9 +154,10 @@ window.PickCalcUI = window.PickCalcUI || {};
         simulated += Number(branch.simulatedCount || 0);
         warnings += Object.values(branch.parsed || {}).filter((value) => Number(value) === 0).length;
         total += Number(branch.factorsTarget || 0);
+        nonZero += Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
       });
     });
-    const integrityScore = total ? ((Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).reduce((inner, branch) => inner + Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length, 0), 0) / total) * 100).toFixed(2) : '0.00';
+    const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';
     const purityScore = total ? ((real / total) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
     return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };

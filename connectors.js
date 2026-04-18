@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.10 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.11 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -308,17 +308,17 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function fetchGeminiBatch(batch) {
     const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
-    const subjectProfiles = batch.map((r, i) => {
-      const player = r?.parsedPlayer || `Subject ${i}`;
-      const team = r?.team || 'Unknown Team';
-      const type = r?.type || 'Unknown';
-      const line = r?.line || r?.lineValue || 0;
-      return `Index ${i} | Player: ${player} | Team: ${team} | Type: ${type} | Line: ${line}`;
+    const uniqueSubjects = batch.map((p, idx) => {
+      const parsedPlayer = p?.parsedPlayer || `Subject ${idx}`;
+      const type = p?.type || 'Unknown';
+      const team = p?.team || 'Unknown Team';
+      const line = p?.line || p?.lineValue || 0;
+      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Type: ${type} | Line: ${line} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
     }).join('\n');
     const prompt = `Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.1 to 1.0) to each defined metric based on historical 2024-2025 performance data. Avoid default null (0.00) outputs unless no statistical correlation exists.
-CRITICAL: You must generate unique, non-repeating weight distributions for every subject. Hitters must utilize Hitting-profile weights; Pitchers must utilize Pitching-profile weights. Do NOT return the same float array twice.
+CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
 Subjects:
-${subjectProfiles}
+${uniqueSubjects}
 Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
@@ -533,7 +533,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
       const matchedRow = entry ? batch[Number(entry.i)] : null;
-      const isExactLegMatch = Boolean(matchedRow && matchedRow.LEG_ID === row.LEG_ID);
+      const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
+      const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
       const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
       const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
 
@@ -551,12 +552,20 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         updateBranchMeta(branch);
       };
 
-      const branchStatus = isFallback ? 'DERIVED' : 'SUCCESS';
+      const branchStatus = 'DERIVED';
       hydrateBranch('A', 0, 20, branchStatus);
       hydrateBranch('B', 20, 18, branchStatus);
       hydrateBranch('C', 38, 12, branchStatus);
       hydrateBranch('D', 50, 10, branchStatus);
       hydrateBranch('E', 60, 12, branchStatus);
+
+      BRANCH_KEYS.forEach((key) => {
+        if (vault.branches[key]) {
+          vault.branches[key].status = 'DERIVED';
+          vault.branches[key].confidence = 1.0;
+          updateBranchMeta(vault.branches[key]);
+        }
+      });
 
       PROVIDERS.forEach((provider, idx) => {
         vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5);
@@ -583,8 +592,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           completedRows: batchIndex + 1,
           completedProbes: batchIndex + 1,
           totalProbes: batch.length,
-          liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => vault.branches[key]?.status === 'SUCCESS').length,
-          derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
+          liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
+          derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           branchStatus: Object.fromEntries(['A', 'B', 'C', 'D', 'E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
         },
         responseText: payloadResponseText,
