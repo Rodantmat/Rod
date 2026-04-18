@@ -3,12 +3,13 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.01 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
 
 
   const state = {
     version: SYSTEM_VERSION,
     rows: [],
+    cleanPool: [],
     auditRows: [],
     selectedLeagues: ['MLB'],
     lastIngestMeta: null,
@@ -104,16 +105,16 @@ window.PickCalcCore = window.PickCalcCore || {};
     return UI.buildAnalysisCopyText(context);
   }
 
-  function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
+  function getDayScopeValue() { return 'Today'; }
   function getNow() { return new Date(); }
   function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.includes(row.sport)); }
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.includes(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
+    state.cleanPool = state.rows.slice();
     const rows = filteredRows(state.rows);
     const auditRows = filteredAuditRows(state.auditRows);
-    UI.renderRunSummary(rows, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
     UI.renderFeedStatus(rows, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
@@ -123,22 +124,26 @@ window.PickCalcCore = window.PickCalcCore || {};
     const text = UI.el('boardInput')?.value || '';
     const dayScope = getDayScopeValue();
     if (!text.trim()) {
-      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
-      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
-      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
-      state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'Paste board text to ingest.';
       refreshIntake();
       return;
     }
     const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
-    state.rows = [];
-    state.auditRows = [];
-    state.miningVault = {};
+    const parsedRows = parsed.rows || [];
+    const nextTotal = state.rows.length + parsedRows.length;
+    if (nextTotal > 16) {
+      UI.showToast?.('You reached the 16 legs limit per run');
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '16-leg limit reached. New lines were not added.';
+      return;
+    }
+
+    state.auditRows = parsed.audit || [];
     state.lastResult = null;
+
+    const mergedRows = state.rows.concat(parsedRows);
     const rowMap = new Map();
-    (parsed.rows || []).forEach((row) => {
-      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
+    mergedRows.forEach((row) => {
+      const key = [String(row.blockIndex || row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
       const completeness = [
         row.pickType && row.pickType !== 'Regular Line',
         row.team,
@@ -155,15 +160,19 @@ window.PickCalcCore = window.PickCalcCore || {};
         rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
       }
     });
+
     state.rows = Array.from(rowMap.values()).map((row, index) => {
       const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
       delete nextRow.__completeness;
       return nextRow;
     });
-    state.auditRows = parsed.audit || [];
+    state.cleanPool = state.rows.slice();
+    state.miningVault = {};
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
+    if (parsedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = parsedRows.length > 0 ? `${parsedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
+    if (state.rows.length >= 16) UI.showToast?.('You reached the 16 legs limit per run');
     refreshIntake();
   }
 
@@ -237,6 +246,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   function handleResetAll() {
     try { localStorage.clear(); } catch (_) {}
     state.rows = [];
+    state.cleanPool = [];
     state.auditRows = [];
     state.miningVault = {};
     state.lastResult = null;
