@@ -755,7 +755,8 @@ window.PickCalcParser = (() => {
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
       if (!parsed.row) return;
-      const key = [String(parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0), normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
+      const legId = String(parsed.row.legId || parsed.row.LEG_ID || parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0);
+      const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {

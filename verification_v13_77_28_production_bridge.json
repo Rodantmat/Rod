@@ -1,0 +1,19 @@
+{
+  "version": "v13.77.28 (OXYGEN-COBALT)",
+  "parseRowCount": 15,
+  "chaseDeLauterPresent": true,
+  "aaronJudgeProps": [
+    "Total Bases",
+    "Hits+Runs+RBIs",
+    "Hits"
+  ],
+  "noTrendingNoise": true,
+  "modelStringFound": true,
+  "fetchUrlTargetsModel": true,
+  "realStampFound": true,
+  "runSummaryChecksIsReal": true,
+  "expectedAlphaShieldFor15Legs": {
+    "real": 1080,
+    "derived": 0
+  }
+}
