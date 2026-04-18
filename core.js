@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.7 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -76,6 +76,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.showAnalysisScreen();
     UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
+    UI.startHeartbeat?.();
 
     const starterVault = Connectors.createZeroFilledVault(rows[0]);
     const starter = {
@@ -124,6 +125,8 @@ window.PickCalcCore = window.PickCalcCore || {};
       state.lastResult = response.lastResult || state.lastResult;
     } catch (error) {
       UI.renderConsole([{ level: 'warning', text: `[SYSTEM] ${error.message}` }]);
+    } finally {
+      UI.stopHeartbeat?.();
     }
   }
 

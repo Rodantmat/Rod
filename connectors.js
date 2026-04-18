@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.7 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -315,21 +315,25 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     if (!activeKey) return buildBaselinePayload(batch);
 
     const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
-    const requestBody = {
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json" }
-    };
+    const promptText = String(prompt || "Extract player data");
+    const body = JSON.stringify({ 
+      contents: [{ 
+        role: "user", 
+        parts: [{ text: promptText }] 
+      }] 
+    });
     console.log('[OXYGEN] FETCH_URL:', url);
     console.log('HANDSHAKE_URL:', url);
-    console.log('HANDSHAKE_BODY:', JSON.stringify(requestBody));
-    console.log("RAW_PAYLOAD:", prompt);
+    console.log('HANDSHAKE_BODY:', body);
+    console.log("RAW_PAYLOAD:", promptText);
+    console.log("FINAL_JSON_SENT:", body);
     logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s)`);
 
     try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
+        body
       });
 
       logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);

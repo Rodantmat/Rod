@@ -1,6 +1,6 @@
 
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.6 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.7 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -389,7 +389,7 @@ window.PickCalcParser = (() => {
       league: sportHint,
       prop: propInfo.label || '',
       propKey: propInfo.key || '',
-      line: anchorLine || '',
+      line: normalizedAnchorLine || '0.5',
       direction,
       team: matchup.team || teamRole.team || '',
       opponent: matchup.opponent || '',
@@ -401,7 +401,11 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
-    if (!anchorLine || isNaN(parseFloat(anchorLine))) {
+    const normalizedAnchorLine = (!anchorLine || anchorLine == null)
+      ? '0.5'
+      : String(anchorLine);
+
+    if (anchorLine && isNaN(parseFloat(anchorLine))) {
       console.warn(`[PARSER] FAILED_TO_EXTRACT_LINE_FOR: ${cluster[0]}`);
       audit.rejectionReason = 'No numeric anchor found.';
       return { audit, row: null };
@@ -432,8 +436,8 @@ window.PickCalcParser = (() => {
       prop: propInfo.label,
       propKey: propInfo.key,
       propFamily: propInfo.label,
-      line: String(anchorLine),
-      lineValue: isNaN(parseFloat(anchorLine)) ? 0.5 : parseFloat(anchorLine),
+      line: String(normalizedAnchorLine || '0.5'),
+      lineValue: isNaN(parseFloat(normalizedAnchorLine)) ? 0.5 : parseFloat(normalizedAnchorLine),
       direction,
       team: matchup.team || teamRole.team || '',
       opponent: matchup.opponent || '',
