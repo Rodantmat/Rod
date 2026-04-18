@@ -1,11 +1,133 @@
-<!doctype html><html><body>
-<textarea id='boardInput'></textarea>
-<button id='ingestBtn'>Ingest & Validate Board</button>
-<div id='feedStatus'></div>
-<div id='poolMount'></div>
-<button id='resetAllBtn'>Reset</button>
-<script src='parser.js'></script>
-<script src='ui-engine.js'></script>
-<script src='core.js'></script>
-<script src='connectors.js'></script>
-</body></html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PickCalc Multi-Sport Engine • v13.78.03 (OXYGEN-COBALT)</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <section id="intakeScreen" style="display: none !important;">
+      <header class="hero">
+        <h1 id="intakeTitle">PickCalc Multi-Sport Engine <span class="version-pill">v13.78.03 (OXYGEN-COBALT)</span></h1>
+        <p>Paste board chunks, ingest MLB props, track feed status, then run the clean pool.</p>
+      </header>
+
+
+      <section class="card">
+        <h2>Paste Board Text</h2>
+        <div class="btn-row top-gap">
+          <button id="clearBoxBtn" class="secondary">Clear box</button>
+        </div>
+        <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
+        <div class="btn-row">
+          <button id="ingestBtn">Ingest &amp; Validate Board</button>
+        </div>
+        <div id="ingestMessage" class="message ingest-status"></div>
+      </section>
+
+      <section class="card">
+        <h2>Feed Status</h2>
+        <div class="btn-row top-gap">
+          <button id="resetAllBtn" class="danger">Reset all</button>
+        </div>
+        <div id="feedStatus"></div>
+        <div id="poolMount"></div>
+        <div class="btn-row run-row">
+          <button id="runBtn" class="run-btn">Run Analysis</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="analysisScreen" class="hidden">
+      <header class="hero hero-inline">
+        <div>
+          <h1 id="analysisTitle">Run Analysis v13.78.03 (OXYGEN-COBALT)</h1>
+          <p id="analysisVersion">Version: v13.78.03 (OXYGEN-COBALT)</p>
+        </div>
+        <div class="btn-row no-top-gap">
+          <button id="backBtn" class="secondary">Back</button>
+          <button id="copyBtn" class="primary">COPY ANALYSIS REPORT</button>
+        </div>
+      </header>
+
+      <div id="progressBar" class="progress-bar-container"></div>
+
+      <section class="card">
+        <h2>Run Snapshot</h2>
+        <div id="analysisSummary" class="summary-pills"></div>
+        <div id="analysisHint" class="message"></div>
+        <div id="runOverlay" class="run-overlay hidden">
+          <div class="run-overlay-card">
+            <div class="overlay-title">Fusion Recovery Mining</div>
+            <div id="overlaySub" class="overlay-sub">Initializing…</div>
+            <div id="overlayBody" class="message">Preparing factor cards.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Ingested Leg Pool</h2>
+        <div id="analysisRowCard"></div>
+      </section>
+
+      <section class="card">
+        <h2>OXYGEN-COBALT Mining Matrix</h2>
+        <p class="mini-muted">High-density 7-row grounded mining layout with real extraction, numeric-only saturation, and Branch E market providers rendered inline.</p>
+        <div id="analysisKpis" class="analysis-kpis"></div>
+        <div class="analysis-connector-wrap">
+          <svg id="connectorSvg" class="connector-lines" aria-hidden="true"></svg>
+          <div id="miningGrid" class="mining-grid"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2 id="shieldTitle">Alpha Shield v13.78.03 (OXYGEN-COBALT)</h2>
+        <div id="shieldPanel" class="shield-grid"></div>
+      </section>
+
+      <section class="card">
+        <h2>Current Clean Pool</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Sport</th>
+                <th>League</th>
+                <th>Player / Entity</th>
+                <th>Team</th>
+                <th>Opponent</th>
+                <th>Prop</th>
+                <th>Line</th>
+                <th>Type</th>
+              </tr>
+            </thead>
+            <tbody id="analysisResultsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>API Configuration</h2>
+        <div class="flex-row" style="display:flex; gap:10px; align-items:center;">
+          <input type="password" id="apiKeyInput" placeholder="Paste Gemini API Key Here" style="flex:1; padding:10px; border-radius:8px; border:1px solid var(--border); background:#09101d; color:white;">
+          <button id="saveKeyBtn" class="btn-primary" style="padding:10px 20px;">Save Key</button>
+          <button id="debugConnectionBtn" class="secondary" style="padding:10px 20px;">Debug Connection</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>System Console</h2>
+        <div id="systemConsole" class="console-wrap"></div>
+      </section>
+    </section>
+  </div>
+
+  <script src="./parser.js"></script>
+  <script src="./connectors.js"></script>
+  <script src="./ui-engine.js"></script>
+  <script src="./core.js"></script>
+</body>
+</html>
