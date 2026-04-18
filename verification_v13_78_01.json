@@ -1,0 +1,29 @@
+{
+  "index.html": {
+    "version_locked": true
+  },
+  "parser.js": {
+    "version_locked": true
+  },
+  "core.js": {
+    "version_locked": true
+  },
+  "ui-engine.js": {
+    "version_locked": true
+  },
+  "connectors.js": {
+    "version_locked": true
+  },
+  "checks": {
+    "gemini_model_flash_lite": true,
+    "ingest_button_renamed": true,
+    "run_key_lab_removed": true,
+    "day_scope_removed": true,
+    "sports_leagues_removed": true,
+    "selected_leagues_hardcoded_mlb": true,
+    "reset_clears_localstorage": true,
+    "render_feed_status_dynamic": true,
+    "parser_rejected_lines_array": true,
+    "parser_prop_leg_dedupe": true
+  }
+}

@@ -1,10 +1,9 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.01 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
-    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true },
-    { id: 'NHL', label: 'NHL', sport: 'NHL', league: 'NHL', checked: true }
+    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true }
   ];
 
   const PICK_TYPE_RX = /\b(Goblin|Demon|Taco|Free Pick)\b/i;
@@ -74,20 +73,6 @@ window.PickCalcParser = (() => {
 
   const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
-  const NHL_PROP_ALIASES = {
-    'SOG': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
-    'SHOTS ON GOAL': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
-    'BLK': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
-    'BLOCKED SHOTS': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
-    'PTS': { label: 'Points', key: 'points', role: 'Skater' },
-    'POINTS': { label: 'Points', key: 'points', role: 'Skater' },
-    'AST': { label: 'Assists', key: 'assists', role: 'Skater' },
-    'ASSISTS': { label: 'Assists', key: 'assists', role: 'Skater' },
-    'GOALS': { label: 'Goals', key: 'goals', role: 'Skater' },
-    'SAVES': { label: 'Saves', key: 'saves', role: 'Goalie' },
-    'GA': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' },
-    'GOALS ALLOWED': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' }
-  };
 
   function pad2(value) { return String(value).padStart(2, '0'); }
   function cleanWhitespace(value) { return String(value || '').replace(/\u00a0/g, ' ').replace(/[|•]+/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -120,6 +105,17 @@ window.PickCalcParser = (() => {
       .replace(/\n{4,}/g, '\n\n\n')
       .split('\n');
   }
+
+  function isRegisteredMlbProp(propLabel = '') {
+    return MLB_FEED_MATRIX.includes(String(propLabel || '').trim());
+  }
+
+  function pushRejectedLine(bucket, value) {
+    const line = cleanWhitespace(value);
+    if (!line) return;
+    if (!bucket.includes(line)) bucket.push(line);
+  }
+
   function normalizeDayScope(value) {
     const text = String(value || '').toLowerCase();
     if (text.includes('both') || (text.includes('today') && text.includes('tomorrow'))) return 'both';
@@ -217,21 +213,20 @@ window.PickCalcParser = (() => {
 
   function inferSportHint(lines = []) {
     const joined = lines.map((line) => typeof line === 'string' ? line : line.raw).join(' ').toUpperCase();
-    if (/\b(SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NHL';
+    if (/\b(NBA|NHL|NFL|WNBA|SOCCER|TENNIS|GOLF|SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NON_MLB';
     return 'MLB';
   }
 
   function resolvePropAlias(text, sportHint = 'MLB') {
+    if (sportHint !== 'MLB') return null;
     const raw = cleanWhitespace(text).toUpperCase();
     const normalized = raw.replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
-    const maps = sportHint === 'NHL' ? [NHL_PROP_ALIASES] : [MLB_PROP_ALIASES, NHL_PROP_ALIASES];
-    for (const dictionary of maps) {
-      const aliases = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
-      for (const [alias, meta] of aliases) {
-        const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
-        const rx = new RegExp(`(^|[^A-Z])${aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^A-Z])`, 'i');
-        if (rx.test(normalized)) return { ...meta, source: text };
-      }
+    const aliases = Object.entries(MLB_PROP_ALIASES).sort((a, b) => b[0].length - a[0].length);
+    for (const [alias, meta] of aliases) {
+      const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
+      const escaped = aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(`(^|[^A-Z])${escaped}(?=$|[^A-Z])`, 'i');
+      if (rx.test(normalized)) return { ...meta, source: text };
     }
     return null;
   }
@@ -571,12 +566,16 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
+    if (sportHint !== 'MLB') {
+      audit.rejectionReason = 'Rejected: non-MLB content.';
+      return { audit, row: null };
+    }
     if (!candidate.anchorValue) {
       audit.rejectionReason = 'No numeric anchor found.';
       return { audit, row: null };
     }
-    if (!propMeta?.label) {
-      audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.';
+    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) {
+      audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.';
       return { audit, row: null };
     }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) {
@@ -709,8 +708,9 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR
     };
+    if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
-    if (!propMeta?.label) { audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.'; return { audit, row: null }; }
+    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
@@ -750,11 +750,17 @@ window.PickCalcParser = (() => {
     const lines = preprocessBoardText(text);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
+    audit.rejectedLines = [];
     const rowMap = new Map();
 
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
-      if (!parsed.row) return;
+      if (!parsed.row) {
+        if (parsed?.audit?.rejectionReason && /non-MLB|outside the 19 registered MLB props/i.test(parsed.audit.rejectionReason)) {
+          pushRejectedLine(audit.rejectedLines, parsed.audit.rawText || parsed.audit.cleanedRawText || parsed.audit.prop || parsed.audit.parsedPlayer || '');
+        }
+        return;
+      }
       const legId = String(parsed.row.legId || parsed.row.LEG_ID || parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0);
       const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
@@ -783,7 +789,6 @@ window.PickCalcParser = (() => {
     LEAGUES,
     MLB_PROP_ALIASES,
     MLB_FEED_MATRIX,
-    NHL_PROP_ALIASES,
     cleanWhitespace,
     extractTimeContext,
     evaluateTimeFilter,

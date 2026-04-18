@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.01 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -199,10 +199,20 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderFeedStatus(rows, auditRows = []) {
-    const active = new Set((rows || []).filter((r) => r.sport === 'MLB').map((r) => String(r.prop || '').trim()));
     const mount = el('feedStatus');
     if (!mount) return;
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${(auditRows || []).some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
+    const counts = new Map();
+    (rows || []).forEach((row) => {
+      if (row?.sport !== 'MLB') return;
+      const prop = String(row?.prop || '').trim();
+      if (!prop) return;
+      counts.set(prop, (counts.get(prop) || 0) + 1);
+    });
+    const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
+    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
+    const lines = ordered.map((prop) => `<div class="feed-line"><span>${escapeHtml(prop)}</span><span>${counts.get(prop)} lines</span></div>`);
+    lines.push(`<div class="feed-line"><span>Rejected Lines</span><span>${rejectedCount}</span></div>`);
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Feed Summary</strong><div class="mini-muted">Dynamic count of accepted MLB props plus rejected non-compliant lines.</div></div><span class="status-badge">${(rows || []).length} ROWS</span></div><div class="feed-summary-list">${lines.join('')}</div></div>`;
   }
 
   function renderPoolTable(rows) {

@@ -3,23 +3,14 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.01 (OXYGEN-COBALT)';
 
-  const LAB_BOOT_ROWS = [
-    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
-    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
-    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', gameTimeText: 'Fri 7:05 PM', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
-    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', gameTimeText: 'Fri 7:05 PM', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', gameTimeText: 'Fri 7:15 PM', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
-    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', gameTimeText: 'Fri 7:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
-  ];
 
   const state = {
     version: SYSTEM_VERSION,
     rows: [],
     auditRows: [],
-    selectedLeagues: new Set((window.PickCalcParser?.LEAGUES || []).filter((x) => x.checked).map((x) => x.id)),
+    selectedLeagues: ['MLB'],
     lastIngestMeta: null,
     lastResult: null,
     ingestLogs: [],
@@ -115,8 +106,8 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
-  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
-  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
+  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.includes(row.sport)); }
+  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.includes(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
@@ -242,6 +233,19 @@ window.PickCalcCore = window.PickCalcCore || {};
     }
   }
 
+
+  function handleResetAll() {
+    try { localStorage.clear(); } catch (_) {}
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
+    state.lastResult = null;
+    state.lastIngestMeta = null;
+    state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
+    if (UI.el('boardInput')) UI.el('boardInput').value = '';
+    refreshIntake();
+  }
+
   function bindEvents() {
     document.getElementById('debugConnectionBtn')?.addEventListener('click', async () => {
       try {
@@ -254,7 +258,7 @@ window.PickCalcCore = window.PickCalcCore || {};
         logger({ level: 'warning', text: `[OXYGEN] DEBUG_CONNECTION_FAIL: ${error.message}` });
       }
     });
-    document.getElementById('saveKeyBtn').addEventListener('click', () => {
+    document.getElementById('saveKeyBtn')?.addEventListener('click', () => {
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
         localStorage.setItem('OXYGEN_GEMINI_KEY', key);
@@ -267,28 +271,14 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
-    UI.el('runKeyLabBtn')?.addEventListener('click', () => handleMiningClick(true));
     UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
-      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
-      state.auditRows = [];
-      state.miningVault = {};
-      state.lastResult = null;
-      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
-      if (UI.el('boardInput')) UI.el('boardInput').value = '';
-      refreshIntake();
+      handleResetAll();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
       const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
-    });
-    document.querySelectorAll('#leagueChecklist input[type="checkbox"]').forEach((input) => {
-      input.addEventListener('change', () => {
-        const checked = new Set(Array.from(document.querySelectorAll('#leagueChecklist input[type="checkbox"]:checked')).map((node) => node.value));
-        state.selectedLeagues = checked;
-        refreshIntake();
-      });
     });
   }
 
@@ -301,13 +291,12 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
     if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
-    UI.renderLeagueChecklist(Parser.LEAGUES || []);
     refreshIntake();
     bindEvents();
     const intake = UI.el('intakeScreen');
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, LAB_BOOT_ROWS, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, handleResetAll, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();
