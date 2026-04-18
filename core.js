@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.76.1 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.76.2 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -128,6 +128,17 @@ window.PickCalcCore = window.PickCalcCore || {};
   }
 
   function bindEvents() {
+    document.getElementById('debugConnectionBtn')?.addEventListener('click', async () => {
+      try {
+        await fetch('https://generativelanguage.googleapis.com', { method: 'GET', mode: 'no-cors' });
+        const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+        logger({ level: 'info', text: '[OXYGEN] DIRECT_HANDSHAKE_OK: Google endpoint responded.' });
+      } catch (error) {
+        const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+        logger({ level: 'warning', text: '[OXYGEN] BROWSER_BLOCK: Direct Google handshake failed.' });
+        alert('Your Browser is blocking the API. Please disable Ad-Blockers or use a different Browser.');
+      }
+    });
     document.getElementById('saveKeyBtn').addEventListener('click', () => {
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
