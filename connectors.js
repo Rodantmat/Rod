@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.21 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.22 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -204,7 +204,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const instructions = mode === 'fallback'
       ? [
-          'Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects.',
+          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Schema:',
@@ -213,7 +213,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           "For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential. Use 0.0 only when data is physically unavailable."
         ].join('\n')
       : [
-          'Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects, including explicit Sharp variables and sportsbook tiers.',
+          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects, including explicit Sharp variables and sportsbook tiers. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
           'Categorize the data as Systematic Extraction metrics.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',

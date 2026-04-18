@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.21 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.22 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -47,13 +47,15 @@ window.PickCalcParser = (() => {
     'HR': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
     'HOME RUN': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
     'HOME RUNS': { label: 'Home Runs', key: 'homeRuns', role: 'Batter' },
-    'HITS ALLOWED': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
     'ER': { label: 'Earned Runs', key: 'earnedRuns', role: 'Pitcher' },
     'EARNED RUNS': { label: 'Earned Runs', key: 'earnedRuns', role: 'Pitcher' },
     'WALKS ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
+    'HITS ALLOWED': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
     'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
+    '1ST INNING RUNS ALLOWED': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
+    'NRFI': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
     'FANTASY SCORE': { label: 'Fantasy Score', key: 'fantasyScore', role: 'Hitter' },
     'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
@@ -81,18 +83,22 @@ window.PickCalcParser = (() => {
   function normalizeName(value) { return stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, ''); }
   function splitGluedTokens(value) {
     return String(value || '')
-      .replace(/([a-z])(?=(Goblin|Demon|Taco|Free Pick)\b)/gi, '$1 ')
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/g, '$1 $2')
       .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
       .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
 
   function preprocessBoardText(text) {
     return String(text || '')
-      .replace(/\r/g, '\n')
+      .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/g, '$1 $2')
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).trim())
-      .filter(Boolean);
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .split('\n');
   }
 
   function normalizeDayScope(value) {
@@ -526,25 +532,142 @@ window.PickCalcParser = (() => {
     return { audit, row };
   }
 
+
+  function splitStructuredBlocks(lines = []) {
+    const blocks = [];
+    let current = [];
+    lines.forEach((line) => {
+      const clean = cleanWhitespace(line);
+      if (!clean) {
+        if (current.length) {
+          blocks.push(current.slice());
+          current = [];
+        }
+        return;
+      }
+      current.push(clean);
+    });
+    if (current.length) blocks.push(current.slice());
+    return blocks;
+  }
+
+  function findPrimaryAnchor(block = []) {
+    const numericLines = block.filter((line) => /^\d+(?:\.\d+)?$/.test(line));
+    const decimal = numericLines.find((line) => line.includes('.'));
+    if (decimal) return decimal;
+    const small = numericLines.find((line) => Number(line) <= 40);
+    if (small) return small;
+    return extractInlineAnchor(block.join(' ')) || '';
+  }
+
+  function parseStructuredBlock(block = [], dayScope = 'today', now = new Date(), blockIndex = 0) {
+    const joined = block.join('\n');
+    const sportHint = inferSportHint(block);
+    const pickType = extractPickType(joined);
+    const teamRole = extractTeamRole(joined);
+    let matchup = extractMatchup(joined, teamRole.team);
+    if (!matchup.opponent) matchup = extractMatchupFallback(block, teamRole.team);
+    const contextItems = block.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: idx }));
+    const anchorValue = findPrimaryAnchor(block);
+    const anchorIndex = Math.max(0, block.findIndex((line) => cleanWhitespace(line) === String(anchorValue)));
+    const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(joined, sportHint);
+    const directionTokens = block.filter((line) => /^(more|less|higher|lower)$/i.test(line));
+    const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
+    const timeContext = extractTimeContext(joined, now);
+    const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
+    const playerCandidates = [];
+    block.forEach((line) => {
+      if (isLikelyPlayerName(line)) playerCandidates.push(line);
+      extractNameCandidates(line).forEach((candidate) => playerCandidates.push(candidate));
+    });
+    const counts = {};
+    playerCandidates.forEach((name) => { const clean = sanitizePlayerName(name); if (isLikelyPlayerName(clean)) counts[clean] = (counts[clean] || 0) + 1; });
+    const parsedPlayer = Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
+    const type = detectType(joined, propMeta);
+    const team = teamRole.team || matchup.team || '';
+    const opponent = matchup.opponent || '';
+    const audit = {
+      idx: blockIndex + 1,
+      rawText: joined,
+      cleanedRawText: cleanWhitespace(joined),
+      parsedPlayer,
+      sport: sportHint,
+      league: sportHint,
+      prop: propMeta?.label || '',
+      propKey: propMeta?.key || '',
+      line: String(anchorValue || ''),
+      direction,
+      team,
+      opponent,
+      gameTimeText: timeContext.token || '',
+      gameTimeISO: timeContext.isoLocal || '',
+      pickType,
+      type,
+      accepted: false,
+      rejectionReason: '',
+      timeFilter,
+      parseYear: PARSE_YEAR
+    };
+    if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
+    if (!propMeta?.label) { audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.'; return { audit, row: null }; }
+    if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
+    if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
+    audit.accepted = true;
+    return { audit, row: {
+      idx: audit.idx,
+      rawText: audit.rawText,
+      cleanedRawText: audit.cleanedRawText,
+      parsedPlayer,
+      player: parsedPlayer,
+      sport: sportHint,
+      league: sportHint,
+      role: propMeta.role,
+      prop: propMeta.label,
+      propKey: propMeta.key,
+      propFamily: propMeta.label,
+      line: String(anchorValue),
+      lineValue: Number(anchorValue),
+      direction,
+      team,
+      opponent,
+      type,
+      pickType,
+      gameTimeText: timeContext.token || '',
+      gameTimeISO: timeContext.isoLocal || '',
+      accepted: true,
+      timeFilter,
+      parseYear: PARSE_YEAR,
+      selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : ''
+    }};
+  }
+
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
     const dayScope = options.dayScope || 'today';
     const lines = preprocessBoardText(text);
-    const candidates = buildAnchorCandidates(lines);
+    const blocks = splitStructuredBlocks(lines);
     const audit = [];
     const rowMap = new Map();
 
-    candidates.forEach((candidate) => {
-      const parsed = parseCandidate(candidate, dayScope, now);
+    const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
       if (!parsed.row) return;
-      const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || '')].join('|');
+      const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {
         rowMap.set(key, Object.assign({}, parsed.row, { __completeness: completeness }));
       }
+    };
+
+    blocks.forEach((block, index) => {
+      if (block.length >= 4) acceptParsed(parseStructuredBlock(block, dayScope, now, index));
     });
+
+    if (!rowMap.size) {
+      const candidates = buildAnchorCandidates(lines.filter((line) => cleanWhitespace(line)));
+      candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
+    }
 
     const rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
