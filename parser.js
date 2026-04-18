@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -16,7 +16,7 @@ window.PickCalcParser = (() => {
   const POPULARITY_BADGE_RX = /^\d+(?:\.\d+)?K$/i;
   const COUNTDOWN_RX = /^\d{2}:\d{2}:\d{2}$/;
   const LIVE_STATUS_RX = /^(?:LIVE|1st|2nd|3rd|Inning|Period)$/i;
-  const TIME_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,3}m(?:\s+\d{1,2}s)?\b|\b\d{1,2}:\d{2}:\d{2}\b)/i;
+  const TIME_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,3}m\s+\d{1,2}s\b|\b\d{1,3}m\b|\b\d{1,2}:\d{2}:\d{2}\b)/i;
   const INLINE_TIME_RX = TIME_RX;
   const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Popularity|Hot|Boost|Promo|Specials?|Insurance)\b/gi;
   const NOISE_WORD_RX = /\b(trending|popular|popularity|hot|boost|promo|specials?|insurance)\b/gi;
@@ -366,14 +366,35 @@ window.PickCalcParser = (() => {
     return Boolean(extractInlineAnchor(clean));
   }
 
+  function cleanClusterLine(value) {
+    return cleanWhitespace(
+      splitGluedTokens(String(value || ''))
+        .replace(BADGE_RX, ' ')
+        .replace(GLUED_NOISE_RX, ' ')
+        .replace(NOISE_WORD_RX, ' ')
+    );
+  }
+
+  function makeCluster(lines, anchorIndex, aboveRadius = 7, belowRadius = 5) {
+    const cluster = [];
+    const start = Math.max(0, anchorIndex - aboveRadius);
+    const end = Math.min(lines.length - 1, anchorIndex + belowRadius);
+    for (let i = start; i <= end; i += 1) {
+      const clean = cleanClusterLine(lines[i]);
+      if (!clean) continue;
+      cluster.push({ raw: clean, clean, absIndex: i });
+    }
+    return cluster;
+  }
+
   function collectBackwardCluster(lines, anchorIndex, maxLines = 7) {
     const cluster = [];
     let i = anchorIndex - 1;
     while (i >= 0 && cluster.length < maxLines) {
-      const clean = cleanWhitespace(lines[i]);
+      const clean = cleanClusterLine(lines[i]);
       if (!clean) { i -= 1; continue; }
       if (isAnchorBoundary(lines, i, anchorIndex)) break;
-      cluster.unshift(lines[i]);
+      cluster.unshift(clean);
       i -= 1;
     }
     return cluster;
@@ -383,10 +404,10 @@ window.PickCalcParser = (() => {
     const cluster = [];
     let i = anchorIndex + 1;
     while (i < lines.length && cluster.length < maxLines) {
-      const clean = cleanWhitespace(lines[i]);
+      const clean = cleanClusterLine(lines[i]);
       if (!clean) { i += 1; continue; }
       if (isAnchorBoundary(lines, i, anchorIndex)) break;
-      cluster.push(lines[i]);
+      cluster.push(clean);
       if (/^(more|less|higher|lower)$/i.test(clean) && cluster.length >= 2) break;
       i += 1;
     }
@@ -394,11 +415,8 @@ window.PickCalcParser = (() => {
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const backward = collectBackwardCluster(lines, anchorIndex, 7);
-    const forward = collectForwardCluster(lines, anchorIndex, 5);
-    const start = anchorIndex - backward.length;
-    const context = backward.concat([lines[anchorIndex]], forward);
-    return context.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
+    const context = makeCluster(lines, anchorIndex, 7, 5);
+    return context.length ? context : [{ raw: cleanClusterLine(lines[anchorIndex]), clean: cleanClusterLine(lines[anchorIndex]), absIndex: anchorIndex }];
   }
 
   function isStandaloneAnchorLine(line) {
@@ -420,7 +438,7 @@ window.PickCalcParser = (() => {
     const start = Math.max(0, index - 2);
     const end = Math.min(lines.length - 1, index + 2);
     for (let i = start; i <= end; i += 1) {
-      const clean = cleanWhitespace(lines[i]);
+      const clean = cleanClusterLine(lines[i]);
       if (!clean || isNoiseLine(clean)) continue;
       if (STAT_BOUND_ALIAS_RX.test(clean)) return true;
     }
@@ -431,22 +449,15 @@ window.PickCalcParser = (() => {
     const candidates = [];
     const seen = new Set();
     lines.forEach((line, index) => {
-      const clean = cleanWhitespace(line);
+      const clean = cleanClusterLine(line);
       if (!clean || isNoiseLine(clean)) return;
-      let anchor = '';
-      let inline = false;
-      if (isStandaloneAnchorLine(clean) && hasNearbyStatAlias(lines, index)) {
-        anchor = clean;
-      } else {
-        anchor = extractInlineAnchor(clean);
-        inline = Boolean(anchor);
-      }
-      if (!anchor) return;
+      if (!(STANDALONE_NUMBER_RX.test(clean) && hasNearbyStatAlias(lines, index))) return;
+      const anchor = clean;
       const context = gatherCandidateContext(lines, index);
-      const key = `${normalizeName(context.map((item) => item.raw).join(' '))}|${anchor}`;
+      const key = `${normalizeName(context.map((item) => item.raw).join(' '))}|${anchor}|${index}`;
       if (seen.has(key)) return;
       seen.add(key);
-      candidates.push({ anchorLineIndex: index, anchorValue: anchor, inline, context });
+      candidates.push({ anchorLineIndex: index, anchorValue: anchor, inline: false, context });
     });
     return candidates;
   }
@@ -656,18 +667,16 @@ window.PickCalcParser = (() => {
       const line = cleanWhitespace(block[i]);
       if (!line || isNoiseLine(line)) continue;
       if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) count += 1;
-      else if (extractInlineAnchor(line)) count += 1;
+
     }
     return count;
   }
 
   function findPrimaryAnchor(block = []) {
     for (let i = 0; i < block.length; i += 1) {
-      const line = cleanWhitespace(block[i]);
+      const line = cleanClusterLine(block[i]);
       if (!line) continue;
       if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) return line;
-      const inlineAnchor = extractInlineAnchor(line);
-      if (inlineAnchor) return inlineAnchor;
     }
     return '';
   }

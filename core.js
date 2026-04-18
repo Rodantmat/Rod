@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -134,7 +134,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const acceptedRows = parsedRows.slice(0, availableSlots);
     const hitCap = parsedRows.length > acceptedRows.length;
     if (!availableSlots && parsedRows.length) {
-      UI.showToast?.('You reached the 16 legs limit per run');
+      UI.showToast?.('16-leg hard cap reached. Additional legs were not ingested.');
       if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '16-leg limit reached. New lines were not added.';
       return;
     }
@@ -175,7 +175,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
     if (acceptedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
     if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = acceptedRows.length > 0 ? `${acceptedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
-    if (hitCap || state.rows.length >= 16) UI.showToast?.('You reached the 16 legs limit per run');
+    if (hitCap || state.rows.length >= 16) UI.showToast?.('16-leg hard cap reached. Additional legs were not ingested.');
     refreshIntake();
   }
 
@@ -255,8 +255,18 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.selectedLeagues = ['MLB'];
     state.lastResult = null;
     state.lastIngestMeta = null;
-    state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
-    if (UI.el('boardInput')) UI.el('boardInput').value = '';
+    state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Cold boot reset complete.' }];
+    state.verboseMode = false;
+
+    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
+      const node = UI.el(id);
+      if (!node) return;
+      if ('value' in node) node.value = '';
+      node.innerHTML = '';
+      if ('textContent' in node) node.textContent = '';
+    });
+
+    UI.backToIntake?.();
     refreshIntake();
   }
 
@@ -301,7 +311,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const analysisTitle = document.getElementById('analysisTitle');
     const analysisVersion = document.getElementById('analysisVersion');
     const shieldTitle = document.getElementById('shieldTitle');
-    if (title) title.innerHTML = `PickCalc Multi-Sport Engine <span class="version-pill">${SYSTEM_VERSION}</span>`;
+    if (title) title.textContent = 'PickCalc Multi-Sport Engine';
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
     if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;

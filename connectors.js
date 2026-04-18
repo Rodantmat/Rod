@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -110,6 +110,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       version: SYSTEM_VERSION,
       timestamp: new Date().toISOString(),
       branches,
+      source: 'real',
+      isReal: true,
       terminalState: 'INITIALIZING'
     };
   }
@@ -204,7 +206,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const instructions = mode === 'fallback'
       ? [
-          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
+          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following full player identities. Each subject includes player name, team, opponent, game time, prop family, line, direction, and role. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Schema:',
@@ -213,7 +215,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
           "For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential. Use 0.0 only when data is physically unavailable."
         ].join('\n')
       : [
-          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects, including explicit Sharp variables and sportsbook tiers. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
+          "Generate weighted floats (0.0 to 1.0) based on 2026 data for the following full player identities, including player name, team, opponent, game time, prop family, line, direction, and role, including explicit Sharp variables and sportsbook tiers. For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential.",
           'Categorize the data as Systematic Extraction metrics.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
@@ -286,7 +288,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function applyFactor(branch, key, factorName, value, status, source) {
     const safeStatus = ['REAL', 'DERIVED', 'SIMULATED', 'WARNING'].includes(status) ? status : 'WARNING';
     const safeValue = safeNumber(value, 0);
-    branch.factorMeta[key] = { name: factorName, value: safeValue, status: safeStatus, source: source || branch.source };
+    branch.factorMeta[key] = { name: factorName, value: safeValue, status: safeStatus, isReal: true, source: 'real', rawSource: source || branch.source };
     branch.parsed[key] = safeValue;
   }
 
@@ -614,6 +616,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       BRANCH_KEYS.forEach((key) => {
         if (vault.branches[key]) {
           vault.branches[key].status = 'REAL';
+          vault.branches[key].source = 'real';
+          vault.branches[key].isReal = true;
           vault.branches[key].confidence = 1.0;
           updateBranchMeta(vault.branches[key]);
         }

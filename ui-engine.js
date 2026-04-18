@@ -1,11 +1,11 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
-  const MODEL_ID = 'gemini-flash-latest';
+  const MODEL_ID = 'gemini-3.1-flash-lite-preview';
   const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
   const PROFILE_FACTOR_NAMES = {
@@ -197,9 +197,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       return;
     }
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-    const lines = ordered.map((prop) => `<div class="feed-line"><span>${escapeHtml(prop)}:</span><span>[${counts.get(prop)}]</span></div>`);
-    lines.push(`<div class="feed-line"><span>Rejected Lines:</span><span>[${rejectedCount}]</span></div>`);
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><strong>MLB ✅</strong></div><div class="feed-summary-list">${lines.join('')}</div></div>`;
+    const lines = ordered.map((prop) => `<div class="feed-line">${escapeHtml(prop)}: [${counts.get(prop)}]</div>`);
+    if (rejectedCount) lines.push(`<div class="feed-line">Rejected Lines: [${rejectedCount}]</div>`);
+    const header = counts.size ? `<div class="status-panel-head"><strong>MLB ✅</strong></div>` : '';
+    mount.innerHTML = `<div class="status-panel feed-status-inline-panel">${header}<div class="feed-summary-list">${lines.join('')}</div></div>`;
   }
 
   function renderPoolTable(rows) {
@@ -387,7 +388,7 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {
     if (el('analysisTitle')) el('analysisTitle').textContent = `Run Analysis ${version}`;
-    if (el('analysisVersion')) el('analysisVersion').textContent = `Version: ${version}`;
+    if (el('analysisVersion')) el('analysisVersion').textContent = version;
     if (el('shieldTitle')) el('shieldTitle').textContent = `Alpha Shield ${version}`;
 
     const row = result?.row || rows[0] || {};
@@ -407,7 +408,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
     renderMiningGrid(rows, vaultCollection);
     const shieldPanel = el('shieldPanel');
-    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>REAL / DERIVED / SIMULATED / WARNING</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
+    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>Signal Mix</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
     const body = el('analysisResultsBody');
     if (body) body.innerHTML = rows.map((item) => `<tr><td>${escapeHtml(item.idx)}</td><td>${escapeHtml(item.sport)}</td><td>${escapeHtml(item.league)}</td><td>${escapeHtml(item.parsedPlayer)}</td><td>${escapeHtml(item.team || '')}</td><td>${escapeHtml(item.opponent || '')}</td><td>${escapeHtml(item.prop || '')}</td><td>${escapeHtml(item.line || '')}</td><td>${escapeHtml(item.type || '')}</td></tr>`).join('');
     renderConsole(result.logs || []);
@@ -512,21 +513,30 @@ window.PickCalcUI = window.PickCalcUI || {};
       toast.style.right = '20px';
       toast.style.bottom = '20px';
       toast.style.zIndex = '9999';
+      toast.style.minWidth = '280px';
+      toast.style.maxWidth = '420px';
       toast.style.padding = '14px 18px';
-      toast.style.borderRadius = '12px';
-      toast.style.background = 'rgba(9,16,29,0.97)';
+      toast.style.borderRadius = '14px';
+      toast.style.background = 'linear-gradient(180deg, rgba(18,26,47,0.98), rgba(12,20,39,0.98))';
       toast.style.color = '#edf2ff';
-      toast.style.boxShadow = '0 14px 34px rgba(0,0,0,0.45)';
-      toast.style.border = '1px solid #5da8ff';
+      toast.style.boxShadow = '0 18px 44px rgba(0,0,0,0.45)';
+      toast.style.border = '1px solid #24304f';
+      toast.style.outline = '1px solid rgba(93,168,255,0.28)';
       toast.style.fontWeight = '700';
+      toast.style.letterSpacing = '0.01em';
       toast.style.opacity = '0';
-      toast.style.transition = 'opacity 180ms ease';
+      toast.style.transform = 'translateY(8px)';
+      toast.style.transition = 'opacity 180ms ease, transform 180ms ease';
       document.body.appendChild(toast);
     }
     toast.textContent = String(message || '');
     toast.style.opacity = '1';
+    toast.style.transform = 'translateY(0)';
     clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 4000);
+    showToast._timer = setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(8px)';
+    }, 4000);
   }
 
   Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast });

@@ -2,7 +2,7 @@
   --bg:#0b1020;--panel:#121a2f;--panel-2:#0f1730;--border:#24304f;--text:#edf2ff;--muted:#a7b1c7;
   --accent:#5da8ff;--accent-2:#66e0a3;--warn:#ffcf66;--danger:#ff7d7d;--shadow:0 16px 40px rgba(0,0,0,.28);--radius:16px}
 *{box-sizing:border-box}html,body{margin:0;padding:0;background:linear-gradient(180deg,#09101d,#0d1426 45%,#0b1020);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
-body{min-height:100vh}.hidden{display:none!important}.app-shell{max-width:1400px;margin:0 auto;padding:20px}.hero{padding:20px 0 10px}
+body{min-height:100vh}.hidden{display:none!important}.app-shell{max-width:900px;margin:0 auto;padding:20px}.hero{padding:20px 0 10px}
 .hero-inline{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap}h1,h2,h3{margin:0 0 10px}p{margin:0;color:var(--muted)}
 .card{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin:14px 0;box-shadow:var(--shadow);overflow:hidden}
 .version-pill,.pill,.status-badge,.card-type-tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 10px;border:1px solid var(--border);background:#16203a;color:var(--text);font-size:12px}
@@ -47,3 +47,5 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .collapsible-content{padding:15px;border-left:2px solid var(--border);margin-left:10px}
 .collapsible-arrow{display:inline-block;transition:transform .15s ease}
 .matrix-collapsible[open] .collapsible-arrow{transform:rotate(90deg)}
+
+.feed-status-inline{margin-top:12px}.feed-status-inline-panel{margin-top:0}.feed-summary-list{display:grid;gap:8px}.feed-line{padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#0c1427;font-weight:600}.feed-status-inline:empty{display:none}
