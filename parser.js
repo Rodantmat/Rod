@@ -8,7 +8,6 @@ window.PickCalcParser = (() => {
   ];
 
   const PICK_TYPE_RX = /\b(Goblin|Demon|Taco|Free Pick)\b/i;
-  const GLUED_TEAM_ROLE_RX = /([a-z])(?=([A-Z]{2,3})\s*-\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g;
   const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b/i;
   const DIRECTION_RX = /\b(more|less|higher|lower)\b/i;
   const MATCHUP_RX = /\b(vs\.?|@)\s*([A-Z]{2,3})\b/i;
@@ -19,6 +18,7 @@ window.PickCalcParser = (() => {
   const ROLE_ONLY_RX = /^(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i;
   const TEAM_ABBR_LIST = ['ARI','ATL','BAL','BOS','CHC','CIN','CLE','COL','CWS','DET','HOU','KC','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK','PHI','PIT','SD','SEA','SF','STL','TB','TEX','TOR','WSH','BUF','CAR','CBJ','CGY','CHI','COL','DAL','EDM','FLA','LAK','MIN','MTL','NJD','NSH','NYI','NYR','OTT','PHI','PIT','SEA','SJS','STL','TBL','TOR','UTA','VAN','VGK','WPG'];
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
+  const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
   const MLB_PROP_ALIASES = {
     'TB': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
@@ -54,6 +54,7 @@ window.PickCalcParser = (() => {
     'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
+    'FANTASY SCORE': { label: 'Fantasy Score', key: 'fantasyScore', role: 'Hitter' },
     'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HFS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' }
@@ -78,19 +79,19 @@ window.PickCalcParser = (() => {
   function cleanWhitespace(value) { return String(value || '').replace(/\u00a0/g, ' ').replace(/[|•]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function stripAccents(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
   function normalizeName(value) { return stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, ''); }
-  function splitGluedPickTypes(value) { return String(value || '').replace(/([a-z])(?=(Goblin|Demon|Taco|Free Pick)\b)/gi, '$1 '); }
-  function splitGluedTeamRole(value) { return String(value || '').replace(GLUED_TEAM_ROLE_RX, '$1\n'); }
+  function splitGluedTokens(value) {
+    return String(value || '')
+      .replace(/([a-z])(?=(Goblin|Demon|Taco|Free Pick)\b)/gi, '$1 ')
+      .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
+      .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
+  }
 
   function preprocessBoardText(text) {
     return String(text || '')
       .replace(/\r/g, '\n')
       .replace(/\u00a0/g, ' ')
-      .replace(/\t+/g, ' ')
-      .replace(/([A-Za-z'.-])(?=(?:Goblin|Demon|Taco|Free Pick)\b)/g, '$1 ')
-      .replace(/([a-z])(?=[A-Z]{2,3}\s*-\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1\n')
       .split('\n')
-      .flatMap((line) => splitGluedTeamRole(splitGluedPickTypes(stripAccents(line))).split('\n'))
-      .map((line) => line.trim())
+      .map((line) => splitGluedTokens(stripAccents(line)).trim())
       .filter(Boolean);
   }
 
@@ -211,10 +212,9 @@ window.PickCalcParser = (() => {
   }
 
   function detectType(sourceText = '', propMeta = null) {
-    const raw = String(sourceText || '');
-    const token = `${propMeta?.label || ''} ${raw}`;
-    if (/\b(Ks|K's|Strikeouts|Pitching Outs|PO|Outs|Walks Allowed|BB Allowed|BB|Hits Allowed|Earned Runs|Pitcher Fantasy Score|PFS)\b/i.test(token)) return 'Pitcher';
-    if (/\b(Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+R|HRR|Hits|Home Runs?|RBIs?|Runs Batted In|Total Bases|TB|Hitter Fantasy Score|HFS)\b/i.test(token)) return 'Hitter';
+    const token = `${propMeta?.label || ''} ${String(sourceText || '')}`;
+    if (/\b(Pitcher Fantasy Score|PFS|Ks|K's|Strikeouts|Pitching Outs|PO|Outs|Walks Allowed|Hits Allowed|Earned Runs|BB)\b/i.test(token)) return 'Pitcher';
+    if (/\b(Hitter Fantasy Score|HFS|Fantasy Score|Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+R|HRR|Hits|Home Runs?|RBIs?|Runs Batted In|Total Bases|TB)\b/i.test(token)) return 'Hitter';
     if (propMeta?.role === 'Pitcher') return 'Pitcher';
     return 'Hitter';
   }
@@ -229,7 +229,7 @@ window.PickCalcParser = (() => {
 
   function sanitizePlayerName(value) {
     return cleanWhitespace(
-      splitGluedPickTypes(String(value || ''))
+      splitGluedTokens(String(value || ''))
         .replace(PICK_TYPE_RX, ' ')
         .replace(TEAM_ROLE_RX, ' ')
         .replace(MATCHUP_RX, ' ')
@@ -247,15 +247,15 @@ window.PickCalcParser = (() => {
     if (!clean) return false;
     if (TEAM_ROLE_RX.test(clean) || ROLE_ONLY_RX.test(clean)) return false;
     if (/\b(?:vs\.?|@)\b/i.test(clean) || /\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow|am|pm)\b/i.test(clean)) return false;
-    if (/\b(?:Pitcher Fantasy Score|Hitter Fantasy Score|Strikeouts|Pitching Outs|Walks Allowed|Hits Allowed|Earned Runs|Total Bases|Home Runs|Hits Runs RBIs|RBIs|Runs|Hits|Goals Allowed|Shots on Goal|Blocked Shots|Assists|Points|Saves)\b/i.test(clean)) return false;
     const words = clean.split(' ');
-    if (words.length < 2 || words.length > 4) return false;
-    return words.every((word) => /^(?:[A-Z][A-Za-z'.-]*|Jr\.?|Sr\.?|II|III|IV)$/.test(word));
+    if (words.length < 2 || words.length > 3) return false;
+    if (words.some((word) => RESERVED_NAME_WORDS.has(word.toUpperCase()))) return false;
+    return words.every((word) => /^[A-Z][A-Za-z'.-]*$/.test(word));
   }
 
   function extractNameCandidates(text) {
     const matches = [];
-    const clean = splitGluedPickTypes(String(text || ''));
+    const clean = splitGluedTokens(String(text || ''));
     for (const match of clean.matchAll(NAME_CANDIDATE_RX)) {
       const candidate = sanitizePlayerName(match[1]);
       if (isLikelyPlayerName(candidate)) matches.push(candidate);
@@ -279,7 +279,7 @@ window.PickCalcParser = (() => {
     const joined = cleanWhitespace((context || []).map((item) => item?.raw || item || '').join(' '));
     if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
 
-    const direct = joined.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+    const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
     if (direct && direct[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
       return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
     }
@@ -299,7 +299,7 @@ window.PickCalcParser = (() => {
     const lines = Array.isArray(context) ? context : [];
     for (let i = 0; i < lines.length; i += 1) {
       const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
-      const match = raw.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+      const match = raw.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
       if (match && match[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
         return { opponent: match[1].toUpperCase(), indicator: /@/.test(match[0]) ? '@' : 'vs', token: cleanWhitespace(match[0]), team: teamHint || '' };
       }
@@ -317,7 +317,7 @@ window.PickCalcParser = (() => {
 
   function extractInlineAnchor(line) {
     const clean = cleanWhitespace(line);
-    const propFirst = clean.match(/(\d+(?:\.\d+)?)\s*(Pitcher Fantasy Score|PFS|Hitter Fantasy Score|HFS|Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|BB Allowed|BB|Earned Runs|ER|Hits Allowed|Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+RBI|H\+R\+R|HRR|Home Runs?|HR|Hits|RBIs|Runs Batted In|RBI|Runs|TB|Total Bases|SOG|Shots on Goal|Blocked Shots|PTS|Points|Assists|Goals|Saves|Goals Allowed)\b/i);
+    const propFirst = clean.match(/(\d+(?:\.\d+)?)\s*(Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|Hits Allowed|Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+RBI|H\+R\+R|HRR|Home Runs?|HR|Hits|RBIs|Runs Batted In|RBI|Runs|TB|Total Bases|SOG|Shots on Goal|Blocked Shots|PTS|Points|Assists|Goals|Saves|Goals Allowed)\b/i);
     if (propFirst) return propFirst[1];
     const directionFirst = clean.match(/\b(\d+(?:\.\d+)?)\b(?=.*\b(?:more|less|higher|lower)\b)/i);
     return directionFirst ? directionFirst[1] : '';
@@ -368,16 +368,11 @@ window.PickCalcParser = (() => {
       let score = 100 + Math.max(0, (anchorLineIndex - item.absIndex)) * 2;
       if (item.absIndex === anchorLineIndex - 1) score += 12;
       if (item.absIndex === anchorLineIndex - 2) score += 8;
-      if (!/\b(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)\b/i.test(item.clean)) score += 15;
+      if (!/(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)/i.test(item.clean)) score += 15;
       return score;
     };
 
     head.forEach((item) => {
-      const roleMatch = item.raw.match(TEAM_ROLE_RX);
-      if (roleMatch) {
-        const beforeRole = item.raw.slice(0, item.raw.toUpperCase().indexOf(roleMatch[0].toUpperCase()));
-        extractNameCandidates(beforeRole).forEach((candidate, idx) => addCandidate(candidate, 320 + (idx * 10) + candidate.length));
-      }
       if (isLikelyPlayerName(item.clean)) addCandidate(item.clean, linePriority(item) + item.clean.length);
       extractNameCandidates(item.raw).forEach((candidate) => addCandidate(candidate, linePriority(item) + candidate.length));
     });
@@ -407,20 +402,33 @@ window.PickCalcParser = (() => {
   }
 
   function chooseProp(context, anchorLineIndex, sportHint) {
-    const anchorLine = context.find((item) => item.absIndex === anchorLineIndex)?.clean || '';
-    const tail = context.filter((item) => item.absIndex > anchorLineIndex).sort((a, b) => a.absIndex - b.absIndex);
-    const head = context.filter((item) => item.absIndex < anchorLineIndex).sort((a, b) => b.absIndex - a.absIndex);
-    const joined = context.map((item) => item.clean).join(' ');
+    const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
+    const cleanCandidates = ordered
+      .filter((item) => !TEAM_ROLE_RX.test(item.clean))
+      .filter((item) => !MATCHUP_RX.test(item.clean))
+      .filter((item) => !INLINE_TIME_RX.test(item.clean))
+      .filter((item) => !isLikelyPlayerName(item.clean))
+      .map((item) => item.clean);
+
     const prioritySources = [];
-    if (anchorLine) prioritySources.push(anchorLine);
-    tail.forEach((item) => prioritySources.push(item.clean));
-    head.forEach((item) => prioritySources.push(item.clean));
-    prioritySources.push(joined);
+    [0, 1, -1, 2, -2, 3].forEach((offset) => {
+      const item = context.find((entry) => entry.absIndex === anchorLineIndex + offset);
+      if (item && !prioritySources.includes(item.clean)) prioritySources.push(item.clean);
+    });
+    cleanCandidates.forEach((source) => {
+      if (!prioritySources.includes(source)) prioritySources.push(source);
+    });
+
     for (const source of prioritySources) {
       const meta = resolvePropAlias(source, sportHint);
       if (meta) return meta;
     }
-    return null;
+
+    const forwardJoin = context
+      .filter((item) => item.absIndex >= anchorLineIndex && item.absIndex <= anchorLineIndex + 3)
+      .map((item) => item.clean)
+      .join(' ');
+    return resolvePropAlias(forwardJoin, sportHint);
   }
 
   function chooseDirection(context, anchorLineIndex) {

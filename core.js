@@ -38,71 +38,68 @@ window.PickCalcCore = window.PickCalcCore || {};
     };
     const averageBranch = (branchKey, keys = null) => {
       const parsed = branches?.[branchKey]?.parsed || {};
-      const values = Array.isArray(keys) && keys.length ? keys.map((key) => parsed?.[key]).filter((value) => value !== undefined) : Object.values(parsed);
+      const values = Array.isArray(keys) && keys.length ? keys.map((key) => parsed[key]).filter((value) => value !== undefined) : Object.values(parsed);
       if (!values.length) return 0;
       return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
     };
-    const metric = (branchKey, key) => clamp01(branches?.[branchKey]?.parsed?.[key]);
     const prop = String(row?.prop || '').toLowerCase();
-    const type = String(row?.type || '').toLowerCase();
     const pickType = String(row?.pickType || '').toLowerCase();
-    const direction = String(row?.direction || '').toLowerCase();
-    const isPitcherFantasy = /pitcher fantasy score|pfs/.test(prop);
-    const isHitterFantasy = /hitter fantasy score|hfs/.test(prop);
-    const isFantasy = isPitcherFantasy || isHitterFantasy;
+    const isFantasy = /fantasy score|\bpfs\b|\bhfs\b/.test(prop);
+    const isPitcherFantasy = /pitcher fantasy score|\bpfs\b/.test(prop);
+    const isHitterFantasy = /hitter fantasy score|\bhfs\b/.test(prop) || (isFantasy && String(row?.type || '').toLowerCase().includes('hit'));
 
-    let branchA = averageBranch('A');
+    let overScore = 0;
+    let underScore = 0;
+
     if (isPitcherFantasy) {
-      branchA = averageBranch('A', ['a11', 'a15', 'a10', 'a14', 'a06']);
-    } else if (isHitterFantasy) {
-      branchA = averageBranch('A', ['a17', 'a04', 'a03', 'a01', 'a18']);
+      const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
+      const efficiency = averageBranch('B', ['b01', 'b03', 'b04', 'b09', 'b10', 'b11', 'b14', 'b18']);
+      const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
+      const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (kPulse * 0.38) + (efficiency * 0.29) + (environment * 0.13) + (leash * 0.12) + (market * 0.08);
+      underScore = ((1 - kPulse) * 0.38) + ((1 - efficiency) * 0.29) + ((1 - environment) * 0.13) + ((1 - leash) * 0.12) + ((1 - market) * 0.08);
+    } else if (isHitterFantasy || isFantasy) {
+      const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
+      const risp = averageBranch('B', ['b01', 'b02', 'b05', 'b06', 'b09', 'b16', 'b17', 'b18']);
+      const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
+      const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (clout * 0.34) + (risp * 0.27) + (setup * 0.15) + (upside * 0.16) + (market * 0.08);
+      underScore = ((1 - clout) * 0.34) + ((1 - risp) * 0.27) + ((1 - setup) * 0.15) + ((1 - upside) * 0.16) + ((1 - market) * 0.08);
+    } else {
+      const branchA = averageBranch('A');
+      const branchB = averageBranch('B');
+      const branchC = averageBranch('C');
+      const branchD = averageBranch('D');
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (branchA * 0.40) + (branchB * 0.20) + (branchC * 0.18) + (branchD * 0.14) + (branchE * 0.08);
+      underScore = ((1 - branchA) * 0.40) + ((1 - branchB) * 0.20) + ((1 - branchC) * 0.18) + ((1 - branchD) * 0.14) + ((1 - branchE) * 0.08);
     }
-
-    let branchC = averageBranch('C');
-    let branchD = averageBranch('D');
-    if (isPitcherFantasy) {
-      branchD = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
-    } else if (isHitterFantasy) {
-      branchD = averageBranch('D', ['d04', 'd06', 'd05', 'd10']);
-    }
-    const branchEDelta = clamp01(metric('E', 'e10') || metric('E', 'e11') || averageBranch('E'));
-
-    const overScore = ((branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchEDelta * 0.05));
-    const underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchEDelta) * 0.05);
 
     let chosenProbability = overScore;
     let chosenSide = 'More';
-    if (pickType === 'goblin' || pickType === 'demon' || pickType === 'taco') {
-      chosenProbability = overScore;
-      chosenSide = 'More';
-    } else if (direction === 'less' || direction === 'under') {
-      chosenProbability = Math.max(overScore, underScore);
-      chosenSide = underScore >= overScore ? 'Less' : 'More';
-    } else if (direction === 'more' || direction === 'over') {
-      chosenProbability = Math.max(overScore, underScore);
-      chosenSide = overScore >= underScore ? 'More' : 'Less';
-    } else {
-      chosenProbability = Math.max(overScore, underScore);
-      chosenSide = underScore > overScore ? 'Less' : 'More';
+    if (pickType === 'goblin' || pickType === 'demon') {
+      const requested = String(row?.direction || '').toLowerCase();
+      if (requested === 'less' || requested === 'under') {
+        chosenProbability = underScore;
+        chosenSide = 'Less';
+      } else {
+        chosenProbability = overScore;
+        chosenSide = 'More';
+      }
+    } else if (underScore > overScore) {
+      chosenProbability = underScore;
+      chosenSide = 'Less';
     }
 
     const final = Math.max(0, Math.min(100, Math.round(chosenProbability * 100)));
     return {
       score: final,
       side: chosenSide,
+      displaySide: chosenSide,
       overScore: Math.round(overScore * 1000) / 1000,
       underScore: Math.round(underScore * 1000) / 1000,
-      pScore: Math.round(branchA * 450) / 1000,
-      eScore: Math.round(branchC * 300) / 1000,
-      sScore: Math.round(branchD * 200) / 1000,
-      mScore: Math.round(branchEDelta * 50) / 1000,
-      branchA,
-      branchC,
-      branchD,
-      branchEDelta,
-      isFantasy,
-      fantasyProfile: isPitcherFantasy ? 'Pitcher Fantasy Score' : (isHitterFantasy ? 'Hitter Fantasy Score' : ''),
-      profileType: type,
       player: row?.parsedPlayer || '',
       legId: row?.LEG_ID || ''
     };

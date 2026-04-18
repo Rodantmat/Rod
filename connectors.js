@@ -204,16 +204,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const instructions = mode === 'fallback'
       ? [
-          'Extract discrete Grounded Metrics and a 5-tier sportsbook projection ladder for the following subjects.',
+          'Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Schema:',
           '{"players":{"normalizedname":{"a01":0.0,"a02":0.0,"a03":0.0,"a04":0.0,"a05":0.0,"a06":0.0,"a07":0.0,"a08":0.0,"a09":0.0,"a10":0.0,"a11":0.0,"a12":0.0,"a13":0.0,"a14":0.0,"a15":0.0,"a16":0.0,"a17":0.0,"a18":0.0,"a19":0.0,"a20":0.0,"b01":0.0,"b02":0.0,"b03":0.0,"b04":0.0,"b05":0.0,"b06":0.0,"b07":0.0,"b08":0.0,"b09":0.0,"b10":0.0,"b11":0.0,"b12":0.0,"b13":0.0,"b14":0.0,"b15":0.0,"b16":0.0,"b17":0.0,"b18":0.0,"c01":0.0,"c02":0.0,"c03":0.0,"c04":0.0,"c05":0.0,"c06":0.0,"c07":0.0,"c08":0.0,"c09":0.0,"c10":0.0,"c11":0.0,"c12":0.0,"d01":0.0,"d02":0.0,"d03":0.0,"d04":0.0,"d05":0.0,"d06":0.0,"d07":0.0,"d08":0.0,"d09":0.0,"d10":0.0,"market01":0.0,"market02":0.0,"market03":0.0,"market04":0.0,"market05":0.0}}}',
           'Explicitly populate c07=Air Density, c08=Umpire Zone, d01=Platoon Delta, d02=Manager Threshold, market01=DraftKings, market02=FanDuel, market03=BetMGM, market04=Bet365, market05=Pinnacle.\nDo not include prose, code fences, headings, or commentary.',
-          'Use 0.0 only when data is physically unavailable.'
+          "For 'Walks Allowed,' prioritize Command/Patience. For 'Fantasy Score,' prioritize accumulation potential. Use 0.0 only when data is physically unavailable."
         ].join('\n')
       : [
-          'Extract 72 discrete data points for the following subjects, including explicit Sharp variables and sportsbook tiers.',
+          'Generate weighted floats (0.0 to 1.0) based on 2026 data for the following subjects, including explicit Sharp variables and sportsbook tiers.',
           'Categorize the data as Systematic Extraction metrics.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
@@ -354,7 +354,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const line = p?.line || p?.lineValue || 0;
       return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Type: ${type} | Line: ${line} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
     }).join('\n');
-    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. For Walks Allowed, prioritize Command and hitter Patience. For Fantasy Score, prioritize accumulation potential. 0.5 is the fail-state.
+    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
 Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
 CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
 CRITICAL SLOT MAP:
