@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.76.2 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.76.4 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -10,7 +10,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 if (!GEMINI_API_KEY) {
   console.warn("[OXYGEN] KEY_MISSING: Please enter your key in the API Configuration box.");
 }
-  const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+  const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev/v1beta/models/gemini-1.5-flash:generateContent';
 
   const FACTOR_NAMES = {
     A: Array.from({ length: 20 }, (_, i) => `A${String(i + 1).padStart(2, '0')} Grounded Metric`),
@@ -308,7 +308,7 @@ No prose. No markdown. JSON only.`;
 
     if (!GEMINI_API_KEY) return buildBaselinePayload(batch);
 
-    const requestUrl = `${GEMINI_BASE_URL}?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    const requestUrl = `${GEMINI_BASE_URL}?key=${GEMINI_API_KEY}`;
     const requestInit = {
       method: 'POST',
       headers: {
