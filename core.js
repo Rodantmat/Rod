@@ -17,25 +17,29 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   const state = {
     version: SYSTEM_VERSION,
-    rows: LAB_BOOT_ROWS.slice(),
+    rows: [],
     auditRows: [],
-    selectedLeagues: new Set(['MLB', 'NHL']),
-    lastResult: null,
+    selectedLeagues: new Set((window.PickCalcParser?.LEAGUES || []).filter((x) => x.checked).map((x) => x.id)),
     lastIngestMeta: null,
+    lastResult: null,
     ingestLogs: [],
     miningVault: {},
     verboseMode: false
   };
+
+  function calcCobaltEdge() {
+    return 0;
+  }
+
+  function buildAnalysisCopyText(context = {}) {
+    return UI.buildAnalysisCopyText(context);
+  }
 
   function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
   function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).filter((item) => !item.accepted).map((item) => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` })); }
-
-  function calcCobaltEdge(context = {}) {
-    return { edgeScore: 0, label: 'EDGE_PENDING', context };
-  }
 
   function refreshIntake() {
     const rows = filteredRows(state.rows);
@@ -172,7 +176,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       refreshIntake();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
-      const payload = UI.buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS });
+      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
     });
     document.querySelectorAll('#leagueChecklist input[type="checkbox"]').forEach((input) => {
@@ -200,6 +204,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, LAB_BOOT_ROWS, SYSTEM_VERSION, calcCobaltEdge });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, LAB_BOOT_ROWS, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();

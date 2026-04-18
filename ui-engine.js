@@ -10,157 +10,146 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   const PROFILE_FACTOR_NAMES = {
     Pitcher: {
-      A: [
-        'Velocity Stability', 'Spin Rate Delta', 'Extension Efficiency', 'Vertical Break', 'Horizontal Movement',
-        'Command Grade', 'Location Heat', 'Tunneling Quality', 'Release Consistency', 'Zone Rate',
-        'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
-        'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
-      ],
-      B: [
-        'Stamina Decay', 'Late Movement', 'Release Extension', 'Strike-One Rate', 'Pressure Tolerance', 'High-Leverage Efficiency',
-        'Primary Pitch Reliability', 'Secondary Pitch Bite', 'Sequencing Logic', 'Pitch Mix Stability', 'Velocity Preservation',
-        'Third-Time-Through Penalty', 'Contact Suppression', 'CSW Rate', 'Called Strike Edge', 'Chase Induction',
-        'Backdoor Command', 'Finisher Quality'
-      ],
-      C: [
-        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Air Density', 'Umpire Zone Rating', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
-      ],
-      D: [
-        'Platoon Delta', 'Manager Pull Threshold', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
-        'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
-      ],
-      E: [
-        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
-        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
-      ]
+      A: ["Velocity Stability", "Spin Rate Delta", "Extension", "Vertical Break", "Horizontal Movement", "Command Grade", "Location Heat", "Tunneling Quality", "Release Consistency", "Zone Rate", "K-BB% Trend", "Whiff Rate (Fastball)", "Whiff Rate (Offspeed)", "First Pitch Strike%", "Put-away % Efficiency", "Hard Hit Avoidance", "Barrel Rate Allowed", "GB/FB Ratio", "Average Exit Velocity", "Soft Contact%"],
+      B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
+      D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
     },
     Hitter: {
-      A: [
-        'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
-        'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
-        'Pitch Recognition', 'Barrel Accuracy', 'Pull Power', 'Oppo Gap Efficiency', 'High-Fastball Combat',
-        'Offspeed Timing', 'Clout Grade', 'Sprint Speed Impact', 'ISO Trend', 'Plate Coverage'
-      ],
-      B: [
-        'Contact Authority', 'Damage on Mistakes', 'Breaking Ball Handling', 'Fastball Lift', 'Spray Discipline', 'RISP Approach',
-        'Walk Pressure', 'Strikeout Resistance', 'First-Pitch Attack', 'Pull Airball Rate', 'Center-Field Carry',
-        'Opposite-Field Carry', 'Lefty Split Stability', 'Righty Split Stability', 'Batted-Ball Efficiency',
-        'Basepath Leverage', 'Lineup Spot Edge', 'Clutch Contact'
-      ],
-      C: [
-        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Air Density', 'Umpire Zone Rating', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
-      ],
-      D: [
-        'Platoon Delta', 'Manager Pull Threshold', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
-        'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
-      ],
-      E: [
-        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
-        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
-      ]
+      A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
+      B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
+      D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
     }
   };
 
   const FACTOR_GLOSSARY = {
-    'Bat Speed': 'Raw velocity of the barrel at contact',
-    'Squared Up Rate': 'Impact quality on flush contact',
-    'Blasts Per Swing': 'High-speed ideal contact frequency',
-    'Sweet Spot%': 'Launch efficiency in optimal band',
-    'Launch Angle Consistency': 'Flight angle stability swing to swing',
-    'Max Exit Velocity': 'Peak batted-ball speed ceiling',
-    'Pull/Opposite Mix': 'Directional spray balance across field',
-    'Two-Strike Approach': 'Adjustments made in protect counts',
-    'Chase Rate': 'Swings at pitches off-zone',
-    'In-Zone Contact': 'Contact rate on strikes seen',
-    'Pitch Recognition': 'Read quality out of hand',
-    'Barrel Accuracy': 'Precision of ideal impact point',
-    'Pull Power': 'Damage ability to pull side',
-    'Oppo Gap Efficiency': 'Opposite-field carry into alleys',
-    'High-Fastball Combat': 'Performance against elevated velocity',
-    'Offspeed Timing': 'Tempo match versus slow stuff',
-    'Clout Grade': 'Overall extra-base damage quality',
-    'Sprint Speed Impact': 'Run tool effect on outcomes',
-    'ISO Trend': 'Recent isolated power trajectory',
-    'Plate Coverage': 'Reach across full strike zone',
-    'Velocity Stability': 'Consistency of heater speed through innings',
-    'Spin Rate Delta': 'Variance in movement-driving spin',
-    'Extension Efficiency': 'Release point distance advantage forward',
-    'Vertical Break': 'Gravity-defying ride or drop shape',
-    'Horizontal Movement': 'Side-to-side action through zone',
-    'Command Grade': 'Ability to locate intended targets',
-    'Location Heat': 'Concentration of quality attack spots',
-    'Tunneling Quality': 'Pitch disguise on shared paths',
-    'Release Consistency': 'Repeatability of arm slot release',
-    'Zone Rate': 'Frequency of strikes in zone',
-    'K-BB% Trend': 'Recent strikeout minus walk edge',
-    'Whiff Rate (Fastball)': 'Miss rate generated on heaters',
-    'Whiff Rate (Offspeed)': 'Miss rate generated offspeed',
-    'First Pitch Strike%': 'Opening strike frequency to hitters',
-    'Put-away % Efficiency': 'Ability to finish two-strike counts',
-    'Hard Hit Avoidance': 'Suppression of loud contact allowed',
-    'Barrel Rate Allowed': 'Ideal contact allowed per ball',
-    'GB/FB Ratio': 'Ground-ball versus fly-ball mix',
-    'Average Exit Velocity': 'Mean EV permitted on contact',
-    'Soft Contact%': 'Weak contact share induced',
-    'Air Density': 'Atmospheric resistance on ball flight travel',
-    'Umpire Zone Rating': 'Numeric strike-call frequency profile',
-    'Platoon Delta': 'L/R handedness edge magnitude',
-    'Manager Pull Threshold': 'Historical volume and hook bias',
-    'Park Factor': 'Run environment boost or drag',
-    'Umpire Bias': 'General calling tendency influence',
-    'Wind Impact': 'Wind effect on carry path',
-    'Historical Matchup': 'Prior opponent interaction signal',
-    'L/R Splits': 'Handedness split performance edge',
-    'Recent 5-Game Trend': 'Short-run form over last five',
-    'Fatigue Index': 'Wear-and-tear impact on output',
-    'Travel Load': 'Schedule and transit burden factor',
-    'Defense Support': 'Team fielding support behind pitcher',
-    'Bullpen Buffer': 'Relief support protecting projection tail',
-    'Game Script Fit': 'Scenario alignment with expected usage',
-    'Weather Volatility': 'Instability from changing game weather',
-    'Bullpen Exposure': 'Reliever quality likely faced late',
-    'Lineup Protection': 'Support hitters around batter slot',
-    'Hit Probability Drift': 'Shift in baseline hit odds',
-    'Extra-Base Upside': 'Likelihood of doubles or better',
-    'Contact Floor': 'Minimum likely contact outcome floor',
-    'Power Spike Chance': 'Chance of elevated slug event',
-    'Pitcher Vulnerability': 'Opponent weakness exploitable by hitter',
-    'Defensive Shift Cost': 'Expected outs lost to positioning',
-    'Batted-Ball Luck': 'Variance from fortune on contact',
-    'Late-Game Leverage': 'Pressure-context effect in late innings',
-    'Stamina Decay': 'Performance drop deeper into outing',
-    'Late Movement': 'Shape quality late in pitch flight',
-    'Release Extension': 'Forward release creating approach angle',
-    'Strike-One Rate': 'First-strike generation frequency',
-    'Pressure Tolerance': 'Execution under high-stress spots',
-    'High-Leverage Efficiency': 'Results in leverage-heavy moments',
-    'Primary Pitch Reliability': 'Dependability of primary offering',
-    'Secondary Pitch Bite': 'Sharpness of offspeed break',
-    'Sequencing Logic': 'Quality of pitch-order decisions',
-    'Pitch Mix Stability': 'Consistency of arsenal allocation',
-    'Velocity Preservation': 'Ability to hold velo late',
-    'Third-Time-Through Penalty': 'Risk increase on repeated looks',
-    'Contact Suppression': 'Limiting quality contact overall',
-    'CSW Rate': 'Called plus swinging strike share',
-    'Called Strike Edge': 'Extra strikes won from command',
-    'Chase Induction': 'Ability to expand hitter decisions',
-    'Backdoor Command': 'Precision on edge-stealing pitches',
-    'Finisher Quality': 'Out pitch quality to end at-bats',
-    'DraftKings Projection': 'DraftKings market-implied projection point',
-    'FanDuel Projection': 'FanDuel market-implied projection point',
-    'BetMGM Projection': 'BetMGM market-implied projection point',
-    'Bet365 Projection': 'Bet365 market-implied projection point',
-    'Pinnacle Projection': 'Pinnacle market-implied projection point',
-    'Consensus Mean': 'Average across tracked book signals',
-    'Consensus Median': 'Middle value across book signals',
-    'Consensus High': 'Highest listed market estimate',
-    'Consensus Low': 'Lowest listed market estimate',
-    'Spread': 'Gap between high and low',
-    'Line Delta': 'Difference versus anchor line',
-    'Market Confidence': 'Agreement strength across books'
+    "Bat Speed": "Raw barrel speed at contact",
+    "Squared Up": "Quality of centered contact",
+    "Blasts": "High-speed flush contact rate",
+    "Sweet Spot": "Ideal launch band frequency",
+    "LA Consistency": "Stable launch-angle repeatability",
+    "Velocity Stability": "Consistency of pitch speed",
+    "Spin Rate Delta": "Movement shift from spin variance",
+    "Extension": "Release-point distance toward plate",
+    "Vertical Break": "Ride or drop movement",
+    "Horizontal Movement": "Arm-side or glove-side run",
+    "Air Density": "Atmospheric resistance on ball travel",
+    "Umpire Zone": "Strike-call frequency and width",
+    "Platoon Delta": "Handedness matchup edge magnitude",
+    "Manager Threshold": "Pitch-count or pull tendency",
+    "DK Projection": "DraftKings market projection value",
+    "FD Projection": "FanDuel market projection value",
+    "MGM Projection": "BetMGM market projection value",
+    "365 Projection": "Bet365 market projection value",
+    "PIN Projection": "Pinnacle market projection value",
+    "Consensus Mean": "Average across market sources",
+    "Consensus Median": "Middle market source number",
+    "Consensus High": "Highest listed market number",
+    "Consensus Low": "Lowest listed market number",
+    "Spread": "High-minus-low market gap",
+    "Line Delta": "Market average versus line",
+    "Market Confidence": "Coverage rate across books",
+    "Command Grade": "Overall command and intent",
+    "Location Heat": "Command quality by location",
+    "Tunneling Quality": "Pitch disguise from same lane",
+    "Release Consistency": "Repeatable arm slot release",
+    "Zone Rate": "Frequency of zone attacks",
+    "K-BB% Trend": "Strikeout minus walk trend",
+    "Whiff Rate (Fastball)": "Fastball swing-and-miss rate",
+    "Whiff Rate (Offspeed)": "Offspeed swing-and-miss rate",
+    "First Pitch Strike%": "Opening strike frequency rate",
+    "Put-away % Efficiency": "Finishing hitters with two strikes",
+    "Hard Hit Avoidance": "Limit on dangerous contact",
+    "Barrel Rate Allowed": "Barrels allowed per contact",
+    "GB/FB Ratio": "Groundball versus flyball mix",
+    "Average Exit Velocity": "Average exit speed allowed",
+    "Soft Contact%": "Frequency of weak contact",
+    "Stamina Decay": "Late-game fatigue dropoff rate",
+    "Late Movement": "Action retained deep outing",
+    "Release Extension": "Forward release distance consistency",
+    "Strike-One Rate": "Rate of first-strike counts",
+    "Pressure Tolerance": "Performance under leverage spots",
+    "High-Leverage Efficiency": "Execution in key moments",
+    "Primary Pitch Reliability": "Dependability of main pitch",
+    "Secondary Pitch Bite": "Sharpness of secondary movement",
+    "Sequencing Logic": "Pitch order effectiveness pattern",
+    "Pitch Mix Stability": "Consistency of pitch selection",
+    "Velocity Preservation": "Holding velocity over innings",
+    "Third-Time-Through Penalty": "Dropoff facing lineup again",
+    "Contact Suppression": "Ability to mute contact",
+    "CSW Rate": "Called plus swinging strikes",
+    "Called Strike Edge": "Extra called strikes generated",
+    "Chase Induction": "Ability to draw chases",
+    "Backdoor Command": "Steal edges with location",
+    "Finisher Quality": "Ability to close at-bats",
+    "Max Exit Velocity": "Peak batted-ball speed ceiling",
+    "Pull/Opposite Mix": "Direction balance on contact",
+    "Two-Strike Approach": "Survival quality with two strikes",
+    "Chase Rate": "Out-of-zone swing tendency",
+    "In-Zone Contact": "Contact rate on strikes",
+    "Pitch Recognition": "Reading shape and speed",
+    "Barrel Accuracy": "Precision of hard launch",
+    "Pull Power": "Damage when pulling airballs",
+    "Oppo Gap Efficiency": "Drive quality to opposite field",
+    "High-Fastball Combat": "Handling elevated velocity well",
+    "Offspeed Timing": "Timing against soft stuff",
+    "Clout Grade": "Overall power impact level",
+    "Sprint Speed Impact": "Run-speed effect on outcomes",
+    "ISO Trend": "Isolated power recent trend",
+    "Plate Coverage": "Reach across strike zone",
+    "Contact Authority": "Strength behind fair contact",
+    "Damage on Mistakes": "Punishing mistakes in zone",
+    "Breaking Ball Handling": "Ability versus spin pitches",
+    "Fastball Lift": "Air damage on heaters",
+    "Spray Discipline": "Intentional contact direction control",
+    "RISP Approach": "Approach with runners aboard",
+    "Walk Pressure": "Plate patience forcing mistakes",
+    "Strikeout Resistance": "Ability to avoid strikeouts",
+    "First-Pitch Attack": "Aggression on opener pitches",
+    "Pull Airball Rate": "Pulled flyball frequency",
+    "Center-Field Carry": "Carry through middle lanes",
+    "Opposite-Field Carry": "Carry to opposite field",
+    "Lefty Split Stability": "Consistency versus left-handed pitching",
+    "Righty Split Stability": "Consistency versus right-handed pitching",
+    "Batted-Ball Efficiency": "Quality per ball in play",
+    "Basepath Leverage": "Extra value from speed",
+    "Lineup Spot Edge": "Order position run upside",
+    "Clutch Contact": "Contact quality in key spots",
+    "Park Factor": "Venue effect on production",
+    "Umpire Bias": "General strike-zone lean",
+    "Wind Impact": "Wind effect on outcome",
+    "Historical Matchup": "Prior matchup performance signal",
+    "L/R Splits": "Left-right split performance",
+    "Recent 5-Game Trend": "Recent form over five games",
+    "Defense Support": "Defense behind pitcher quality",
+    "Bullpen Buffer": "Relief protection after exit",
+    "Game Script Fit": "Expected flow of game",
+    "Weather Volatility": "Weather instability risk factor",
+    "Bullpen Exposure": "Relief matchup exposure later",
+    "Lineup Protection": "Support around lineup slot",
+    "Run Support Expectation": "Expected offense behind pitcher",
+    "Inning Efficiency": "Pitches used per inning",
+    "Pitch Count Elasticity": "Likely leash length tonight",
+    "Strike Zone Fit": "Profile fit to umpire zone",
+    "Batted-Ball Luck": "Results driven by variance",
+    "Recovery Window": "Rest freshness before game",
+    "Clutch Stability": "Execution consistency under pressure",
+    "Lineup Depth": "Strength throughout batting order",
+    "Hit Probability Drift": "Moving baseline for hits",
+    "Extra-Base Upside": "Chance for extra-base damage",
+    "Contact Floor": "Minimum contact expectation level",
+    "Power Spike Chance": "Upside for power surge",
+    "Pitcher Vulnerability": "Pitcher weakness exposure level",
+    "Defensive Shift Cost": "Defensive alignment suppression cost",
+    "Late-Game Leverage": "High-leverage late opportunity rate"
   };
+
+  function el(id) { return document.getElementById(id); }
+  function escapeHtml(value) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function asArray(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
 
   function resolveProfileType(row = {}) {
     const raw = String(row?.type || '').toLowerCase();
@@ -174,6 +163,10 @@ window.PickCalcUI = window.PickCalcUI || {};
   function resolveFactorName(row = {}, branchKey, index, meta = {}) {
     const profile = resolveProfileType(row);
     return PROFILE_FACTOR_NAMES[profile]?.[branchKey]?.[index - 1] || meta.name || `${branchKey}${String(index).padStart(2, '0')}`;
+  }
+
+  function resolveFactorGlossary(name = '') {
+    return FACTOR_GLOSSARY[name] || 'Short factor definition pending';
   }
 
   function renderLeagueChecklist(leagues) {
@@ -227,7 +220,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
     const label = numericValue === 0 ? 'WARNING' : ((meta.status === 'SUCCESS' || meta.status === 'REAL') ? 'REAL' : 'DERIVED');
     const statusClass = label === 'WARNING' ? ' factor-status' : ' factor-status visually-hidden';
-    const glossary = FACTOR_GLOSSARY[meta.name || ''] || 'Model-derived factor context';
+    const glossary = resolveFactorGlossary(meta.name || '');
     return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="mini-muted">(${escapeHtml(glossary)})</span><span class="${statusClass.trim()}">${escapeHtml(label === 'WARNING' ? ' WARNING' : '')}</span></div>`;
   }
 
@@ -243,7 +236,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
       return `${label}: <span${zeroClass}>${escapeHtml(formatValue(value))}</span>`;
     }).join(' | ');
-    return `<div class="market-providers"><div>${providerLine}</div></div>`;
+    return `<div class="market-providers"><div><strong>Market Projections/Odds:</strong> ${providerLine}</div></div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -253,12 +246,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
-      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
-      if (branchKey === 'E') {
-        return `<section class="branch-block ${tone.card}${warningClass}">${renderMarketProviders(branch.providerMap || {})}</section>`;
-      }
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
-      return `<section class="branch-block ${tone.card}${warningClass}">${factorMeta.map(renderFactorLine).join('')}</section>`;
+      const branchHeader = branchKey === 'E' ? '<div class="branch-title"><strong>Market</strong></div>' : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+      return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
     }).join('')}</article>`;
   }
 
@@ -415,16 +406,20 @@ window.PickCalcUI = window.PickCalcUI || {};
         return `${k}:${active}`;
       }).join('|');
       const matrixLines = branchKeys.map((k) => {
-        if (k === 'E') {
-          const providers = [['DK', vault.branches?.E?.providerMap?.DraftKings, 'DraftKings market-implied projection point'], ['FD', vault.branches?.E?.providerMap?.FanDuel, 'FanDuel market-implied projection point'], ['MGM', vault.branches?.E?.providerMap?.BetMGM, 'BetMGM market-implied projection point'], ['365', vault.branches?.E?.providerMap?.Bet365, 'Bet365 market-implied projection point'], ['PIN', vault.branches?.E?.providerMap?.Pinnacle, 'Pinnacle market-implied projection point']].map(([label, value, glossary]) => `${label}=${formatValue(value)} (${glossary})`).join(', ');
-          return `BRANCH E: ${providers}`;
-        }
         const parsed = vault.branches?.[k]?.parsed || {};
-        return `BRANCH ${k}: ` + Object.entries(parsed).map(([key, value], idx) => {
-          const label = resolveFactorName(row, k, idx + 1, { name: key });
-          const glossary = FACTOR_GLOSSARY[label] || 'Model-derived factor context';
-          return `${label}=${formatValue(value)} (${glossary})`;
+        const parsedLine = Object.entries(parsed).map(([key, value], idx) => {
+          const factorName = resolveFactorName(row, k, idx + 1, { name: key });
+          return `${factorName}=${formatValue(value)} (${resolveFactorGlossary(factorName)})`;
         }).join(', ');
+        if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
+        const providerSummary = [
+          `DK=${formatValue(vault.branches?.E?.providerMap?.DraftKings || 0)}`,
+          `FD=${formatValue(vault.branches?.E?.providerMap?.FanDuel || 0)}`,
+          `MGM=${formatValue(vault.branches?.E?.providerMap?.BetMGM || 0)}`,
+          `365=${formatValue(vault.branches?.E?.providerMap?.Bet365 || 0)}`,
+          `PIN=${formatValue(vault.branches?.E?.providerMap?.Pinnacle || 0)}`
+        ].join(', ');
+        return `BRANCH E: ${providerSummary} || ${parsedLine}`;
       });
 
       return [
@@ -442,6 +437,6 @@ window.PickCalcUI = window.PickCalcUI || {};
 
 
 
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();

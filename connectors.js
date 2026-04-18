@@ -10,56 +10,18 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   const FACTOR_NAMES = {
     Pitcher: {
-      A: [
-        'Velocity Stability', 'Spin Rate Delta', 'Extension Efficiency', 'Vertical Break', 'Horizontal Movement',
-        'Command Grade', 'Location Heat', 'Tunneling Quality', 'Release Consistency', 'Zone Rate',
-        'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
-        'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
-      ],
-      B: [
-        'Stamina Decay', 'Late Movement', 'Release Extension', 'Strike-One Rate', 'Pressure Tolerance', 'High-Leverage Efficiency',
-        'Primary Pitch Reliability', 'Secondary Pitch Bite', 'Sequencing Logic', 'Pitch Mix Stability', 'Velocity Preservation',
-        'Third-Time-Through Penalty', 'Contact Suppression', 'CSW Rate', 'Called Strike Edge', 'Chase Induction',
-        'Backdoor Command', 'Finisher Quality'
-      ],
-      C: [
-        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Air Density', 'Umpire Zone Rating', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
-      ],
-      D: [
-        'Platoon Delta', 'Manager Pull Threshold', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
-        'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
-      ],
-      E: [
-        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
-        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
-      ]
+      A: ["Velocity Stability", "Spin Rate Delta", "Extension", "Vertical Break", "Horizontal Movement", "Command Grade", "Location Heat", "Tunneling Quality", "Release Consistency", "Zone Rate", "K-BB% Trend", "Whiff Rate (Fastball)", "Whiff Rate (Offspeed)", "First Pitch Strike%", "Put-away % Efficiency", "Hard Hit Avoidance", "Barrel Rate Allowed", "GB/FB Ratio", "Average Exit Velocity", "Soft Contact%"],
+      B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
+      D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
     },
     Hitter: {
-      A: [
-        'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
-        'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
-        'Pitch Recognition', 'Barrel Accuracy', 'Pull Power', 'Oppo Gap Efficiency', 'High-Fastball Combat',
-        'Offspeed Timing', 'Clout Grade', 'Sprint Speed Impact', 'ISO Trend', 'Plate Coverage'
-      ],
-      B: [
-        'Contact Authority', 'Damage on Mistakes', 'Breaking Ball Handling', 'Fastball Lift', 'Spray Discipline', 'RISP Approach',
-        'Walk Pressure', 'Strikeout Resistance', 'First-Pitch Attack', 'Pull Airball Rate', 'Center-Field Carry',
-        'Opposite-Field Carry', 'Lefty Split Stability', 'Righty Split Stability', 'Batted-Ball Efficiency',
-        'Basepath Leverage', 'Lineup Spot Edge', 'Clutch Contact'
-      ],
-      C: [
-        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Air Density', 'Umpire Zone Rating', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
-      ],
-      D: [
-        'Platoon Delta', 'Manager Pull Threshold', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
-        'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
-      ],
-      E: [
-        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
-        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
-      ]
+      A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
+      B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
+      D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
     }
   };
 
@@ -242,22 +204,22 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const instructions = mode === 'fallback'
       ? [
-          'Extract discrete Grounded Metrics and Market Projections for the following subjects.',
+          'Extract discrete Grounded Metrics and a 5-tier sportsbook projection ladder for the following subjects.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Schema:',
           '{"players":{"normalizedname":{"a01":0.0,"a02":0.0,"a03":0.0,"a04":0.0,"a05":0.0,"a06":0.0,"a07":0.0,"a08":0.0,"a09":0.0,"a10":0.0,"a11":0.0,"a12":0.0,"a13":0.0,"a14":0.0,"a15":0.0,"a16":0.0,"a17":0.0,"a18":0.0,"a19":0.0,"a20":0.0,"b01":0.0,"b02":0.0,"b03":0.0,"b04":0.0,"b05":0.0,"b06":0.0,"b07":0.0,"b08":0.0,"b09":0.0,"b10":0.0,"b11":0.0,"b12":0.0,"b13":0.0,"b14":0.0,"b15":0.0,"b16":0.0,"b17":0.0,"b18":0.0,"c01":0.0,"c02":0.0,"c03":0.0,"c04":0.0,"c05":0.0,"c06":0.0,"c07":0.0,"c08":0.0,"c09":0.0,"c10":0.0,"c11":0.0,"c12":0.0,"d01":0.0,"d02":0.0,"d03":0.0,"d04":0.0,"d05":0.0,"d06":0.0,"d07":0.0,"d08":0.0,"d09":0.0,"d10":0.0,"market01":0.0,"market02":0.0,"market03":0.0,"market04":0.0,"market05":0.0}}}',
-          'Do not include prose, code fences, headings, or commentary.',
+          'Explicitly populate c07=Air Density, c08=Umpire Zone, d01=Platoon Delta, d02=Manager Threshold, market01=DraftKings, market02=FanDuel, market03=BetMGM, market04=Bet365, market05=Pinnacle.\nDo not include prose, code fences, headings, or commentary.',
           'Use 0.0 only when data is physically unavailable.'
         ].join('\n')
       : [
-          'Extract 72 discrete data points for the following subjects.',
+          'Extract 72 discrete data points for the following subjects, including explicit Sharp variables and sportsbook tiers.',
           'Categorize the data as Systematic Extraction metrics.',
           'Strictly return one JSON object only.',
           'Each subject key must be the normalized alphanumeric subject name.',
           'Required schema:',
           '{"players":{"normalizedname":{"a01":0.0,"a02":0.0,"a03":0.0,"a04":0.0,"a05":0.0,"a06":0.0,"a07":0.0,"a08":0.0,"a09":0.0,"a10":0.0,"a11":0.0,"a12":0.0,"a13":0.0,"a14":0.0,"a15":0.0,"a16":0.0,"a17":0.0,"a18":0.0,"a19":0.0,"a20":0.0,"b01":0.0,"b02":0.0,"b03":0.0,"b04":0.0,"b05":0.0,"b06":0.0,"b07":0.0,"b08":0.0,"b09":0.0,"b10":0.0,"b11":0.0,"b12":0.0,"b13":0.0,"b14":0.0,"b15":0.0,"b16":0.0,"b17":0.0,"b18":0.0,"c01":0.0,"c02":0.0,"c03":0.0,"c04":0.0,"c05":0.0,"c06":0.0,"c07":0.0,"c08":0.0,"c09":0.0,"c10":0.0,"c11":0.0,"c12":0.0,"d01":0.0,"d02":0.0,"d03":0.0,"d04":0.0,"d05":0.0,"d06":0.0,"d07":0.0,"d08":0.0,"d09":0.0,"d10":0.0,"market01":0.0,"market02":0.0,"market03":0.0,"market04":0.0,"market05":0.0}}}',
-          'Do not include prose, markdown headers, or explanations.',
+          'Explicitly populate c07=Air Density, c08=Umpire Zone, d01=Platoon Delta, d02=Manager Threshold, market01=DraftKings, market02=FanDuel, market03=BetMGM, market04=Bet365, market05=Pinnacle.\nDo not include prose, markdown headers, or explanations.',
           'Use 0.0 only if data is physically unavailable.'
         ].join('\n');
 
@@ -276,8 +238,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function remapProviderAliases(payload = {}) {
     const safe = Object.assign({}, payload || {});
     const aliasMap = {
-      DraftKings: ['DraftKings', 'draftkings', 'market01', 'provider01', 'projection01'],
-      FanDuel: ['FanDuel', 'fanduel', 'market02', 'provider02', 'projection02'],
+      FanDuel: ['FanDuel', 'fanduel', 'market01', 'provider01', 'projection01'],
+      DraftKings: ['DraftKings', 'draftkings', 'market02', 'provider02', 'projection02'],
       BetMGM: ['BetMGM', 'betmgm', 'market03', 'provider03', 'projection03'],
       Bet365: ['Bet365', 'bet365', 'market04', 'provider04', 'projection04'],
       Pinnacle: ['Pinnacle', 'pinnacle', 'market05', 'provider05', 'projection05']
@@ -392,9 +354,20 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }).join('\n');
     const prompt = `Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.1 to 1.0) to each defined metric based on historical 2024-2025 performance data. Avoid default null (0.00) outputs unless no statistical correlation exists.
 CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
+CRITICAL SLOT MAP:
+- v[38] = c07 Air Density (temperature + altitude + humidity ball-flight multiplier)
+- v[39] = c08 Umpire Zone (numeric strike-call frequency)
+- v[50] = d01 Platoon Delta (left/right handedness edge)
+- v[51] = d02 Manager Threshold (volume/substitution bias)
+- v[60] = market01 DraftKings
+- v[61] = market02 FanDuel
+- v[62] = market03 BetMGM
+- v[63] = market04 Bet365
+- v[64] = market05 Pinnacle
+Return five specific sportsbook floats for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle in that exact order.
 Subjects:
 ${uniqueSubjects}
-Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}. Explicitly provide five sportsbook-tier floats in Branch E for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle, plus the four Sharp variables Air Density, Umpire Zone Rating, Platoon Delta, and Manager Pull Threshold in their designated slots.`;
+Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
