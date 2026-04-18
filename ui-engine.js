@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -232,6 +232,19 @@ window.PickCalcUI = window.PickCalcUI || {};
     return ` <span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
   }
 
+  function resolveCobaltScore(vault = {}, row = {}) {
+    return window.PickCalcCore?.calcCobaltEdge?.(vault, row) || { score: 0 };
+  }
+
+  function resolveScoreEmoji(score = 0) {
+    const n = Number(score) || 0;
+    if (n >= 95) return '💎';
+    if (n >= 90) return '🔥';
+    if (n >= 80) return '⚡';
+    if (n >= 70) return '📈';
+    return '🧊';
+  }
+
   function renderFactorLine(meta = {}) {
     const numericValue = Number(meta.value);
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
@@ -262,7 +275,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
+    const scoreMeta = resolveCobaltScore(vault, row);
+    const score = Number(scoreMeta?.score || 0);
+    const scoreEmoji = resolveScoreEmoji(score);
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
       const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
@@ -356,7 +372,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const hint = el('analysisHint');
     if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT recovery active.';
     const rowCard = el('analysisRowCard');
-    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')}${renderPickTypeBadge(row.pickType || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')}</div></div>`;
+    if (rowCard) rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')}${renderPickTypeBadge(row.pickType || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')} - Score: ${escapeHtml(String(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}/100 ${escapeHtml(resolveScoreEmoji(resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row)?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div><div class="mini-muted">LEG_ID: ${escapeHtml(row.LEG_ID || '')}</div></div>`;
     const kpis = el('analysisKpis');
     if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
     renderMiningGrid(rows, vaultCollection);
@@ -444,7 +460,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       return [
         `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
         `LEG_ID: ${legId}`,
-        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'}`,
+        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'} | SCORE: ${(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}/100 ${resolveScoreEmoji(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}`,
         `SATURATION: ${summary}`,
         ...matrixLines,
         `PROJECTIONS: ${JSON.stringify(vault.branches?.E?.providerMap || {})}`

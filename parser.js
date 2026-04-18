@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -263,6 +263,43 @@ window.PickCalcParser = (() => {
     return { opponent: match[2].toUpperCase(), indicator: match[1].replace('.', '').toLowerCase(), token: cleanWhitespace(match[0]), team: teamHint || '' };
   }
 
+  function extractMatchupFallback(context = [], teamHint = '') {
+    const joined = cleanWhitespace((context || []).map((item) => item?.raw || item || '').join(' '));
+    if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
+
+    const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
+    if (direct) return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
+
+    const tokens = joined.split(/\s+/).filter(Boolean);
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i].replace(/[^A-Za-z@.]/g, '');
+      if (!/^(vs\.?|@)$/i.test(token)) continue;
+      for (let j = i + 1; j < Math.min(tokens.length, i + 5); j += 1) {
+        const candidate = tokens[j].replace(/[^A-Za-z]/g, '').toUpperCase();
+        if (/^[A-Z]{2,3}$/.test(candidate) && candidate !== (teamHint || '').toUpperCase()) {
+          return { opponent: candidate, indicator: token.replace('.', '').toLowerCase(), token: `${token} ${candidate}`, team: teamHint || '' };
+        }
+      }
+    }
+
+    const lines = Array.isArray(context) ? context : [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
+      if (!raw) continue;
+      if (/^(vs\.?|@)$/i.test(raw)) {
+        for (let j = i + 1; j < Math.min(lines.length, i + 3); j += 1) {
+          const nextRaw = cleanWhitespace(lines[j]?.raw || lines[j] || '');
+          const nextMatch = nextRaw.match(/([A-Z]{2,3})/);
+          if (nextMatch && nextMatch[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
+            return { opponent: nextMatch[1].toUpperCase(), indicator: raw.replace('.', '').toLowerCase(), token: `${raw} ${nextMatch[1].toUpperCase()}`, team: teamHint || '' };
+          }
+        }
+      }
+    }
+
+    return { opponent: '', indicator: '', token: '', team: teamHint || '' };
+  }
+
   function isStandaloneAnchorLine(line) {
     const clean = cleanWhitespace(line);
     if (!STANDALONE_ANCHOR_RX.test(clean)) return false;
@@ -386,7 +423,9 @@ window.PickCalcParser = (() => {
     const joined = context.map((item) => item.raw).join('\n');
     const pickType = extractPickType(joined);
     const teamRole = extractTeamRole(joined);
-    const matchup = extractMatchup(joined, teamRole.team);
+    const matchupPrimary = extractMatchup(joined, teamRole.team);
+    const matchupFallback = matchupPrimary.opponent ? matchupPrimary : extractMatchupFallback(context, teamRole.team);
+    const matchup = matchupFallback;
     const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint);
     const parsedPlayer = choosePlayer(context, candidate.anchorLineIndex);
     const direction = chooseDirection(context, candidate.anchorLineIndex);

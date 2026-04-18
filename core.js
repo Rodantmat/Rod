@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -27,8 +27,47 @@ window.PickCalcCore = window.PickCalcCore || {};
     verboseMode: false
   };
 
-  function calcCobaltEdge() {
-    return 0;
+  function calcCobaltEdge(vault = {}, row = {}) {
+    const branches = vault?.branches || {};
+    const clamp01 = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      if (n <= 1) return Math.max(0, Math.min(1, n));
+      if (n <= 100) return Math.max(0, Math.min(1, n / 100));
+      return 1;
+    };
+    const averageBranch = (branchKey) => {
+      const parsed = Object.values(branches?.[branchKey]?.parsed || {});
+      if (!parsed.length) return 0;
+      return parsed.reduce((sum, value) => sum + clamp01(value), 0) / parsed.length;
+    };
+    const metric = (branchKey, key) => clamp01(branches?.[branchKey]?.parsed?.[key]);
+
+    const branchA = averageBranch('A');
+    const branchC = averageBranch('C');
+    const branchD = averageBranch('D');
+    const branchEDeltas = [metric('E', 'market10'), metric('E', 'market11'), metric('E', 'market12')].filter((value) => Number.isFinite(value));
+    const branchEDelta = branchEDeltas.length ? (branchEDeltas.reduce((sum, value) => sum + value, 0) / branchEDeltas.length) : averageBranch('E');
+
+    const pScore = branchA * 0.4;
+    const eScore = branchC * 0.3;
+    const sScore = branchD * 0.2;
+    const mScore = branchEDelta * 0.1;
+    const final = Math.max(0, Math.min(100, Math.round((pScore + eScore + sScore + mScore) * 100)));
+
+    return {
+      score: final,
+      pScore: Math.round(pScore * 1000) / 1000,
+      eScore: Math.round(eScore * 1000) / 1000,
+      sScore: Math.round(sScore * 1000) / 1000,
+      mScore: Math.round(mScore * 1000) / 1000,
+      branchA,
+      branchC,
+      branchD,
+      branchEDelta,
+      player: row?.parsedPlayer || '',
+      legId: row?.LEG_ID || ''
+    };
   }
 
   function buildAnalysisCopyText(context = {}) {
