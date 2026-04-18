@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.15 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.16 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -67,7 +67,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.auditRows = [];
     state.miningVault = {};
     state.lastResult = null;
-    state.rows = (parsed.rows || []).slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}`, pickType: row.pickType || 'Regular Line' }));
+    const dedupedRows = Array.from(new Map((parsed.rows || []).map((row) => { const key = [String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || row.lineValue || '')].join('|'); return [key, row]; })).values());
+    state.rows = dedupedRows.slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}`, pickType: row.pickType || 'Regular Line' }));
     state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
@@ -170,7 +171,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
-      state.rows = LAB_BOOT_ROWS.slice();
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
       state.auditRows = [];
       state.miningVault = {};
       state.lastResult = null;

@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.15 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.16 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -215,6 +215,14 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Number.isFinite(n) ? n.toFixed(3) : '0.000';
   }
 
+
+  function splitTeamRoleFromName(row = {}) {
+    const parsed = String(row?.parsedPlayer || '').trim();
+    const match = parsed.match(/^(.*?)(?:\s+)?([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i);
+    if (!match) return { playerName: parsed, team: row?.team || '' };
+    return { playerName: match[1].trim(), team: String(row?.team || match[2] || '').toUpperCase() };
+  }
+
   function renderPickTypeBadge(pickType = '') {
     const normalized = String(pickType || '').trim();
     if (!normalized || normalized === 'Regular Line') return '';
@@ -248,10 +256,11 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
     const branches = vault?.branches || {};
+    const normalized = splitTeamRoleFromName(row);
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
       const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
