@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.12 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.13 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -16,27 +16,49 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
         'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
       ],
-      B: Array.from({ length: 18 }, (_, i) => `Pitching Profile B${String(i + 1).padStart(2, '0')}`),
-      C: Array.from({ length: 12 }, (_, i) => `Pitching Profile C${String(i + 1).padStart(2, '0')}`),
-      D: Array.from({ length: 10 }, (_, i) => `Pitching Profile D${String(i + 1).padStart(2, '0')}`),
+      B: [
+        'Stamina Decay', 'Late Movement', 'Release Extension', 'Strike-One Rate', 'Pressure Tolerance', 'High-Leverage Efficiency',
+        'Primary Pitch Reliability', 'Secondary Pitch Bite', 'Sequencing Logic', 'Pitch Mix Stability', 'Velocity Preservation',
+        'Third-Time-Through Penalty', 'Contact Suppression', 'CSW Rate', 'Called Strike Edge', 'Chase Induction',
+        'Backdoor Command', 'Finisher Quality'
+      ],
+      C: [
+        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
+        'Fatigue Index', 'Travel Load', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
+      ],
+      D: [
+        'Opponent Patience', 'Opponent Whiff Bias', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
+        'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
+      ],
       E: [
-        'FanDuel Projection','DraftKings Projection','OddsJam Projection','Pinnacle Projection','Bet365 Projection',
-        'Consensus Mean','Consensus Median','Consensus High','Consensus Low','Spread','Line Delta','Market Confidence'
+        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     },
     Hitter: {
       A: [
         'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
         'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
-        'Hitting Profile A11', 'Hitting Profile A12', 'Hitting Profile A13', 'Hitting Profile A14', 'Hitting Profile A15',
-        'Hitting Profile A16', 'Hitting Profile A17', 'Hitting Profile A18', 'Hitting Profile A19', 'Hitting Profile A20'
+        'Pitch Recognition', 'Barrel Accuracy', 'Pull Power', 'Oppo Gap Efficiency', 'High-Fastball Combat',
+        'Offspeed Timing', 'Clout Grade', 'Sprint Speed Impact', 'ISO Trend', 'Plate Coverage'
       ],
-      B: Array.from({ length: 18 }, (_, i) => `Hitting Profile B${String(i + 1).padStart(2, '0')}`),
-      C: Array.from({ length: 12 }, (_, i) => `Hitting Profile C${String(i + 1).padStart(2, '0')}`),
-      D: Array.from({ length: 10 }, (_, i) => `Hitting Profile D${String(i + 1).padStart(2, '0')}`),
+      B: [
+        'Contact Authority', 'Damage on Mistakes', 'Breaking Ball Handling', 'Fastball Lift', 'Spray Discipline', 'RISP Approach',
+        'Walk Pressure', 'Strikeout Resistance', 'First-Pitch Attack', 'Pull Airball Rate', 'Center-Field Carry',
+        'Opposite-Field Carry', 'Lefty Split Stability', 'Righty Split Stability', 'Batted-Ball Efficiency',
+        'Basepath Leverage', 'Lineup Spot Edge', 'Clutch Contact'
+      ],
+      C: [
+        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
+        'Fatigue Index', 'Travel Load', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
+      ],
+      D: [
+        'Steal Pressure', 'Run Creation Form', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
+        'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
+      ],
       E: [
-        'FanDuel Projection','DraftKings Projection','OddsJam Projection','Pinnacle Projection','Bet365 Projection',
-        'Consensus Mean','Consensus Median','Consensus High','Consensus Low','Spread','Line Delta','Market Confidence'
+        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     }
   };

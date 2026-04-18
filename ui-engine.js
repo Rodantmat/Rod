@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.12 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.13 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -15,14 +15,50 @@ window.PickCalcUI = window.PickCalcUI || {};
         'Command Grade', 'Location Heat', 'Tunneling Quality', 'Release Consistency', 'Zone Rate',
         'K-BB% Trend', 'Whiff Rate (Fastball)', 'Whiff Rate (Offspeed)', 'First Pitch Strike%', 'Put-away % Efficiency',
         'Hard Hit Avoidance', 'Barrel Rate Allowed', 'GB/FB Ratio', 'Average Exit Velocity', 'Soft Contact%'
+      ],
+      B: [
+        'Stamina Decay', 'Late Movement', 'Release Extension', 'Strike-One Rate', 'Pressure Tolerance', 'High-Leverage Efficiency',
+        'Primary Pitch Reliability', 'Secondary Pitch Bite', 'Sequencing Logic', 'Pitch Mix Stability', 'Velocity Preservation',
+        'Third-Time-Through Penalty', 'Contact Suppression', 'CSW Rate', 'Called Strike Edge', 'Chase Induction',
+        'Backdoor Command', 'Finisher Quality'
+      ],
+      C: [
+        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
+        'Fatigue Index', 'Travel Load', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
+      ],
+      D: [
+        'Opponent Patience', 'Opponent Whiff Bias', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
+        'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
+      ],
+      E: [
+        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     },
     Hitter: {
       A: [
         'Bat Speed', 'Squared Up Rate', 'Blasts Per Swing', 'Sweet Spot%', 'Launch Angle Consistency',
         'Max Exit Velocity', 'Pull/Opposite Mix', 'Two-Strike Approach', 'Chase Rate', 'In-Zone Contact',
-        'Hitting Profile A11', 'Hitting Profile A12', 'Hitting Profile A13', 'Hitting Profile A14', 'Hitting Profile A15',
-        'Hitting Profile A16', 'Hitting Profile A17', 'Hitting Profile A18', 'Hitting Profile A19', 'Hitting Profile A20'
+        'Pitch Recognition', 'Barrel Accuracy', 'Pull Power', 'Oppo Gap Efficiency', 'High-Fastball Combat',
+        'Offspeed Timing', 'Clout Grade', 'Sprint Speed Impact', 'ISO Trend', 'Plate Coverage'
+      ],
+      B: [
+        'Contact Authority', 'Damage on Mistakes', 'Breaking Ball Handling', 'Fastball Lift', 'Spray Discipline', 'RISP Approach',
+        'Walk Pressure', 'Strikeout Resistance', 'First-Pitch Attack', 'Pull Airball Rate', 'Center-Field Carry',
+        'Opposite-Field Carry', 'Lefty Split Stability', 'Righty Split Stability', 'Batted-Ball Efficiency',
+        'Basepath Leverage', 'Lineup Spot Edge', 'Clutch Contact'
+      ],
+      C: [
+        'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
+        'Fatigue Index', 'Travel Load', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
+      ],
+      D: [
+        'Steal Pressure', 'Run Creation Form', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
+        'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
+      ],
+      E: [
+        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     }
   };
@@ -95,7 +131,8 @@ window.PickCalcUI = window.PickCalcUI || {};
     const numericValue = Number(meta.value);
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
     const label = numericValue === 0 ? 'WARNING' : ((meta.status === 'SUCCESS' || meta.status === 'REAL') ? 'REAL' : 'DERIVED');
-    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="factor-status">- ${escapeHtml(label)}</span></div>`;
+    const statusClass = label === 'WARNING' ? ' factor-status' : ' factor-status visually-hidden';
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span><span class="${statusClass.trim()}">${escapeHtml(label === 'WARNING' ? ' WARNING' : '')}</span></div>`;
   }
 
   function renderMarketProviders(providerMap = {}) {
@@ -110,7 +147,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
       return `${label}: <span${zeroClass}>${escapeHtml(formatValue(value))}</span>`;
     }).join(' | ');
-    return `<div class="market-providers"><strong>Market Projections/Odds:</strong><div>${providerLine}</div></div>`;
+    return `<div class="market-providers"><div>${providerLine}</div></div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -120,9 +157,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
-      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
-      return `<section class="branch-block ${tone.card}${warningClass}"><div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
+      const branchHeader = branchKey === 'E' ? '<div class="branch-title"><strong>Market</strong></div>' : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+      return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
     }).join('')}</article>`;
   }
 
@@ -134,7 +172,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const hasVaultData = Object.keys(safeVaults).length > 0;
     const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
     const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Verbatim Density Layout</strong><div class="mini-muted">7-player sequential shell. Player / Team / Matchup / Time header locked. Branch E market providers rendered inline.</div></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Mining Matrix</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
 
   function renderConsole(logs) {
@@ -191,8 +229,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       });
     });
     const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';
-    const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status === 'REAL' || b.status === 'DERIVED').length, 0);
-    const purityScore = total ? ((purityUnits / total) * 100).toFixed(2) : '0.00';
+    const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status !== 'WARNING').length, 0);
+    const purityScore = Object.keys(vaultCollection || {}).length ? ((purityUnits / (Object.keys(vaultCollection || {}).length * BRANCH_KEYS.length)) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
     return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
   }
@@ -280,10 +318,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       }).join('|');
       const matrixLines = branchKeys.map((k) => {
         const parsed = vault.branches?.[k]?.parsed || {};
-        const parsedLine = Object.entries(parsed).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
+        const parsedLine = Object.entries(parsed).map(([key, value], idx) => `${resolveFactorName(row, k, idx + 1, { name: key })}=${formatValue(value)}`).join(', ');
         if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
         const providers = Object.entries(vault.branches?.E?.providerMap || {}).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
-        return `BRANCH E: ${parsedLine}${providers ? ` | PROVIDERS: ${providers}` : ''}`;
+        return `BRANCH E: ${providers || parsedLine}`;
       });
 
       return [
