@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.16 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.17 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -39,7 +39,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   function getNow() { return new Date(); }
   function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
-  function buildIngestLogs(auditRows) { return (auditRows || []).filter((item) => !item.accepted).map((item) => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` })); }
+  function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
     const rows = filteredRows(state.rows);
@@ -67,8 +67,18 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.auditRows = [];
     state.miningVault = {};
     state.lastResult = null;
-    const dedupedRows = Array.from(new Map((parsed.rows || []).map((row) => { const key = [String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || row.lineValue || '')].join('|'); return [key, row]; })).values());
-    state.rows = dedupedRows.slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}`, pickType: row.pickType || 'Regular Line' }));
+    const rowMap = new Map();
+    (parsed.rows || []).forEach((row) => {
+      const key = [String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || row.lineValue || '')].join('|');
+      const completeness = [row.pickType && row.pickType !== 'Regular Line', row.team, row.opponent, row.gameTimeText, row.rawText].filter(Boolean).length;
+      const existing = rowMap.get(key);
+      if (!existing || completeness > existing.__completeness) rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
+    });
+    state.rows = Array.from(rowMap.values()).slice(0, 7).map((row, index) => {
+      const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
+      delete nextRow.__completeness;
+      return nextRow;
+    });
     state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
