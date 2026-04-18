@@ -1,0 +1,109 @@
+{
+  "unit15": {
+    "count": 15,
+    "players": [
+      "Otto Lopez",
+      "Aaron Judge",
+      "Tarik Skubal",
+      "Shohei Ohtani",
+      "Brooks Lee",
+      "Will Warren",
+      "Taj Bradley",
+      "Paul Skenes",
+      "Emmet Sheehan",
+      "Austin Martin",
+      "Elly Cruz",
+      "Aaron Judge",
+      "Chris Sale",
+      "Aaron Judge",
+      "Chase DeLauter"
+    ],
+    "chase": {
+      "idx": 15,
+      "rawText": "416\nChase DeLauter Demon\nCLE - OF\n0.5 Home Runs",
+      "cleanedRawText": "416 Chase DeLauter Demon CLE - OF 0.5 Home Runs",
+      "parsedPlayer": "Chase DeLauter",
+      "player": "Chase DeLauter",
+      "sport": "MLB",
+      "league": "MLB",
+      "role": "Batter",
+      "prop": "Home Runs",
+      "propKey": "homeRuns",
+      "propFamily": "Home Runs",
+      "line": "0.5",
+      "lineValue": 0.5,
+      "direction": "More",
+      "team": "CLE",
+      "opponent": "",
+      "type": "Hitter",
+      "pickType": "Demon",
+      "gameTimeText": "",
+      "gameTimeISO": "",
+      "accepted": true,
+      "timeFilter": {
+        "accepted": true,
+        "code": "NO_TIME",
+        "detail": "No game time found.",
+        "scope": "today",
+        "parseYear": 2026
+      },
+      "parseYear": 2026,
+      "selectedDate": "",
+      "sourceIndex": 60
+    },
+    "cleanNames": true,
+    "threeJudgeProps": [
+      "Total Bases",
+      "Hits+Runs+RBIs",
+      "Hits"
+    ]
+  },
+  "vertical5": {
+    "count": 5,
+    "paul": {
+      "idx": 5,
+      "rawText": "TB\nLess\nMore\nPaul Skenes Goblin\nPIT - P\nPaul Skenes\nvs TB Sat 1:05pm\n17.5\nPO\nMore",
+      "cleanedRawText": "TB Less More Paul Skenes Goblin PIT - P Paul Skenes vs TB Sat 1:05pm 17.5 PO More",
+      "parsedPlayer": "Paul Skenes",
+      "player": "Paul Skenes",
+      "sport": "MLB",
+      "league": "MLB",
+      "role": "Pitcher",
+      "prop": "Pitching Outs",
+      "propKey": "inningsPitched",
+      "propFamily": "Pitching Outs",
+      "line": "17.5",
+      "lineValue": 17.5,
+      "direction": "More",
+      "team": "PIT",
+      "opponent": "TB",
+      "type": "Pitcher",
+      "pickType": "Goblin",
+      "gameTimeText": "Sat 1:05pm",
+      "gameTimeISO": "2026-04-18T13:05:00",
+      "accepted": true,
+      "timeFilter": {
+        "accepted": true,
+        "code": "IN_SCOPE",
+        "detail": "Accepted for today.",
+        "scope": "today",
+        "parseYear": 2026
+      },
+      "parseYear": 2026,
+      "selectedDate": "2026-04-18",
+      "sourceIndex": 45
+    }
+  },
+  "versions": {
+    "parser.js": true,
+    "core.js": true,
+    "connectors.js": true,
+    "ui-engine.js": true,
+    "index.html": true
+  },
+  "alphaShieldExpected": {
+    "real": 1080,
+    "derived": 0,
+    "basis": "vault.isReal=true and vault.source=\"real\" in streamingIngress; UI summary treats real-stamped vaults as all-real units"
+  }
+}

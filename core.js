@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -147,7 +147,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.lastResult = null;
     const rowMap = new Map();
     (parsed.rows || []).forEach((row) => {
-      const key = [String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
+      const key = [String(row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
       const completeness = [
         row.pickType && row.pickType !== 'Regular Line',
         row.team,

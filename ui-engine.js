@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -179,13 +179,23 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('runSummary');
     if (!mount) return;
     const vaultCollection = window.PickCalcCore?.state?.miningVault || {};
-    let activeStatuses = 0;
+    let realUnits = 0;
+    let derivedUnits = 0;
     Object.values(vaultCollection).forEach((vault) => {
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
       Object.values(vault?.branches || {}).forEach((branch) => {
-        activeStatuses += Object.values(branch?.factorMeta || {}).filter((meta) => ['DERIVED', 'REAL', 'SUCCESS'].includes(meta?.status)).length;
+        const branchTotal = Number(branch?.factorsTarget || Object.keys(branch?.factorMeta || {}).length || 0);
+        if (vaultIsReal) realUnits += branchTotal;
+        else derivedUnits += Number(branch?.derivedCount || 0);
       });
     });
-    mount.innerHTML = [`<div class="pill">Accepted: ${rows.length}</div>`,`<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,`<div class="pill">Active Probes: ${activeStatuses}</div>`,`<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`].join('');
+    mount.innerHTML = [
+      `<div class="pill">Accepted: ${rows.length}</div>`,
+      `<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,
+      `<div class="pill">REAL Units: ${realUnits}</div>`,
+      `<div class="pill">DERIVED Units: ${derivedUnits}</div>`,
+      `<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`
+    ].join('');
   }
 
   function renderFeedStatus(rows, auditRows = []) {
@@ -347,13 +357,21 @@ window.PickCalcUI = window.PickCalcUI || {};
   function summarizeShield(vaultCollection = {}) {
     let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0, nonZero = 0;
     Object.values(vaultCollection || {}).forEach((vault) => {
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
       Object.values(vault?.branches || {}).forEach((branch) => {
-        real += Number(branch.realCount || 0);
-        derived += Number(branch.derivedCount || 0);
-        simulated += Number(branch.simulatedCount || 0);
-        warnings += Object.values(branch.parsed || {}).filter((value) => Number(value) === 0).length;
-        total += Number(branch.factorsTarget || 0);
-        nonZero += Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
+        const factorEntries = Object.values(branch?.factorMeta || {});
+        const branchTotal = Number(branch.factorsTarget || factorEntries.length || 0);
+        total += branchTotal;
+        const branchNonZero = Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
+        nonZero += branchNonZero;
+        warnings += Math.max(0, branchTotal - branchNonZero);
+        if (vaultIsReal) {
+          real += branchTotal;
+        } else {
+          real += Number(branch.realCount || 0);
+          derived += Number(branch.derivedCount || 0);
+          simulated += Number(branch.simulatedCount || 0);
+        }
       });
     });
     const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';

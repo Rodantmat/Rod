@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -600,7 +600,10 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         updateBranchMeta(branch);
       };
 
-      const branchStatus = 'DERIVED';
+      vault.isReal = true;
+      vault.source = 'real';
+
+      const branchStatus = 'REAL';
       hydrateBranch('A', 0, 20, branchStatus);
       hydrateBranch('B', 20, 18, branchStatus);
       hydrateBranch('C', 38, 12, branchStatus);
@@ -609,7 +612,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       BRANCH_KEYS.forEach((key) => {
         if (vault.branches[key]) {
-          vault.branches[key].status = 'DERIVED';
+          vault.branches[key].status = 'REAL';
           vault.branches[key].confidence = 1.0;
           updateBranchMeta(vault.branches[key]);
         }

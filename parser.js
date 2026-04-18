@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.27 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -104,6 +104,7 @@ window.PickCalcParser = (() => {
     const normalized = String(text || '')
       .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
+      .replace(/\|/g, '\n')
       .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2');
 
     return normalized
@@ -111,6 +112,7 @@ window.PickCalcParser = (() => {
       .map((line) => splitGluedTokens(stripAccents(line)))
       .map((line) => line.replace(/\b\d{2}:\d{2}:\d{2}\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\bTrending\b/gi, ' '))
       .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
       .map((line) => line.replace(/[\t ]+/g, ' ').trim())
@@ -118,7 +120,6 @@ window.PickCalcParser = (() => {
       .replace(/\n{4,}/g, '\n\n\n')
       .split('\n');
   }
-
   function normalizeDayScope(value) {
     const text = String(value || '').toLowerCase();
     if (text.includes('both') || (text.includes('today') && text.includes('tomorrow'))) return 'both';
@@ -251,6 +252,18 @@ window.PickCalcParser = (() => {
     return value.charAt(0).toUpperCase() + value.slice(1);
   }
 
+  function extractLocalPickType(context = [], anchorLineIndex = 0) {
+    const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
+    for (const item of ordered) {
+      const match = String(item?.raw || item || '').match(PICK_TYPE_RX);
+      if (!match) continue;
+      const value = match[1].toLowerCase();
+      if (value === 'free pick') return 'Free Pick';
+      return value.charAt(0).toUpperCase() + value.slice(1);
+    }
+    return 'Regular Line';
+  }
+
   function sanitizePlayerName(value) {
     return cleanWhitespace(
       splitGluedTokens(String(value || ''))
@@ -346,7 +359,7 @@ window.PickCalcParser = (() => {
     return Boolean(extractInlineAnchor(clean));
   }
 
-  function collectBackwardCluster(lines, anchorIndex, maxLines = 12) {
+  function collectBackwardCluster(lines, anchorIndex, maxLines = 14) {
     const cluster = [];
     let i = anchorIndex - 1;
     while (i >= 0 && cluster.length < maxLines) {
@@ -374,7 +387,7 @@ window.PickCalcParser = (() => {
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const backward = collectBackwardCluster(lines, anchorIndex, 12);
+    const backward = collectBackwardCluster(lines, anchorIndex, 14);
     const forward = collectForwardCluster(lines, anchorIndex, 6);
     const start = anchorIndex - backward.length;
     const context = backward.concat([lines[anchorIndex]], forward);
@@ -390,9 +403,10 @@ window.PickCalcParser = (() => {
 
   function extractInlineAnchor(line) {
     const clean = cleanWhitespace(line);
-    const propFirst = clean.match(/(\d+(?:\.\d+)?)\s*(Pitcher Fantasy Score|PFS|Hitter Fantasy Score|HFS|Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|BB|Earned Runs|ER|Hits Allowed|HA|Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\s*\+\s*Runs\s*\+\s*RBI|H\+R\+RBI|H\+R\+R|HRR|Home Runs?|HR|Hits|RBIs|Runs Batted In|RBI|Runs|TB|Total Bases|SOG|Shots on Goal|Blocked Shots|PTS|Points|Assists|Goals|Saves|Goals Allowed)/i);
-    if (propFirst) return propFirst[1];
-    return '';
+    const match = clean.match(/^(\d+(?:\.\d+)?)\s+(.+)$/i);
+    if (!match) return '';
+    const remainder = cleanWhitespace(match[2]);
+    return resolvePropAlias(remainder, 'MLB') ? match[1] : '';
   }
 
   function hasNearbyStatAlias(lines, index) {
@@ -522,7 +536,7 @@ window.PickCalcParser = (() => {
     const context = candidate.context;
     const sportHint = inferSportHint(context);
     const joined = context.map((item) => item.raw).join('\n');
-    const pickType = extractPickType(joined);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
@@ -599,7 +613,8 @@ window.PickCalcParser = (() => {
       accepted: true,
       timeFilter,
       parseYear: PARSE_YEAR,
-      selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : ''
+      selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
+      sourceIndex: audit.idx
     };
     return { audit, row };
   }
@@ -649,7 +664,7 @@ window.PickCalcParser = (() => {
   function parseStructuredBlock(block = [], dayScope = 'today', now = new Date(), blockIndex = 0) {
     const joined = block.join('\n');
     const sportHint = inferSportHint(block);
-    const pickType = extractPickType(joined);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(block, teamRole.team);
@@ -723,7 +738,8 @@ window.PickCalcParser = (() => {
       accepted: true,
       timeFilter,
       parseYear: PARSE_YEAR,
-      selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : ''
+      selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
+      sourceIndex: audit.idx
     }};
   }
 
@@ -738,7 +754,7 @@ window.PickCalcParser = (() => {
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
       if (!parsed.row) return;
-      const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
+      const key = [String(parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0), normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {
