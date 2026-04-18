@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -150,6 +150,16 @@ window.PickCalcUI = window.PickCalcUI || {};
   function el(id) { return document.getElementById(id); }
   function escapeHtml(value) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
   function asArray(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
+  function purgeUiNoise(value) {
+    return String(value ?? '')
+      .replace(/REAL\/DERIVED Units/gi, '')
+      .replace(/REAL Units/gi, '')
+      .replace(/DERIVED Units/gi, '')
+      .replace(/SIMULATED Units/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
 
   function resolveProfileType(row = {}) {
     const raw = String(row?.type || '').toLowerCase();
@@ -197,7 +207,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       return;
     }
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-    const lines = ordered.map((prop) => `<div class="feed-line">${escapeHtml(prop)}: [${counts.get(prop)}]</div>`);
+    const lines = ordered.map((prop) => `<div class="feed-line">${escapeHtml(purgeUiNoise(prop))}: [${counts.get(prop)}]</div>`);
     if (rejectedCount) lines.push(`<div class="feed-line">Rejected Lines: [${rejectedCount}]</div>`);
     const header = counts.size ? `<div class="status-panel-head"><strong>MLB ✅</strong></div>` : '';
     mount.innerHTML = `<div class="status-panel feed-status-inline-panel">${header}<div class="feed-summary-list">${lines.join('')}</div></div>`;
@@ -397,12 +407,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     const summary = el('analysisSummary');
     if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">REAL: ${escapeHtml(shield.real)}</div>`,`<div class="pill">SIMULATED: ${escapeHtml(shield.simulated)}</div>`].join('');
     const hint = el('analysisHint');
-    if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT recovery active.';
+    if (hint) hint.textContent = purgeUiNoise(result?.analysisHint || 'OXYGEN-COBALT recovery active.');
     const rowCard = el('analysisRowCard');
     if (rowCard) {
       const rowScoreMeta = resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row);
       const rowSide = rowScoreMeta?.displaySide ? ` [${rowScoreMeta.displaySide}]` : '';
-      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
+      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(purgeUiNoise(row.prop || ''))} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
     }
     const kpis = el('analysisKpis');
     if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
@@ -510,7 +520,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       toast = document.createElement('div');
       toast.id = 'pcToast';
       toast.style.position = 'fixed';
-      toast.style.right = '20px';
+      toast.style.left = '50%';
       toast.style.bottom = '20px';
       toast.style.zIndex = '9999';
       toast.style.minWidth = '280px';
@@ -525,17 +535,17 @@ window.PickCalcUI = window.PickCalcUI || {};
       toast.style.fontWeight = '700';
       toast.style.letterSpacing = '0.01em';
       toast.style.opacity = '0';
-      toast.style.transform = 'translateY(8px)';
+      toast.style.transform = 'translate(-50%, 8px)';
       toast.style.transition = 'opacity 180ms ease, transform 180ms ease';
       document.body.appendChild(toast);
     }
-    toast.textContent = String(message || '');
+    toast.textContent = purgeUiNoise(String(message || ''));
     toast.style.opacity = '1';
-    toast.style.transform = 'translateY(0)';
+    toast.style.transform = 'translate(-50%, 0)';
     clearTimeout(showToast._timer);
     showToast._timer = setTimeout(() => {
       toast.style.opacity = '0';
-      toast.style.transform = 'translateY(8px)';
+      toast.style.transform = 'translate(-50%, 8px)';
     }, 4000);
   }
 

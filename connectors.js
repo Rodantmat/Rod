@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -48,6 +48,54 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       .replace(/[^a-zA-Z0-9]/g, '')
       .toLowerCase()
       .trim();
+  }
+
+  function hasNumericNoiseInIdentity(value = '') {
+    const raw = String(value || '').trim();
+    if (!raw) return true;
+    if (/unknown/i.test(raw)) return true;
+    if (/\d/.test(raw)) return true;
+    const normalized = raw.replace(/[^A-Za-z'.\-\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    return !/^[A-Za-z][A-Za-z'.\-]*(?:\s+[A-Za-z][A-Za-z'.\-]*){1,2}$/.test(normalized);
+  }
+
+  function buildIngressErrorResult(row = {}, stateRef = null, detail = 'Data Ingress Error') {
+    const vault = createZeroVault(row);
+    vault.LEG_ID = row?.LEG_ID || vault.LEG_ID;
+    vault.idx = row?.idx || vault.idx;
+    vault.terminalState = 'Data Ingress Error';
+    vault.isReal = false;
+    vault.source = 'error';
+    BRANCH_KEYS.forEach((key) => {
+      if (!vault.branches[key]) return;
+      vault.branches[key].status = 'WARNING';
+      vault.branches[key].source = 'error';
+      vault.branches[key].note = detail;
+      updateBranchMeta(vault.branches[key]);
+    });
+    commitVault(stateRef, row, vault);
+    return {
+      vault,
+      row,
+      shield: computeShieldFromVault(vault),
+      analysisHint: detail,
+      connectorState: {
+        version: SYSTEM_VERSION,
+        completedRows: 0,
+        completedProbes: 0,
+        totalProbes: 0,
+        liveBranches: 0,
+        derivedBranches: 0,
+        branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key]?.status || 'WARNING']))
+      },
+      responseText: '',
+      logs: [{ level: 'warning', text: `[OXYGEN] DATA_INGRESS_ERROR: ${row?.parsedPlayer || row?.LEG_ID || 'UNKNOWN_ROW'} :: ${detail}` }]
+    };
+  }
+
+  function rowHasIngressIdentityError(row = {}) {
+    const player = String(row?.parsedPlayer || '').trim();
+    return !player || hasNumericNoiseInIdentity(player);
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -557,9 +605,30 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       LEG_ID: rawRow?.LEG_ID || `LEG-${rawRow?.idx || rowIndex + 1}`,
       idx: Number(rawRow?.idx || rowIndex + 1)
     }));
+    const validBatch = [];
+    const invalidEntries = [];
+    batch.forEach((row) => {
+      if (rowHasIngressIdentityError(row)) invalidEntries.push(row);
+      else validBatch.push(row);
+    });
 
-    const payload = await fetchGeminiBatch(batch);
     const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+
+    invalidEntries.forEach((row) => {
+      const result = buildIngressErrorResult(row, stateRef, 'Data Ingress Error');
+      results.push(result);
+      if (logger === console.log) logger(result.logs[0].text);
+      else logger(result.logs[0]);
+      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
+    });
+
+    if (!validBatch.length) {
+      const lastResult = results[results.length - 1] || null;
+      hooks.onComplete?.({ results, totalRows, lastResult });
+      return { results, lastResult };
+    }
+
+    const payload = await fetchGeminiBatch(validBatch);
     const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
     const cleanJson = sanitizeJsonText(rawResponse);
 
@@ -575,14 +644,14 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
-    for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
-      const row = batch[batchIndex];
+    for (let batchIndex = 0; batchIndex < validBatch.length; batchIndex++) {
+      const row = validBatch[batchIndex];
       const vault = createZeroVault(row);
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
 
       const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
-      const matchedRow = entry ? batch[Number(entry.i)] : null;
+      const matchedRow = entry ? validBatch[Number(entry.i)] : null;
       const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
       const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
       const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
@@ -646,8 +715,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
-          completedProbes: batchIndex + 1,
-          totalProbes: batch.length,
+          completedProbes: results.length,
+          totalProbes: totalProbes,
           liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           branchStatus: Object.fromEntries(['A', 'B', 'C', 'D', 'E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
@@ -668,7 +737,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr);
         }
       }
-      hooks.onRowComplete?.({ row, rowIndex: batchIndex, result, completedRows: batchIndex + 1, totalRows, completedProbes: batchIndex + 1, totalProbes: batch.length });
+      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
     }
 
     const lastResult = results[results.length - 1] || null;
@@ -683,6 +752,12 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
+    if (rowHasIngressIdentityError(row)) {
+      const result = buildIngressErrorResult(row, stateRef, 'Data Ingress Error');
+      hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
+      hooks.onComplete?.({ results: [result], totalRows: 1, lastResult: result });
+      return result;
+    }
     const res = await streamingIngress([row], stateRef, hooks);
     return res?.results?.[0] || null;
   }

@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -375,7 +375,40 @@ window.PickCalcParser = (() => {
     );
   }
 
-  function makeCluster(lines, anchorIndex, aboveRadius = 7, belowRadius = 5) {
+  function buildIdentityCleanLines(cluster = []) {
+    return (cluster || [])
+      .map((item) => {
+        const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
+        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\d+K)/gi, '').trim();
+      })
+      .filter(Boolean);
+  }
+
+  function resolvePlayerFromTeamRoleContext(cluster = [], anchorLineIndex = Infinity) {
+    const normalized = buildIdentityCleanLines(cluster).map((raw, idx) => ({
+      idx,
+      absIndex: Number.isFinite(cluster?.[idx]?.absIndex) ? cluster[idx].absIndex : idx,
+      raw,
+      clean: cleanWhitespace(raw)
+    })).filter((item) => item.clean);
+
+    const teamRoleEntries = normalized
+      .filter((item) => TEAM_ROLE_RX.test(item.clean))
+      .sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex) || a.absIndex - b.absIndex);
+
+    for (const entry of teamRoleEntries) {
+      const entryIdx = normalized.findIndex((item) => item.absIndex === entry.absIndex && item.clean === entry.clean);
+      for (let i = entryIdx - 1; i >= 0; i -= 1) {
+        const candidate = sanitizePlayerName(normalized[i].clean);
+        if (!candidate) continue;
+        if (isLikelyPlayerName(candidate)) return candidate;
+        break;
+      }
+    }
+    return '';
+  }
+
+  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 5) {
     const cluster = [];
     const start = Math.max(0, anchorIndex - aboveRadius);
     const end = Math.min(lines.length - 1, anchorIndex + belowRadius);
@@ -415,7 +448,7 @@ window.PickCalcParser = (() => {
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const context = makeCluster(lines, anchorIndex, 7, 5);
+    const context = makeCluster(lines, anchorIndex, 12, 5);
     return context.length ? context : [{ raw: cleanClusterLine(lines[anchorIndex]), clean: cleanClusterLine(lines[anchorIndex]), absIndex: anchorIndex }];
   }
 
@@ -559,7 +592,8 @@ window.PickCalcParser = (() => {
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
     const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint);
-    const parsedPlayer = choosePlayer(context, candidate.anchorLineIndex);
+    const identityPlayer = resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
+    const parsedPlayer = identityPlayer || choosePlayer(context, candidate.anchorLineIndex);
     const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
@@ -696,14 +730,15 @@ window.PickCalcParser = (() => {
     const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
+    const identityPlayer = resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
     const playerCandidates = [];
-    block.forEach((line) => {
+    buildIdentityCleanLines(block).forEach((line) => {
       if (isLikelyPlayerName(line)) playerCandidates.push(line);
       extractNameCandidates(line).forEach((candidate) => playerCandidates.push(candidate));
     });
     const counts = {};
     playerCandidates.forEach((name) => { const clean = sanitizePlayerName(name); if (isLikelyPlayerName(clean)) counts[clean] = (counts[clean] || 0) + 1; });
-    const parsedPlayer = Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
+    const parsedPlayer = identityPlayer || Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
     const team = teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';

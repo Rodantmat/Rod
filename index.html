@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PickCalc Multi-Sport Engine • v13.78.05 (OXYGEN-COBALT)</title>
+  <title>PickCalc Multi-Sport Engine • v13.78.06 (OXYGEN-COBALT)</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="app-shell">
-    <section id="intakeScreen" style="display: none !important;">
+    <section id="intakeScreen" class="hidden">
       <header class="hero">
         <h1 id="intakeTitle">PickCalc Multi-Sport Engine</h1>
         <p>Paste board chunks, ingest MLB props, track feed status, then run the clean pool.</p>
@@ -17,11 +17,11 @@
 
       <section class="card">
         <h2>Paste Board Text</h2>
+        <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
+        <div id="feedStatus" class="feed-status-inline"></div>
         <div class="btn-row top-gap">
           <button id="clearBoxBtn" class="secondary">Clear box</button>
         </div>
-        <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
-        <div id="feedStatus" class="feed-status-inline"></div>
         <div class="btn-row">
           <button id="ingestBtn">Ingest &amp; Validate Board</button>
         </div>
@@ -43,8 +43,8 @@
     <section id="analysisScreen" class="hidden">
       <header class="hero hero-inline">
         <div>
-          <h1 id="analysisTitle">Run Analysis v13.78.05 (OXYGEN-COBALT)</h1>
-          <p id="analysisVersion">v13.78.05 (OXYGEN-COBALT)</p>
+          <h1 id="analysisTitle">Run Analysis v13.78.06 (OXYGEN-COBALT)</h1>
+          <p id="analysisVersion">v13.78.06 (OXYGEN-COBALT)</p>
         </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
@@ -83,7 +83,7 @@
       </section>
 
       <section class="card">
-        <h2 id="shieldTitle">Alpha Shield v13.78.05 (OXYGEN-COBALT)</h2>
+        <h2 id="shieldTitle">Alpha Shield v13.78.06 (OXYGEN-COBALT)</h2>
         <div id="shieldPanel" class="shield-grid"></div>
       </section>
 

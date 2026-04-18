@@ -49,3 +49,5 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .matrix-collapsible[open] .collapsible-arrow{transform:rotate(90deg)}
 
 .feed-status-inline{margin-top:12px}.feed-status-inline-panel{margin-top:0}.feed-summary-list{display:grid;gap:8px}.feed-line{padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:#0c1427;font-weight:600}.feed-status-inline:empty{display:none}
+
+#pcToast{position:fixed;left:50%;bottom:20px;z-index:9999;pointer-events:none}

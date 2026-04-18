@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -168,8 +168,8 @@ window.PickCalcCore = window.PickCalcCore || {};
       const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
       delete nextRow.__completeness;
       return nextRow;
-    });
-    state.cleanPool = state.rows.slice();
+    }).slice(0, 16).map((row, index) => Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}` }));
+    state.cleanPool = state.rows.slice(0, 16);
     state.miningVault = {};
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
@@ -255,7 +255,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.selectedLeagues = ['MLB'];
     state.lastResult = null;
     state.lastIngestMeta = null;
-    state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Cold boot reset complete.' }];
+    state.ingestLogs = [];
+
     state.verboseMode = false;
 
     ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
@@ -266,8 +267,10 @@ window.PickCalcCore = window.PickCalcCore || {};
       if ('textContent' in node) node.textContent = '';
     });
 
+    if (UI.stopHeartbeat) UI.stopHeartbeat();
     UI.backToIntake?.();
     refreshIntake();
+    UI.showToast?.('System reset complete.');
   }
 
   function bindEvents() {
