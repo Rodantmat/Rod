@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.7 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.8 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -314,18 +314,19 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
-    const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
-    const promptText = String(prompt || "Extract player data");
+    const url = `${GEMINI_BASE_URL}/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`;
+    const promptText = String(prompt || "").trim();
+    const finalPromptText = promptText || 'Extract player data';
     const body = JSON.stringify({ 
       contents: [{ 
         role: "user", 
-        parts: [{ text: promptText }] 
+        parts: [{ text: finalPromptText }] 
       }] 
     });
     console.log('[OXYGEN] FETCH_URL:', url);
     console.log('HANDSHAKE_URL:', url);
     console.log('HANDSHAKE_BODY:', body);
-    console.log("RAW_PAYLOAD:", promptText);
+    console.log("RAW_PAYLOAD:", finalPromptText);
     console.log("FINAL_JSON_SENT:", body);
     logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s)`);
 
@@ -341,6 +342,12 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       if (!response.ok) {
         const errorText = await response.text();
         console.error("GOOGLE_REJECTION:", errorText);
+        const rejectLogger = getConsoleLogger();
+        if (rejectLogger === console.log) {
+          console.log(`[SYSTEM] GOOGLE_REJECTION: ${errorText}`);
+        } else {
+          rejectLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${errorText}`, modelId: GEMINI_MODEL });
+        }
         alert("CRITICAL_API_FAIL: " + response.status + " - " + errorText);
         if (response.status === 403) {
           const authLogger = getConsoleLogger();
@@ -348,6 +355,7 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           else authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.', modelId: GEMINI_MODEL });
         }
         logConnectorStep('GOOGLE_PROCESSING', `Rejected with status ${response.status}`);
+        logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${response.status}`);
         return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText });
       }
 
@@ -375,11 +383,19 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
       }
       logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
+      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Success');
       return Object.assign(parsed, { responseText: raw || '' });
     } catch (e) {
       console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
+      const catchLogger = getConsoleLogger();
+      if (catchLogger === console.log) {
+        console.log(`[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`);
+      } else {
+        catchLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`, modelId: GEMINI_MODEL });
+      }
       alert('CRITICAL_API_FAIL: 0 - ' + (e?.message || 'Unknown fetch error'));
       logConnectorStep('WORKER_HANDSHAKE', e?.message || 'Fetch failure');
+      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Failure 0');
       return buildBaselinePayload(batch);
     }
   }
@@ -392,7 +408,7 @@ Return strictly valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       else logger({ level: 'warning', text: '[SYSTEM] KEY_MISSING: Save an API key before debugging.', modelId: GEMINI_MODEL });
       return { ok: false, status: 0, errorText: 'KEY_MISSING' };
     }
-    const url = GEMINI_BASE_URL + '/v1beta/models/gemini-1.5-flash:generateContent?key=' + activeKey;
+    const url = `${GEMINI_BASE_URL}/v1beta/models/${GEMINI_MODEL}:generateContent?key=${activeKey}`;
     const body = { contents: [{ role: "user", parts: [{ text: 'Connection test. Return JSON: {"ok":true}.' }] }] };
     console.log('HANDSHAKE_URL:', url);
     console.log('HANDSHAKE_BODY:', JSON.stringify(body));

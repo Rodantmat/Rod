@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.7 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.8 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -207,6 +207,9 @@ window.PickCalcUI = window.PickCalcUI || {};
     updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.');
     const responseText = result?.responseText || result?.errorText || '';
     console.log("RAW_MODEL_DATA:", responseText);
+    if (result?.errorText) {
+      appendConsole({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${result.errorText}` });
+    }
     if (Number(result?.errorStatus) === 400 && result?.errorText) {
       appendConsole({ level: 'warning', text: `[SYSTEM] 400 GOOGLE_ERROR: ${result.errorText}` });
     }
