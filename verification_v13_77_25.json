@@ -1,0 +1,87 @@
+{
+  "version": "v13.77.25 (OXYGEN-COBALT)",
+  "block1_rows": 5,
+  "block2_rows": 6,
+  "combined_rows": 11,
+  "bad_name_count": 0,
+  "brandon_woodruff_opponent": "MIA",
+  "rows": [
+    {
+      "player": "Ben Rice",
+      "prop": "Hits",
+      "line": "0.5",
+      "opponent": "KC",
+      "pickType": "Goblin"
+    },
+    {
+      "player": "Giancarlo Stanton",
+      "prop": "Hits+Runs+RBIs",
+      "line": "1.5",
+      "opponent": "KC",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Taj Bradley",
+      "prop": "Strikeouts",
+      "line": "6.5",
+      "opponent": "CIN",
+      "pickType": "Demon"
+    },
+    {
+      "player": "Aaron Judge",
+      "prop": "Total Bases",
+      "line": "1.5",
+      "opponent": "KC",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Paul Skenes",
+      "prop": "Pitching Outs",
+      "line": "17.5",
+      "opponent": "TB",
+      "pickType": "Goblin"
+    },
+    {
+      "player": "Aaron Judge",
+      "prop": "Home Runs",
+      "line": "0.5",
+      "opponent": "KC",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Brandon Woodruff",
+      "prop": "Strikeouts",
+      "line": "5.5",
+      "opponent": "MIA",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Dansby Swanson",
+      "prop": "Hits+Runs+RBIs",
+      "line": "1.5",
+      "opponent": "NYM",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Otto Lopez",
+      "prop": "Hits+Runs+RBIs",
+      "line": "1.5",
+      "opponent": "MIL",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Andrew Abbott",
+      "prop": "Strikeouts",
+      "line": "4.5",
+      "opponent": "MIN",
+      "pickType": "Regular Line"
+    },
+    {
+      "player": "Tarik Skubal",
+      "prop": "Strikeouts",
+      "line": "7.5",
+      "opponent": "BOS",
+      "pickType": "Regular Line"
+    }
+  ]
+}

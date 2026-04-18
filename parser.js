@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.23 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.25 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -13,6 +13,9 @@ window.PickCalcParser = (() => {
   const MATCHUP_RX = /\b(vs\.?|@)\s*([A-Z]{2,3})\b/i;
   const NAME_CANDIDATE_RX = /\b([A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})\b/g;
   const STANDALONE_ANCHOR_RX = /^\d+(?:\.\d+)?$/;
+  const POPULARITY_BADGE_RX = /^\d+(?:\.\d+)?K$/i;
+  const COUNTDOWN_RX = /^\d{2}:\d{2}:\d{2}$/;
+  const LIVE_STATUS_RX = /^(?:LIVE|1st|2nd|3rd|Inning|Period)$/i;
   const INLINE_TIME_RX = /\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
   const NOISE_WORD_RX = /\b(trending|popular|popularity|hot|boost|promo|specials?|insurance)\b/gi;
   const ROLE_ONLY_RX = /^(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i;
@@ -317,6 +320,43 @@ window.PickCalcParser = (() => {
     return { opponent: '', indicator: '', token: '', team: teamHint || '' };
   }
 
+
+  function isNoiseLine(line) {
+    const clean = cleanWhitespace(line);
+    return !clean || COUNTDOWN_RX.test(clean) || LIVE_STATUS_RX.test(clean) || POPULARITY_BADGE_RX.test(clean) || /^\d+$/.test(clean);
+  }
+
+  function collectBackwardCluster(lines, anchorIndex, maxLines = 5) {
+    const cluster = [];
+    let i = anchorIndex - 1;
+    while (i >= 0 && !cleanWhitespace(lines[i])) i -= 1;
+    while (i >= 0 && cleanWhitespace(lines[i]) && cluster.length < maxLines) {
+      cluster.unshift(lines[i]);
+      i -= 1;
+    }
+    return cluster;
+  }
+
+  function collectForwardCluster(lines, anchorIndex, maxLines = 3) {
+    const cluster = [];
+    let i = anchorIndex + 1;
+    while (i < lines.length && !cleanWhitespace(lines[i])) i += 1;
+    while (i < lines.length && cleanWhitespace(lines[i]) && cluster.length < maxLines) {
+      cluster.push(lines[i]);
+      if (/^(more|less|higher|lower)$/i.test(cleanWhitespace(lines[i])) && cluster.length >= 2) break;
+      i += 1;
+    }
+    return cluster;
+  }
+
+  function gatherCandidateContext(lines, anchorIndex) {
+    const backward = collectBackwardCluster(lines, anchorIndex, 5);
+    const forward = collectForwardCluster(lines, anchorIndex, 3);
+    const start = anchorIndex - backward.length;
+    const context = backward.concat([lines[anchorIndex]], forward);
+    return context.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
+  }
+
   function isStandaloneAnchorLine(line) {
     const clean = cleanWhitespace(line);
     if (!STANDALONE_ANCHOR_RX.test(clean)) return false;
@@ -336,16 +376,10 @@ window.PickCalcParser = (() => {
     const end = Math.min(lines.length - 1, index + 2);
     for (let i = start; i <= end; i += 1) {
       const clean = cleanWhitespace(lines[i]);
-      if (!clean) continue;
+      if (!clean || isNoiseLine(clean)) continue;
       if (STAT_BOUND_ALIAS_RX.test(clean)) return true;
     }
     return false;
-  }
-
-  function gatherContext(lines, anchorLineIndex) {
-    const start = Math.max(0, anchorLineIndex - 6);
-    const end = Math.min(lines.length - 1, anchorLineIndex + 3);
-    return lines.slice(start, end + 1).map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
   }
 
   function buildAnchorCandidates(lines) {
@@ -353,7 +387,7 @@ window.PickCalcParser = (() => {
     const seen = new Set();
     lines.forEach((line, index) => {
       const clean = cleanWhitespace(line);
-      if (!clean) return;
+      if (!clean || isNoiseLine(clean)) return;
       let anchor = '';
       let inline = false;
       if (isStandaloneAnchorLine(clean) && hasNearbyStatAlias(lines, index)) {
@@ -363,8 +397,8 @@ window.PickCalcParser = (() => {
         inline = Boolean(anchor);
       }
       if (!anchor) return;
-      const context = gatherContext(lines, index);
-      const key = `${index}|${anchor}|${context.map((item) => item.absIndex).join(',')}`;
+      const context = gatherCandidateContext(lines, index);
+      const key = `${normalizeName(context.map((item) => item.raw).join(' '))}|${anchor}`;
       if (seen.has(key)) return;
       seen.add(key);
       candidates.push({ anchorLineIndex: index, anchorValue: anchor, inline, context });
@@ -565,6 +599,18 @@ window.PickCalcParser = (() => {
     return blocks;
   }
 
+
+  function countBlockAnchors(block = []) {
+    let count = 0;
+    for (let i = 0; i < block.length; i += 1) {
+      const line = cleanWhitespace(block[i]);
+      if (!line || isNoiseLine(line)) continue;
+      if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) count += 1;
+      else if (extractInlineAnchor(line)) count += 1;
+    }
+    return count;
+  }
+
   function findPrimaryAnchor(block = []) {
     for (let i = 0; i < block.length; i += 1) {
       const line = cleanWhitespace(block[i]);
@@ -676,14 +722,8 @@ window.PickCalcParser = (() => {
       }
     };
 
-    blocks.forEach((block, index) => {
-      if (block.length >= 4) acceptParsed(parseStructuredBlock(block, dayScope, now, index));
-    });
-
-    if (!rowMap.size) {
-      const candidates = buildAnchorCandidates(lines.filter((line) => cleanWhitespace(line)));
-      candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
-    }
+    const candidates = buildAnchorCandidates(lines);
+    candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
 
     const rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
