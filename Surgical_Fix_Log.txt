@@ -1,3 +1,4 @@
+v13.76.0 (OXYGEN-COBALT) Reliability Patch
 OXYGEN-COBALT v13.73.0
 - Version lock raised to v13.73.0 across project files.
 - Replaced connectors.js fetchGeminiBatch with Strict Structured Output responseSchema mode.
