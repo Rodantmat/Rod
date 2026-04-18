@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.22 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.23 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -53,6 +53,7 @@ window.PickCalcParser = (() => {
     'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'HITS ALLOWED': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
+    'HA': { label: 'Hits Allowed', key: 'hitsAllowed', role: 'Pitcher' },
     'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     '1ST INNING RUNS ALLOWED': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
     'NRFI': { label: '1st Inning Runs Allowed', key: 'firstInningRunsAllowed', role: 'Pitcher' },
@@ -83,7 +84,7 @@ window.PickCalcParser = (() => {
   function normalizeName(value) { return stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, ''); }
   function splitGluedTokens(value) {
     return String(value || '')
-      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/g, '$1 $2')
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
       .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
       .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
@@ -92,7 +93,7 @@ window.PickCalcParser = (() => {
     return String(text || '')
       .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
-      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/g, '$1 $2')
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).trim())
       .map((line) => line.replace(/\s+/g, ' ').trim())
@@ -335,18 +336,33 @@ window.PickCalcParser = (() => {
     return lines.slice(start, end + 1).map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
   }
 
-  function buildAnchorCandidates(lines) {
+  function isStatAliasNearby(lines = [], index = 0) {
+    const start = Math.max(0, index - 2);
+    const end = Math.min(lines.length - 1, index + 2);
+    for (let i = start; i <= end; i += 1) {
+      const line = cleanWhitespace(lines[i]);
+      if (!line) continue;
+      if (resolvePropAlias(line, inferSportHint([line]))) return true;
+    }
+    return false;
+  }
+
+  function buildStatBoundCandidates(lines) {
     const candidates = [];
     const seen = new Set();
     lines.forEach((line, index) => {
       const clean = cleanWhitespace(line);
+      if (!clean) return;
       let anchor = '';
       let inline = false;
-      if (isStandaloneAnchorLine(clean)) {
+      if (isStandaloneAnchorLine(clean) && isStatAliasNearby(lines, index)) {
         anchor = clean;
       } else {
-        anchor = extractInlineAnchor(clean);
-        inline = Boolean(anchor);
+        const inlineAnchor = extractInlineAnchor(clean);
+        if (inlineAnchor && isStatAliasNearby(lines, index)) {
+          anchor = inlineAnchor;
+          inline = true;
+        }
       }
       if (!anchor) return;
       const context = inline ? [{ raw: line, clean, absIndex: index }] : gatherContext(lines, index);
@@ -665,7 +681,7 @@ window.PickCalcParser = (() => {
     });
 
     if (!rowMap.size) {
-      const candidates = buildAnchorCandidates(lines.filter((line) => cleanWhitespace(line)));
+      const candidates = buildStatBoundCandidates(lines);
       candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
     }
 
