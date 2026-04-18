@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.02 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -191,14 +191,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       if (!prop) return;
       counts.set(prop, (counts.get(prop) || 0) + 1);
     });
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
-    if (!counts.size && !rejectedCount) {
-      mount.innerHTML = '';
-      return;
-    }
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-    const lines = ordered.map((prop) => `<div class="feed-line"><span>${escapeHtml(prop)}:</span><span>[${counts.get(prop)}]</span></div>`);
-    lines.push(`<div class="feed-line"><span>Rejected Lines:</span><span>[${rejectedCount}]</span></div>`);
+    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
+    const lines = ordered.map((prop) => `<div class="feed-line"><span>${escapeHtml(prop)}:</span><span>${counts.get(prop)}</span></div>`);
+    lines.push(`<div class="feed-line"><span>Rejected Lines:</span><span>${rejectedCount}</span></div>`);
     mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><strong>MLB ✅</strong></div><div class="feed-summary-list">${lines.join('')}</div></div>`;
   }
 
@@ -214,7 +210,36 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (branch?.status === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'DERIVED' };
     if (branch?.status === 'SIMULATED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'SIMULATED' };
     if (branch?.status === 'WARNING') return { card: 'status-pending', badge: 'heuristic', label: 'WARNING' };
-    return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
+  
+  function showToast(message) {
+    let toast = document.getElementById('pcToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'pcToast';
+      toast.style.position = 'fixed';
+      toast.style.right = '20px';
+      toast.style.bottom = '20px';
+      toast.style.zIndex = '9999';
+      toast.style.padding = '12px 16px';
+      toast.style.borderRadius = '10px';
+      toast.style.background = 'rgba(18,24,38,0.96)';
+      toast.style.color = '#fff';
+      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
+      toast.style.border = '1px solid rgba(255,255,255,0.12)';
+      toast.style.fontWeight = '600';
+      toast.style.opacity = '0';
+      toast.style.transition = 'opacity 180ms ease';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = String(message || '');
+    toast.style.opacity = '1';
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => {
+      toast.style.opacity = '0';
+    }, 4000);
+  }
+
+  return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
   }
 
   function formatValue(value) {
@@ -222,13 +247,43 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Number.isFinite(n) ? n.toFixed(3) : '0.000';
   }
 
+
   function splitTeamRoleFromName(row = {}) {
     const raw = String(row?.parsedPlayer || row?.player || '').trim();
     let parsed = raw.replace(/([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)/gi, ' ').trim();
     parsed = parsed.replace(/(Goblin|Demon|Taco|Free Pick)/gi, ' ').replace(/\s+/g, ' ').trim();
     if (/^[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i.test(raw)) parsed = '';
     const match = raw.match(/([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)/i);
-    return { playerName: parsed || String(row?.player || '').trim(), team: String(row?.team || match?.[1] || '').toUpperCase() };
+  
+  function showToast(message) {
+    let toast = document.getElementById('pcToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'pcToast';
+      toast.style.position = 'fixed';
+      toast.style.right = '20px';
+      toast.style.bottom = '20px';
+      toast.style.zIndex = '9999';
+      toast.style.padding = '12px 16px';
+      toast.style.borderRadius = '10px';
+      toast.style.background = 'rgba(18,24,38,0.96)';
+      toast.style.color = '#fff';
+      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
+      toast.style.border = '1px solid rgba(255,255,255,0.12)';
+      toast.style.fontWeight = '600';
+      toast.style.opacity = '0';
+      toast.style.transition = 'opacity 180ms ease';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = String(message || '');
+    toast.style.opacity = '1';
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => {
+      toast.style.opacity = '0';
+    }, 4000);
+  }
+
+  return { playerName: parsed || String(row?.player || '').trim(), team: String(row?.team || match?.[1] || '').toUpperCase() };
   }
 
   function renderPickTypeBadge(pickType = '') {
@@ -351,22 +406,14 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function summarizeShield(vaultCollection = {}) {
-    let total = 0;
-    let nonZero = 0;
-    let real = 0;
-    let derived = 0;
-    let simulated = 0;
-    let warnings = 0;
+    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0, nonZero = 0;
     Object.values(vaultCollection || {}).forEach((vault) => {
-      const vaultIsReal = vault?.isReal === true;
-      BRANCH_KEYS.forEach((key) => {
-        const branch = vault?.branches?.[key] || {};
-        const branchValues = Object.keys(branch)
-          .filter((k) => /^([abcde])\d{2}$/i.test(k))
-          .map((k) => Number(branch[k]) || 0);
-        const branchTotal = branchValues.length || (key === 'A' ? 20 : key === 'B' ? 18 : key === 'C' ? 12 : key === 'D' ? 10 : 12);
-        const branchNonZero = branchValues.filter((v) => v !== 0).length;
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        const factorEntries = Object.values(branch?.factorMeta || {});
+        const branchTotal = Number(branch.factorsTarget || factorEntries.length || 0);
         total += branchTotal;
+        const branchNonZero = Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
         nonZero += branchNonZero;
         warnings += Math.max(0, branchTotal - branchNonZero);
         if (vaultIsReal) {
@@ -382,7 +429,36 @@ window.PickCalcUI = window.PickCalcUI || {};
     const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status !== 'WARNING').length, 0);
     const purityScore = Object.keys(vaultCollection || {}).length ? ((purityUnits / (Object.keys(vaultCollection || {}).length * BRANCH_KEYS.length)) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
-    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
+  
+  function showToast(message) {
+    let toast = document.getElementById('pcToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'pcToast';
+      toast.style.position = 'fixed';
+      toast.style.right = '20px';
+      toast.style.bottom = '20px';
+      toast.style.zIndex = '9999';
+      toast.style.padding = '12px 16px';
+      toast.style.borderRadius = '10px';
+      toast.style.background = 'rgba(18,24,38,0.96)';
+      toast.style.color = '#fff';
+      toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
+      toast.style.border = '1px solid rgba(255,255,255,0.12)';
+      toast.style.fontWeight = '600';
+      toast.style.opacity = '0';
+      toast.style.transition = 'opacity 180ms ease';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = String(message || '');
+    toast.style.opacity = '1';
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => {
+      toast.style.opacity = '0';
+    }, 4000);
+  }
+
+  return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
   }
 
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {
@@ -502,33 +578,6 @@ window.PickCalcUI = window.PickCalcUI || {};
 
 
 
-
-  function showToast(message) {
-    let toast = document.getElementById('pcToast');
-    if (!toast) {
-      toast = document.createElement('div');
-      toast.id = 'pcToast';
-      toast.style.position = 'fixed';
-      toast.style.right = '20px';
-      toast.style.bottom = '20px';
-      toast.style.zIndex = '9999';
-      toast.style.padding = '14px 18px';
-      toast.style.borderRadius = '12px';
-      toast.style.background = 'rgba(9,16,29,0.97)';
-      toast.style.color = '#edf2ff';
-      toast.style.boxShadow = '0 14px 34px rgba(0,0,0,0.45)';
-      toast.style.border = '1px solid #5da8ff';
-      toast.style.fontWeight = '700';
-      toast.style.opacity = '0';
-      toast.style.transition = 'opacity 180ms ease';
-      document.body.appendChild(toast);
-    }
-    toast.textContent = String(message || '');
-    toast.style.opacity = '1';
-    clearTimeout(showToast._timer);
-    showToast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 4000);
-  }
-
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();
