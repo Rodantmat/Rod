@@ -1,0 +1,15 @@
+{
+  "version": "v13.78.04 (OXYGEN-COBALT)",
+  "modified_files": [
+    "parser.js"
+  ],
+  "notes": "Surgical parser-only patch. All other system files left untouched.",
+  "checksums": {
+    "parser.js": "ad260e90a197690862d9f0ed326dcf41c4f32109a9d92852452b14edcdfb6f30",
+    "index.html": "ac448d918f380939f5ed1c6fff83ffad21559eb40a3531781a721665ab1f69bd",
+    "ui-engine.js": "9caaad3481e6e7ca2a3947cac60f28781fb9084e8dd248bd6be113d7065696c9",
+    "core.js": "6b90329bbae75f2c48b8813a3733f616efd5c61346704ae9c10d4455661f12d8",
+    "connectors.js": "c55949a58177a7e8a1c522311bfda9481ac0bb7d5a60408c8e03a8753b97c715",
+    "styles.css": "787b5d58573c6383338e725043cd8de09074003ae7b57f1690047c3a8d039dcb"
+  }
+}

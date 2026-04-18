@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.03 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.04 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -355,7 +355,13 @@ window.PickCalcParser = (() => {
 
   function isNoiseLine(line) {
     const clean = cleanWhitespace(line);
-    return !clean || COUNTDOWN_RX.test(clean) || LIVE_STATUS_RX.test(clean) || POPULARITY_BADGE_RX.test(clean) || /^\d+$/.test(clean) || /^Block ingestion example:?$/i.test(clean);
+    if (!clean) return true;
+    if (COUNTDOWN_RX.test(clean) || LIVE_STATUS_RX.test(clean) || POPULARITY_BADGE_RX.test(clean) || /^Block ingestion example:?$/i.test(clean)) return true;
+    if (/^\d+$/.test(clean)) {
+      const n = Number(clean);
+      return !Number.isFinite(n) || n > 40;
+    }
+    return false;
   }
 
   function isAnchorBoundary(lines, index, currentAnchorIndex) {
@@ -775,11 +781,9 @@ window.PickCalcParser = (() => {
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
     const lines = preprocessBoardText(nonPipeText);
-    const blocks = splitStructuredBlocks(lines);
     const audit = [];
     audit.rejectedLines = [];
     const rowMap = new Map();
-
 
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
@@ -798,50 +802,28 @@ window.PickCalcParser = (() => {
       }
     };
 
-    const consumedAnchors = new Set();
     pipeBlocks.forEach((block, blockIndex) => {
       if (!block.length) return;
-      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        acceptParsed(parsed);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
+      acceptParsed(parseStructuredBlock(block, dayScope, now, blockIndex));
     });
 
-    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1));
-    blocks.forEach((block, blockIndex) => {
-      if (!block.length) return;
-      if (countBlockAnchors(block) !== 1) return;
-      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        acceptParsed(parsed);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
+    const candidates = buildAnchorCandidates(lines);
+    candidates.forEach((candidate) => {
+      acceptParsed(parseCandidate(candidate, dayScope, now));
     });
 
-    if (!structuredOnly) {
-      const candidates = buildAnchorCandidates(lines);
-      candidates.forEach((candidate) => {
-      const parsed = parseCandidate(candidate, dayScope, now);
-      const signature = String(parsed?.row?.line || parsed?.audit?.line || '') + '|' + normalizeName(parsed?.row?.parsedPlayer || parsed?.audit?.parsedPlayer || '') + '|' + normalizeName(parsed?.row?.prop || parsed?.audit?.prop || '');
-      if (consumedAnchors.has(signature)) return;
-        acceptParsed(parsed);
+    const rows = Array.from(rowMap.values())
+      .sort((a, b) => Number(a.sourceIndex || a.idx || 0) - Number(b.sourceIndex || b.idx || 0))
+      .map((row, index) => {
+        const cleanRow = Object.assign({}, row);
+        delete cleanRow.__completeness;
+        cleanRow.idx = index + 1;
+        return cleanRow;
       });
-    }
-
-    const rows = Array.from(rowMap.values()).map((row, index) => {
-      const cleanRow = Object.assign({}, row);
-      delete cleanRow.__completeness;
-      cleanRow.idx = index + 1;
-      return cleanRow;
-    });
 
     return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows, audit };
   }
+
 
   return {
     SYSTEM_VERSION,
