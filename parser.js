@@ -20,6 +20,8 @@ window.PickCalcParser = (() => {
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
   const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
+  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Fantasy Score|PFS|Hitter Fantasy Score|HFS|Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|BB|Earned Runs|ER|Hits Allowed|HA|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|Home Runs?|HR)\b/i;
+
   const MLB_PROP_ALIASES = {
     'TB': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
     'TOTAL BASES': { label: 'Total Bases', key: 'totalBases', role: 'Batter' },
@@ -324,10 +326,20 @@ window.PickCalcParser = (() => {
 
   function extractInlineAnchor(line) {
     const clean = cleanWhitespace(line);
-    const propFirst = clean.match(/(\d+(?:\.\d+)?)\s*(Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|Hits Allowed|Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+RBI|H\+R\+R|HRR|Home Runs?|HR|Hits|RBIs|Runs Batted In|RBI|Runs|TB|Total Bases|SOG|Shots on Goal|Blocked Shots|PTS|Points|Assists|Goals|Saves|Goals Allowed)\b/i);
+    const propFirst = clean.match(/(\d+(?:\.\d+)?)\s*(Pitcher Fantasy Score|PFS|Hitter Fantasy Score|HFS|Ks|K's|Strikeouts|PO|Outs|Pitching Outs|Walks Allowed|BB|Earned Runs|ER|Hits Allowed|HA|Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\s*\+\s*Runs\s*\+\s*RBI|H\+R\+RBI|H\+R\+R|HRR|Home Runs?|HR|Hits|RBIs|Runs Batted In|RBI|Runs|TB|Total Bases|SOG|Shots on Goal|Blocked Shots|PTS|Points|Assists|Goals|Saves|Goals Allowed)/i);
     if (propFirst) return propFirst[1];
-    const directionFirst = clean.match(/\b(\d+(?:\.\d+)?)\b(?=.*\b(?:more|less|higher|lower)\b)/i);
-    return directionFirst ? directionFirst[1] : '';
+    return '';
+  }
+
+  function hasNearbyStatAlias(lines, index) {
+    const start = Math.max(0, index - 2);
+    const end = Math.min(lines.length - 1, index + 2);
+    for (let i = start; i <= end; i += 1) {
+      const clean = cleanWhitespace(lines[i]);
+      if (!clean) continue;
+      if (STAT_BOUND_ALIAS_RX.test(clean)) return true;
+    }
+    return false;
   }
 
   function gatherContext(lines, anchorLineIndex) {
@@ -336,18 +348,7 @@ window.PickCalcParser = (() => {
     return lines.slice(start, end + 1).map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
   }
 
-  function isStatAliasNearby(lines = [], index = 0) {
-    const start = Math.max(0, index - 2);
-    const end = Math.min(lines.length - 1, index + 2);
-    for (let i = start; i <= end; i += 1) {
-      const line = cleanWhitespace(lines[i]);
-      if (!line) continue;
-      if (resolvePropAlias(line, inferSportHint([line]))) return true;
-    }
-    return false;
-  }
-
-  function buildStatBoundCandidates(lines) {
+  function buildAnchorCandidates(lines) {
     const candidates = [];
     const seen = new Set();
     lines.forEach((line, index) => {
@@ -355,17 +356,14 @@ window.PickCalcParser = (() => {
       if (!clean) return;
       let anchor = '';
       let inline = false;
-      if (isStandaloneAnchorLine(clean) && isStatAliasNearby(lines, index)) {
+      if (isStandaloneAnchorLine(clean) && hasNearbyStatAlias(lines, index)) {
         anchor = clean;
       } else {
-        const inlineAnchor = extractInlineAnchor(clean);
-        if (inlineAnchor && isStatAliasNearby(lines, index)) {
-          anchor = inlineAnchor;
-          inline = true;
-        }
+        anchor = extractInlineAnchor(clean);
+        inline = Boolean(anchor);
       }
       if (!anchor) return;
-      const context = inline ? [{ raw: line, clean, absIndex: index }] : gatherContext(lines, index);
+      const context = gatherContext(lines, index);
       const key = `${index}|${anchor}|${context.map((item) => item.absIndex).join(',')}`;
       if (seen.has(key)) return;
       seen.add(key);
@@ -568,12 +566,14 @@ window.PickCalcParser = (() => {
   }
 
   function findPrimaryAnchor(block = []) {
-    const numericLines = block.filter((line) => /^\d+(?:\.\d+)?$/.test(line));
-    const decimal = numericLines.find((line) => line.includes('.'));
-    if (decimal) return decimal;
-    const small = numericLines.find((line) => Number(line) <= 40);
-    if (small) return small;
-    return extractInlineAnchor(block.join(' ')) || '';
+    for (let i = 0; i < block.length; i += 1) {
+      const line = cleanWhitespace(block[i]);
+      if (!line) continue;
+      if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) return line;
+      const inlineAnchor = extractInlineAnchor(line);
+      if (inlineAnchor) return inlineAnchor;
+    }
+    return '';
   }
 
   function parseStructuredBlock(block = [], dayScope = 'today', now = new Date(), blockIndex = 0) {
@@ -681,7 +681,7 @@ window.PickCalcParser = (() => {
     });
 
     if (!rowMap.size) {
-      const candidates = buildStatBoundCandidates(lines);
+      const candidates = buildAnchorCandidates(lines.filter((line) => cleanWhitespace(line)));
       candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
     }
 

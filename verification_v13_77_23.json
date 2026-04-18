@@ -1,0 +1,52 @@
+{
+  "version": "v13.77.23 (OXYGEN-COBALT)",
+  "rowCount": 5,
+  "players": [
+    "Ben Rice",
+    "Giancarlo Stanton",
+    "Taj Bradley",
+    "Aaron Judge",
+    "Paul Skenes"
+  ],
+  "opponents": {
+    "Ben Rice": "KC",
+    "Giancarlo Stanton": "KC",
+    "Taj Bradley": "CIN",
+    "Aaron Judge": "KC",
+    "Paul Skenes": "TB"
+  },
+  "props": {
+    "Ben Rice": "Hits",
+    "Giancarlo Stanton": "Hits+Runs+RBIs",
+    "Taj Bradley": "Strikeouts",
+    "Aaron Judge": "Total Bases",
+    "Paul Skenes": "Pitching Outs"
+  },
+  "contamination": [
+    {
+      "player": "Ben Rice",
+      "hasGoblin": false,
+      "has436": false
+    },
+    {
+      "player": "Giancarlo Stanton",
+      "hasGoblin": false,
+      "has436": false
+    },
+    {
+      "player": "Taj Bradley",
+      "hasGoblin": false,
+      "has436": false
+    },
+    {
+      "player": "Aaron Judge",
+      "hasGoblin": false,
+      "has436": false
+    },
+    {
+      "player": "Paul Skenes",
+      "hasGoblin": false,
+      "has436": false
+    }
+  ]
+}

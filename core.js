@@ -115,21 +115,56 @@ window.PickCalcCore = window.PickCalcCore || {};
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
-  function completenessScore(row = {}) {
-    return [
-      row.pickType && row.pickType !== 'Regular Line',
-      row.team,
-      row.opponent,
-      row.gameTimeText,
-      row.direction,
-      row.propKey,
-      row.role,
-      row.rawText
-    ].filter(Boolean).length;
+  function refreshIntake() {
+    const rows = filteredRows(state.rows);
+    const auditRows = filteredAuditRows(state.auditRows);
+    UI.renderRunSummary(rows, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
+    UI.renderFeedStatus(rows, auditRows);
+    UI.renderPoolTable(rows);
+    UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }
 
-  function dedupeLegPool(rows = []) {
-    state.rows = dedupeLegPool(parsed.rows || []);
+  function ingestBoard() {
+    const text = UI.el('boardInput')?.value || '';
+    const dayScope = getDayScopeValue();
+    if (!text.trim()) {
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
+      state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
+      refreshIntake();
+      return;
+    }
+    const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
+    state.lastResult = null;
+    const rowMap = new Map();
+    (parsed.rows || []).forEach((row) => {
+      const key = [String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase()].join('|');
+      const completeness = [
+        row.pickType && row.pickType !== 'Regular Line',
+        row.team,
+        row.opponent,
+        row.gameTimeText,
+        row.direction,
+        row.type,
+        row.rawText,
+        row.line,
+        row.lineValue
+      ].filter(Boolean).length;
+      const existing = rowMap.get(key);
+      if (!existing || completeness > existing.__completeness || ((row.rawText || '').length > (existing.rawText || '').length)) {
+        rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
+      }
+    });
+    state.rows = Array.from(rowMap.values()).map((row, index) => {
+      const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
+      delete nextRow.__completeness;
+      return nextRow;
+    });
     state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };

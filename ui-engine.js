@@ -229,7 +229,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const normalized = String(pickType || '').trim();
     if (!normalized || normalized === 'Regular Line') return '';
     const className = normalized.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-+|-+$/g, '');
-    return `<span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
+    return ` <span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
   }
 
   function resolveCobaltScore(vault = {}, row = {}) {
@@ -285,11 +285,11 @@ window.PickCalcUI = window.PickCalcUI || {};
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       const branchHeader = branchKey === 'E'
-        ? '<div class="branch-title"><strong>Market</strong></div>'
+        ? '<div class="branch-title"><strong>Branch E</strong> <span class="card-type-tag market">MARKET</span></div>'
         : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
+      return `<details class="branch-block ${tone.card}${warningClass}"><summary class="branch-summary">${branchHeader}</summary><div class="branch-body">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
     }).join('');
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</strong> ${pickTypeMarkup}</div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>Score: ${escapeHtml(String(score))}/100</strong>${pickTypeMarkup}<strong>${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -300,7 +300,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const hasVaultData = Object.keys(safeVaults).length > 0;
     const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
     const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Ingested Leg Pool</strong></div><div class="pill">Rows: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Ingested Leg Pool</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
 
   function renderConsole(logs) {
@@ -379,7 +379,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (rowCard) {
       const rowScoreMeta = resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row);
       const rowSide = rowScoreMeta?.displaySide ? ` [${rowScoreMeta.displaySide}]` : '';
-      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong> ${renderPickTypeBadge(row.pickType || '')}</div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
+      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
     }
     const kpis = el('analysisKpis');
     if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
