@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.19 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -202,8 +202,8 @@ window.PickCalcParser = (() => {
   function detectType(sourceText = '', propMeta = null) {
     const raw = String(sourceText || '');
     const token = `${propMeta?.label || ''} ${raw}`;
-    if (/\b(Ks|K's|Strikeouts|Pitching Outs|Outs|Walks Allowed)\b/i.test(token)) return 'Pitcher';
-    if (/\b(Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+R|HRR|Hits|Home Runs?|RBIs?|Runs Batted In|Total Bases)\b/i.test(token)) return 'Hitter';
+    if (/(Ks|K's|Strikeouts|Pitching Outs|PO|Outs|Walks Allowed|Hits Allowed|Earned Runs)/i.test(token)) return 'Pitcher';
+    if (/(Hits\s*\+\s*Runs\s*\+\s*RBIs|H\+R\+R|HRR|Hits|Home Runs?|RBIs?|Runs Batted In|Total Bases)/i.test(token)) return 'Hitter';
     if (propMeta?.role === 'Pitcher') return 'Pitcher';
     return 'Hitter';
   }
@@ -268,7 +268,9 @@ window.PickCalcParser = (() => {
     if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
 
     const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
-    if (direct) return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
+    if (direct && direct[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
+      return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
+    }
 
     const tokens = joined.split(/\s+/).filter(Boolean);
     for (let i = 0; i < tokens.length; i += 1) {
@@ -285,15 +287,9 @@ window.PickCalcParser = (() => {
     const lines = Array.isArray(context) ? context : [];
     for (let i = 0; i < lines.length; i += 1) {
       const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
-      if (!raw) continue;
-      if (/^(vs\.?|@)$/i.test(raw)) {
-        for (let j = i + 1; j < Math.min(lines.length, i + 3); j += 1) {
-          const nextRaw = cleanWhitespace(lines[j]?.raw || lines[j] || '');
-          const nextMatch = nextRaw.match(/([A-Z]{2,3})/);
-          if (nextMatch && nextMatch[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
-            return { opponent: nextMatch[1].toUpperCase(), indicator: raw.replace('.', '').toLowerCase(), token: `${raw} ${nextMatch[1].toUpperCase()}`, team: teamHint || '' };
-          }
-        }
+      const match = raw.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
+      if (match && match[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
+        return { opponent: match[1].toUpperCase(), indicator: /@/.test(match[0]) ? '@' : 'vs', token: cleanWhitespace(match[0]), team: teamHint || '' };
       }
     }
 
@@ -316,8 +312,8 @@ window.PickCalcParser = (() => {
   }
 
   function gatherContext(lines, anchorLineIndex) {
-    const start = Math.max(0, anchorLineIndex - 4);
-    const end = Math.min(lines.length - 1, anchorLineIndex + 2);
+    const start = Math.max(0, anchorLineIndex - 6);
+    const end = Math.min(lines.length - 1, anchorLineIndex + 3);
     return lines.slice(start, end + 1).map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
   }
 
@@ -335,8 +331,7 @@ window.PickCalcParser = (() => {
         inline = Boolean(anchor);
       }
       if (!anchor) return;
-      const inlineSelfContained = inline && TEAM_ROLE_RX.test(clean) && DIRECTION_RX.test(clean);
-      const context = inlineSelfContained ? [{ raw: line, clean, absIndex: index }] : gatherContext(lines, index);
+      const context = inline ? [{ raw: line, clean, absIndex: index }] : gatherContext(lines, index);
       const key = `${index}|${anchor}|${context.map((item) => item.absIndex).join(',')}`;
       if (seen.has(key)) return;
       seen.add(key);
@@ -346,66 +341,67 @@ window.PickCalcParser = (() => {
   }
 
   function choosePlayer(context, anchorLineIndex) {
-    const anchorText = context.find((item) => item.absIndex === anchorLineIndex)?.raw || '';
+    const head = context.filter((item) => item.absIndex <= anchorLineIndex);
     const scoreMap = new Map();
 
-    if (anchorText) {
-      const roleMatch = anchorText.match(TEAM_ROLE_RX);
-      const matchupMatch = anchorText.match(MATCHUP_RX);
-      const upper = anchorText.toUpperCase();
-      if (roleMatch) {
-        const boundaryIndex = upper.indexOf(roleMatch[0].toUpperCase());
-        const beforeRole = sanitizePlayerName(anchorText.slice(0, boundaryIndex));
-        for (const candidate of extractNameCandidates(beforeRole)) {
-          scoreMap.set(candidate, Math.max(scoreMap.get(candidate) || 0, 180 + candidate.length));
-        }
-      }
-      if (matchupMatch) {
-        const boundaryIndex = upper.indexOf(matchupMatch[0].toUpperCase());
-        const beforeMatchup = sanitizePlayerName(anchorText.slice(0, boundaryIndex));
-        for (const candidate of extractNameCandidates(beforeMatchup)) {
-          scoreMap.set(candidate, Math.max(scoreMap.get(candidate) || 0, 150 + candidate.length));
-        }
-      }
-    }
+    const addCandidate = (candidate, score) => {
+      const clean = sanitizePlayerName(candidate);
+      if (!isLikelyPlayerName(clean)) return;
+      if (TEAM_ROLE_RX.test(clean) || PICK_TYPE_RX.test(clean)) return;
+      if (TEAM_ABBR_LIST.includes(clean.toUpperCase())) return;
+      scoreMap.set(clean, Math.max(scoreMap.get(clean) || 0, score));
+    };
 
-    const beforeText = context.filter((item) => item.absIndex <= anchorLineIndex).map((item) => item.raw).join(' ');
-    const allText = context.map((item) => item.raw).join(' ');
+    const linePriority = (item) => {
+      let score = 100 + Math.max(0, (anchorLineIndex - item.absIndex)) * 2;
+      if (item.absIndex === anchorLineIndex - 1) score += 12;
+      if (item.absIndex === anchorLineIndex - 2) score += 8;
+      if (!/(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)/i.test(item.clean)) score += 15;
+      return score;
+    };
 
-    context.forEach((item) => {
-      if (isLikelyPlayerName(item.clean)) {
-        const candidate = sanitizePlayerName(item.clean);
-        const score = 100 + (anchorLineIndex - item.absIndex) * 3 + candidate.length;
-        scoreMap.set(candidate, Math.max(scoreMap.get(candidate) || 0, score));
-      }
+    head.forEach((item) => {
+      if (isLikelyPlayerName(item.clean)) addCandidate(item.clean, linePriority(item) + item.clean.length);
+      extractNameCandidates(item.raw).forEach((candidate) => addCandidate(candidate, linePriority(item) + candidate.length));
     });
 
-    for (const candidate of extractNameCandidates(beforeText)) {
-      const occurrences = (beforeText.match(new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-      const score = 70 + occurrences * 20 + candidate.length;
-      scoreMap.set(candidate, Math.max(scoreMap.get(candidate) || 0, score));
+    const anchorText = head.map((item) => item.raw).join(' ');
+    const roleMatch = anchorText.match(TEAM_ROLE_RX);
+    if (roleMatch) {
+      const beforeRole = anchorText.slice(0, anchorText.toUpperCase().indexOf(roleMatch[0].toUpperCase()));
+      extractNameCandidates(beforeRole).forEach((candidate, idx) => addCandidate(candidate, 220 + (idx * 5) + candidate.length));
+    }
+    const matchupMatch = anchorText.match(MATCHUP_RX);
+    if (matchupMatch) {
+      const beforeMatchup = anchorText.slice(0, anchorText.toUpperCase().indexOf(matchupMatch[0].toUpperCase()));
+      extractNameCandidates(beforeMatchup).forEach((candidate, idx) => addCandidate(candidate, 190 + (idx * 5) + candidate.length));
     }
 
-    for (const candidate of extractNameCandidates(allText)) {
-      const occurrences = (allText.match(new RegExp(candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-      const score = 40 + occurrences * 15 + candidate.length;
-      scoreMap.set(candidate, Math.max(scoreMap.get(candidate) || 0, score));
-    }
+    const occurrences = {};
+    head.forEach((item) => {
+      extractNameCandidates(item.raw).forEach((candidate) => {
+        occurrences[candidate] = (occurrences[candidate] || 0) + 1;
+      });
+    });
+    Object.entries(occurrences).forEach(([candidate, count]) => addCandidate(candidate, 140 + (count * 25) + candidate.length));
 
-    const sorted = Array.from(scoreMap.entries())
-      .filter(([candidate]) => !TEAM_ROLE_RX.test(candidate) && !PICK_TYPE_RX.test(candidate) && !TEAM_ABBR_LIST.includes(candidate.toUpperCase()))
-      .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
+    const sorted = Array.from(scoreMap.entries()).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
     return sorted[0]?.[0] || '';
   }
 
   function chooseProp(context, anchorLineIndex, sportHint) {
     const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
-    for (const item of ordered) {
-      const meta = resolvePropAlias(item.clean, sportHint);
+    const joined = context.map((item) => item.clean).join(' ');
+    const anchorLine = context.find((item) => item.absIndex === anchorLineIndex)?.clean || '';
+    const prioritySources = [];
+    ordered.forEach((item) => prioritySources.push(item.clean));
+    if (anchorLine) prioritySources.unshift(anchorLine);
+    prioritySources.push(joined);
+    for (const source of prioritySources) {
+      const meta = resolvePropAlias(source, sportHint);
       if (meta) return meta;
     }
-    const joined = context.map((item) => item.clean).join(' ');
-    return resolvePropAlias(joined, sportHint);
+    return null;
   }
 
   function chooseDirection(context, anchorLineIndex) {
@@ -423,9 +419,8 @@ window.PickCalcParser = (() => {
     const joined = context.map((item) => item.raw).join('\n');
     const pickType = extractPickType(joined);
     const teamRole = extractTeamRole(joined);
-    const matchupPrimary = extractMatchup(joined, teamRole.team);
-    const matchupFallback = matchupPrimary.opponent ? matchupPrimary : extractMatchupFallback(context, teamRole.team);
-    const matchup = matchupFallback;
+    let matchup = extractMatchup(joined, teamRole.team);
+    if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
     const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint);
     const parsedPlayer = choosePlayer(context, candidate.anchorLineIndex);
     const direction = chooseDirection(context, candidate.anchorLineIndex);
@@ -517,9 +512,9 @@ window.PickCalcParser = (() => {
       audit.push(parsed.audit);
       if (!parsed.row) return;
       const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || '')].join('|');
-      const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
+      const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
-      if (!existing || completeness > existing.__completeness) {
+      if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {
         rowMap.set(key, Object.assign({}, parsed.row, { __completeness: completeness }));
       }
     });
@@ -531,7 +526,6 @@ window.PickCalcParser = (() => {
       return cleanRow;
     });
 
-    rows.sort((a, b) => a.idx - b.idx);
     return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows, audit };
   }
 

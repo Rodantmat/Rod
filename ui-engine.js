@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.19 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -278,7 +278,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const scoreMeta = resolveCobaltScore(vault, row);
     const score = Number(scoreMeta?.score || 0);
     const scoreEmoji = resolveScoreEmoji(score);
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')}${pickTypeMarkup} - ${escapeHtml(normalized.team || row.team || '')} - Score: ${escapeHtml(String(score))}/100 ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
       const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean

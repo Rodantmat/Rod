@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.18 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.19 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -46,21 +46,38 @@ window.PickCalcCore = window.PickCalcCore || {};
     const branchA = averageBranch('A');
     const branchC = averageBranch('C');
     const branchD = averageBranch('D');
-    const branchEDeltas = [metric('E', 'market10'), metric('E', 'market11'), metric('E', 'market12')].filter((value) => Number.isFinite(value));
-    const branchEDelta = branchEDeltas.length ? (branchEDeltas.reduce((sum, value) => sum + value, 0) / branchEDeltas.length) : averageBranch('E');
+    const branchEDelta = clamp01(metric('E', 'market11') || averageBranch('E'));
 
-    const pScore = branchA * 0.4;
-    const eScore = branchC * 0.3;
-    const sScore = branchD * 0.2;
-    const mScore = branchEDelta * 0.1;
-    const final = Math.max(0, Math.min(100, Math.round((pScore + eScore + sScore + mScore) * 100)));
+    const overScore = ((branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchEDelta * 0.05));
+    const underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchEDelta) * 0.05);
+    const pickType = String(row?.pickType || '').toLowerCase();
+    const direction = String(row?.direction || '').toLowerCase();
 
+    let chosenProbability = overScore;
+    let chosenSide = 'Over';
+    if (!(pickType === 'goblin' || pickType === 'demon')) {
+      if (direction === 'less' || direction === 'under') {
+        chosenProbability = underScore;
+        chosenSide = 'Under';
+      } else if (direction === 'more' || direction === 'over') {
+        chosenProbability = overScore;
+        chosenSide = 'Over';
+      } else if (underScore > overScore) {
+        chosenProbability = underScore;
+        chosenSide = 'Under';
+      }
+    }
+
+    const final = Math.max(0, Math.min(100, Math.round(chosenProbability * 100)));
     return {
       score: final,
-      pScore: Math.round(pScore * 1000) / 1000,
-      eScore: Math.round(eScore * 1000) / 1000,
-      sScore: Math.round(sScore * 1000) / 1000,
-      mScore: Math.round(mScore * 1000) / 1000,
+      side: chosenSide,
+      overScore: Math.round(overScore * 1000) / 1000,
+      underScore: Math.round(underScore * 1000) / 1000,
+      pScore: Math.round(branchA * 450) / 1000,
+      eScore: Math.round(branchC * 300) / 1000,
+      sScore: Math.round(branchD * 200) / 1000,
+      mScore: Math.round(branchEDelta * 50) / 1000,
       branchA,
       branchC,
       branchD,
@@ -113,7 +130,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       const existing = rowMap.get(key);
       if (!existing || completeness > existing.__completeness) rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
     });
-    state.rows = Array.from(rowMap.values()).slice(0, 7).map((row, index) => {
+    state.rows = Array.from(rowMap.values()).map((row, index) => {
       const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
       delete nextRow.__completeness;
       return nextRow;
@@ -127,7 +144,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   async function handleMiningClick(isVerbose = false) {
     state.verboseMode = Boolean(isVerbose);
-    const rows = filteredRows(state.rows).slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}` }));
+    const rows = filteredRows(state.rows).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}` }));
     if (!rows.length) {
       if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'Nothing to run. Paste and ingest at least one valid row.';
       return;
