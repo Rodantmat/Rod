@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -7,7 +7,7 @@ window.PickCalcParser = (() => {
   ];
 
   const PICK_TYPE_RX = /\b(Goblin|Demon|Taco|Free Pick)\b/i;
-  const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b/i;
+  const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b/i;
   const DIRECTION_RX = /\b(more|less|higher|lower)\b/i;
   const MATCHUP_RX = /\b(vs\.?|@)\s*([A-Z]{2,3})\b/i;
   const NAME_CANDIDATE_RX = /\b([A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})\b/g;
@@ -87,8 +87,8 @@ window.PickCalcParser = (() => {
     return String(value || '')
       .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
       .replace(GLUED_NOISE_RX, ' ')
-      .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
-      .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
+      .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
+      .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
 
   function preprocessBoardText(text) {
@@ -423,52 +423,45 @@ window.PickCalcParser = (() => {
 
   function parseCluster(cluster) {
     const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi;
-    // Clean lines but preserve indices
-    const lines = (cluster || []).map((item) => {
-      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(GLUED_NOISE_RX, '').trim();
-    });
+    const lines = (cluster || [])
+      .map((item) => {
+        const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
+        return String(raw || '').replace(GLUED_NOISE_RX, '').trim();
+      })
+      .filter((line) => line.length > 0);
 
     let player = '', team = '', prop = '', line = 0;
-    const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
+    const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
+    const MATCHUP_RX = /\b(vs\.?|@)\s*[A-Z]{2,3}\b/i;
+    const DATE_NOISE_RX = /\b(Sat|Sun|Mon|Tue|Wed|Thu|Fri)\b/i;
 
-    // 1. Find the Number Anchor (Source of Truth)
-    lines.forEach((l) => {
-      if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l);
-    });
+    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
 
-    // 2. Identify Team and Player via Upward Search
     for (let i = 0; i < lines.length; i += 1) {
       if (TEAM_ROLE_RX.test(lines[i])) {
         team = (lines[i].match(TEAM_ROLE_RX)?.[1] || team || '').toUpperCase();
-        // Search UPWARD from the Team/Role line to find the first valid Player Name
         for (let j = i - 1; j >= 0; j -= 1) {
-          const candidate = lines[j];
-          if (
-            candidate &&
-            candidate.length > 3 &&
-            !TEAM_ROLE_RX.test(candidate) &&
-            !/@|vs|Sat|Sun|Mon|Tue|Wed|Thu|Fri/i.test(candidate)
-          ) {
-            player = sanitizePlayerName(candidate);
+          const c = lines[j];
+          if (c.length > 3 && !TEAM_ROLE_RX.test(c) && !MATCHUP_RX.test(c) && !DATE_NOISE_RX.test(c)) {
+            player = sanitizePlayerName(c);
             break;
           }
         }
       }
     }
 
-    // 3. Robust Prop Detection
     const blob = lines.join(' ');
     if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
     else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
-    else if (/Fantasy Score/i.test(blob)) prop = 'Pitcher Fantasy Score';
+    else if (/Outs/i.test(blob)) prop = 'Pitching Outs';
+    else if (/Fantasy/i.test(blob)) prop = 'Pitcher Fantasy Score';
 
     return {
       parsedPlayer: player,
-      team,
+      team: team,
       prop: prop || 'MLB Prop',
-      line,
-      accepted: (player.length > 2 && line > 0)
+      line: line,
+      accepted: (player.length > 2 && line > 0 && !!team)
     };
   }
 

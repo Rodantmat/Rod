@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -126,7 +126,9 @@ window.PickCalcCore = window.PickCalcCore || {};
     const parsed = Parser.parseBoard(input.value);
 
     if ((parsed.rows || []).length > 0) {
-      state.cleanPool = [...state.cleanPool, ...parsed.rows].slice(0, 16);
+      const combined = [...state.cleanPool, ...parsed.rows];
+      const overflow = Math.max(0, combined.length - 16);
+      state.cleanPool = combined.slice(0, 16);
       state.rows = state.cleanPool.slice(0, 16).map((row, index) => Object.assign({}, row, {
         idx: Number(index + 1),
         LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`,
@@ -145,8 +147,9 @@ window.PickCalcCore = window.PickCalcCore || {};
         timestamp: new Date().toISOString(),
         parseYear: Parser.PARSE_YEAR
       };
-      input.value = ''; // Auto-clear textarea
-      UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
+      input.value = '';
+      if (overflow > 0) UI.showToast('16-leg maximum reached. Extra legs were not added.');
+      else UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
@@ -234,8 +237,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.lastResult = null;
     state.lastIngestMeta = null;
     state.ingestLogs = [];
-
     state.verboseMode = false;
+    state.version = SYSTEM_VERSION;
 
     ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);

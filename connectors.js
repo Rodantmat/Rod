@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -95,7 +95,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function rowHasIngressIdentityError(row = {}) {
     const player = String(row?.parsedPlayer || '').trim();
-    return !player || hasNumericNoiseInIdentity(player);
+    if (!player) return true;
+    if (hasNumericNoiseInIdentity(player)) return true;
+    if (/\b(?:@|vs\.?|sun|mon|tue|wed|thu|fri|sat)\b/i.test(player)) return true;
+    return false;
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -709,6 +712,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       const result = {
         vault,
         row,
+        isReal: true,
+        source: 'real',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated',
@@ -753,8 +758,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
     if (rowHasIngressIdentityError(row)) {
-      try { window.PickCalcUI?.showToast?.('Mining Blocked: Missing Player Identity'); } catch (_) {}
-      const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
+      try { window.PickCalcUI?.showToast?.('Data Ingress Error'); } catch (_) {}
+      const result = buildIngressErrorResult(row, stateRef, 'Data Ingress Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
       hooks.onComplete?.({ results: [result], totalRows: 1, lastResult: result });
       return result;
