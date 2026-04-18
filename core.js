@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.14 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.15 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -54,8 +54,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     const text = UI.el('boardInput')?.value || '';
     const dayScope = getDayScopeValue();
     if (!text.trim()) {
-      state.rows = LAB_BOOT_ROWS.slice();
-      state.auditRows = LAB_BOOT_ROWS.map((row) => Object.assign({ accepted: true }, row));
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
       state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
       state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
       if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
@@ -63,11 +63,14 @@ window.PickCalcCore = window.PickCalcCore || {};
       return;
     }
     const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
-    state.rows = (parsed.rows || []).slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}` }));
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
+    state.lastResult = null;
+    state.rows = (parsed.rows || []).slice(0, 7).map((row, index) => Object.assign({}, row, { idx: Number(row.idx || index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(row.idx || index + 1)}`, pickType: row.pickType || 'Regular Line' }));
     state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (!state.rows.length) state.rows = LAB_BOOT_ROWS.slice();
     if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
     refreshIntake();
   }

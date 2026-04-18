@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.14 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.15 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -215,6 +215,13 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Number.isFinite(n) ? n.toFixed(3) : '0.000';
   }
 
+  function renderPickTypeBadge(pickType = '') {
+    const normalized = String(pickType || '').trim();
+    if (!normalized || normalized === 'Regular Line') return '';
+    const className = normalized.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-+|-+$/g, '');
+    return ` <span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
+  }
+
   function renderFactorLine(meta = {}) {
     const numericValue = Number(meta.value);
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
@@ -243,7 +250,8 @@ window.PickCalcUI = window.PickCalcUI || {};
     const branches = vault?.branches || {};
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
+    const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
       const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
@@ -425,7 +433,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       return [
         `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
         `LEG_ID: ${legId}`,
-        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''}`,
+        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'}`,
         `SATURATION: ${summary}`,
         ...matrixLines,
         `PROJECTIONS: ${JSON.stringify(vault.branches?.E?.providerMap || {})}`
