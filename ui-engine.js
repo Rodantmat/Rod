@@ -1,10 +1,10 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.14 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
-  const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
+  const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const MODEL_ID = 'gemini-flash-latest';
   const MLB_FEED_MATRIX = ['Strikeouts','Total Bases','H+R+RBI','Runs','Hits','Pitching Outs','Earned Runs','Walks Allowed','Hits Allowed'];
 
@@ -24,14 +24,14 @@ window.PickCalcUI = window.PickCalcUI || {};
       ],
       C: [
         'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Fatigue Index', 'Travel Load', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
+        'Air Density', 'Umpire Zone Rating', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
       ],
       D: [
-        'Opponent Patience', 'Opponent Whiff Bias', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
+        'Platoon Delta', 'Manager Pull Threshold', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
         'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
       ],
       E: [
-        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
         'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     },
@@ -50,22 +50,117 @@ window.PickCalcUI = window.PickCalcUI || {};
       ],
       C: [
         'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Fatigue Index', 'Travel Load', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
+        'Air Density', 'Umpire Zone Rating', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
       ],
       D: [
-        'Steal Pressure', 'Run Creation Form', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
+        'Platoon Delta', 'Manager Pull Threshold', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
         'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
       ],
       E: [
-        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
         'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     }
   };
 
-  function el(id) { return document.getElementById(id); }
-  function escapeHtml(value) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-  function asArray(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
+  const FACTOR_GLOSSARY = {
+    'Bat Speed': 'Raw velocity of the barrel at contact',
+    'Squared Up Rate': 'Impact quality on flush contact',
+    'Blasts Per Swing': 'High-speed ideal contact frequency',
+    'Sweet Spot%': 'Launch efficiency in optimal band',
+    'Launch Angle Consistency': 'Flight angle stability swing to swing',
+    'Max Exit Velocity': 'Peak batted-ball speed ceiling',
+    'Pull/Opposite Mix': 'Directional spray balance across field',
+    'Two-Strike Approach': 'Adjustments made in protect counts',
+    'Chase Rate': 'Swings at pitches off-zone',
+    'In-Zone Contact': 'Contact rate on strikes seen',
+    'Pitch Recognition': 'Read quality out of hand',
+    'Barrel Accuracy': 'Precision of ideal impact point',
+    'Pull Power': 'Damage ability to pull side',
+    'Oppo Gap Efficiency': 'Opposite-field carry into alleys',
+    'High-Fastball Combat': 'Performance against elevated velocity',
+    'Offspeed Timing': 'Tempo match versus slow stuff',
+    'Clout Grade': 'Overall extra-base damage quality',
+    'Sprint Speed Impact': 'Run tool effect on outcomes',
+    'ISO Trend': 'Recent isolated power trajectory',
+    'Plate Coverage': 'Reach across full strike zone',
+    'Velocity Stability': 'Consistency of heater speed through innings',
+    'Spin Rate Delta': 'Variance in movement-driving spin',
+    'Extension Efficiency': 'Release point distance advantage forward',
+    'Vertical Break': 'Gravity-defying ride or drop shape',
+    'Horizontal Movement': 'Side-to-side action through zone',
+    'Command Grade': 'Ability to locate intended targets',
+    'Location Heat': 'Concentration of quality attack spots',
+    'Tunneling Quality': 'Pitch disguise on shared paths',
+    'Release Consistency': 'Repeatability of arm slot release',
+    'Zone Rate': 'Frequency of strikes in zone',
+    'K-BB% Trend': 'Recent strikeout minus walk edge',
+    'Whiff Rate (Fastball)': 'Miss rate generated on heaters',
+    'Whiff Rate (Offspeed)': 'Miss rate generated offspeed',
+    'First Pitch Strike%': 'Opening strike frequency to hitters',
+    'Put-away % Efficiency': 'Ability to finish two-strike counts',
+    'Hard Hit Avoidance': 'Suppression of loud contact allowed',
+    'Barrel Rate Allowed': 'Ideal contact allowed per ball',
+    'GB/FB Ratio': 'Ground-ball versus fly-ball mix',
+    'Average Exit Velocity': 'Mean EV permitted on contact',
+    'Soft Contact%': 'Weak contact share induced',
+    'Air Density': 'Atmospheric resistance on ball flight travel',
+    'Umpire Zone Rating': 'Numeric strike-call frequency profile',
+    'Platoon Delta': 'L/R handedness edge magnitude',
+    'Manager Pull Threshold': 'Historical volume and hook bias',
+    'Park Factor': 'Run environment boost or drag',
+    'Umpire Bias': 'General calling tendency influence',
+    'Wind Impact': 'Wind effect on carry path',
+    'Historical Matchup': 'Prior opponent interaction signal',
+    'L/R Splits': 'Handedness split performance edge',
+    'Recent 5-Game Trend': 'Short-run form over last five',
+    'Fatigue Index': 'Wear-and-tear impact on output',
+    'Travel Load': 'Schedule and transit burden factor',
+    'Defense Support': 'Team fielding support behind pitcher',
+    'Bullpen Buffer': 'Relief support protecting projection tail',
+    'Game Script Fit': 'Scenario alignment with expected usage',
+    'Weather Volatility': 'Instability from changing game weather',
+    'Bullpen Exposure': 'Reliever quality likely faced late',
+    'Lineup Protection': 'Support hitters around batter slot',
+    'Hit Probability Drift': 'Shift in baseline hit odds',
+    'Extra-Base Upside': 'Likelihood of doubles or better',
+    'Contact Floor': 'Minimum likely contact outcome floor',
+    'Power Spike Chance': 'Chance of elevated slug event',
+    'Pitcher Vulnerability': 'Opponent weakness exploitable by hitter',
+    'Defensive Shift Cost': 'Expected outs lost to positioning',
+    'Batted-Ball Luck': 'Variance from fortune on contact',
+    'Late-Game Leverage': 'Pressure-context effect in late innings',
+    'Stamina Decay': 'Performance drop deeper into outing',
+    'Late Movement': 'Shape quality late in pitch flight',
+    'Release Extension': 'Forward release creating approach angle',
+    'Strike-One Rate': 'First-strike generation frequency',
+    'Pressure Tolerance': 'Execution under high-stress spots',
+    'High-Leverage Efficiency': 'Results in leverage-heavy moments',
+    'Primary Pitch Reliability': 'Dependability of primary offering',
+    'Secondary Pitch Bite': 'Sharpness of offspeed break',
+    'Sequencing Logic': 'Quality of pitch-order decisions',
+    'Pitch Mix Stability': 'Consistency of arsenal allocation',
+    'Velocity Preservation': 'Ability to hold velo late',
+    'Third-Time-Through Penalty': 'Risk increase on repeated looks',
+    'Contact Suppression': 'Limiting quality contact overall',
+    'CSW Rate': 'Called plus swinging strike share',
+    'Called Strike Edge': 'Extra strikes won from command',
+    'Chase Induction': 'Ability to expand hitter decisions',
+    'Backdoor Command': 'Precision on edge-stealing pitches',
+    'Finisher Quality': 'Out pitch quality to end at-bats',
+    'DraftKings Projection': 'DraftKings market-implied projection point',
+    'FanDuel Projection': 'FanDuel market-implied projection point',
+    'BetMGM Projection': 'BetMGM market-implied projection point',
+    'Bet365 Projection': 'Bet365 market-implied projection point',
+    'Pinnacle Projection': 'Pinnacle market-implied projection point',
+    'Consensus Mean': 'Average across tracked book signals',
+    'Consensus Median': 'Middle value across book signals',
+    'Consensus High': 'Highest listed market estimate',
+    'Consensus Low': 'Lowest listed market estimate',
+    'Spread': 'Gap between high and low',
+    'Line Delta': 'Difference versus anchor line',
+    'Market Confidence': 'Agreement strength across books'
+  };
 
   function resolveProfileType(row = {}) {
     const raw = String(row?.type || '').toLowerCase();
@@ -132,16 +227,17 @@ window.PickCalcUI = window.PickCalcUI || {};
     const zeroClass = numericValue === 0 ? ' metric-zero' : '';
     const label = numericValue === 0 ? 'WARNING' : ((meta.status === 'SUCCESS' || meta.status === 'REAL') ? 'REAL' : 'DERIVED');
     const statusClass = label === 'WARNING' ? ' factor-status' : ' factor-status visually-hidden';
-    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span><span class="${statusClass.trim()}">${escapeHtml(label === 'WARNING' ? ' WARNING' : '')}</span></div>`;
+    const glossary = FACTOR_GLOSSARY[meta.name || ''] || 'Model-derived factor context';
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="mini-muted">(${escapeHtml(glossary)})</span><span class="${statusClass.trim()}">${escapeHtml(label === 'WARNING' ? ' WARNING' : '')}</span></div>`;
   }
 
   function renderMarketProviders(providerMap = {}) {
     const providerLine = [
-      ['FanDuel', providerMap.FanDuel || 0],
-      ['DraftKings', providerMap.DraftKings || 0],
-      ['OddsJam', providerMap.OddsJam || 0],
-      ['Pinnacle', providerMap.Pinnacle || 0],
-      ['Bet365', providerMap.Bet365 || 0]
+      ['DK', providerMap.DraftKings || 0],
+      ['FD', providerMap.FanDuel || 0],
+      ['MGM', providerMap.BetMGM || 0],
+      ['365', providerMap.Bet365 || 0],
+      ['PIN', providerMap.Pinnacle || 0]
     ].map(([label, value]) => {
       const numericValue = Number(value);
       const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
@@ -157,10 +253,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(row.parsedPlayer || '')} - ${escapeHtml(row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${BRANCH_KEYS.map((branchKey) => {
       const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
       const tone = branchTone(branch);
-      const warningClass = branch?.status === 'WARNING' ? ' warning' : ''; // non-warning branches stay clean
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
+      if (branchKey === 'E') {
+        return `<section class="branch-block ${tone.card}${warningClass}">${renderMarketProviders(branch.providerMap || {})}</section>`;
+      }
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
-      const branchHeader = branchKey === 'E' ? '<div class="branch-title"><strong>Market</strong></div>' : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      return `<section class="branch-block ${tone.card}${warningClass}">${branchHeader}${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</section>`;
+      return `<section class="branch-block ${tone.card}${warningClass}">${factorMeta.map(renderFactorLine).join('')}</section>`;
     }).join('')}</article>`;
   }
 
@@ -317,11 +415,16 @@ window.PickCalcUI = window.PickCalcUI || {};
         return `${k}:${active}`;
       }).join('|');
       const matrixLines = branchKeys.map((k) => {
+        if (k === 'E') {
+          const providers = [['DK', vault.branches?.E?.providerMap?.DraftKings, 'DraftKings market-implied projection point'], ['FD', vault.branches?.E?.providerMap?.FanDuel, 'FanDuel market-implied projection point'], ['MGM', vault.branches?.E?.providerMap?.BetMGM, 'BetMGM market-implied projection point'], ['365', vault.branches?.E?.providerMap?.Bet365, 'Bet365 market-implied projection point'], ['PIN', vault.branches?.E?.providerMap?.Pinnacle, 'Pinnacle market-implied projection point']].map(([label, value, glossary]) => `${label}=${formatValue(value)} (${glossary})`).join(', ');
+          return `BRANCH E: ${providers}`;
+        }
         const parsed = vault.branches?.[k]?.parsed || {};
-        const parsedLine = Object.entries(parsed).map(([key, value], idx) => `${resolveFactorName(row, k, idx + 1, { name: key })}=${formatValue(value)}`).join(', ');
-        if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
-        const providers = Object.entries(vault.branches?.E?.providerMap || {}).map(([key, value]) => `${key}=${formatValue(value)}`).join(', ');
-        return `BRANCH E: ${providers || parsedLine}`;
+        return `BRANCH ${k}: ` + Object.entries(parsed).map(([key, value], idx) => {
+          const label = resolveFactorName(row, k, idx + 1, { name: key });
+          const glossary = FACTOR_GLOSSARY[label] || 'Model-derived factor context';
+          return `${label}=${formatValue(value)} (${glossary})`;
+        }).join(', ');
       });
 
       return [

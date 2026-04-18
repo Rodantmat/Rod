@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.14 (OXYGEN-COBALT)';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -32,6 +32,10 @@ window.PickCalcCore = window.PickCalcCore || {};
   function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
   function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).filter((item) => !item.accepted).map((item) => ({ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` })); }
+
+  function calcCobaltEdge(context = {}) {
+    return { edgeScore: 0, label: 'EDGE_PENDING', context };
+  }
 
   function refreshIntake() {
     const rows = filteredRows(state.rows);
@@ -196,6 +200,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, LAB_BOOT_ROWS, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, LAB_BOOT_ROWS, SYSTEM_VERSION, calcCobaltEdge });
   window.addEventListener('DOMContentLoaded', boot);
 })();

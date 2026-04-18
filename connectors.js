@@ -1,10 +1,10 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.77.14 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
-  const PROVIDERS = ['FanDuel', 'DraftKings', 'OddsJam', 'Pinnacle', 'Bet365'];
+  const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const GEMINI_MODEL = 'gemini-flash-latest';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
@@ -24,14 +24,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       ],
       C: [
         'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Fatigue Index', 'Travel Load', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
+        'Air Density', 'Umpire Zone Rating', 'Defense Support', 'Bullpen Buffer', 'Game Script Fit', 'Weather Volatility'
       ],
       D: [
-        'Opponent Patience', 'Opponent Whiff Bias', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
+        'Platoon Delta', 'Manager Pull Threshold', 'Lineup Depth', 'Run Support Expectation', 'Inning Efficiency',
         'Pitch Count Elasticity', 'Strike Zone Fit', 'Batted-Ball Luck', 'Recovery Window', 'Clutch Stability'
       ],
       E: [
-        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
         'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     },
@@ -50,14 +50,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       ],
       C: [
         'Park Factor', 'Umpire Bias', 'Wind Impact', 'Historical Matchup', 'L/R Splits', 'Recent 5-Game Trend',
-        'Fatigue Index', 'Travel Load', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
+        'Air Density', 'Umpire Zone Rating', 'Bullpen Exposure', 'Weather Volatility', 'Lineup Protection', 'Game Script Fit'
       ],
       D: [
-        'Steal Pressure', 'Run Creation Form', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
+        'Platoon Delta', 'Manager Pull Threshold', 'Hit Probability Drift', 'Extra-Base Upside', 'Contact Floor',
         'Power Spike Chance', 'Pitcher Vulnerability', 'Defensive Shift Cost', 'Batted-Ball Luck', 'Late-Game Leverage'
       ],
       E: [
-        'FanDuel Projection', 'DraftKings Projection', 'OddsJam Projection', 'Pinnacle Projection', 'Bet365 Projection',
+        'DraftKings Projection', 'FanDuel Projection', 'BetMGM Projection', 'Bet365 Projection', 'Pinnacle Projection',
         'Consensus Mean', 'Consensus Median', 'Consensus High', 'Consensus Low', 'Spread', 'Line Delta', 'Market Confidence'
       ]
     }
@@ -276,11 +276,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function remapProviderAliases(payload = {}) {
     const safe = Object.assign({}, payload || {});
     const aliasMap = {
-      FanDuel: ['FanDuel', 'fanduel', 'market01', 'provider01', 'projection01'],
-      DraftKings: ['DraftKings', 'draftkings', 'market02', 'provider02', 'projection02'],
-      OddsJam: ['OddsJam', 'oddsjam', 'market03', 'provider03', 'projection03'],
-      Pinnacle: ['Pinnacle', 'pinnacle', 'market04', 'provider04', 'projection04'],
-      Bet365: ['Bet365', 'bet365', 'market05', 'provider05', 'projection05']
+      DraftKings: ['DraftKings', 'draftkings', 'market01', 'provider01', 'projection01'],
+      FanDuel: ['FanDuel', 'fanduel', 'market02', 'provider02', 'projection02'],
+      BetMGM: ['BetMGM', 'betmgm', 'market03', 'provider03', 'projection03'],
+      Bet365: ['Bet365', 'bet365', 'market04', 'provider04', 'projection04'],
+      Pinnacle: ['Pinnacle', 'pinnacle', 'market05', 'provider05', 'projection05']
     };
     safe.providers = Object.assign({}, safe.providers || {});
     Object.entries(aliasMap).forEach(([provider, aliases]) => {
@@ -344,7 +344,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const numericProviders = PROVIDERS.map((provider) => safeNumber(providers[provider], NaN)).filter(Number.isFinite);
       if (numericProviders.length) {
         const map = {
-          1: providers.FanDuel, 2: providers.DraftKings, 3: providers.OddsJam, 4: providers.Pinnacle, 5: providers.Bet365,
+          1: providers.DraftKings, 2: providers.FanDuel, 3: providers.BetMGM, 4: providers.Bet365, 5: providers.Pinnacle,
           6: average(numericProviders), 7: median(numericProviders), 8: Math.max(...numericProviders), 9: Math.min(...numericProviders),
           10: safeNumber(Math.max(...numericProviders) - Math.min(...numericProviders)),
           11: safeNumber(average(numericProviders) - Number(row.lineValue || row.line || 0)),
@@ -394,7 +394,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
 Subjects:
 ${uniqueSubjects}
-Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
+Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}. Explicitly provide five sportsbook-tier floats in Branch E for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle, plus the four Sharp variables Air Density, Umpire Zone Rating, Platoon Delta, and Manager Pull Threshold in their designated slots.`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
