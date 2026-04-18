@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -420,6 +420,51 @@ window.PickCalcParser = (() => {
     return cluster;
   }
 
+
+  function parseCluster(cluster) {
+    const lines = (cluster || []).map((item) => {
+      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
+      return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi, '').trim();
+    });
+
+    let player = '';
+    let team = '';
+    let prop = '';
+    let line = 0;
+
+    lines.forEach((l) => {
+      if (STANDALONE_NUMBER_RX.test(cleanWhitespace(l))) line = parseFloat(cleanWhitespace(l));
+    });
+
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!TEAM_ROLE_RX.test(lines[i])) continue;
+      const match = lines[i].match(TEAM_ROLE_RX);
+      team = match?.[1]?.toUpperCase?.() || team;
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const candidate = sanitizePlayerName(lines[j]);
+        if (!candidate || candidate.length <= 3) continue;
+        if (TEAM_ROLE_RX.test(lines[j])) continue;
+        if (/@|vs/i.test(lines[j])) continue;
+        if (!isLikelyPlayerName(candidate)) continue;
+        player = candidate;
+        break;
+      }
+      if (player) break;
+    }
+
+    const flatCluster = lines.join(' ');
+    const propMeta = resolvePropAlias(flatCluster, 'MLB');
+    if (propMeta?.label) prop = propMeta.label;
+
+    return {
+      parsedPlayer: player,
+      team,
+      prop: prop || 'MLB Prop',
+      line,
+      accepted: Boolean(player.length > 2 && line > 0)
+    };
+  }
+
   function collectBackwardCluster(lines, anchorIndex, maxLines = 7) {
     const cluster = [];
     let i = anchorIndex - 1;
@@ -588,17 +633,18 @@ window.PickCalcParser = (() => {
     const sportHint = inferSportHint(context);
     const joined = context.map((item) => item.raw).join('\n');
     const pickType = extractPickType(joined);
+    const clusterIdentity = parseCluster(context);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
-    const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint);
-    const identityPlayer = resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
+    const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint) || resolvePropAlias(clusterIdentity.prop || '', sportHint);
+    const identityPlayer = clusterIdentity.parsedPlayer || resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
     const parsedPlayer = identityPlayer || choosePlayer(context, candidate.anchorLineIndex);
     const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
-    const team = teamRole.team || matchup.team || '';
+    const team = clusterIdentity.team || teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
       idx: candidate.anchorLineIndex + 1,
@@ -719,18 +765,19 @@ window.PickCalcParser = (() => {
     const joined = block.join('\n');
     const sportHint = inferSportHint(block);
     const pickType = extractPickType(joined);
+    const parsedCluster = parseCluster(block);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(block, teamRole.team);
     const contextItems = block.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: idx }));
     const anchorValue = findPrimaryAnchor(block);
     const anchorIndex = Math.max(0, block.findIndex((line) => cleanWhitespace(line) === String(anchorValue)));
-    const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(joined, sportHint);
+    const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(parsedCluster.prop || '', sportHint) || resolvePropAlias(joined, sportHint);
     const directionTokens = block.filter((line) => /^(more|less|higher|lower)$/i.test(line));
     const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
-    const identityPlayer = resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
+    const identityPlayer = parsedCluster.parsedPlayer || resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
     const playerCandidates = [];
     buildIdentityCleanLines(block).forEach((line) => {
       if (isLikelyPlayerName(line)) playerCandidates.push(line);
@@ -740,7 +787,7 @@ window.PickCalcParser = (() => {
     playerCandidates.forEach((name) => { const clean = sanitizePlayerName(name); if (isLikelyPlayerName(clean)) counts[clean] = (counts[clean] || 0) + 1; });
     const parsedPlayer = identityPlayer || Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
-    const team = teamRole.team || matchup.team || '';
+    const team = parsedCluster.team || teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
       idx: blockIndex + 1,

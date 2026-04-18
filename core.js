@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -175,6 +175,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
     if (acceptedRows.length > 0 && UI.el('boardInput')) UI.el('boardInput').value = '';
     if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = acceptedRows.length > 0 ? `${acceptedRows.length} leg(s) ingested.` : 'No valid MLB legs found.';
+    if (acceptedRows.length > 0) UI.showToast?.(`Ingested ${acceptedRows.length} legs`);
+    else UI.showToast?.('No valid legs found. Check format.');
     if (hitCap || state.rows.length >= 16) UI.showToast?.('16-leg hard cap reached. Additional legs were not ingested.');
     refreshIntake();
   }
