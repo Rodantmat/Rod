@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -757,9 +757,10 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
-    if (rowHasIngressIdentityError(row)) {
-      try { window.PickCalcUI?.showToast?.('Data Ingress Error'); } catch (_) {}
-      const result = buildIngressErrorResult(row, stateRef, 'Data Ingress Error');
+    // If the parser failed to provide a clean name, ABORT to prevent fake sequential data
+    if (!row.parsedPlayer || row.parsedPlayer.length < 3 || /vs|@|Sat|Sun/i.test(row.parsedPlayer)) {
+      try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
+      const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
       hooks.onComplete?.({ results: [result], totalRows: 1, lastResult: result });
       return result;
