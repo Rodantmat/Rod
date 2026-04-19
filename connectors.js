@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.25 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -628,18 +628,18 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       return { ok: false, errorStatus: 0, errorText: 'Missing Gemini API key.', temporaryFailure: false, modelId: GEMINI_MODEL };
     }
 
-    const models = [GEMINI_MODEL, ...GEMINI_FALLBACK_MODELS];
     const logger = getConsoleLogger();
     const body = JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
       generationConfig: { responseMimeType: 'application/json' }
     });
-    let lastFailure = { ok: false, errorStatus: 0, errorText: 'Unknown Gemini failure.', temporaryFailure: true, modelId: GEMINI_MODEL };
 
-    for (const modelId of models) {
+    async function tryModel(modelId, maxAttempts = 3) {
       const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + modelId + ':generateContent?key=' + activeKey;
-      for (let attempt = 1; attempt <= 3; attempt += 1) {
-        logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) via ${modelId} [attempt ${attempt}/3]`);
+      let lastFailure = { ok: false, errorStatus: 0, errorText: 'Unknown Gemini failure.', temporaryFailure: true, modelId };
+      let sawPayloadShapeFailure = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) via ${modelId} [attempt ${attempt}/${maxAttempts}]`);
         try {
           const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
           logConnectorStep('WORKER_HANDSHAKE', `${modelId} HTTP ${response.status}`);
@@ -651,8 +651,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
             lastFailure = { ok: false, errorStatus: response.status, errorText: message, errorJson: errorObject, temporaryFailure: isRetryableStatus(response.status), modelId };
             if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`);
             else logger({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`, modelId, pre: errorText });
-            if (isRetryableStatus(response.status) && attempt < 3) {
-              try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
+            if (isRetryableStatus(response.status) && attempt < maxAttempts) {
+              try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
               await delay(700 * attempt);
               continue;
             }
@@ -664,11 +664,13 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           const parsedEnvelope = safeJsonParse(raw);
           const parsed = parsedEnvelope.parsed;
           if (!parsed) {
+            sawPayloadShapeFailure = true;
             lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
             break;
           }
           const validation = validateGeminiPayload(parsed);
           if (!validation.ok) {
+            sawPayloadShapeFailure = true;
             lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
             break;
           }
@@ -679,16 +681,40 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           lastFailure = { ok: false, errorStatus: 0, errorText: e?.message || 'Unknown fetch error', temporaryFailure: true, modelId };
           if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
           else logger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`, modelId, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
-          if (attempt < 3) {
-            try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
+          if (attempt < maxAttempts) {
+            try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
             await delay(700 * attempt);
             continue;
           }
         }
       }
+      return Object.assign(lastFailure, { sawPayloadShapeFailure });
     }
 
-    logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${lastFailure.errorStatus || 0}`);
+    const primaryResult = await tryModel(GEMINI_MODEL, 3);
+    if (primaryResult?.ok) return primaryResult;
+
+    const shouldTryFallback = Boolean(
+      primaryResult?.temporaryFailure === true &&
+      !primaryResult?.sawPayloadShapeFailure &&
+      Array.isArray(GEMINI_FALLBACK_MODELS) &&
+      GEMINI_FALLBACK_MODELS.length
+    );
+
+    if (!shouldTryFallback) {
+      logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${primaryResult?.errorStatus || 0}`);
+      return primaryResult;
+    }
+
+    let lastFailure = primaryResult;
+    for (const modelId of GEMINI_FALLBACK_MODELS) {
+      const fallbackResult = await tryModel(modelId, 2);
+      if (fallbackResult?.ok) return fallbackResult;
+      lastFailure = fallbackResult;
+      if (fallbackResult?.sawPayloadShapeFailure) break;
+    }
+
+    logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${lastFailure?.errorStatus || 0}`);
     return lastFailure;
   }
 
