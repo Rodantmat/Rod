@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.25 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.26 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -561,13 +561,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const entries = Array.isArray(payload?.data) ? payload.data : [];
     if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.' };
     const signatures = new Map();
+    const warnings = [];
     for (const entry of entries) {
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
       if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
       const stats = entryStats(entry.v);
-      if (stats.distinct2 < 12 || stats.stddev < 0.035) return { ok: false, reason: 'Low-variance factor payload detected.' };
+      if (stats.distinct2 < 12 || stats.stddev < 0.035) warnings.push('Low-variance factor payload detected.');
       const providers = entry.v.slice(60, 65).map((n) => Number(n));
       if (providers.some((n) => !Number.isFinite(n))) return { ok: false, reason: 'Missing provider slots.' };
       if (new Set(providers.map((n) => n.toFixed(2))).size < 2) return { ok: false, reason: 'Provider payload lacks variance.' };
@@ -582,7 +583,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.' };
       }
     }
-    return { ok: true };
+    return { ok: true, warnings: Array.from(new Set(warnings)) };
   }
 
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
@@ -676,7 +677,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           }
           logConnectorStep('JSON_PARSING', `Parsed ${(parsed.data || []).length} subject payload(s) via ${modelId}`);
           logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Success via ${modelId}`);
-          return Object.assign({ ok: true, modelId, rawResponse: parsedEnvelope.clean || raw || '', responseText: raw || '' }, parsed);
+          return Object.assign({ ok: true, modelId, rawResponse: parsedEnvelope.clean || raw || '', responseText: raw || '', warnings: validation.warnings || [] }, parsed);
         } catch (e) {
           lastFailure = { ok: false, errorStatus: 0, errorText: e?.message || 'Unknown fetch error', temporaryFailure: true, modelId };
           if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
@@ -858,6 +859,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
     }
 
     const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+    const payloadWarnings = Array.isArray(payload?.warnings) ? payload.warnings.slice() : [];
+    const lowVarianceWarning = payloadWarnings.some((warning) => /low-variance/i.test(String(warning)));
 
     for (let batchIndex = 0; batchIndex < validBatch.length; batchIndex++) {
       const row = validBatch[batchIndex];
@@ -924,12 +927,14 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const proofFlags = buildProofFlags(vault, row, vals);
       stampBranchEAudit(vault, proofFlags.localMarket || {}, vals);
+      const payloadUnderReview = lowVarianceWarning === true;
       vault.proofFlags = proofFlags;
-      vault.reliable = proofFlags.passed;
-      vault.partialDecode = proofFlags.partial === true;
-      vault.isReal = proofFlags.passed || proofFlags.partial === true;
-      vault.source = proofFlags.partial ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected');
-      vault.terminalState = proofFlags.partial ? 'Partial Decode' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed');
+      vault.payloadWarnings = payloadWarnings.slice();
+      vault.reliable = proofFlags.passed && !payloadUnderReview;
+      vault.partialDecode = proofFlags.partial === true || payloadUnderReview;
+      vault.isReal = proofFlags.passed || proofFlags.partial === true || payloadUnderReview;
+      vault.source = vault.partialDecode ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected');
+      vault.terminalState = vault.partialDecode ? 'Partial Decode' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed');
 
       const found = vals.filter((n) => Number(n) !== 0).length;
 
@@ -944,16 +949,22 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       const eTailLogs = (proofFlags.tailAudits || []).map((audit) => ({ level: audit.passed ? 'info' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${audit.message}` }));
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` });
+      const partialUnderReview = proofFlags.partial || lowVarianceWarning;
+      const baseHint = lowVarianceWarning
+        ? 'Payload arrived and decoded, but factor variance is low. Data is kept visible for review instead of being hard-rejected.'
+        : (proofFlags.partial
+          ? 'Payload arrived, decoded, and mapped. Raw market slots 61-65 are usable; tail slots 66-72 are modeled sentiment signals, not arithmetic summary outputs.'
+          : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'));
       const result = {
         vault,
         row,
-        isReal: proofFlags.passed || proofFlags.partial,
-        isReliable: proofFlags.passed,
-        source: proofFlags.partial ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'),
+        isReal: proofFlags.passed || proofFlags.partial || lowVarianceWarning,
+        isReliable: proofFlags.passed && !lowVarianceWarning,
+        source: partialUnderReview ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'),
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: proofFlags.partial ? 'Payload arrived, decoded, and mapped. Raw market slots 61-65 are usable; tail slots 66-72 are modeled sentiment signals, not arithmetic summary outputs.' : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'),
-        runStatus: proofFlags.partial ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'),
+        analysisHint: baseHint,
+        runStatus: partialUnderReview ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'),
         finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
@@ -966,9 +977,11 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: proofFlags.partial ? 'info' : (proofFlags.passed ? 'success' : 'warning'),
-          text: proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`)
-        }, ...proofLogs, ...eTailLogs]
+          level: partialUnderReview ? 'info' : (proofFlags.passed ? 'success' : 'warning'),
+          text: lowVarianceWarning
+            ? `[OXYGEN] PAYLOAD_WARN_LOW_VARIANCE: ${row.parsedPlayer} (${found} units)`
+            : (proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`))
+        }, ...payloadWarnings.map((warning) => ({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${warning}` })), ...proofLogs, ...eTailLogs]
       };
 
       results.push(result);
