@@ -673,8 +673,17 @@ window.PickCalcParser = (() => {
   }
 
   function isComboEntity(value = '') {
-    const raw = String(value || '').trim();
-    return /\+/.test(raw) || /\b[A-Z]{2,3}\/[A-Z]{2,3}\b/.test(raw);
+    const raw = cleanWhitespace(String(value || ''));
+    if (!raw) return false;
+    if (/[A-Z]{2,3}\/[A-Z]{2,3}/.test(raw)) return true;
+    if (/(?:and|\&)/i.test(raw) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(raw)) return true;
+    const strippedPropText = raw
+      .replace(/(?:Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\+Runs\+RBIs|H\+R\+RBI|HRR|Total Bases|Pitcher Strikeouts|Pitching Outs|Pitcher Fantasy Score|Hitter Fantasy Score|Walks Allowed|Hits Allowed|Earned Runs Allowed|Walks|Hits|Runs|RBIs?|Home Runs?|Singles|Doubles|Triples|Stolen Bases|Hitter Strikeouts|Ks|K's|Outs|Fantasy)/gi, ' ')
+      .replace(/\+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (/(?:and|\&)/i.test(strippedPropText) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(strippedPropText)) return true;
+    return false;
   }
 
   function parseCandidate(candidate, dayScope, now) {
