@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.32 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.33 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -25,7 +25,7 @@ window.PickCalcParser = (() => {
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
   const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
-  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|Pitcher FS|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|Hitter FS|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|Hitter Strikeouts|Ks|K's|PO|Outs|BB|HA)\b/i;
+  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|Pitcher FS|PFS|Pitches Thrown|Pitch Count|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|Hitter FS|HFS|Fantasy Score|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|SB|Hitter Strikeouts|Hitter Ks|Ks|K's|PO|Outs|BB|HA)\b/i;
 
   const MLB_PROP_ALIASES = {
     'PITCHER STRIKEOUTS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
@@ -73,12 +73,16 @@ window.PickCalcParser = (() => {
     'TRIPLES': { label: 'Triples', key: 'triples', role: 'Batter' },
     'WALKS': { label: 'Walks', key: 'walks', role: 'Batter' },
     'STOLEN BASES': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
+    'SB': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
     'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
     'HITTER KS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
-    "HITTER K'S": { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' }
+    'BATTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
+    'PITCHES THROWN': { label: 'Pitches Thrown', key: 'pitchesThrown', role: 'Pitcher' },
+    'PITCH COUNT': { label: 'Pitches Thrown', key: 'pitchesThrown', role: 'Pitcher' },
+    'FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' }
   };
 
-  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
+  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Pitches Thrown','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
 
   function pad2(value) { return String(value).padStart(2, '0'); }
@@ -98,14 +102,13 @@ window.PickCalcParser = (() => {
       .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
       .replace(/\|/g, '\n')
-      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
-      .replace(/\b(?:Goblin|Demon|Taco|Promo|Less|More)\b/gi, ' ');
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2');
 
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
-      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?|pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
-      .map((line) => line.replace(/\b(?:LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|In\s+Lineup|Probable|Top\s+\d+(?:st|nd|rd|th)|Bot\s+\d+(?:st|nd|rd|th)|Mid\s+\d+(?:st|nd|rd|th)|Extra\s+Innings|Next\s+Half\s+Inning|Current\s+Inning|\d+(?:st|nd|rd|th)\s+Inning\s+Stretch|Inning\s*\d+|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
@@ -193,7 +196,7 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b(?:\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)\b/i);
+    match = source.match(/\b\d{1,3}m(?:\s+\d{1,2}s)?\b/i);
     if (match) {
       return { found: false, token: cleanWhitespace(match[0]), eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'Countdown timer ignored.' };
     }
@@ -326,7 +329,7 @@ window.PickCalcParser = (() => {
     const joined = cleanWhitespace((context || []).map((item) => item?.raw || item || '').join(' '));
     if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
 
-    const direct = joined.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+    const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
     if (direct && direct[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
       return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
     }
@@ -346,7 +349,7 @@ window.PickCalcParser = (() => {
     const lines = Array.isArray(context) ? context : [];
     for (let i = 0; i < lines.length; i += 1) {
       const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
-      const match = raw.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+      const match = raw.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
       if (match && match[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
         return { opponent: match[1].toUpperCase(), indicator: /@/.test(match[0]) ? '@' : 'vs', token: cleanWhitespace(match[0]), team: teamHint || '' };
       }
@@ -382,7 +385,7 @@ window.PickCalcParser = (() => {
     return (cluster || [])
       .map((item) => {
         const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi, '').trim();
+        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\d+K)/gi, '').trim();
       })
       .filter(Boolean);
   }
@@ -426,84 +429,56 @@ window.PickCalcParser = (() => {
 
   function parseCluster(cluster) {
     const DECON = /(Demon|Goblin|Taco|Free Pick|Promo|Trending|Hot|Boost|Popular|Insurance|Less|More)/gi;
-    const rawLines = (cluster || []).map((item) => {
+    const lines = (cluster || []).map((item) => {
       const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(DECON, '').trim();
+      return cleanWhitespace(splitGluedTokens(String(raw || '')).replace(DECON, ' ').replace(BADGE_RX, ' '));
     });
 
     let player = '', team = '', prop = '', line = 0;
-    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
-    const JUNK = /(?:\bvs\.?\b|@|\b(?:Sat|Sun|Mon|Tue|Wed|Thu|Fri|Today|Tomorrow|LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|Probable)\b|\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)/i;
-    const NAME_SCORE_RX = /^[A-Za-z'.\-\s]{3,25}$/;
+    const TEAM_RX = /([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)/i;
+    const JUNK = /(?:vs\.?|@|Sun|Mon|Tue|Wed|Thu|Fri|Sat|\d{1,2}:\d{2}\s*(?:am|pm)?)/i;
 
-    rawLines.forEach((value) => {
-      const clean = cleanWhitespace(value);
-      if (STANDALONE_NUMBER_RX.test(clean)) line = parseFloat(clean);
-    });
+    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
 
-    const teamEntries = [];
-    rawLines.forEach((value, index) => {
-      const clean = cleanWhitespace(value);
-      const match = clean.match(TEAM_RX);
-      if (match) teamEntries.push({ index, team: String(match[1] || '').toUpperCase() });
-    });
-
-    const scoreNameCandidate = (value, pivotIndex, idx) => {
-      const clean = sanitizePlayerName(value);
-      if (!clean || clean.includes('+')) return { clean: '', score: -1 };
-      if (!NAME_SCORE_RX.test(clean)) return { clean: '', score: -1 };
-      if (TEAM_RX.test(clean) || JUNK.test(clean) || /^\d/.test(clean)) return { clean: '', score: -1 };
-      if (!isLikelyPlayerName(clean)) return { clean: '', score: -1 };
-      let score = 100 - Math.abs(idx - pivotIndex) * 12;
-      if (idx === pivotIndex - 1 || idx === pivotIndex + 1) score += 35;
-      else if (idx === pivotIndex - 2 || idx === pivotIndex + 2) score += 22;
-      else if (idx === pivotIndex - 3 || idx === pivotIndex + 3) score += 12;
-      return { clean, score };
-    };
-
-    let best = { clean: '', score: -1, team: '' };
-    teamEntries.forEach((entry) => {
-      const hunt = [entry.index - 1, entry.index + 1, entry.index - 2, entry.index + 2, entry.index - 3, entry.index + 3];
-      hunt.forEach((idx) => {
-        if (idx < 0 || idx >= rawLines.length) return;
-        const candidate = scoreNameCandidate(rawLines[idx], entry.index, idx);
-        if (candidate.score > best.score) best = { ...candidate, team: entry.team };
-      });
-    });
-
-    if (best.clean) {
-      player = best.clean;
-      team = best.team;
-    } else if (teamEntries[0]) {
-      team = teamEntries[0].team;
+    for (let i = 0; i < lines.length; i += 1) {
+      const current = lines[i];
+      if (!TEAM_RX.test(current)) continue;
+      const match = current.match(TEAM_RX);
+      team = (match?.[1] || '').toUpperCase();
+      const hunt = [i - 1, i + 1, i - 2, i + 2, i - 3, i + 3];
+      for (const idx of hunt) {
+        const rawCandidate = cleanWhitespace(lines[idx] || '');
+        if (!rawCandidate) continue;
+        const candidate = sanitizePlayerName(rawCandidate);
+        if (candidate && candidate.length > 3 && !TEAM_RX.test(rawCandidate) && !JUNK.test(rawCandidate) && !/^\d/.test(rawCandidate) && isLikelyPlayerName(candidate)) {
+          player = candidate;
+          break;
+        }
+      }
+      if (player) break;
     }
 
-    const blob = rawLines.join(' ');
-    if (/\b(?:Ks|K's|Strikeouts)\b/i.test(blob)) prop = 'Pitcher Strikeouts';
-    else if (/\b(?:Total Bases|TB)\b/i.test(blob)) prop = 'Total Bases';
-    else if (/\b(?:Pitching Outs|PO|Outs)\b/i.test(blob)) prop = 'Pitching Outs';
-    else if (/\b(?:Pitcher Fantasy Score|PFS|Fantasy)\b/i.test(blob)) prop = 'Pitcher Fantasy Score';
-    else if (/\b(?:Walks Allowed|BB Allowed|BB)\b/i.test(blob)) prop = 'Walks Allowed';
-    else if (/\b(?:Hits Allowed|HA)\b/i.test(blob)) prop = 'Hits Allowed';
-    else if (/\b(?:Earned Runs Allowed|Earned Runs|ER)\b/i.test(blob)) prop = 'Earned Runs Allowed';
-    else if (/\b(?:Hitter Fantasy Score|HFS)\b/i.test(blob)) prop = 'Hitter Fantasy Score';
-    else if (/\b(?:Hits\+Runs\+RBIs|H\+R\+RBI|HRR)\b/i.test(blob)) prop = 'Hits+Runs+RBIs';
-    else if (/\bHits\b/i.test(blob)) prop = 'Hits';
-    else if (/\bRuns\b/i.test(blob)) prop = 'Runs';
-    else if (/\b(?:RBIs|RBI)\b/i.test(blob)) prop = 'RBIs';
-    else if (/\b(?:Home Runs|Home Run|HR)\b/i.test(blob)) prop = 'Home Runs';
-    else if (/\bSingles\b/i.test(blob)) prop = 'Singles';
-    else if (/\bDoubles\b/i.test(blob)) prop = 'Doubles';
-    else if (/\bTriples\b/i.test(blob)) prop = 'Triples';
-    else if (/\bWalks\b/i.test(blob)) prop = 'Walks';
-    else if (/\bStolen Bases\b/i.test(blob)) prop = 'Stolen Bases';
-    else if (/\b(?:Hitter Strikeouts|Hitter Ks|Hitter K's)\b/i.test(blob)) prop = 'Hitter Strikeouts';
+    if (!player) {
+      for (const raw of lines) {
+        const candidate = sanitizePlayerName(raw);
+        if (candidate && isLikelyPlayerName(candidate)) { player = candidate; break; }
+      }
+    }
+
+    const blob = lines.join(' ');
+    const directMeta = resolvePropAlias(blob, 'MLB');
+    if (directMeta?.label) prop = directMeta.label;
+    else if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
+    else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
+    else if (/Pitching Outs|Outs|PO/i.test(blob)) prop = 'Pitching Outs';
+    else if (/Pitches Thrown|Pitch Count/i.test(blob)) prop = 'Pitches Thrown';
+    else if (/Fantasy|HFS|PFS/i.test(blob)) prop = /(?:P|SP|RP)/i.test(blob) ? 'Pitcher Fantasy Score' : 'Hitter Fantasy Score';
 
     return {
       parsedPlayer: player,
-      team,
+      team: team,
       prop: prop || 'MLB Prop',
-      line,
+      line: line,
       accepted: (player.length > 2 && line > 0 && !!team)
     };
   }
@@ -599,7 +574,7 @@ window.PickCalcParser = (() => {
       let score = 100 + Math.max(0, (anchorLineIndex - item.absIndex)) * 2;
       if (item.absIndex === anchorLineIndex - 1) score += 12;
       if (item.absIndex === anchorLineIndex - 2) score += 8;
-      if (!/\b(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)\b/i.test(item.clean)) score += 15;
+      if (!/(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)/i.test(item.clean)) score += 15;
       return score;
     };
 
@@ -662,28 +637,13 @@ window.PickCalcParser = (() => {
     return resolvePropAlias(forwardJoin, sportHint);
   }
 
-  function chooseDirection(context, anchorLineIndex, pickType = 'Regular Line') {
-    if (/^(goblin|demon|free pick|taco)$/i.test(String(pickType || ''))) return 'More';
+  function chooseDirection(context, anchorLineIndex) {
     const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
     for (const item of ordered) {
       const match = item.clean.match(DIRECTION_RX);
       if (match) return /less|lower/i.test(match[1]) ? 'Less' : 'More';
     }
-    return '';
-  }
-
-  function isComboEntity(value = '') {
-    const raw = cleanWhitespace(String(value || ''));
-    if (!raw) return false;
-    if (/[A-Z]{2,3}\/[A-Z]{2,3}/.test(raw)) return true;
-    if (/(?:and|\&)/i.test(raw) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(raw)) return true;
-    const strippedPropText = raw
-      .replace(/(?:Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\+Runs\+RBIs|H\+R\+RBI|HRR|Total Bases|Pitcher Strikeouts|Pitching Outs|Pitcher Fantasy Score|Hitter Fantasy Score|Walks Allowed|Hits Allowed|Earned Runs Allowed|Walks|Hits|Runs|RBIs?|Home Runs?|Singles|Doubles|Triples|Stolen Bases|Hitter Strikeouts|Ks|K's|Outs|Fantasy)/gi, ' ')
-      .replace(/\+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (/(?:and|\&)/i.test(strippedPropText) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(strippedPropText)) return true;
-    return false;
+    return 'More';
   }
 
   function parseCandidate(candidate, dayScope, now) {
@@ -698,7 +658,7 @@ window.PickCalcParser = (() => {
     const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint) || resolvePropAlias(clusterIdentity.prop || '', sportHint);
     const identityPlayer = clusterIdentity.parsedPlayer || resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
     const parsedPlayer = identityPlayer || choosePlayer(context, candidate.anchorLineIndex);
-    const direction = chooseDirection(context, candidate.anchorLineIndex, pickType);
+    const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
@@ -737,10 +697,6 @@ window.PickCalcParser = (() => {
     }
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) {
       audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.';
-      return { audit, row: null };
-    }
-    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) {
-      audit.rejectionReason = 'Rejected: combo or paired legs are not supported.';
       return { audit, row: null };
     }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) {
@@ -835,7 +791,8 @@ window.PickCalcParser = (() => {
     const anchorValue = findPrimaryAnchor(block);
     const anchorIndex = Math.max(0, block.findIndex((line) => cleanWhitespace(line) === String(anchorValue)));
     const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(parsedCluster.prop || '', sportHint) || resolvePropAlias(joined, sportHint);
-    const direction = chooseDirection(contextItems, anchorIndex, pickType);
+    const directionTokens = block.filter((line) => /^(more|less|higher|lower)$/i.test(line));
+    const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const identityPlayer = parsedCluster.parsedPlayer || resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
@@ -875,7 +832,6 @@ window.PickCalcParser = (() => {
     if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
-    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) { audit.rejectionReason = 'Rejected: combo or paired legs are not supported.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
@@ -905,20 +861,10 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
       sourceIndex: audit.idx,
-      blockIndex: audit.idx,
-      geminiSubject: {
-        name: parsedPlayer,
-        team,
-        opponent,
-        prop: propMeta.label,
-        line: String(anchorValue),
-        gameTime: timeContext.token || '',
-        pickType,
-        direction,
-        type
-      }
+      blockIndex: audit.idx
     }};
   }
+
 
   function splitPipeBlocks(text = '') {
     return String(text || '')
@@ -933,7 +879,7 @@ window.PickCalcParser = (() => {
 
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
-    const dayScope = options.dayScope || 'both';
+    const dayScope = options.dayScope || 'today';
     const pipeBlocks = splitPipeBlocks(text);
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
@@ -973,9 +919,10 @@ window.PickCalcParser = (() => {
       }
     });
 
-    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0);
+    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1));
     blocks.forEach((block, blockIndex) => {
       if (!block.length) return;
+      if (countBlockAnchors(block) !== 1) return;
       const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
       if (parsed?.row) {
         acceptParsed(parsed);
@@ -995,24 +942,12 @@ window.PickCalcParser = (() => {
       });
     }
 
-    let rows = Array.from(rowMap.values()).map((row, index) => {
+    const rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
       delete cleanRow.__completeness;
       cleanRow.idx = index + 1;
       return cleanRow;
     });
-
-    if (!rows.length && blocks.length) {
-      blocks.forEach((block, blockIndex) => {
-        if (!block.length) return;
-        const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-        if (parsed?.row) {
-          const cleanRow = Object.assign({}, parsed.row, { idx: rows.length + 1 });
-          rows.push(cleanRow);
-          if (parsed.audit) audit.push(parsed.audit);
-        }
-      });
-    }
 
     return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows, audit };
   }

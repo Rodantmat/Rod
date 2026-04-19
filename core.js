@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.32 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.33 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -34,19 +34,6 @@ window.PickCalcCore = window.PickCalcCore || {};
       if (!values.length) return 0;
       return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
     };
-    const resolveMarketComposite = () => {
-      const providerMap = branches?.E?.providerMap || {};
-      const rawBooks = [providerMap.DraftKings, providerMap.FanDuel, providerMap.BetMGM, providerMap.Bet365, providerMap.Pinnacle]
-        .map(clamp01)
-        .filter((v) => Number.isFinite(v));
-      const arithmetic = branches?.E?.localArithmetic || {};
-      const components = rawBooks.slice();
-      if (Number.isFinite(Number(arithmetic.mean))) components.push(clamp01(arithmetic.mean));
-      if (Number.isFinite(Number(arithmetic.marketConfidence))) components.push(clamp01(arithmetic.marketConfidence));
-      if (!components.length) return 0;
-      return components.reduce((sum, value) => sum + value, 0) / components.length;
-    };
-    const marketComposite = resolveMarketComposite();
     const prop = String(row?.prop || '').toLowerCase();
     const pickType = String(row?.pickType || '').toLowerCase();
     const isFantasy = /fantasy score|\bpfs\b|\bhfs\b/.test(prop);
@@ -60,28 +47,28 @@ window.PickCalcCore = window.PickCalcCore || {};
       const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
       const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
       const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
-      const market = marketComposite;
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
       overScore = (kPulse * 0.30) + (environment * 0.20) + (leash * 0.40) + (market * 0.10);
       underScore = ((1 - kPulse) * 0.30) + ((1 - environment) * 0.20) + ((1 - leash) * 0.40) + ((1 - market) * 0.10);
     } else if (isHitterFantasy || isFantasy || /hits\+runs\+rbis|hrr/.test(prop)) {
       const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
       const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
       const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
-      const market = marketComposite;
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
       overScore = (clout * 0.30) + (setup * 0.20) + (upside * 0.40) + (market * 0.10);
       underScore = ((1 - clout) * 0.30) + ((1 - setup) * 0.20) + ((1 - upside) * 0.40) + ((1 - market) * 0.10);
     } else if (/home runs|triples|stolen bases/.test(prop)) {
       const branchA = averageBranch('A');
       const branchC = averageBranch('C');
       const branchD = averageBranch('D');
-      const branchE = marketComposite;
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
       overScore = (branchA * 0.60) + (branchC * 0.20) + (branchD * 0.15) + (branchE * 0.05);
       underScore = ((1 - branchA) * 0.60) + ((1 - branchC) * 0.20) + ((1 - branchD) * 0.15) + ((1 - branchE) * 0.05);
     } else {
       const branchA = averageBranch('A');
       const branchC = averageBranch('C');
       const branchD = averageBranch('D');
-      const branchE = marketComposite;
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
       overScore = (branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchE * 0.05);
       underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchE) * 0.05);
     }
@@ -126,11 +113,9 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function refreshIntake() {
     state.cleanPool = state.rows.slice();
-    const rows = filteredRows(state.cleanPool);
+    const rows = filteredRows(state.rows);
     const auditRows = filteredAuditRows(state.auditRows);
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
-    UI.renderPoolCounts?.(rows.length, rejectedCount);
-    UI.renderFeedStatus(state.cleanPool, auditRows);
+    UI.renderFeedStatus(rows, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }
@@ -138,34 +123,41 @@ window.PickCalcCore = window.PickCalcCore || {};
   function ingestBoard() {
     const input = UI.el('boardInput');
     if (!input || !input.value.trim()) return;
-    const parsed = Parser.parseBoard(input.value, { dayScope: 'both' });
-    const incoming = Array.isArray(parsed.rows) ? parsed.rows : [];
-    const rejectedCount = Array.isArray(parsed.audit?.rejectedLines) ? parsed.audit.rejectedLines.length : 0;
-    if (incoming.length > 0) {
-      const combined = [...state.cleanPool, ...incoming];
+    const parsed = Parser.parseBoard(input.value);
+
+    if ((parsed.rows || []).length > 0) {
+      const combined = [...state.cleanPool, ...parsed.rows];
       const overflow = Math.max(0, combined.length - 16);
-      state.cleanPool = combined.slice(0, 16).map((row, index) => Object.assign({}, row, {
-        idx: index + 1,
-        LEG_ID: row.LEG_ID || `LEG-${index + 1}`
+      state.cleanPool = combined.slice(0, 16);
+      state.rows = state.cleanPool.slice(0, 16).map((row, index) => Object.assign({}, row, {
+        idx: Number(index + 1),
+        LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`,
+        pickType: row.pickType || 'Regular Line'
       }));
-      state.rows = state.cleanPool.slice();
+      state.cleanPool = state.rows.slice(0, 16);
       state.auditRows = parsed.audit || [];
       state.lastResult = null;
       state.miningVault = {};
       state.ingestLogs = buildIngestLogs(state.auditRows);
+      state.lastIngestMeta = {
+        acceptedCount: state.rows.length,
+        totalAnchors: state.auditRows.length,
+        rejectedCount: state.auditRows.filter((item) => !item.accepted).length,
+        dayScope: getDayScopeValue(),
+        timestamp: new Date().toISOString(),
+        parseYear: Parser.PARSE_YEAR
+      };
       input.value = '';
-      UI.renderPoolCounts?.(incoming.length, rejectedCount + overflow);
-      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (16 Max)` });
+      if (overflow > 0) UI.showToast('16-leg maximum reached. Extra legs were not added.');
+      else UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
-      UI.renderPoolCounts?.(0, rejectedCount);
+      UI.showToast('No valid legs detected. Check board format.');
     }
     UI.renderFeedStatus(state.cleanPool, parsed.audit);
     UI.renderPoolTable(state.cleanPool);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
-    if (!incoming.length && UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'No valid legs found. Check board format.';
-    else if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '';
   }
 
   async function handleMiningClick(isVerbose = false) {
@@ -178,7 +170,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     state.miningVault = {};
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Wait bar active. Probing and retrieving payload...');
+    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
     UI.startHeartbeat?.();
 
@@ -190,10 +182,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       vault: starterVault,
       vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
-      analysisHint: 'Wait bar active. Probing and retrieving payload...',
-      runStatus: 'LOADING',
-      analysisPhase: 'loading',
-      finalized: false
+      analysisHint: 'Firing Atomic Ingress...'
     };
     state.lastResult = starter;
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
@@ -208,10 +197,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             vault,
             vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
             shield,
-            analysisHint: 'Wait bar active. Probing and retrieving payload...',
-            runStatus: 'LOADING',
-            analysisPhase: 'loading',
-            finalized: false,
+            analysisHint: branchKey === 'INIT' ? 'Zero-fill vault primed.' : `Streaming Branch ${branchKey} for ${row?.parsedPlayer || row?.LEG_ID}.`,
             connectorState: { completedRows: 0, completedProbes, totalProbes },
             logs: logs || [{ level: 'info', text: `[SYSTEM] Branch ${branchKey} hydrated.` }]
           };
@@ -220,16 +206,12 @@ window.PickCalcCore = window.PickCalcCore || {};
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
           result.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
-          result.analysisPhase = 'final';
-          result.finalized = true;
           state.lastResult = result;
           UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
         },
         onComplete: ({ lastResult }) => {
           if (lastResult) {
             lastResult.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
-            lastResult.analysisPhase = 'final';
-            lastResult.finalized = true;
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
             UI.updateProgressBar(rows.length * 5, rows.length * 5, lastResult?.analysisHint || 'Atomic Matrix Saturated');
@@ -258,7 +240,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
 
-    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
+    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       if ('value' in node) node.value = '';
@@ -287,14 +269,15 @@ window.PickCalcCore = window.PickCalcCore || {};
     document.getElementById('saveKeyBtn')?.addEventListener('click', () => {
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
-        localStorage.setItem('OXYGEN_GEMINI_KEY', key);
-        alert('Key Saved! Refreshing...');
-        window.location.reload();
+        try { localStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+        try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+        window.__OXYGEN_GEMINI_KEY__ = key;
+        UI.showToast?.('API key saved.');
       }
     });
     // Initialize input value if key exists
-    const savedKey = localStorage.getItem('OXYGEN_GEMINI_KEY');
-    if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
+    const savedKey = window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY');
+    if (savedKey) { document.getElementById('apiKeyInput').value = savedKey; window.__OXYGEN_GEMINI_KEY__ = savedKey; }
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
     UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
@@ -315,7 +298,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const shieldTitle = document.getElementById('shieldTitle');
     if (title) title.textContent = 'PickCalc Multi-Sport Engine';
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
-    if (analysisVersion) analysisVersion.textContent = '';
+    if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
     refreshIntake();
     bindEvents();
