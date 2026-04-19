@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.18 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.19 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -894,7 +894,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       if (logger === console.log) logger(`[OXYGEN] BRANCH_E_SLOT_AUDIT: ${row.parsedPlayer} :: ${slotAuditLine}`);
       else logger({ level: 'info', text: `[OXYGEN] BRANCH_E_SLOT_AUDIT: ${row.parsedPlayer} :: ${slotAuditLine}` });
       const local = proofFlags.localMarket || {};
-      const rawBookLine = [providerMap.DraftKings || 0, providerMap.FanDuel || 0, providerMap.BetMGM || 0, providerMap.Bet365 || 0, providerMap.Pinnacle || 0].map((v) => safeNumber(v, 0).toFixed(3)).join(', ');
+      const safeProviderMap = vault?.branches?.E?.providerMap || {};
+      const rawBookLine = [safeProviderMap.DraftKings || 0, safeProviderMap.FanDuel || 0, safeProviderMap.BetMGM || 0, safeProviderMap.Bet365 || 0, safeProviderMap.Pinnacle || 0].map((v) => safeNumber(v, 0).toFixed(3)).join(', ');
       const expectedLine = `mean=${safeNumber(local.mean,0).toFixed(3)} median=${safeNumber(local.median,0).toFixed(3)} high=${safeNumber(local.high,0).toFixed(3)} low=${safeNumber(local.low,0).toFixed(3)} spread=${safeNumber(local.spread,0).toFixed(3)} lineDelta=${safeNumber(local.lineDelta,0).toFixed(3)} conf=${safeNumber(local.marketConfidence,0).toFixed(3)}`;
       if (logger === console.log) logger(`[OXYGEN] BRANCH_E_EXPECTED_FROM_RAW: ${row.parsedPlayer} :: books=[${rawBookLine}] :: ${expectedLine}`);
       else logger({ level: 'info', text: `[OXYGEN] BRANCH_E_EXPECTED_FROM_RAW: ${row.parsedPlayer} :: books=[${rawBookLine}] :: ${expectedLine}` });
