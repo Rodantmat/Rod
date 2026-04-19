@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.26 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.27 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -34,6 +34,19 @@ window.PickCalcCore = window.PickCalcCore || {};
       if (!values.length) return 0;
       return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
     };
+    const resolveMarketComposite = () => {
+      const providerMap = branches?.E?.providerMap || {};
+      const rawBooks = [providerMap.DraftKings, providerMap.FanDuel, providerMap.BetMGM, providerMap.Bet365, providerMap.Pinnacle]
+        .map(clamp01)
+        .filter((v) => Number.isFinite(v));
+      const arithmetic = branches?.E?.localArithmetic || {};
+      const components = rawBooks.slice();
+      if (Number.isFinite(Number(arithmetic.mean))) components.push(clamp01(arithmetic.mean));
+      if (Number.isFinite(Number(arithmetic.marketConfidence))) components.push(clamp01(arithmetic.marketConfidence));
+      if (!components.length) return 0;
+      return components.reduce((sum, value) => sum + value, 0) / components.length;
+    };
+    const marketComposite = resolveMarketComposite();
     const prop = String(row?.prop || '').toLowerCase();
     const pickType = String(row?.pickType || '').toLowerCase();
     const isFantasy = /fantasy score|\bpfs\b|\bhfs\b/.test(prop);
@@ -47,28 +60,28 @@ window.PickCalcCore = window.PickCalcCore || {};
       const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
       const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
       const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
-      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      const market = marketComposite;
       overScore = (kPulse * 0.30) + (environment * 0.20) + (leash * 0.40) + (market * 0.10);
       underScore = ((1 - kPulse) * 0.30) + ((1 - environment) * 0.20) + ((1 - leash) * 0.40) + ((1 - market) * 0.10);
     } else if (isHitterFantasy || isFantasy || /hits\+runs\+rbis|hrr/.test(prop)) {
       const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
       const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
       const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
-      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      const market = marketComposite;
       overScore = (clout * 0.30) + (setup * 0.20) + (upside * 0.40) + (market * 0.10);
       underScore = ((1 - clout) * 0.30) + ((1 - setup) * 0.20) + ((1 - upside) * 0.40) + ((1 - market) * 0.10);
     } else if (/home runs|triples|stolen bases/.test(prop)) {
       const branchA = averageBranch('A');
       const branchC = averageBranch('C');
       const branchD = averageBranch('D');
-      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      const branchE = marketComposite;
       overScore = (branchA * 0.60) + (branchC * 0.20) + (branchD * 0.15) + (branchE * 0.05);
       underScore = ((1 - branchA) * 0.60) + ((1 - branchC) * 0.20) + ((1 - branchD) * 0.15) + ((1 - branchE) * 0.05);
     } else {
       const branchA = averageBranch('A');
       const branchC = averageBranch('C');
       const branchD = averageBranch('D');
-      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      const branchE = marketComposite;
       overScore = (branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchE * 0.05);
       underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchE) * 0.05);
     }
