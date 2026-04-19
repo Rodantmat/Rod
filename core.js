@@ -115,6 +115,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.cleanPool = state.rows.slice();
     const rows = filteredRows(state.cleanPool);
     const auditRows = filteredAuditRows(state.auditRows);
+    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
+    UI.renderPoolCounts?.(rows.length, rejectedCount);
     UI.renderFeedStatus(state.cleanPool, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
@@ -125,6 +127,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (!input || !input.value.trim()) return;
     const parsed = Parser.parseBoard(input.value, { dayScope: 'both' });
     const incoming = Array.isArray(parsed.rows) ? parsed.rows : [];
+    const rejectedCount = Array.isArray(parsed.audit?.rejectedLines) ? parsed.audit.rejectedLines.length : 0;
     if (incoming.length > 0) {
       const combined = [...state.cleanPool, ...incoming];
       const overflow = Math.max(0, combined.length - 16);
@@ -138,16 +141,18 @@ window.PickCalcCore = window.PickCalcCore || {};
       state.miningVault = {};
       state.ingestLogs = buildIngestLogs(state.auditRows);
       input.value = '';
-      if (overflow > 0) UI.showToast(`Remaining ${overflow} legs ignored (16 Max)`);
-      else UI.showToast(`Ingested ${incoming.length} legs`);
+      UI.renderPoolCounts?.(incoming.length, rejectedCount + overflow);
+      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (16 Max)` });
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
-      UI.showToast('No valid legs found. Check board format.');
+      UI.renderPoolCounts?.(0, rejectedCount);
     }
     UI.renderFeedStatus(state.cleanPool, parsed.audit);
     UI.renderPoolTable(state.cleanPool);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
+    if (!incoming.length && UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'No valid legs found. Check board format.';
+    else if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '';
   }
 
   async function handleMiningClick(isVerbose = false) {

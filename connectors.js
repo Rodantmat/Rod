@@ -6,6 +6,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+  const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17'];
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -389,6 +390,32 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
   }
 
+  function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+  function isRetryableStatus(status) {
+    return [429, 500, 502, 503, 504].includes(Number(status));
+  }
+
+  function vectorSignature(v = []) {
+    return Array.isArray(v) ? v.map((n) => Number(n).toFixed(3)).join('|') : '';
+  }
+
+  function validateGeminiPayload(payload) {
+    const entries = Array.isArray(payload?.data) ? payload.data : [];
+    if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.' };
+    const signatures = new Map();
+    for (const entry of entries) {
+      if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
+      if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
+      if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
+      const sig = vectorSignature(entry.v);
+      if (sig) signatures.set(sig, (signatures.get(sig) || 0) + 1);
+    }
+    const dup = Array.from(signatures.values()).some((count) => count > 1);
+    if (dup && entries.length > 1) return { ok: false, reason: 'Duplicate factor payload detected.' };
+    return { ok: true };
+  }
+
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
     const logger = getConsoleLogger();
     const text = `[SYSTEM] ${step}${detail ? `: ${detail}` : ''}`;
@@ -428,95 +455,72 @@ Subjects:
 ${uniqueSubjects}
 Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
-    if (!activeKey) return buildBaselinePayload(batch);
-
-    const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + activeKey;
-    const promptText = String(prompt || '').trim() || 'Extract data for subject';
-    const finalPromptText = promptText;
-    const body = JSON.stringify({ 
-      contents: [{ 
-        role: "user", 
-        parts: [{ text: finalPromptText }] 
-      }],
-      generationConfig: { responseMimeType: "application/json" }
-    });
-    console.log('[OXYGEN] FETCH_URL:', url);
-    console.log('HANDSHAKE_URL:', url);
-    console.log('HANDSHAKE_BODY:', body);
-    console.log("RAW_PAYLOAD:", finalPromptText);
-    console.log("FINAL_JSON_SENT:", body);
-    logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s)`);
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body
-      });
-
-      logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("GOOGLE_REJECTION:", errorText);
-        let errorObject = null;
-        try { errorObject = JSON.parse(errorText); } catch (_) {}
-        const rejectLogger = getConsoleLogger();
-        if (rejectLogger === console.log) {
-          console.log(`[SYSTEM] GOOGLE_REJECTION: ${errorText}`);
-          if (errorObject) console.log(errorObject);
-        } else {
-          rejectLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${errorText}`, modelId: GEMINI_MODEL, pre: errorObject ? JSON.stringify(errorObject, null, 2) : errorText });
-        }
-        alert("CRITICAL_API_FAIL: " + response.status + " - " + errorText);
-        if (response.status === 403) {
-          const authLogger = getConsoleLogger();
-          if (authLogger === console.log) console.log('[SYSTEM] AUTH_ERROR: Check API Key or Region.');
-          else authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.', modelId: GEMINI_MODEL });
-        }
-        logConnectorStep('GOOGLE_PROCESSING', `Rejected with status ${response.status}`);
-        logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${response.status}`);
-        return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText, errorJson: errorObject });
-      }
-
-      logConnectorStep('GOOGLE_PROCESSING', 'Response received from model');
-      const json = await response.json();
-      console.log("Full Google Response:", json);
-      console.log("RAW_RESPONSE:", json);
-      const candidate = json?.candidates?.[0] || null;
-      const finishReason = String(candidate?.finishReason || '').toUpperCase();
-      const raw = candidate?.content?.parts?.[0]?.text || '';
-      const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-      if (blocked || !raw.trim()) {
-        logConnectorStep('JSON_PARSING', 'No parseable candidate payload; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
-      }
-      const { parsed, clean, error } = safeJsonParse(raw);
-      if (!parsed) {
-        console.warn('[OXYGEN] JSON_PARSE_REPAIR_FAIL:', error);
-        logConnectorStep('JSON_PARSING', 'Malformed JSON envelope; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
-      }
-      if (!Array.isArray(parsed?.data) || !parsed.data.length) {
-        logConnectorStep('JSON_PARSING', 'Empty data array; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
-      }
-      logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
-      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Success');
-      return Object.assign(parsed, { responseText: raw || '', rawResponse: clean || raw || '' });
-    } catch (e) {
-      console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
-      const catchLogger = getConsoleLogger();
-      if (catchLogger === console.log) {
-        console.log(`[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`);
-      } else {
-        catchLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`, modelId: GEMINI_MODEL, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
-      }
-      alert('CRITICAL_API_FAIL: 0 - ' + (e?.message || 'Unknown fetch error'));
-      logConnectorStep('WORKER_HANDSHAKE', e?.message || 'Fetch failure');
-      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Failure 0');
-      return buildBaselinePayload(batch);
+    if (!activeKey) {
+      return { ok: false, errorStatus: 0, errorText: 'Missing Gemini API key.', temporaryFailure: false, modelId: GEMINI_MODEL };
     }
+
+    const models = [GEMINI_MODEL, ...GEMINI_FALLBACK_MODELS];
+    const logger = getConsoleLogger();
+    const body = JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
+      generationConfig: { responseMimeType: 'application/json' }
+    });
+    let lastFailure = { ok: false, errorStatus: 0, errorText: 'Unknown Gemini failure.', temporaryFailure: true, modelId: GEMINI_MODEL };
+
+    for (const modelId of models) {
+      const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + modelId + ':generateContent?key=' + activeKey;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) via ${modelId} [attempt ${attempt}/3]`);
+        try {
+          const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+          logConnectorStep('WORKER_HANDSHAKE', `${modelId} HTTP ${response.status}`);
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorObject = null;
+            try { errorObject = JSON.parse(errorText); } catch (_) {}
+            const message = errorObject?.error?.message || errorText || `HTTP ${response.status}`;
+            lastFailure = { ok: false, errorStatus: response.status, errorText: message, errorJson: errorObject, temporaryFailure: isRetryableStatus(response.status), modelId };
+            if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`);
+            else logger({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`, modelId, pre: errorText });
+            if (isRetryableStatus(response.status) && attempt < 3) {
+              try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
+              await delay(700 * attempt);
+              continue;
+            }
+            break;
+          }
+
+          const json = await response.json();
+          const raw = extractGeminiText(json);
+          const parsedEnvelope = safeJsonParse(raw);
+          const parsed = parsedEnvelope.parsed;
+          if (!parsed) {
+            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            break;
+          }
+          const validation = validateGeminiPayload(parsed);
+          if (!validation.ok) {
+            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            break;
+          }
+          logConnectorStep('JSON_PARSING', `Parsed ${(parsed.data || []).length} subject payload(s) via ${modelId}`);
+          logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Success via ${modelId}`);
+          return Object.assign({ ok: true, modelId, rawResponse: parsedEnvelope.clean || raw || '', responseText: raw || '' }, parsed);
+        } catch (e) {
+          lastFailure = { ok: false, errorStatus: 0, errorText: e?.message || 'Unknown fetch error', temporaryFailure: true, modelId };
+          if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
+          else logger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`, modelId, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
+          if (attempt < 3) {
+            try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
+            await delay(700 * attempt);
+            continue;
+          }
+        }
+      }
+    }
+
+    logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${lastFailure.errorStatus || 0}`);
+    return lastFailure;
   }
 
   async function debugConnection() {
@@ -636,19 +640,29 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
     const payload = await fetchGeminiBatch(validBatch);
     const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
-    const cleanJson = sanitizeJsonText(rawResponse);
+    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
-    let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
-    if ((!responseData.data.length) && cleanJson) {
-      const repaired = safeJsonParse(cleanJson);
-      if (repaired.parsed) {
-        responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
-      } else {
-        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
-      }
+    if (!payload?.ok) {
+      const detail = payload?.temporaryFailure
+        ? `Temporary API unavailable (${payload?.modelId || GEMINI_MODEL}): ${payload?.errorText || 'Retry later.'}`
+        : `Non-real Gemini payload (${payload?.modelId || GEMINI_MODEL}): ${payload?.errorText || 'Rejected.'}`;
+      validBatch.forEach((row) => {
+        const result = buildIngressErrorResult(row, stateRef, detail);
+        result.errorText = payload?.errorText || detail;
+        result.errorStatus = payload?.errorStatus || 0;
+        result.errorJson = payload?.errorJson || null;
+        result.responseText = payloadResponseText;
+        results.push(result);
+        if (logger === console.log) logger(result.logs[0].text);
+        else logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
+      });
+      const lastResult = results[results.length - 1] || null;
+      hooks.onComplete?.({ results, totalRows, lastResult });
+      return { results, lastResult };
     }
 
-    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
 
     for (let batchIndex = 0; batchIndex < validBatch.length; batchIndex++) {
       const row = validBatch[batchIndex];
@@ -660,8 +674,17 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       const matchedRow = entry ? validBatch[Number(entry.i)] : null;
       const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
       const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
-      const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
+      const vals = (isExactLegMatch && Array.isArray(entry?.v) && entry.v.length === 72) ? entry.v : null;
+      const isFallback = !vals || entry?.fallback === true;
+
+      if (isFallback) {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload. Matrix hidden.');
+        result.responseText = payloadResponseText;
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
+        continue;
+      }
 
       console.log('[OXYGEN] Hydrating ' + (row.parsedPlayer || row.LEG_ID) + ' [Index: ' + batchIndex + '] with ' + vals.length + ' units.');
 
@@ -719,7 +742,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         source: 'real',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated',
+        analysisHint: 'Atomic Matrix Saturated',
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
@@ -732,7 +755,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         responseText: payloadResponseText,
         logs: [{
           level: isFallback ? 'warning' : 'success',
-          text: `[OXYGEN] ${isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH'}: ${row.parsedPlayer} (${found} units)`
+          text: `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)`
         }]
       };
 

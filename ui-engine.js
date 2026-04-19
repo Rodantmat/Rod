@@ -191,6 +191,12 @@ window.PickCalcUI = window.PickCalcUI || {};
     mount.innerHTML = '';
   }
 
+  function renderPoolCounts(accepted = 0, rejected = 0) {
+    const mount = el('poolCounts');
+    if (!mount) return;
+    mount.innerHTML = `<span class="count-accepted">Accepted: ${escapeHtml(String(accepted))}</span><span class="count-rejected">Rejected: ${escapeHtml(String(rejected))}</span>`;
+  }
+
   function renderFeedStatus(rows, auditRows = []) {
     const mount = el('feedStatus');
     if (!mount) return;
@@ -287,11 +293,15 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
-    const branches = vault?.branches || {};
     const normalized = splitTeamRoleFromName(row);
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
+    const hardError = vault?.isReal !== true || /error|unavailable|retry/i.test(String(vault?.terminalState || '')) || Object.keys(vault?.branches || {}).length === 0;
+    if (hardError) {
+      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner">Real data was not confirmed for this leg. Matrix hidden. Check API availability / payload integrity and rerun.</div></article>`;
+    }
+    const branches = vault?.branches || {};
     const scoreMeta = resolveCobaltScore(vault, row);
     const score = Number(scoreMeta?.score || 0);
     const side = scoreMeta?.displaySide ? ` [${scoreMeta.displaySide}]` : '';
@@ -415,7 +425,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(purgeUiNoise(row.prop || ''))} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
     }
     const kpis = el('analysisKpis');
-    if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
+    if (kpis) {
+      if (result?.isReal === false) kpis.innerHTML = `<div class="pill">Matrix Hidden</div><div class="pill">Reason: API / payload not confirmed real</div>`;
+      else kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
+    }
     renderMiningGrid(rows, vaultCollection);
     const shieldPanel = el('shieldPanel');
     if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>Signal Mix</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
@@ -549,6 +562,6 @@ window.PickCalcUI = window.PickCalcUI || {};
     }, 4000);
   }
 
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();
