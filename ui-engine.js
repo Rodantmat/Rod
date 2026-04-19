@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.14 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.15 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -256,7 +256,13 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function isReliableVault(vault = {}) {
-    return Boolean(vault && vault.isReal === true && vault.reliable === true && vault.source === 'gemini_verified' && String(vault.terminalState || '').toLowerCase().includes('verified'));
+    return Boolean(vault && vault.isReal === true && vault.reliable === true && vault.source === 'gemini_verified' && vault?.proofFlags?.passed === true && String(vault.terminalState || '').toLowerCase().includes('verified'));
+  }
+
+  function renderProofFlags(vault = {}) {
+    const failures = Array.isArray(vault?.proofFlags?.failures) ? vault.proofFlags.failures : [];
+    if (!failures.length) return '<div class="proof-pass">Brutal Honesty Proof: PASS</div>';
+    return `<div class="proof-fail"><strong>Brutal Honesty Flags:</strong><div class="proof-list">${failures.map((item) => `<div class="proof-line">• ${escapeHtml(item.message || item.label || 'Checkpoint failed')}</div>`).join('')}</div></div>`;
   }
 
   function resolveCobaltScore(vault = {}, row = {}) {
@@ -305,7 +311,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const reliable = isReliableVault(vault);
     if (!reliable) {
       const reason = purgeUiNoise(String(vault?.terminalState || 'Payload not verified from Gemini API.'));
-      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner"><strong>ERROR:</strong> Data was not verified as real Gemini output. Matrix hidden. ${escapeHtml(reason)}</div></article>`;
+      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner"><strong>ERROR:</strong> Data was not verified as real and reliable Gemini output. Matrix hidden. ${escapeHtml(reason)}</div>${renderProofFlags(vault)}</article>`;
     }
     const branches = vault?.branches || {};
     const scoreMeta = resolveCobaltScore(vault, row);
@@ -320,9 +326,9 @@ window.PickCalcUI = window.PickCalcUI || {};
       const branchHeader = branchKey === 'E'
         ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">MARKET</span></div>`
         : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}" open><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
+      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
     }).join('');
-    return `<details class="player-mining-card matrix-collapsible player-collapsible" open><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${matrixMarkup}</div></details>`;
+    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${renderProofFlags(vault)}${matrixMarkup}</div></details>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {

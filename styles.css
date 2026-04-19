@@ -55,3 +55,10 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .pool-toolbar{align-items:center;justify-content:space-between}.pool-counts{display:inline-flex;align-items:center;gap:26px;min-height:44px;padding:0 4px;color:var(--text);font-weight:800;font-size:16px}.pool-counts .count-accepted{color:#aef0cc}.pool-counts .count-rejected{color:#ffd989}@media (max-width:680px){.pool-toolbar{align-items:flex-start}.pool-counts{font-size:14px;gap:16px;flex-wrap:wrap}}
 
 .branch-title-left{display:inline-flex;align-items:center;gap:8px}.analysis-error-banner{display:block;margin-top:0}.branch-summary{display:flex;align-items:center;justify-content:space-between}
+
+
+.proof-pass,.proof-fail{margin-top:10px;padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#0c1427}
+.proof-pass{border-color:#295b43;color:#aef0cc}
+.proof-fail{border-color:#5c4720;color:#ffd989}
+.proof-list{display:grid;gap:6px;margin-top:8px}
+.proof-line{overflow-wrap:anywhere}

@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.14 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.15 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -67,6 +67,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.terminalState = 'Data Ingress Error';
     vault.isReal = false;
     vault.reliable = false;
+    vault.proofFlags = { passed: false, checks: [], failures: [{ key: 'ingress_error', label: detail, passed: false, message: detail }], statusLabel: 'PROOF_FAIL' };
     vault.source = 'error';
     BRANCH_KEYS.forEach((key) => {
       if (!vault.branches[key]) return;
@@ -121,6 +122,107 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return nums.length % 2 ? safeNumber(nums[mid]) : safeNumber((nums[mid - 1] + nums[mid]) / 2);
   }
 
+
+  function nearlyEqual(a, b, tolerance = 0.02) {
+    return Math.abs(Number(a || 0) - Number(b || 0)) <= tolerance;
+  }
+
+  function buildCheck(key, label, actual, expected, passed, severity = 'error') {
+    return {
+      key,
+      label,
+      actual: safeNumber(actual, 0),
+      expected: safeNumber(expected, 0),
+      passed: Boolean(passed),
+      severity,
+      message: passed ? `${label}: PASS` : `${label}: FAIL (actual ${safeNumber(actual, 0).toFixed(2)} vs expected ${safeNumber(expected, 0).toFixed(2)})`
+    };
+  }
+
+  function computeLocalMarketMetrics(providerMap = {}) {
+    const values = [providerMap.DraftKings, providerMap.FanDuel, providerMap.BetMGM, providerMap.Bet365, providerMap.Pinnacle]
+      .map((value) => Number(value))
+      .filter(Number.isFinite);
+    const high = values.length ? Math.max(...values) : 0;
+    const low = values.length ? Math.min(...values) : 0;
+    const mean = average(values);
+    const medianValue = median(values);
+    const spread = safeNumber(high - low, 0);
+    const coverageCount = values.filter((value) => value > 0).length;
+    const marketConfidence = safeNumber(coverageCount / 5, 0);
+    return {
+      mean,
+      median: medianValue,
+      high: safeNumber(high, 0),
+      low: safeNumber(low, 0),
+      spread,
+      lineDelta: mean,
+      marketConfidence,
+      coverageCount
+    };
+  }
+
+  function stampLocalBranchEMetrics(vault = {}, metrics = {}) {
+    const branch = vault?.branches?.E;
+    if (!branch?.factorMeta) return;
+    const localPairs = [
+      ['e06', 'Consensus Mean', metrics.mean],
+      ['e07', 'Consensus Median', metrics.median],
+      ['e08', 'Consensus High', metrics.high],
+      ['e09', 'Consensus Low', metrics.low],
+      ['e10', 'Spread', metrics.spread],
+      ['e11', 'Line Delta', metrics.lineDelta],
+      ['e12', 'Market Confidence', metrics.marketConfidence]
+    ];
+    localPairs.forEach(([key, name, value]) => applyFactor(branch, key, name, value, 'DERIVED', 'LOCAL_PROOF_COMPUTE'));
+    updateBranchMeta(branch);
+  }
+
+  function buildProofFlags(vault = {}, row = {}, payloadValues = []) {
+    const checks = [];
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => Number(value)) : [];
+    const allFinite = numericValues.length === 72 && numericValues.every(Number.isFinite);
+    const allInRange = allFinite && numericValues.every((value) => value >= 0 && value <= 1);
+
+    checks.push({ key: 'schema_length', label: 'Schema Length 72', passed: numericValues.length === 72, actual: numericValues.length, expected: 72, severity: 'error', message: numericValues.length === 72 ? 'Schema Length 72: PASS' : `Schema Length 72: FAIL (actual ${numericValues.length} vs expected 72)` });
+    checks.push({ key: 'numeric_finite', label: 'All Numeric Finite', passed: allFinite, actual: allFinite ? 72 : 0, expected: 72, severity: 'error', message: allFinite ? 'All Numeric Finite: PASS' : 'All Numeric Finite: FAIL' });
+    checks.push({ key: 'numeric_unit_range', label: 'All Values In 0-1 Range', passed: allInRange, actual: allInRange ? 72 : 0, expected: 72, severity: 'error', message: allInRange ? 'All Values In 0-1 Range: PASS' : 'All Values In 0-1 Range: FAIL' });
+
+    const providerMap = vault?.branches?.E?.providerMap || {};
+    const metrics = computeLocalMarketMetrics(providerMap);
+    const rawMean = vault?.branches?.E?.factorMeta?.e06?.value ?? 0;
+    const rawMedian = vault?.branches?.E?.factorMeta?.e07?.value ?? 0;
+    const rawHigh = vault?.branches?.E?.factorMeta?.e08?.value ?? 0;
+    const rawLow = vault?.branches?.E?.factorMeta?.e09?.value ?? 0;
+    const rawSpread = vault?.branches?.E?.factorMeta?.e10?.value ?? 0;
+    const rawConfidence = vault?.branches?.E?.factorMeta?.e12?.value ?? 0;
+
+    checks.push(buildCheck('market_mean_match', 'Branch E Mean Match', rawMean, metrics.mean, nearlyEqual(rawMean, metrics.mean)));
+    checks.push(buildCheck('market_median_match', 'Branch E Median Match', rawMedian, metrics.median, nearlyEqual(rawMedian, metrics.median)));
+    checks.push(buildCheck('market_high_match', 'Branch E High Match', rawHigh, metrics.high, nearlyEqual(rawHigh, metrics.high)));
+    checks.push(buildCheck('market_low_match', 'Branch E Low Match', rawLow, metrics.low, nearlyEqual(rawLow, metrics.low)));
+    checks.push(buildCheck('market_spread_match', 'Branch E Spread Match', rawSpread, metrics.spread, nearlyEqual(rawSpread, metrics.spread)));
+    checks.push(buildCheck('market_confidence_match', 'Branch E Confidence Match', rawConfidence, metrics.marketConfidence, nearlyEqual(rawConfidence, metrics.marketConfidence)));
+    checks.push({
+      key: 'market_high_low_order',
+      label: 'Branch E High/Low Order',
+      actual: safeNumber(rawHigh - rawLow, 0),
+      expected: 0,
+      passed: Number(rawHigh) >= Number(rawLow),
+      severity: 'error',
+      message: Number(rawHigh) >= Number(rawLow) ? 'Branch E High/Low Order: PASS' : `Branch E High/Low Order: FAIL (high ${safeNumber(rawHigh,0).toFixed(2)} < low ${safeNumber(rawLow,0).toFixed(2)})`
+    });
+
+    const failures = checks.filter((check) => !check.passed);
+    return {
+      passed: failures.length === 0,
+      checks,
+      failures,
+      localMarket: metrics,
+      statusLabel: failures.length === 0 ? 'PROOF_PASS' : 'PROOF_FAIL'
+    };
+  }
+
   function buildFactorMeta(branchKey) {
     const count = BRANCH_TARGETS[branchKey] || 0;
     const meta = {};
@@ -166,6 +268,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       source: 'pending',
       isReal: false,
       reliable: false,
+      proofFlags: { passed: false, checks: [], failures: [], statusLabel: 'UNVERIFIED' },
       terminalState: 'INITIALIZING'
     };
   }
@@ -762,8 +865,15 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5);
       });
 
+      const proofFlags = buildProofFlags(vault, row, vals);
+      stampLocalBranchEMetrics(vault, proofFlags.localMarket || {});
+      vault.proofFlags = proofFlags;
+      vault.reliable = proofFlags.passed;
+      vault.isReal = proofFlags.passed;
+      vault.source = proofFlags.passed ? 'gemini_verified' : 'proof_rejected';
+      vault.terminalState = proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed';
+
       const found = vals.filter((n) => Number(n) !== 0).length;
-      vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Gemini Verified';
 
       commitVault(stateRef, row, vault);
       console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
@@ -772,15 +882,16 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const shield = computeShieldFromVault(vault);
       const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
+      const proofLogs = (proofFlags.failures || []).map((failure) => ({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: ${failure.message}` }));
       const result = {
         vault,
         row,
-        isReal: true,
-        isReliable: true,
-        source: 'gemini_verified',
+        isReal: proofFlags.passed,
+        isReliable: proofFlags.passed,
+        source: proofFlags.passed ? 'gemini_verified' : 'proof_rejected',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: 'Gemini Verified payload received.',
+        analysisHint: proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.',
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
@@ -792,9 +903,9 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: isFallback ? 'warning' : 'success',
-          text: `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)`
-        }]
+          level: proofFlags.passed ? 'success' : 'warning',
+          text: proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`
+        }, ...proofLogs]
       };
 
       results.push(result);
