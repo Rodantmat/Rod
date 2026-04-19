@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.34 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.35 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -246,7 +246,16 @@ window.PickCalcCore = window.PickCalcCore || {};
 
 
   function handleResetAll() {
+    let preservedKey = '';
+    try { preservedKey = String(window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
     try { localStorage.clear(); } catch (_) {}
+    try { sessionStorage.clear(); } catch (_) {}
+    if (preservedKey) {
+      try { window.__OXYGEN_GEMINI_KEY__ = preservedKey; } catch (_) {}
+      try { localStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
+      try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
+      try { const keyInput = document.getElementById('apiKeyInput'); if (keyInput) keyInput.value = preservedKey; } catch (_) {}
+    }
     state.rows = [];
     state.cleanPool = [];
     state.auditRows = [];
@@ -288,8 +297,9 @@ window.PickCalcCore = window.PickCalcCore || {};
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
         localStorage.setItem('OXYGEN_GEMINI_KEY', key);
-        alert('Key Saved! Refreshing...');
-        window.location.reload();
+        try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+        try { window.__OXYGEN_GEMINI_KEY__ = key; } catch (_) {}
+        alert('Key Saved!');
       }
     });
     // Initialize input value if key exists

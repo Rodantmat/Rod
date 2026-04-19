@@ -656,6 +656,27 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { ok: true, warnings: Array.from(new Set(warnings)) };
   }
 
+
+  function getActiveGeminiKey() {
+    let key = '';
+    try { key = String(window.__OXYGEN_GEMINI_KEY__ || '').trim(); } catch (_) {}
+    if (!key) {
+      try { key = String(localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim(); } catch (_) {}
+    }
+    if (!key) {
+      try { key = String(sessionStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim(); } catch (_) {}
+    }
+    if (!key) {
+      try { key = String(document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
+    }
+    if (key) {
+      try { window.__OXYGEN_GEMINI_KEY__ = key; } catch (_) {}
+      try { localStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+      try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+    }
+    return key;
+  }
+
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
     const logger = getConsoleLogger();
     const text = `[SYSTEM] ${step}${detail ? `: ${detail}` : ''}`;
@@ -664,7 +685,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   async function fetchGeminiBatch(batch) {
-    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+    const activeKey = getActiveGeminiKey();
     const uniqueSubjects = batch.map((p, idx) => {
       const parsedPlayer = p?.parsedPlayer || `Subject ${idx}`;
       const type = p?.type || 'Unknown';
@@ -790,7 +811,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
   }
 
   async function debugConnection() {
-    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+    const activeKey = getActiveGeminiKey();
     const logger = getConsoleLogger();
     if (!activeKey) {
       if (logger === console.log) console.log('[SYSTEM] KEY_MISSING: Save an API key before debugging.');
