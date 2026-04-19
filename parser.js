@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.30 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.31 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [

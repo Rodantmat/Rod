@@ -256,6 +256,24 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
+
+  function summarizePayloadDensity(payloadValues = []) {
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => Number(value)) : [];
+    const core = numericValues.slice(0, 60);
+    const market = numericValues.slice(60, 65);
+    const tail = numericValues.slice(65, 72);
+    const nonZeroCore = core.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    const nonZeroMarket = market.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    const nonZeroTail = tail.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    return {
+      nonZeroCore,
+      nonZeroMarket,
+      nonZeroTail,
+      collapsed: nonZeroCore < 18,
+      sparse: nonZeroCore < 30
+    };
+  }
+
   function buildFactorMeta(branchKey) {
     const count = BRANCH_TARGETS[branchKey] || 0;
     const meta = {};
@@ -928,19 +946,24 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       });
 
       const proofFlags = buildProofFlags(vault, row, vals);
-      proofFlags.weakSignal = lowVarianceWarning === true;
+      const density = summarizePayloadDensity(vals);
+      proofFlags.payloadDensity = density;
       stampBranchEAudit(vault, proofFlags.localMarket || {}, vals);
       vault.proofFlags = proofFlags;
       vault.payloadWarnings = payloadWarnings.slice();
-      const weakSignal = lowVarianceWarning === true;
-      const tailAuditOnly = proofFlags.partial === true && !proofFlags.passed;
-      const coreReliable = proofFlags.corePassed === true && !weakSignal;
+      const collapsedPayload = lowVarianceWarning === true && density.collapsed;
+      const weakSignal = lowVarianceWarning === true && !collapsedPayload;
+      proofFlags.weakSignal = weakSignal;
+      proofFlags.collapsedPayload = collapsedPayload;
+      const tailAuditOnly = proofFlags.partial === true && !proofFlags.passed && !collapsedPayload;
+      const coreReliable = proofFlags.corePassed === true && !weakSignal && !collapsedPayload;
       vault.reliable = coreReliable;
       vault.partialDecode = tailAuditOnly || weakSignal;
       vault.weakSignal = weakSignal;
-      vault.isReal = proofFlags.passed || proofFlags.partial === true || weakSignal || coreReliable;
-      vault.source = weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')));
-      vault.terminalState = weakSignal ? 'Weak Signal' : (coreReliable ? 'Gemini Verified (Core Locked)' : (tailAuditOnly ? 'Tail Audit' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed')));
+      vault.collapsedPayload = collapsedPayload;
+      vault.isReal = !collapsedPayload && (proofFlags.passed || proofFlags.partial === true || weakSignal || coreReliable);
+      vault.source = collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))));
+      vault.terminalState = collapsedPayload ? 'Collapsed Payload Rejected' : (weakSignal ? 'Weak Signal' : (coreReliable ? 'Gemini Verified (Core Locked)' : (tailAuditOnly ? 'Tail Audit' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed'))));
 
       const found = vals.filter((n) => Number(n) !== 0).length;
 
@@ -952,24 +975,28 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       const shield = computeShieldFromVault(vault);
       const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
       const proofLogs = (proofFlags.failures || []).map((failure) => ({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: ${failure.message}` }));
+      if (collapsedPayload) proofLogs.unshift({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: Core payload collapsed (non-zero core slots ${density.nonZeroCore}/60). Rejecting this run.` });
       const eTailLogs = (proofFlags.tailAudits || []).map((audit) => ({ level: audit.passed ? 'info' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${audit.message}` }));
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Payload density => core_nonzero=${density.nonZeroCore}/60 market_nonzero=${density.nonZeroMarket}/5 tail_nonzero=${density.nonZeroTail}/7` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` });
-      const baseHint = weakSignal
-        ? 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.'
-        : (coreReliable
-          ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are modeled sentiment signals shown for audit only.'
-          : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'));
+      const baseHint = collapsedPayload
+        ? 'Collapsed payload rejected. Most core slots 1-60 were zero or missing, so this run is not usable.'
+        : (weakSignal
+          ? 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.'
+          : (coreReliable
+            ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are modeled sentiment signals shown for audit only.'
+            : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.')));
       const result = {
         vault,
         row,
-        isReal: proofFlags.passed || proofFlags.partial || weakSignal,
+        isReal: !collapsedPayload && (proofFlags.passed || proofFlags.partial || weakSignal),
         isReliable: coreReliable,
-        source: weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))),
+        source: collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')))),
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: baseHint,
-        runStatus: weakSignal ? 'WEAK_SIGNAL' : (coreReliable ? 'VERIFIED' : (tailAuditOnly ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'))),
+        runStatus: collapsedPayload ? 'FAILED_PAYLOAD' : (weakSignal ? 'WEAK_SIGNAL' : (coreReliable ? 'VERIFIED' : (tailAuditOnly ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY')))),
         finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
@@ -982,10 +1009,12 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: weakSignal ? 'info' : (coreReliable ? 'success' : (proofFlags.passed ? 'info' : 'warning')),
-          text: lowVarianceWarning
-            ? `[OXYGEN] WEAK_SIGNAL: ${row.parsedPlayer} (${found} units)`
-            : (coreReliable ? `[OXYGEN] VERIFIED_CORE: ${row.parsedPlayer} (${found} units)` : (proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`)))
+          level: collapsedPayload ? 'warning' : (weakSignal ? 'info' : (coreReliable ? 'success' : (proofFlags.passed ? 'info' : 'warning'))),
+          text: collapsedPayload
+            ? `[OXYGEN] COLLAPSED_PAYLOAD: ${row.parsedPlayer} (${found} units)`
+            : (lowVarianceWarning
+              ? `[OXYGEN] WEAK_SIGNAL: ${row.parsedPlayer} (${found} units)`
+              : (coreReliable ? `[OXYGEN] VERIFIED_CORE: ${row.parsedPlayer} (${found} units)` : (proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`))))
         }, ...payloadWarnings.map((warning) => ({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${warning}` })), ...proofLogs, ...eTailLogs]
       };
 
