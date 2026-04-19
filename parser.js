@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.29 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -973,10 +973,9 @@ window.PickCalcParser = (() => {
       }
     });
 
-    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0 && blocks.every((block) => block.length && countBlockAnchors(block) === 1));
+    const structuredOnly = !nonPipeText.trim() || (blocks.length > 0);
     blocks.forEach((block, blockIndex) => {
       if (!block.length) return;
-      if (countBlockAnchors(block) !== 1) return;
       const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
       if (parsed?.row) {
         acceptParsed(parsed);
@@ -996,12 +995,24 @@ window.PickCalcParser = (() => {
       });
     }
 
-    const rows = Array.from(rowMap.values()).map((row, index) => {
+    let rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
       delete cleanRow.__completeness;
       cleanRow.idx = index + 1;
       return cleanRow;
     });
+
+    if (!rows.length && blocks.length) {
+      blocks.forEach((block, blockIndex) => {
+        if (!block.length) return;
+        const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
+        if (parsed?.row) {
+          const cleanRow = Object.assign({}, parsed.row, { idx: rows.length + 1 });
+          rows.push(cleanRow);
+          if (parsed.audit) audit.push(parsed.audit);
+        }
+      });
+    }
 
     return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows, audit };
   }
