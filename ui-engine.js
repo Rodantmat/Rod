@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.31 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.32 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -14,14 +14,14 @@ window.PickCalcUI = window.PickCalcUI || {};
       B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
       D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     },
     Hitter: {
       A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
       B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
       D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     }
   };
 
@@ -45,13 +45,13 @@ window.PickCalcUI = window.PickCalcUI || {};
     "MGM Projection": "BetMGM market projection value",
     "365 Projection": "Bet365 market projection value",
     "PIN Projection": "Pinnacle market projection value",
-    "Consensus Mean": "Average across market sources",
-    "Consensus Median": "Middle market source number",
-    "Consensus High": "Highest listed market number",
-    "Consensus Low": "Lowest listed market number",
-    "Spread": "High-minus-low market gap",
-    "Line Delta": "Market average versus line",
-    "Market Confidence": "Coverage rate across books",
+    "Mean Signal": "Latent market adjustor representing Gemini's corrected mean-style read",
+    "Median Signal": "Latent market adjustor representing Gemini's corrected median-style read",
+    "Ceiling Signal": "Latent market adjustor for professional ceiling pressure",
+    "Floor Signal": "Latent market adjustor for professional floor/support",
+    "Volatility Signal": "Latent market adjustor for uncertainty and dislocation",
+    "Divergence Signal": "Latent market adjustor for price disagreement versus the prop line",
+    "Confidence Signal": "Latent market adjustor for signal-to-noise confidence",
     "Command Grade": "Overall command and intent",
     "Location Heat": "Command quality by location",
     "Tunneling Quality": "Pitch disguise from same lane",
@@ -350,20 +350,20 @@ window.PickCalcUI = window.PickCalcUI || {};
       ['Line Delta', metrics.lineDelta],
       ['Confidence', metrics.marketConfidence]
     ].map(([label, value]) => `${label}: <span>${escapeHtml(formatValue(value))}</span>`).join(' | ');
-    return `<div class="market-providers"><div><strong>Local Arithmetic from 61-65:</strong> ${items}</div></div>`;
+    return `<div class="market-providers"><div><strong>Raw Market Arithmetic from 61-65:</strong> ${items}</div></div>`;
   }
 
   function renderMarketTailSignals(modeledTail = {}) {
     const items = [
       ['66 Mean Signal', modeledTail.meanSignal],
       ['67 Median Signal', modeledTail.medianSignal],
-      ['68 High Signal', modeledTail.highSignal],
-      ['69 Low Signal', modeledTail.lowSignal],
-      ['70 Spread Signal', modeledTail.spreadSignal],
-      ['71 Line Delta Signal', modeledTail.lineDeltaSignal],
+      ['68 Ceiling Signal', modeledTail.highSignal],
+      ['69 Floor Signal', modeledTail.lowSignal],
+      ['70 Volatility Signal', modeledTail.spreadSignal],
+      ['71 Divergence Signal', modeledTail.lineDeltaSignal],
       ['72 Confidence Signal', modeledTail.confidenceSignal]
     ].map(([label, value]) => `${label}: <span>${escapeHtml(formatValue(value))}</span>`).join(' | ');
-    return `<div class="market-providers"><div><strong>Modeled Tail Slots 66-72:</strong> ${items}</div></div>`;
+    return `<div class="market-providers"><div><strong>Latent Market Adjustors 66-72:</strong> ${items}</div></div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}, context = {}) {

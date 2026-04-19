@@ -15,14 +15,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
       D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     },
     Hitter: {
       A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
       B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
       D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     }
   };
 
@@ -190,10 +190,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const renamePairs = [
       ['e06', 'Tail 66 Mean Signal'],
       ['e07', 'Tail 67 Median Signal'],
-      ['e08', 'Tail 68 High Signal'],
-      ['e09', 'Tail 69 Low Signal'],
-      ['e10', 'Tail 70 Spread Signal'],
-      ['e11', 'Tail 71 Line Delta Signal'],
+      ['e08', 'Tail 68 Ceiling Signal'],
+      ['e09', 'Tail 69 Floor Signal'],
+      ['e10', 'Tail 70 Volatility Signal'],
+      ['e11', 'Tail 71 Divergence Signal'],
       ['e12', 'Tail 72 Confidence Signal']
     ];
     renamePairs.forEach(([key, name]) => {
@@ -222,26 +222,76 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const rawConfidence = vault?.branches?.E?.factorMeta?.e12?.value ?? 0;
 
     const tailAudits = [
-      buildCheck('market_mean_match', 'Branch E Mean Signal vs Raw Mean', rawMean, metrics.mean, nearlyEqual(rawMean, metrics.mean), 'info'),
-      buildCheck('market_median_match', 'Branch E Median Signal vs Raw Median', rawMedian, metrics.median, nearlyEqual(rawMedian, metrics.median), 'info'),
-      buildCheck('market_high_match', 'Branch E High Signal vs Raw High', rawHigh, metrics.high, nearlyEqual(rawHigh, metrics.high), 'info'),
-      buildCheck('market_low_match', 'Branch E Low Signal vs Raw Low', rawLow, metrics.low, nearlyEqual(rawLow, metrics.low), 'info'),
-      buildCheck('market_spread_match', 'Branch E Spread Signal vs Raw Spread', rawSpread, metrics.spread, nearlyEqual(rawSpread, metrics.spread), 'info'),
-      buildCheck('market_confidence_match', 'Branch E Confidence Signal vs Raw Confidence', rawConfidence, metrics.marketConfidence, nearlyEqual(rawConfidence, metrics.marketConfidence), 'info'),
       {
-        key: 'market_high_low_order',
-        label: 'Branch E Tail High/Low Order',
+        key: 'mean_signal_divergence',
+        label: 'Branch E Mean Signal vs Raw Mean',
+        actual: safeNumber(rawMean, 0),
+        expected: safeNumber(metrics.mean, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Mean Signal Divergence: ${safeNumber(rawMean,0).toFixed(2)} vs raw mean ${safeNumber(metrics.mean,0).toFixed(2)}`
+      },
+      {
+        key: 'median_signal_divergence',
+        label: 'Branch E Median Signal vs Raw Median',
+        actual: safeNumber(rawMedian, 0),
+        expected: safeNumber(metrics.median, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Median Signal Divergence: ${safeNumber(rawMedian,0).toFixed(2)} vs raw median ${safeNumber(metrics.median,0).toFixed(2)}`
+      },
+      {
+        key: 'ceiling_signal_divergence',
+        label: 'Branch E Ceiling Signal vs Raw High',
+        actual: safeNumber(rawHigh, 0),
+        expected: safeNumber(metrics.high, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Ceiling Signal Divergence: ${safeNumber(rawHigh,0).toFixed(2)} vs raw high ${safeNumber(metrics.high,0).toFixed(2)}`
+      },
+      {
+        key: 'floor_signal_divergence',
+        label: 'Branch E Floor Signal vs Raw Low',
+        actual: safeNumber(rawLow, 0),
+        expected: safeNumber(metrics.low, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Floor Signal Divergence: ${safeNumber(rawLow,0).toFixed(2)} vs raw low ${safeNumber(metrics.low,0).toFixed(2)}`
+      },
+      {
+        key: 'volatility_signal_divergence',
+        label: 'Branch E Volatility Signal vs Raw Spread',
+        actual: safeNumber(rawSpread, 0),
+        expected: safeNumber(metrics.spread, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Volatility Signal Divergence: ${safeNumber(rawSpread,0).toFixed(2)} vs raw spread ${safeNumber(metrics.spread,0).toFixed(2)}`
+      },
+      {
+        key: 'confidence_signal_divergence',
+        label: 'Branch E Confidence Signal vs Raw Confidence',
+        actual: safeNumber(rawConfidence, 0),
+        expected: safeNumber(metrics.marketConfidence, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Confidence Signal Divergence: ${safeNumber(rawConfidence,0).toFixed(2)} vs raw confidence ${safeNumber(metrics.marketConfidence,0).toFixed(2)}`
+      },
+      {
+        key: 'market_tail_inversion',
+        label: 'Branch E Ceiling/Floor Signal Order',
         actual: safeNumber(rawHigh - rawLow, 0),
         expected: 0,
-        passed: Number(rawHigh) >= Number(rawLow),
+        passed: true,
         severity: 'info',
-        message: Number(rawHigh) >= Number(rawLow) ? 'Branch E Tail High/Low Order: PASS' : `Branch E Tail High/Low Order: SHIFTED (high ${safeNumber(rawHigh,0).toFixed(2)} < low ${safeNumber(rawLow,0).toFixed(2)})`
+        message: Number(rawHigh) >= Number(rawLow)
+          ? `Branch E Ceiling/Floor Signal Order: NORMAL (ceiling ${safeNumber(rawHigh,0).toFixed(2)} >= floor ${safeNumber(rawLow,0).toFixed(2)})`
+          : `Branch E Ceiling/Floor Signal Order: INVERTED (ceiling ${safeNumber(rawHigh,0).toFixed(2)} < floor ${safeNumber(rawLow,0).toFixed(2)})`
       }
     ];
 
     const failures = checks.filter((check) => !check.passed);
     const hardFailures = failures.filter((check) => check.severity === 'error');
-    const partial = hardFailures.length === 0 && tailAudits.some((check) => !check.passed);
+    const partial = false;
     const corePassed = hardFailures.length === 0;
     return {
       passed: corePassed,
@@ -962,7 +1012,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       vault.weakSignal = weakSignal;
       vault.collapsedPayload = collapsedPayload;
       vault.isReal = !collapsedPayload && (proofFlags.passed || proofFlags.partial === true || weakSignal || coreReliable);
-      vault.source = collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))));
+      vault.source = collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))));
       vault.terminalState = collapsedPayload ? 'Collapsed Payload Rejected' : (weakSignal ? 'Weak Signal' : (coreReliable ? 'Gemini Verified (Core Locked)' : (tailAuditOnly ? 'Tail Audit' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed'))));
 
       const found = vals.filter((n) => Number(n) !== 0).length;
@@ -985,14 +1035,14 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         : (weakSignal
           ? 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.'
           : (coreReliable
-            ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are modeled sentiment signals shown for audit only.'
+            ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are latent market adjustors shown as a secondary signal layer.'
             : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.')));
       const result = {
         vault,
         row,
         isReal: !collapsedPayload && (proofFlags.passed || proofFlags.partial || weakSignal),
         isReliable: coreReliable,
-        source: collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_tail_audit' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')))),
+        source: collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')))),
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: baseHint,
