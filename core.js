@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.38 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.0 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -228,6 +228,18 @@ window.PickCalcCore = window.PickCalcCore || {};
 
 
   function handleResetAll() {
+    const preservedKey = (() => {
+      try {
+        return (localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || window.OXYGEN_GEMINI_KEY || '').trim();
+      } catch (_) { return ''; }
+    })();
+    if (preservedKey) {
+      try { localStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
+      try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
+      try { window.OXYGEN_GEMINI_KEY = preservedKey; } catch (_) {}
+      const keyEl = UI.el('apiKeyInput');
+      if (keyEl) keyEl.value = preservedKey;
+    }
     state.rows = [];
     state.cleanPool = [];
     state.auditRows = [];

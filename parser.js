@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.38 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.0 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -101,6 +101,7 @@ window.PickCalcParser = (() => {
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
+      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
@@ -139,6 +140,18 @@ window.PickCalcParser = (() => {
     return { hour, minute };
   }
 
+
+  function formatDisplayTime(date, now = new Date()) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const dayLabel = DAY_NAMES[date.getDay()] || '';
+    let hour = date.getHours();
+    const minute = pad2(date.getMinutes());
+    const ampm = hour >= 12 ? 'pm' : 'am';
+    hour = hour % 12;
+    if (hour === 0) hour = 12;
+    return `${dayLabel.charAt(0).toUpperCase() + dayLabel.slice(1)} ${hour}:${minute}${ampm}`;
+  }
+
   function nextDateForWeekday(now, targetDayIndex) {
     const candidate = new Date(now);
     candidate.setFullYear(PARSE_YEAR);
@@ -146,18 +159,6 @@ window.PickCalcParser = (() => {
     const delta = (targetDayIndex - candidate.getDay() + 7) % 7;
     candidate.setDate(candidate.getDate() + delta);
     return candidate;
-  }
-
-
-  function formatEventToken(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-    const day = DAY_NAMES[date.getDay()] || '';
-    let hour = date.getHours();
-    const minute = pad2(date.getMinutes());
-    const ampm = hour >= 12 ? 'pm' : 'am';
-    hour = hour % 12;
-    if (hour === 0) hour = 12;
-    return `${day.charAt(0).toUpperCase() + day.slice(1)} ${hour}:${minute}${ampm}`;
   }
 
   function extractTimeContext(text, now = new Date()) {
@@ -201,15 +202,13 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b(?:(\d{1,2})h\s*)?(\d{1,3})m(?:\s+(\d{1,2})s)?\b/i);
+    match = source.match(/\b(\d{1,3})m(?:\s+(\d{1,2})s)?\b/i);
     if (match) {
-      const hours = Number(match[1] || '0');
-      const minutes = Number(match[2] || '0');
-      const seconds = Number(match[3] || '0');
-      const date = new Date(now.getTime() + (((hours * 60 + minutes) * 60) + seconds) * 1000);
-      date.setFullYear(PARSE_YEAR);
+      const minutes = Number(match[1] || '0');
+      const seconds = Number(match[2] || '0');
+      const date = new Date(now.getTime() + (minutes * 60000) + (seconds * 1000));
       date.setSeconds(0, 0);
-      return { found: true, token: formatEventToken(date), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, reason: 'Countdown timer resolved.' };
+      return { found: true, token: formatDisplayTime(date, now), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, countdownToken: cleanWhitespace(match[0]) };
     }
 
     match = source.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
@@ -663,6 +662,7 @@ window.PickCalcParser = (() => {
     const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
+    const liveContext = detectLiveGameContext(joined);
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
     const team = clusterIdentity.team || teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
@@ -691,6 +691,10 @@ window.PickCalcParser = (() => {
 
     if (sportHint !== 'MLB') {
       audit.rejectionReason = 'Rejected: non-MLB content.';
+      return { audit, row: null };
+    }
+    if (liveContext.isLive) {
+      audit.rejectionReason = liveContext.reason;
       return { audit, row: null };
     }
     if (!candidate.anchorValue) {
@@ -832,6 +836,7 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
     if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
+    if (liveContext.isLive) { audit.rejectionReason = liveContext.reason; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }

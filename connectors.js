@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.38 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.0 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -391,6 +391,78 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
   }
 
+
+  function computeStdDev(values = []) {
+    const nums = values.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+    if (!nums.length) return 0;
+    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+    const variance = nums.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / nums.length;
+    return Math.sqrt(variance);
+  }
+
+  function inspectPayloadConsistency(data = []) {
+    const items = Array.isArray(data) ? data : [];
+    if (!items.length) return { good: false, reason: 'MALFORMED_FACTOR_PAYLOAD', details: [] };
+    const details = items.map((entry, idx) => {
+      const vals = Array.isArray(entry?.v) ? entry.v.map((v) => safeNumber(v, 0)) : [];
+      const core = vals.slice(0, 60);
+      const market = vals.slice(60, 65);
+      const tail = vals.slice(65, 72);
+      const coreNonZero = core.filter((v) => Math.abs(Number(v)) > 0.000001).length;
+      const marketNonZero = market.filter((v) => Math.abs(Number(v)) > 0.000001).length;
+      const tailNonZero = tail.filter((v) => Math.abs(Number(v)) > 0.000001).length;
+      const variance = computeStdDev(core);
+      const uniqueCount = new Set(core.map((v) => safeNumber(v, 0).toFixed(3))).size;
+      let reason = 'GOOD';
+      let good = true;
+      if (vals.length !== 72) {
+        reason = 'BAD_LENGTH';
+        good = false;
+      } else if (coreNonZero < 12) {
+        reason = (marketNonZero >= 5 && tailNonZero === 0) ? 'INSUFFICIENT_EVIDENCE' : 'COLLAPSED_PAYLOAD';
+        good = false;
+      } else if (variance < 0.035 || uniqueCount < 12) {
+        reason = 'LOW_VARIANCE';
+        good = false;
+      } else if (tailNonZero === 0 && coreNonZero >= 50) {
+        reason = 'VERIFIED_CORE_ONLY';
+        good = true;
+      }
+      return { index: idx, vals, good, reason, coreNonZero, marketNonZero, tailNonZero, variance, uniqueCount };
+    });
+
+    const comparable = details.filter((d) => d.vals.length === 72 && d.coreNonZero >= 40);
+    for (let i = 0; i < comparable.length; i += 1) {
+      for (let j = i + 1; j < comparable.length; j += 1) {
+        const a = comparable[i].vals.slice(0, 60);
+        const b = comparable[j].vals.slice(0, 60);
+        const avgAbsDiff = a.reduce((sum, val, idx) => sum + Math.abs(val - b[idx]), 0) / 60;
+        if (avgAbsDiff < 0.018) {
+          comparable[i].good = false;
+          comparable[j].good = false;
+          comparable[i].reason = 'NEAR_DUPLICATE';
+          comparable[j].reason = 'NEAR_DUPLICATE';
+          comparable[i].duplicateWith = comparable[i].duplicateWith || [];
+          comparable[j].duplicateWith = comparable[j].duplicateWith || [];
+          comparable[i].duplicateWith.push(comparable[j].index);
+          comparable[j].duplicateWith.push(comparable[i].index);
+        }
+      }
+    }
+
+    const anyGood = details.some((d) => d.good);
+    let reason = 'GOOD';
+    if (!anyGood) {
+      if (details.every((d) => d.reason === 'BAD_LENGTH')) reason = 'MALFORMED_FACTOR_PAYLOAD';
+      else if (details.every((d) => d.reason === 'NEAR_DUPLICATE')) reason = 'NEAR_DUPLICATE_FACTOR_PAYLOAD';
+      else if (details.every((d) => d.reason === 'LOW_VARIANCE')) reason = 'PROVIDER_PAYLOAD_LACKS_VARIANCE';
+      else if (details.every((d) => d.reason === 'INSUFFICIENT_EVIDENCE')) reason = 'INSUFFICIENT_EVIDENCE';
+      else if (details.every((d) => d.reason === 'COLLAPSED_PAYLOAD')) reason = 'COLLAPSED_PAYLOAD';
+      else reason = details[0]?.reason || 'INVALID';
+    }
+    return { good: anyGood, reason, details };
+  }
+
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
     const logger = getConsoleLogger();
     const text = `[SYSTEM] ${step}${detail ? `: ${detail}` : ''}`;
@@ -399,121 +471,125 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   async function fetchGeminiBatch(batch) {
-    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || window.OXYGEN_GEMINI_KEY || '').trim();
     const uniqueSubjects = batch.map((p, idx) => {
       const parsedPlayer = p?.parsedPlayer || `Subject ${idx}`;
       const type = p?.type || 'Unknown';
       const team = p?.team || 'Unknown Team';
+      const opp = p?.opponent || 'Unknown Opp';
       const line = p?.line || p?.lineValue || 0;
-      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Type: ${type} | Line: ${line} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
-    }).join('\n');
-    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
-Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
-CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
-CRITICAL SLOT MAP:
-- v[38] = c07 Air Density (temperature + altitude + humidity ball-flight multiplier)
-- v[39] = c08 Umpire Zone (numeric strike-call frequency)
-- v[50] = d01 Platoon Delta (left/right handedness edge)
-- v[51] = d02 Manager Threshold (volume/substitution bias)
-- v[60] = market01 DraftKings
-- v[61] = market02 FanDuel
-- v[62] = market03 BetMGM
-- v[63] = market04 Bet365
-- v[64] = market05 Pinnacle
-Return five specific sportsbook floats for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle in that exact order. Do not collapse unknown values to 0.5 unless the profile is truly neutral after analysis.
-Subjects:
-${uniqueSubjects}
-Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
+      const prop = p?.prop || 'Unknown Prop';
+      return `[SUBJECT ${idx}]
+INDEX=${idx}
+LEG_ID=${p?.LEG_ID || `LEG-${idx + 1}`}
+NAME=${parsedPlayer}
+TEAM=${team}
+OPP=${opp}
+TYPE=${type}
+PROP=${prop}
+LINE=${line}`;
+    }).join('\n\n');
+    const basePrompt = `You are a strict numeric transpiler for sports factor extraction.
+
+TASK:
+Return exactly one JSON object with shape {"data":[{"i":0,"v":[72 floats],"c":0.00,"e":""}]} and no prose.
+
+RULES:
+- Evaluate each subject independently by INDEX.
+- Preserve subject order exactly.
+- Each v array must contain exactly 72 floats between 0.00 and 1.00.
+- Similar prop families do NOT justify similar vectors.
+- Do not mirror, clone, blur, or recycle vector shapes across indices.
+- If one subject has weak evidence, mark that subject only using e="INSUFFICIENT_EVIDENCE" and still return the rest of the batch.
+- Do not fail the whole batch because one subject is weak.
+- Do not output malformed or partial JSON.
+- Do not cluster around 0.50 unless the subject is truly neutral.
+- Same team / same prop family requires subject-specific differentiation.
+- If two subjects receive near-identical vectors without strong evidence, the output is invalid.
+
+OUTPUT CONTRACT:
+- data[] length must equal subject count.
+- i must match the INDEX for that subject.
+- c is confidence from 0.00 to 1.00.
+- e is empty string for normal subjects or INSUFFICIENT_EVIDENCE for weak subjects.
+
+SUBJECTS:
+${uniqueSubjects}`;
 
     if (!activeKey) return buildBaselinePayload(batch);
 
     const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + activeKey;
-    const promptText = String(prompt || '').trim() || 'Extract data for subject';
-    const finalPromptText = promptText;
-    const body = JSON.stringify({ 
-      contents: [{ 
-        role: "user", 
-        parts: [{ text: finalPromptText }] 
-      }],
-      generationConfig: { responseMimeType: "application/json" }
-    });
-    console.log('[OXYGEN] FETCH_URL:', url);
-    console.log('HANDSHAKE_URL:', url);
-    console.log('HANDSHAKE_BODY:', body);
-    console.log("RAW_PAYLOAD:", finalPromptText);
-    console.log("FINAL_JSON_SENT:", body);
-    logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s)`);
+    const maxAttempts = 3;
+    let lastResult = null;
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const retrySuffix = attempt > 1 ? '\nCRITICAL: Previous output failed payload audit. Increase factor separation. Do not zero-fill. Do not cluster around 0.5. Commit to outliers with full 0.0-1.0 spread.' : '';
+      const finalPromptText = `${basePrompt}${retrySuffix}`;
+      const body = JSON.stringify({ 
+        contents: [{ role: "user", parts: [{ text: finalPromptText }] }],
+        generationConfig: { responseMimeType: "application/json", temperature: attempt === 1 ? 0.2 : 0.4 }
       });
+      console.log('[OXYGEN] FETCH_URL:', url);
+      console.log('HANDSHAKE_URL:', url);
+      console.log('HANDSHAKE_BODY:', body);
+      console.log("RAW_PAYLOAD:", finalPromptText);
+      console.log("FINAL_JSON_SENT:", body);
+      logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) [attempt ${attempt}/${maxAttempts}]`);
 
-      logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("GOOGLE_REJECTION:", errorText);
-        let errorObject = null;
-        try { errorObject = JSON.parse(errorText); } catch (_) {}
-        const rejectLogger = getConsoleLogger();
-        if (rejectLogger === console.log) {
-          console.log(`[SYSTEM] GOOGLE_REJECTION: ${errorText}`);
-          if (errorObject) console.log(errorObject);
-        } else {
-          rejectLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${errorText}`, modelId: GEMINI_MODEL, pre: errorObject ? JSON.stringify(errorObject, null, 2) : errorText });
+      try {
+        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+        logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error("GOOGLE_REJECTION:", errorText);
+          let errorObject = null;
+          try { errorObject = JSON.parse(errorText); } catch (_) {}
+          lastResult = Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText, errorJson: errorObject });
+          if (attempt < maxAttempts && (response.status === 429 || response.status >= 500)) continue;
+          return lastResult;
         }
-        alert("CRITICAL_API_FAIL: " + response.status + " - " + errorText);
-        if (response.status === 403) {
-          const authLogger = getConsoleLogger();
-          if (authLogger === console.log) console.log('[SYSTEM] AUTH_ERROR: Check API Key or Region.');
-          else authLogger({ level: 'error', text: '[SYSTEM] AUTH_ERROR: Check API Key or Region.', modelId: GEMINI_MODEL });
-        }
-        logConnectorStep('GOOGLE_PROCESSING', `Rejected with status ${response.status}`);
-        logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${response.status}`);
-        return Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText, errorJson: errorObject });
-      }
 
-      logConnectorStep('GOOGLE_PROCESSING', 'Response received from model');
-      const json = await response.json();
-      console.log("Full Google Response:", json);
-      console.log("RAW_RESPONSE:", json);
-      const candidate = json?.candidates?.[0] || null;
-      const finishReason = String(candidate?.finishReason || '').toUpperCase();
-      const raw = candidate?.content?.parts?.[0]?.text || '';
-      const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-      if (blocked || !raw.trim()) {
-        logConnectorStep('JSON_PARSING', 'No parseable candidate payload; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+        logConnectorStep('GOOGLE_PROCESSING', 'Response received from model');
+        const json = await response.json();
+        console.log("Full Google Response:", json);
+        console.log("RAW_RESPONSE:", json);
+        const candidate = json?.candidates?.[0] || null;
+        const finishReason = String(candidate?.finishReason || '').toUpperCase();
+        const raw = candidate?.content?.parts?.[0]?.text || '';
+        const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
+        if (blocked || !raw.trim()) {
+          lastResult = Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
+          if (attempt < maxAttempts) continue;
+          return lastResult;
+        }
+        const { parsed, clean, error } = safeJsonParse(raw);
+        if (!parsed) {
+          console.warn('[OXYGEN] JSON_PARSE_REPAIR_FAIL:', error);
+          lastResult = Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
+          if (attempt < maxAttempts) continue;
+          return lastResult;
+        }
+        const parsedPayload = Object.assign(parsed, { responseText: raw || '', rawResponse: clean || raw || '' });
+        const quality = inspectPayloadConsistency(parsedPayload.data);
+        parsedPayload.payloadAudit = quality;
+        if (!quality.good && attempt < maxAttempts) {
+          const logger = getConsoleLogger();
+          const msg = `[SYSTEM] PAYLOAD_RETRY: ${quality.reason}. Retrying ${attempt + 1}/${maxAttempts}.`;
+          if (logger === console.log) console.log(msg); else logger({ level: 'warning', text: msg, modelId: GEMINI_MODEL });
+          lastResult = parsedPayload;
+          continue;
+        }
+        logConnectorStep('JSON_PARSING', `Parsed ${Array.isArray(parsedPayload?.data) ? parsedPayload.data.length : 0} subject payload(s)`);
+        logConnectorStep('FETCH_ATTEMPT_COMPLETE', quality.good ? 'Success' : `Final ${quality.reason}`);
+        return parsedPayload;
+      } catch (e) {
+        console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
+        lastResult = buildBaselinePayload(batch);
+        if (attempt < maxAttempts) continue;
+        return lastResult;
       }
-      const { parsed, clean, error } = safeJsonParse(raw);
-      if (!parsed) {
-        console.warn('[OXYGEN] JSON_PARSE_REPAIR_FAIL:', error);
-        logConnectorStep('JSON_PARSING', 'Malformed JSON envelope; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
-      }
-      if (!Array.isArray(parsed?.data) || !parsed.data.length) {
-        logConnectorStep('JSON_PARSING', 'Empty data array; baseline fallback engaged');
-        return Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
-      }
-      logConnectorStep('JSON_PARSING', `Parsed ${parsed.data.length} subject payload(s)`);
-      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Success');
-      return Object.assign(parsed, { responseText: raw || '', rawResponse: clean || raw || '' });
-    } catch (e) {
-      console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
-      const catchLogger = getConsoleLogger();
-      if (catchLogger === console.log) {
-        console.log(`[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`);
-      } else {
-        catchLogger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${e?.message || 'Unknown fetch error'}`, modelId: GEMINI_MODEL, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
-      }
-      alert('CRITICAL_API_FAIL: 0 - ' + (e?.message || 'Unknown fetch error'));
-      logConnectorStep('WORKER_HANDSHAKE', e?.message || 'Fetch failure');
-      logConnectorStep('FETCH_ATTEMPT_COMPLETE', 'Failure 0');
-      return buildBaselinePayload(batch);
     }
+    return lastResult || buildBaselinePayload(batch);
   }
 
   async function debugConnection() {
@@ -622,7 +698,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       results.push(result);
       if (logger === console.log) logger(result.logs[0].text);
       else logger(result.logs[0]);
-      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: Math.min(totalProbes, results.length * 5), totalProbes });
+      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
     });
 
     if (!validBatch.length) {
@@ -631,30 +707,86 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       return { results, lastResult };
     }
 
+    const payload = await fetchGeminiBatch(validBatch);
+    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
+    const cleanJson = sanitizeJsonText(rawResponse);
+
+    let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+    if ((!responseData.data.length) && cleanJson) {
+      const repaired = safeJsonParse(cleanJson);
+      if (repaired.parsed) {
+        responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
+      } else {
+        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
+      }
+    }
+
+    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
+    const payloadAudit = payload?.payloadAudit || inspectPayloadConsistency(responseData.data);
+
+    if (!Array.isArray(responseData.data) || !responseData.data.length || payloadAudit.reason === 'MALFORMED_FACTOR_PAYLOAD') {
+      validBatch.forEach((row) => {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Malformed factor payload.');
+        results.push(result);
+        if (logger === console.log) logger(result.logs[0].text); else logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+      });
+      const lastResult = results[results.length - 1] || null;
+      hooks.onComplete?.({ results, totalRows, lastResult });
+      return { results, lastResult };
+    }
+
     for (let batchIndex = 0; batchIndex < validBatch.length; batchIndex++) {
       const row = validBatch[batchIndex];
-      const payload = await fetchGeminiBatch([row]);
-      const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
-      const cleanJson = sanitizeJsonText(rawResponse);
-
-      let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
-      if ((!responseData.data.length) && cleanJson) {
-        const repaired = safeJsonParse(cleanJson);
-        if (repaired.parsed) {
-          responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
-        } else {
-          console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
-        }
-      }
-
-      const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
       const vault = createZeroVault(row);
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
 
-      const entry = responseData.data.find((d) => Number(d?.i) === 0) || responseData.data[0];
-      const vals = (Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !Array.isArray(entry?.v) || entry?.fallback === true;
+      const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
+      const entryAudit = Array.isArray(payloadAudit?.details) ? payloadAudit.details.find((d) => Number(d?.index) === batchIndex) : null;
+      const matchedRow = entry ? validBatch[Number(entry.i)] : null;
+      const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
+      const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
+      const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
+      const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
+
+      if (!isExactLegMatch || !Array.isArray(entry?.v) || entryAudit?.reason === 'BAD_LENGTH') {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Malformed factor payload.');
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        continue;
+      }
+      if (entryAudit && !entryAudit.good && entryAudit.reason === 'INSUFFICIENT_EVIDENCE') {
+        const result = buildIngressErrorResult(row, stateRef, 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.');
+        result.analysisHint = 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.';
+        result.logs = [{ level: 'warning', text: `[OXYGEN] INSUFFICIENT_EVIDENCE: ${row.parsedPlayer} (${entryAudit.coreNonZero} units)` }];
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        continue;
+      }
+      if (entryAudit && !entryAudit.good && entryAudit.reason === 'LOW_VARIANCE') {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Provider payload lacks variance.');
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        continue;
+      }
+      if (entryAudit && !entryAudit.good && entryAudit.reason === 'NEAR_DUPLICATE') {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Near-duplicate factor payload detected.');
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        continue;
+      }
+      if (entryAudit && !entryAudit.good && entryAudit.reason === 'COLLAPSED_PAYLOAD') {
+        const result = buildIngressErrorResult(row, stateRef, 'Collapsed payload rejected. Most core slots 1-60 were zero or missing, so this run is not usable.');
+        results.push(result);
+        logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        continue;
+      }
 
       console.log('[OXYGEN] Hydrating ' + (row.parsedPlayer || row.LEG_ID) + ' [Index: ' + batchIndex + '] with ' + vals.length + ' units.');
 
@@ -696,7 +828,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       });
 
       const found = vals.filter((n) => Number(n) !== 0).length;
-      vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated';
+      vault.terminalState = (entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'Core Verified / Tail Empty' : (isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated');
 
       commitVault(stateRef, row, vault);
       console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
@@ -712,11 +844,11 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         source: 'real',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated',
+        analysisHint: entryAudit?.reason === 'VERIFIED_CORE_ONLY' ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 were empty, so this is a core-only verified run.' : (isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated'),
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
-          completedProbes: Math.min(totalProbes, (batchIndex + 1) * 5),
+          completedProbes: results.length,
           totalProbes: totalProbes,
           liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
@@ -724,8 +856,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: isFallback ? 'warning' : 'success',
-          text: `[OXYGEN] ${isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH'}: ${row.parsedPlayer} (${found} units)`
+          level: (isFallback || entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'warning' : 'success',
+          text: `[OXYGEN] ${(entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'VERIFIED_CORE_ONLY' : (isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH')}: ${row.parsedPlayer} (${found} units)`
         }]
       };
 
@@ -738,7 +870,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr);
         }
       }
-      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: Math.min(totalProbes, results.length * 5), totalProbes });
+      hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
     }
 
     const lastResult = results[results.length - 1] || null;
