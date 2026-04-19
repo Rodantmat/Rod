@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.29 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.30 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -932,6 +932,9 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       stampBranchEAudit(vault, proofFlags.localMarket || {}, vals);
       vault.proofFlags = proofFlags;
       vault.payloadWarnings = payloadWarnings.slice();
+      const weakSignal = lowVarianceWarning === true;
+      const tailAuditOnly = proofFlags.partial === true && !proofFlags.passed;
+      const coreReliable = proofFlags.corePassed === true && !weakSignal;
       vault.reliable = coreReliable;
       vault.partialDecode = tailAuditOnly || weakSignal;
       vault.weakSignal = weakSignal;
