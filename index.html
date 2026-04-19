@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PickCalc Multi-Sport Engine • v13.78.33 (OXYGEN-COBALT)</title>
+  <title>PickCalc Multi-Sport Engine • v13.78.34 (OXYGEN-COBALT)</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
@@ -30,7 +30,8 @@
 
       <section class="card">
         <h2>Current Clean Pool</h2>
-        <div class="btn-row top-gap">
+        <div class="btn-row top-gap pool-toolbar">
+          <div id="poolCounts" class="pool-counts">Accepted: 0&nbsp;&nbsp;&nbsp;Rejected: 0</div>
           <button id="resetAllBtn" class="danger">Reset all</button>
         </div>
         <div id="poolMount"></div>
@@ -43,8 +44,7 @@
     <section id="analysisScreen" class="hidden">
       <header class="hero hero-inline">
         <div>
-          <h1 id="analysisTitle">Run Analysis v13.78.33 (OXYGEN-COBALT)</h1>
-          <p id="analysisVersion">v13.78.33 (OXYGEN-COBALT)</p>
+          <h1 id="analysisTitle">Run Analysis v13.78.34 (OXYGEN-COBALT)</h1>
         </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
@@ -68,22 +68,15 @@
       </section>
 
       <section class="card">
-        <h2>Ingested Leg Pool</h2>
-        <div id="analysisRowCard"></div>
-      </section>
-
-      <section class="card">
         <h2>OXYGEN-COBALT Mining Matrix</h2>
-        <p class="mini-muted">High-density 7-row grounded mining layout with real extraction, numeric-only saturation, and Branch E market providers rendered inline.</p>
-        <div id="analysisKpis" class="analysis-kpis"></div>
-        <div class="analysis-connector-wrap">
+                <div class="analysis-connector-wrap">
           <svg id="connectorSvg" class="connector-lines" aria-hidden="true"></svg>
           <div id="miningGrid" class="mining-grid"></div>
         </div>
       </section>
 
       <section class="card">
-        <h2 id="shieldTitle">Alpha Shield v13.78.33 (OXYGEN-COBALT)</h2>
+        <h2 id="shieldTitle">Alpha Shield v13.78.34 (OXYGEN-COBALT)</h2>
         <div id="shieldPanel" class="shield-grid"></div>
       </section>
 
