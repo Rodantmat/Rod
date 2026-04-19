@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.2 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.3 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -823,7 +823,7 @@ window.PickCalcParser = (() => {
     if (!teamRoleIndexes.length) return fences;
 
     const blockStartForTeamRole = (teamRoleIndex) => {
-      for (let i = Math.max(0, teamRoleIndex - 2); i < teamRoleIndex; i += 1) {
+      for (let i = Math.max(0, teamRoleIndex - 4); i < teamRoleIndex; i += 1) {
         const clean = cleanClusterLine(lines[i]);
         if (!clean || isNoiseLine(clean)) continue;
         if (isLikelyPlayerName(clean)) return i;
@@ -835,7 +835,8 @@ window.PickCalcParser = (() => {
       const teamRoleIndex = teamRoleIndexes[idx];
       const start = blockStartForTeamRole(teamRoleIndex);
       const nextTeamRole = idx < teamRoleIndexes.length - 1 ? teamRoleIndexes[idx + 1] : lines.length;
-      let end = nextTeamRole - 1;
+      const nextStart = idx < teamRoleIndexes.length - 1 ? blockStartForTeamRole(nextTeamRole) : lines.length;
+      let end = Math.max(start, nextStart - 1);
       while (end > start) {
         const clean = cleanClusterLine(lines[end]);
         if (clean) break;

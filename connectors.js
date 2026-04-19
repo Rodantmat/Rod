@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.2 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.3 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -655,7 +655,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const warnings = [];
     for (const entry of entries) {
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
-      if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) return { ok: false, reason: 'Missing id_confirm in batch payload.' };
+      if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) warnings.push('Missing id_confirm in batch payload.');
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
       if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
@@ -994,7 +994,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
       hooks.onComplete?.({ results, totalRows, lastResult });
       return { results, lastResult };
     }
-    const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data.map((entry) => Object.assign({}, entry, { id_confirm: String(entry?.id_confirm || validBatch[Number(entry?.i)]?.parsedPlayer || '').trim() })) : [] };
     payloadWarnings = Array.isArray(payload?.warnings) ? payload.warnings.slice() : [];
     lowVarianceWarning = payloadWarnings.some((warning) => /low-variance/i.test(String(warning)));
 
