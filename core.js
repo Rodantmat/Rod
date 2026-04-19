@@ -124,19 +124,14 @@ window.PickCalcCore = window.PickCalcCore || {};
     const input = UI.el('boardInput');
     if (!input || !input.value.trim()) return;
     const parsed = Parser.parseBoard(input.value);
-
     if (parsed.rows.length > 0) {
       const previousCount = state.cleanPool.length;
-      const combined = [...state.cleanPool, ...parsed.rows];
-      const overflow = Math.max(0, combined.length - 16);
-      state.cleanPool = combined.slice(0, 16);
-      state.rows = state.cleanPool.slice(0, 16).map((row, index) => Object.assign({}, row, {
+      state.cleanPool = [...state.cleanPool, ...parsed.rows].slice(0, 16).map((row, index) => Object.assign({}, row, {
         idx: Number(index + 1),
         LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`,
         pickType: row.pickType || 'Regular Line'
       }));
-      state.cleanPool = state.rows.slice(0, 16);
-      const addedCount = Math.max(0, state.cleanPool.length - previousCount);
+      state.rows = state.cleanPool.slice();
       state.auditRows = parsed.audit || [];
       state.lastResult = null;
       state.miningVault = {};
@@ -149,15 +144,17 @@ window.PickCalcCore = window.PickCalcCore || {};
         timestamp: new Date().toISOString(),
         parseYear: Parser.PARSE_YEAR
       };
-      if (addedCount > 0) input.value = '';
-      if (overflow > 0) UI.showToast(`Remaining ${overflow} legs ignored (16 Max)`);
+      if (state.cleanPool.length > previousCount) {
+        input.value = '';
+      }
+      if (previousCount + parsed.rows.length > 16) UI.showToast(`Remaining ${previousCount + parsed.rows.length - 16} legs ignored (16 Max)`);
       else UI.showToast(`Ingested ${parsed.rows.length} legs`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
-      UI.showToast('No valid legs found.');
+      UI.showToast('No valid legs found. Check board format.');
     }
-    UI.renderFeedStatus(state.cleanPool, state.auditRows);
+    UI.renderFeedStatus(state.cleanPool, parsed.audit);
     UI.renderPoolTable(state.cleanPool);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }

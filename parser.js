@@ -424,23 +424,26 @@ window.PickCalcParser = (() => {
 
   function parseCluster(cluster) {
     const DECON = /(Demon|Goblin|Taco|Free Pick|Promo|Trending|Hot|Boost|Popular|Insurance|Less|More)/gi;
-    const lines = (cluster || []).map((entry) => {
-      const raw = typeof entry === 'string' ? entry : (entry?.raw || entry?.clean || '');
+    const lines = cluster.map(l => {
+      const raw = typeof l === 'string' ? l : (l?.raw || l?.clean || '');
       return String(raw || '').replace(DECON, '').trim();
     });
-
+    
     let player = '', team = '', prop = '', line = 0;
     const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|SS|OF|IF|DH|UTIL)\b/i;
     const JUNK = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
 
-    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
+    // 1. Find Anchor (Number)
+    lines.forEach(l => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
 
-    for (let i = 0; i < lines.length; i += 1) {
+    // 2. Find Pivot (Team) & Hunt for Player
+    for (let i = 0; i < lines.length; i++) {
       if (TEAM_RX.test(lines[i])) {
         team = (lines[i].match(TEAM_RX)?.[1] || '').toUpperCase();
-        const hunt = [i - 1, i + 1, i - 2, i + 2];
-        for (const idx of hunt) {
-          const c = lines[idx];
+        // Hunt Bidirectionally: Search 2 lines above or below for the best name candidate
+        let hunt = [i-1, i+1, i-2, i+2];
+        for (let idx of hunt) {
+          let c = lines[idx];
           if (c && c.length > 3 && !TEAM_RX.test(c) && !JUNK.test(c) && !/^\d/.test(c)) {
             player = sanitizePlayerName(c);
             break;
@@ -449,16 +452,19 @@ window.PickCalcParser = (() => {
       }
     }
 
+    // 3. Prop Registry Scan
     const blob = lines.join(' ');
     if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
     else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
+    else if (/Outs/i.test(blob)) prop = 'Pitching Outs';
+    else if (/Fantasy/i.test(blob)) prop = 'Pitcher Fantasy Score';
 
-    return {
-      parsedPlayer: player,
-      team,
-      prop: prop || 'MLB Prop',
-      line,
-      accepted: (player.length > 2 && line > 0 && !!team)
+    return { 
+      parsedPlayer: player, 
+      team: team, 
+      prop: prop || 'MLB Prop', 
+      line: line, 
+      accepted: (player.length > 2 && line > 0 && !!team) 
     };
   }
 
