@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.35 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.36 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -248,8 +248,20 @@ window.PickCalcCore = window.PickCalcCore || {};
   function handleResetAll() {
     let preservedKey = '';
     try { preservedKey = String(window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
-    try { localStorage.clear(); } catch (_) {}
-    try { sessionStorage.clear(); } catch (_) {}
+    const preserveStorageKey = (storage) => {
+      if (!storage) return;
+      try {
+        const preserve = new Set(['OXYGEN_GEMINI_KEY']);
+        const doomed = [];
+        for (let i = 0; i < storage.length; i += 1) {
+          const key = storage.key(i);
+          if (!preserve.has(key)) doomed.push(key);
+        }
+        doomed.forEach((key) => { try { storage.removeItem(key); } catch (_) {} });
+      } catch (_) {}
+    };
+    try { preserveStorageKey(localStorage); } catch (_) {}
+    try { preserveStorageKey(sessionStorage); } catch (_) {}
     if (preservedKey) {
       try { window.__OXYGEN_GEMINI_KEY__ = preservedKey; } catch (_) {}
       try { localStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
@@ -270,7 +282,10 @@ window.PickCalcCore = window.PickCalcCore || {};
     ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
-      if ('value' in node) node.value = '';
+      if (id === 'boardInput' && 'value' in node) {
+        node.value = '';
+        return;
+      }
       node.innerHTML = '';
       if ('textContent' in node) node.textContent = '';
     });

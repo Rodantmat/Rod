@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.30 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.36 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -658,19 +658,15 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
 
   function getActiveGeminiKey() {
-    let key = '';
-    try { key = String(window.__OXYGEN_GEMINI_KEY__ || '').trim(); } catch (_) {}
-    if (!key) {
-      try { key = String(localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim(); } catch (_) {}
-    }
-    if (!key) {
-      try { key = String(sessionStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim(); } catch (_) {}
-    }
-    if (!key) {
-      try { key = String(document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
-    }
+    const candidates = [];
+    try { candidates.push(String(window.__OXYGEN_GEMINI_KEY__ || '').trim()); } catch (_) {}
+    try { candidates.push(String(document.getElementById('apiKeyInput')?.value || '').trim()); } catch (_) {}
+    try { candidates.push(String(localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim()); } catch (_) {}
+    try { candidates.push(String(sessionStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim()); } catch (_) {}
+    const key = candidates.find((value) => typeof value === 'string' && value.trim()) || '';
     if (key) {
       try { window.__OXYGEN_GEMINI_KEY__ = key; } catch (_) {}
+      try { const input = document.getElementById('apiKeyInput'); if (input && input.value !== key) input.value = key; } catch (_) {}
       try { localStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
       try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
     }

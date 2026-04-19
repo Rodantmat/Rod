@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.34 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.36 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -108,6 +108,7 @@ window.PickCalcParser = (() => {
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
       .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?|pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
+      .map((line) => /^\d{3,4}$/.test(String(line || '').trim()) ? ' ' : line)
       .map((line) => line.replace(/\b(?:LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|In\s+Lineup|Probable|Top\s+\d+(?:st|nd|rd|th)|Bot\s+\d+(?:st|nd|rd|th)|Mid\s+\d+(?:st|nd|rd|th)|Extra\s+Innings|Next\s+Half\s+Inning|Current\s+Inning|\d+(?:st|nd|rd|th)\s+Inning\s+Stretch|Inning\s*\d+|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
