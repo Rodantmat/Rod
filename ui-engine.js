@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.21 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.22 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -290,17 +290,18 @@ window.PickCalcUI = window.PickCalcUI || {};
       LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
       FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
       FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
-      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived and decoded. Raw market slots 61-65 are usable, while tail slots 66-72 are modeled sentiment signals rather than arithmetic summary outputs.' },
-      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload structure failed a hard checkpoint. Data cannot be trusted until the transport or schema issue is fixed.' },
+      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived, decoded, and mapped. Raw market slots 61-65 are usable. Tail slots 66-72 are modeled sentiment signals.' },
+      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload arrived and decoded, but a hard integrity checkpoint failed. Data is not trustworthy yet.' },
       VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
     };
     const meta = map[status] || map.LOADING;
     const detail = String(result?.analysisHint || '').trim();
-    return { ...meta, detail: status === 'LOADING' ? '' : detail };
+    const sameDetail = detail && purgeUiNoise(detail).toLowerCase() === purgeUiNoise(meta.text).toLowerCase();
+    return { ...meta, detail: (status === 'LOADING' || sameDetail) ? '' : detail };
   }
 
   function resolveCobaltScore(vault = {}, row = {}) {
-    if (!isReliableVault(vault)) return { score: null, displaySide: '', unavailable: true };
+    if (!(isReliableVault(vault) || isPartialVault(vault))) return { score: null, displaySide: '', unavailable: true };
     return window.PickCalcCore?.calcCobaltEdge?.(vault, row) || { score: null, unavailable: true };
   }
 
@@ -387,9 +388,9 @@ window.PickCalcUI = window.PickCalcUI || {};
       const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + (partial && !reliable ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
       return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchExtra}</div></details>`;
     }).join('');
-    const statusLabel = reliable ? 'Verified' : (partial ? 'Decode Pending' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting'));
-    const scoreMarkup = reliable ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
-    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${(reliable || partial) ? matrixMarkup : ''}</div></details>`;
+    const statusLabel = reliable ? 'Verified' : (partial ? 'Partial Decode' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting'));
+    const scoreMarkup = (reliable || partial) && Number.isFinite(score) ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
+    return `<div class="player-mining-card static-player-card"><div class="player-static-header"><div class="player-summary-head"><span class="branch-title-left"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div>${(reliable || partial) ? `<div class="player-collapsible-body">${matrixMarkup}</div>` : ''}</div>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
