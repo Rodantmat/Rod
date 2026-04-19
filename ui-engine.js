@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.19 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.20 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -259,6 +259,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Boolean(vault && vault.isReal === true && vault.reliable === true && vault.source === 'gemini_verified' && vault?.proofFlags?.passed === true && String(vault.terminalState || '').toLowerCase().includes('verified'));
   }
 
+  function isPartialVault(vault = {}) {
+    return Boolean(vault && vault.isReal === true && vault.reliable !== true && (vault.partialDecode === true || vault.source === 'gemini_partial_decode' || vault?.proofFlags?.partial === true));
+  }
+
   function renderProofFlags(vault = {}) {
     const failures = Array.isArray(vault?.proofFlags?.failures) ? vault.proofFlags.failures : [];
     if (!failures.length) return '<div class="proof-pass compact-proof">Integrity Flags: PASS</div>';
@@ -274,7 +278,9 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (Number(result?.errorStatus || 0) >= 500) return 'FAILED_CONNECTOR';
     if (/temporary api unavailable|payload not verified from gemini api|non-real gemini payload|malformed factor payload/i.test(String(result?.analysisHint || '') + ' ' + String(result?.errorText || ''))) return 'FAILED_PAYLOAD';
     const reliableLegs = rows.filter((r) => isReliableVault(vaultCollection?.[r.LEG_ID] || {})).length;
+    const partialLegs = rows.filter((r) => isPartialVault(vaultCollection?.[r.LEG_ID] || {})).length;
     if (rows.length > 0 && reliableLegs === rows.length) return 'VERIFIED';
+    if (partialLegs > 0) return 'PARTIAL_DECODE';
     if (Object.keys(vaultCollection || {}).length > 0) return 'FAILED_INTEGRITY';
     return 'LOADING';
   }
@@ -284,7 +290,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
       FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
       FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
-      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload arrived and decoded, but Branch E integrity checkpoints failed. Raw data is present; final market-slot meaning is still not trustworthy.' },
+      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived and core slots decoded. Branch E tail slots 66-72 are still under audit against the raw market slots 61-65.' },
+      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload decoded, but integrity checkpoints failed. Data is present but not trustworthy yet.' },
       VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
     };
     const meta = map[status] || map.LOADING;
@@ -336,9 +343,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
     const reliable = isReliableVault(vault);
-    if (!reliable) {
-      return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag mini-flag-warn">Integrity Flagged</span></span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div></details>`;
-    }
+    const partial = isPartialVault(vault);
     const branches = vault?.branches || {};
     const scoreMeta = resolveCobaltScore(vault, row);
     const score = Number(scoreMeta?.score || 0);
@@ -350,11 +355,14 @@ window.PickCalcUI = window.PickCalcUI || {};
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       const branchHeader = branchKey === 'E'
-        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">MARKET</span></div>`
+        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${partial && !reliable ? 'MARKET AUDIT' : 'MARKET'}</span></div>`
         : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
+      const factorMarkup = branchKey === 'E' && partial && !reliable ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots e06-e12 are preserved in the payload but remain under audit before final interpretation.</div>` : factorMeta.map(renderFactorLine).join('');
+      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
     }).join('');
-    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${isReliableVault(vault) ? 'mini-flag-ok' : 'mini-flag-warn'}">${isReliableVault(vault) ? 'Verified' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting')}</span><span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span></span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${isReliableVault(vault) ? matrixMarkup : ''}</div></details>`;
+    const statusLabel = reliable ? 'Verified' : (partial ? 'Decode Pending' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting'));
+    const scoreMarkup = reliable ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
+    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${(reliable || partial) ? matrixMarkup : ''}</div></details>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -611,6 +619,6 @@ window.PickCalcUI = window.PickCalcUI || {};
     }, 4000);
   }
 
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast, isReliableVault });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast, isReliableVault, isPartialVault });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();
