@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.16 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.17 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -337,8 +337,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
     const reliable = isReliableVault(vault);
     if (!reliable) {
-      const reason = purgeUiNoise(String(vault?.terminalState || 'Payload not verified from Gemini API.'));
-      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner"><strong>ERROR:</strong> Data was not verified as real and reliable Gemini output. Matrix hidden. ${escapeHtml(reason)}</div>${renderProofFlags(vault)}</article>`;
+      return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag mini-flag-warn">Integrity Flagged</span></span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div></details>`;
     }
     const branches = vault?.branches || {};
     const scoreMeta = resolveCobaltScore(vault, row);
@@ -536,8 +535,7 @@ window.PickCalcUI = window.PickCalcUI || {};
         return [
           `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
           `LEG_ID: ${legId}`,
-          `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'}`,
-          `ERROR: Non-real / non-reliable Gemini payload. Matrix hidden.`
+          `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'}`
         ].join('\n');
       }
       const branchKeys = ['A', 'B', 'C', 'D', 'E'];
