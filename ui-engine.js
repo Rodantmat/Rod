@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.20 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.21 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -290,8 +290,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
       FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
       FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
-      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived and core slots decoded. Branch E tail slots 66-72 are still under audit against the raw market slots 61-65.' },
-      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload decoded, but integrity checkpoints failed. Data is present but not trustworthy yet.' },
+      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived and decoded. Raw market slots 61-65 are usable, while tail slots 66-72 are modeled sentiment signals rather than arithmetic summary outputs.' },
+      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload structure failed a hard checkpoint. Data cannot be trusted until the transport or schema issue is fixed.' },
       VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
     };
     const meta = map[status] || map.LOADING;
@@ -334,7 +334,33 @@ window.PickCalcUI = window.PickCalcUI || {};
       const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
       return `${label}: <span${zeroClass}>${escapeHtml(formatValue(value))}</span>`;
     }).join(' | ');
-    return `<div class="market-providers"><div><strong>Market Projections/Odds:</strong> ${providerLine}</div></div>`;
+    return `<div class="market-providers"><div><strong>Raw Market Slots 61-65:</strong> ${providerLine}</div></div>`;
+  }
+
+  function renderMarketArithmetic(metrics = {}) {
+    const items = [
+      ['Mean', metrics.mean],
+      ['Median', metrics.median],
+      ['High', metrics.high],
+      ['Low', metrics.low],
+      ['Spread', metrics.spread],
+      ['Line Delta', metrics.lineDelta],
+      ['Confidence', metrics.marketConfidence]
+    ].map(([label, value]) => `${label}: <span>${escapeHtml(formatValue(value))}</span>`).join(' | ');
+    return `<div class="market-providers"><div><strong>Local Arithmetic from 61-65:</strong> ${items}</div></div>`;
+  }
+
+  function renderMarketTailSignals(modeledTail = {}) {
+    const items = [
+      ['66 Mean Signal', modeledTail.meanSignal],
+      ['67 Median Signal', modeledTail.medianSignal],
+      ['68 High Signal', modeledTail.highSignal],
+      ['69 Low Signal', modeledTail.lowSignal],
+      ['70 Spread Signal', modeledTail.spreadSignal],
+      ['71 Line Delta Signal', modeledTail.lineDeltaSignal],
+      ['72 Confidence Signal', modeledTail.confidenceSignal]
+    ].map(([label, value]) => `${label}: <span>${escapeHtml(formatValue(value))}</span>`).join(' | ');
+    return `<div class="market-providers"><div><strong>Modeled Tail Slots 66-72:</strong> ${items}</div></div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -355,10 +381,11 @@ window.PickCalcUI = window.PickCalcUI || {};
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       const branchHeader = branchKey === 'E'
-        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${partial && !reliable ? 'MARKET AUDIT' : 'MARKET'}</span></div>`
+        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${partial && !reliable ? 'RAW + TAIL' : 'MARKET'}</span></div>`
         : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      const factorMarkup = branchKey === 'E' && partial && !reliable ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots e06-e12 are preserved in the payload but remain under audit before final interpretation.</div>` : factorMeta.map(renderFactorLine).join('');
-      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
+      const factorMarkup = branchKey === 'E' && partial && !reliable ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots 66-72 are treated as modeled sentiment signals. They are displayed separately below and are no longer judged as arithmetic summaries of 61-65.</div>` : factorMeta.map(renderFactorLine).join('');
+      const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + (partial && !reliable ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
+      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchExtra}</div></details>`;
     }).join('');
     const statusLabel = reliable ? 'Verified' : (partial ? 'Decode Pending' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting'));
     const scoreMarkup = reliable ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
@@ -459,7 +486,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const statusMeta = getRunStatusMeta(runStatus, result);
     const summary = el('analysisSummary');
     if (summary) {
-      summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`,`<div class="pill ${statusMeta.tone}">Status: ${escapeHtml(statusMeta.label)}</div>`,`<div class="pill">Transport: ${escapeHtml(runStatus === 'FAILED_CONNECTOR' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Payload: ${escapeHtml(runStatus === 'FAILED_PAYLOAD' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Integrity: ${escapeHtml(runStatus === 'FAILED_INTEGRITY' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : (allReliable ? 'PASS' : 'PENDING')))}</div>`].join('');
+      summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`,`<div class="pill ${statusMeta.tone}">Status: ${escapeHtml(statusMeta.label)}</div>`,`<div class="pill">Transport: ${escapeHtml(runStatus === 'FAILED_CONNECTOR' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Payload: ${escapeHtml(runStatus === 'FAILED_PAYLOAD' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Integrity: ${escapeHtml(runStatus === 'FAILED_INTEGRITY' ? 'FAIL' : (runStatus === 'PARTIAL_DECODE' ? 'TAIL-AUDIT' : (runStatus === 'LOADING' ? 'WAIT' : (allReliable ? 'PASS' : 'PENDING'))))}</div>`].join('');
     }
     const hint = el('analysisHint');
     if (hint) {

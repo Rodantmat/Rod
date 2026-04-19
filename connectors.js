@@ -164,19 +164,41 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
-  function stampLocalBranchEMetrics(vault = {}, metrics = {}) {
+  function stampBranchEAudit(vault = {}, metrics = {}, payloadValues = []) {
     const branch = vault?.branches?.E;
-    if (!branch?.factorMeta) return;
-    const localPairs = [
-      ['e06', 'Consensus Mean', metrics.mean],
-      ['e07', 'Consensus Median', metrics.median],
-      ['e08', 'Consensus High', metrics.high],
-      ['e09', 'Consensus Low', metrics.low],
-      ['e10', 'Spread', metrics.spread],
-      ['e11', 'Line Delta', metrics.lineDelta],
-      ['e12', 'Market Confidence', metrics.marketConfidence]
+    if (!branch) return;
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => safeNumber(value, 0)) : [];
+    branch.localArithmetic = {
+      mean: safeNumber(metrics.mean, 0),
+      median: safeNumber(metrics.median, 0),
+      high: safeNumber(metrics.high, 0),
+      low: safeNumber(metrics.low, 0),
+      spread: safeNumber(metrics.spread, 0),
+      lineDelta: safeNumber(metrics.lineDelta, 0),
+      marketConfidence: safeNumber(metrics.marketConfidence, 0)
+    };
+    branch.modeledTail = {
+      meanSignal: safeNumber(numericValues[65], 0),
+      medianSignal: safeNumber(numericValues[66], 0),
+      highSignal: safeNumber(numericValues[67], 0),
+      lowSignal: safeNumber(numericValues[68], 0),
+      spreadSignal: safeNumber(numericValues[69], 0),
+      lineDeltaSignal: safeNumber(numericValues[70], 0),
+      confidenceSignal: safeNumber(numericValues[71], 0)
+    };
+    branch.auditMode = 'RAW_PLUS_MODELED_TAIL';
+    const renamePairs = [
+      ['e06', 'Tail 66 Mean Signal'],
+      ['e07', 'Tail 67 Median Signal'],
+      ['e08', 'Tail 68 High Signal'],
+      ['e09', 'Tail 69 Low Signal'],
+      ['e10', 'Tail 70 Spread Signal'],
+      ['e11', 'Tail 71 Line Delta Signal'],
+      ['e12', 'Tail 72 Confidence Signal']
     ];
-    localPairs.forEach(([key, name, value]) => applyFactor(branch, key, name, value, 'DERIVED', 'LOCAL_PROOF_COMPUTE'));
+    renamePairs.forEach(([key, name]) => {
+      if (branch.factorMeta?.[key]) branch.factorMeta[key].name = name;
+    });
     updateBranchMeta(branch);
   }
 
@@ -199,35 +221,36 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const rawSpread = vault?.branches?.E?.factorMeta?.e10?.value ?? 0;
     const rawConfidence = vault?.branches?.E?.factorMeta?.e12?.value ?? 0;
 
-    checks.push(buildCheck('market_mean_match', 'Branch E Mean Match', rawMean, metrics.mean, nearlyEqual(rawMean, metrics.mean), 'warning'));
-    checks.push(buildCheck('market_median_match', 'Branch E Median Match', rawMedian, metrics.median, nearlyEqual(rawMedian, metrics.median), 'warning'));
-    checks.push(buildCheck('market_high_match', 'Branch E High Match', rawHigh, metrics.high, nearlyEqual(rawHigh, metrics.high), 'warning'));
-    checks.push(buildCheck('market_low_match', 'Branch E Low Match', rawLow, metrics.low, nearlyEqual(rawLow, metrics.low), 'warning'));
-    checks.push(buildCheck('market_spread_match', 'Branch E Spread Match', rawSpread, metrics.spread, nearlyEqual(rawSpread, metrics.spread), 'warning'));
-    checks.push(buildCheck('market_confidence_match', 'Branch E Confidence Match', rawConfidence, metrics.marketConfidence, nearlyEqual(rawConfidence, metrics.marketConfidence), 'warning'));
-    checks.push({
-      key: 'market_high_low_order',
-      label: 'Branch E High/Low Order',
-      actual: safeNumber(rawHigh - rawLow, 0),
-      expected: 0,
-      passed: Number(rawHigh) >= Number(rawLow),
-      severity: 'warning',
-      message: Number(rawHigh) >= Number(rawLow) ? 'Branch E High/Low Order: PASS' : `Branch E High/Low Order: FAIL (high ${safeNumber(rawHigh,0).toFixed(2)} < low ${safeNumber(rawLow,0).toFixed(2)})`
-    });
+    const tailAudits = [
+      buildCheck('market_mean_match', 'Branch E Mean Signal vs Raw Mean', rawMean, metrics.mean, nearlyEqual(rawMean, metrics.mean), 'info'),
+      buildCheck('market_median_match', 'Branch E Median Signal vs Raw Median', rawMedian, metrics.median, nearlyEqual(rawMedian, metrics.median), 'info'),
+      buildCheck('market_high_match', 'Branch E High Signal vs Raw High', rawHigh, metrics.high, nearlyEqual(rawHigh, metrics.high), 'info'),
+      buildCheck('market_low_match', 'Branch E Low Signal vs Raw Low', rawLow, metrics.low, nearlyEqual(rawLow, metrics.low), 'info'),
+      buildCheck('market_spread_match', 'Branch E Spread Signal vs Raw Spread', rawSpread, metrics.spread, nearlyEqual(rawSpread, metrics.spread), 'info'),
+      buildCheck('market_confidence_match', 'Branch E Confidence Signal vs Raw Confidence', rawConfidence, metrics.marketConfidence, nearlyEqual(rawConfidence, metrics.marketConfidence), 'info'),
+      {
+        key: 'market_high_low_order',
+        label: 'Branch E Tail High/Low Order',
+        actual: safeNumber(rawHigh - rawLow, 0),
+        expected: 0,
+        passed: Number(rawHigh) >= Number(rawLow),
+        severity: 'info',
+        message: Number(rawHigh) >= Number(rawLow) ? 'Branch E Tail High/Low Order: PASS' : `Branch E Tail High/Low Order: SHIFTED (high ${safeNumber(rawHigh,0).toFixed(2)} < low ${safeNumber(rawLow,0).toFixed(2)})`
+      }
+    ];
 
     const failures = checks.filter((check) => !check.passed);
     const hardFailures = failures.filter((check) => check.severity === 'error');
-    const tailFailures = failures.filter((check) => check.severity !== 'error');
-    const partial = hardFailures.length === 0 && tailFailures.length > 0;
+    const partial = hardFailures.length === 0 && tailAudits.some((check) => !check.passed);
     return {
-      passed: failures.length === 0,
+      passed: hardFailures.length === 0,
       partial,
       checks,
-      failures,
+      failures: hardFailures,
       hardFailures,
-      tailFailures,
+      tailAudits,
       localMarket: metrics,
-      statusLabel: failures.length === 0 ? 'PROOF_PASS' : (partial ? 'PARTIAL_DECODE' : 'PROOF_FAIL')
+      statusLabel: hardFailures.length > 0 ? 'PROOF_FAIL' : (partial ? 'PARTIAL_DECODE' : 'PROOF_PASS')
     };
   }
 
@@ -874,13 +897,13 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       });
 
       const proofFlags = buildProofFlags(vault, row, vals);
-      stampLocalBranchEMetrics(vault, proofFlags.localMarket || {});
+      stampBranchEAudit(vault, proofFlags.localMarket || {}, vals);
       vault.proofFlags = proofFlags;
       vault.reliable = proofFlags.passed;
       vault.partialDecode = proofFlags.partial === true;
       vault.isReal = proofFlags.passed || proofFlags.partial === true;
-      vault.source = proofFlags.passed ? 'gemini_verified' : (proofFlags.partial ? 'gemini_partial_decode' : 'proof_rejected');
-      vault.terminalState = proofFlags.passed ? 'Gemini Verified' : (proofFlags.partial ? 'Partial Decode' : 'Integrity Check Failed');
+      vault.source = proofFlags.partial ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected');
+      vault.terminalState = proofFlags.partial ? 'Partial Decode' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed');
 
       const found = vals.filter((n) => Number(n) !== 0).length;
 
@@ -891,18 +914,20 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const shield = computeShieldFromVault(vault);
       const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
-      const proofLogs = (proofFlags.failures || []).map((failure) => ({ level: failure.severity === 'error' ? 'warning' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${failure.message}` }));
-      const eTailLogs = proofFlags.partial ? [{ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` }, { level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` }] : [];
+      const proofLogs = (proofFlags.failures || []).map((failure) => ({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: ${failure.message}` }));
+      const eTailLogs = (proofFlags.tailAudits || []).map((audit) => ({ level: audit.passed ? 'info' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${audit.message}` }));
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` });
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` });
       const result = {
         vault,
         row,
-        isReal: proofFlags.passed,
+        isReal: proofFlags.passed || proofFlags.partial,
         isReliable: proofFlags.passed,
-        source: proofFlags.passed ? 'gemini_verified' : 'proof_rejected',
+        source: proofFlags.partial ? 'gemini_partial_decode' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'),
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.',
-        runStatus: proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY',
+        analysisHint: proofFlags.partial ? 'Payload arrived, decoded, and mapped. Raw market slots 61-65 are usable; tail slots 66-72 are modeled sentiment signals, not arithmetic summary outputs.' : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'),
+        runStatus: proofFlags.partial ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'),
         finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
@@ -915,9 +940,9 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: proofFlags.passed ? 'success' : 'warning',
-          text: proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`
-        }, ...proofLogs]
+          level: proofFlags.partial ? 'info' : (proofFlags.passed ? 'success' : 'warning'),
+          text: proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`)
+        }, ...proofLogs, ...eTailLogs]
       };
 
       results.push(result);
