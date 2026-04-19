@@ -95,7 +95,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function rowHasIngressIdentityError(row = {}) {
     const player = String(row?.parsedPlayer || '').trim();
-    return !player || player.length < 3;
+    if (!player || player.length < 3) return true;
+    return /\b(?:vs\.?|@|Sun|Mon|Tue|Wed|Thu|Fri|Sat)\b/i.test(player);
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -754,7 +755,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
-    if (!row.parsedPlayer || row.parsedPlayer.length < 3) {
+    if (rowHasIngressIdentityError(row)) {
       try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
       const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });

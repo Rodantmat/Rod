@@ -126,6 +126,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const parsed = Parser.parseBoard(input.value);
 
     if ((parsed.rows || []).length > 0) {
+      const previousCount = state.cleanPool.length;
       const combined = [...state.cleanPool, ...parsed.rows];
       const overflow = Math.max(0, combined.length - 16);
       state.cleanPool = combined.slice(0, 16);
@@ -135,6 +136,7 @@ window.PickCalcCore = window.PickCalcCore || {};
         pickType: row.pickType || 'Regular Line'
       }));
       state.cleanPool = state.rows.slice(0, 16);
+      const addedCount = Math.max(0, state.cleanPool.length - previousCount);
       state.auditRows = parsed.audit || [];
       state.lastResult = null;
       state.miningVault = {};
@@ -147,15 +149,15 @@ window.PickCalcCore = window.PickCalcCore || {};
         timestamp: new Date().toISOString(),
         parseYear: Parser.PARSE_YEAR
       };
-      input.value = '';
-      if (overflow > 0) UI.showToast('16-leg maximum reached. Extra legs were not added.');
+      if (addedCount > 0) input.value = '';
+      if (overflow > 0) UI.showToast(`Remaining ${overflow} legs ignored (16 Max)`);
       else UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
       UI.showToast('No valid legs detected. Check board format.');
     }
-    UI.renderFeedStatus(state.cleanPool, parsed.audit);
+    UI.renderFeedStatus(state.cleanPool, state.auditRows);
     UI.renderPoolTable(state.cleanPool);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }
