@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.22 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.24 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -364,15 +364,19 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `<div class="market-providers"><div><strong>Modeled Tail Slots 66-72:</strong> ${items}</div></div>`;
   }
 
-  function renderPlayerMiningCard(row = {}, vault = {}) {
+  function renderPlayerMiningCard(row = {}, vault = {}, context = {}) {
     const normalized = splitTeamRoleFromName(row);
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
-    const reliable = isReliableVault(vault);
-    const partial = isPartialVault(vault);
-    const branches = vault?.branches || {};
-    const scoreMeta = resolveCobaltScore(vault, row);
+    const fallbackStatus = String(context?.runStatus || '').trim();
+    const effectiveVault = (vault && Object.keys(vault || {}).length)
+      ? vault
+      : ((context?.resultVault && (!context?.resultRowLegId || context.resultRowLegId === row.LEG_ID)) ? context.resultVault : (vault || {}));
+    const reliable = isReliableVault(effectiveVault) || fallbackStatus === 'VERIFIED';
+    const partial = !reliable && (isPartialVault(effectiveVault) || fallbackStatus === 'PARTIAL_DECODE');
+    const branches = effectiveVault?.branches || {};
+    const scoreMeta = resolveCobaltScore(effectiveVault, row);
     const score = Number(scoreMeta?.score || 0);
     const side = scoreMeta?.displaySide ? ` [${scoreMeta.displaySide}]` : '';
     const scoreEmoji = resolveScoreEmoji(score);
@@ -388,18 +392,19 @@ window.PickCalcUI = window.PickCalcUI || {};
       const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + (partial && !reliable ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
       return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchExtra}</div></details>`;
     }).join('');
-    const statusLabel = reliable ? 'Verified' : (partial ? 'Partial Decode' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting'));
+    const statusLabel = reliable ? 'Verified' : (partial ? 'Partial Decode' : (effectiveVault?.proofFlags?.failures?.length ? 'Integrity Flagged' : (fallbackStatus === 'LOADING' ? 'Loading' : 'Waiting')));
     const scoreMarkup = (reliable || partial) && Number.isFinite(score) ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
-    return `<div class="player-mining-card static-player-card"><div class="player-static-header"><div class="player-summary-head"><span class="branch-title-left"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div>${(reliable || partial) ? `<div class="player-collapsible-body">${matrixMarkup}</div>` : ''}</div>`;
+    const playerHeader = `<div class="player-static-header"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div>`;
+    return `<details class="player-mining-card static-player-card player-block-collapsible matrix-collapsible"><summary class="player-summary collapsible-trigger">${playerHeader}</summary><div class="player-collapsible-body collapsible-content">${matrixMarkup}</div></details>`;
   }
 
-  function renderMiningGrid(rows = [], vaultCollection = {}) {
+  function renderMiningGrid(rows = [], vaultCollection = {}, context = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
     const safeRows = asArray(rows);
     const safeVaults = vaultCollection && typeof vaultCollection === 'object' ? vaultCollection : {};
     const hasVaultData = Object.keys(safeVaults).length > 0;
-    const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
+    const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {}, context)).join('');
     const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
     mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Ingested Leg Pool</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
@@ -479,7 +484,9 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (el('shieldTitle')) el('shieldTitle').textContent = `Alpha Shield ${version}`;
 
     const row = result?.row || rows[0] || {};
-    const vaultCollection = result?.vaultCollection || (row?.LEG_ID && result?.vault ? { [row.LEG_ID]: result.vault } : {});
+    const baseVaultCollection = (result?.vaultCollection && typeof result.vaultCollection === 'object') ? result.vaultCollection : {};
+    const fallbackVaultCollection = (row?.LEG_ID && result?.vault && !baseVaultCollection?.[row.LEG_ID]) ? { [row.LEG_ID]: result.vault } : {};
+    const vaultCollection = Object.assign({}, baseVaultCollection, fallbackVaultCollection);
     const shield = summarizeShield(vaultCollection);
     const reliableLegs = rows.filter((r) => isReliableVault(vaultCollection?.[r.LEG_ID] || {})).length;
     const allReliable = rows.length > 0 && reliableLegs === rows.length;
@@ -491,13 +498,15 @@ window.PickCalcUI = window.PickCalcUI || {};
     }
     const hint = el('analysisHint');
     if (hint) {
-      hint.innerHTML = `<span class="${runStatus === 'VERIFIED' ? 'status-ok-banner' : (runStatus === 'LOADING' ? 'status-loading-banner' : 'warning-banner analysis-error-banner')}"><strong>${escapeHtml(statusMeta.label)}:</strong> ${escapeHtml(statusMeta.text)}${statusMeta.detail ? ` ${escapeHtml(purgeUiNoise(statusMeta.detail))}` : ''}</span>`;
+      const allowDetail = runStatus === 'FAILED_CONNECTOR' || runStatus === 'FAILED_PAYLOAD';
+      const detailText = allowDetail && statusMeta.detail ? ` ${escapeHtml(purgeUiNoise(statusMeta.detail))}` : '';
+      hint.innerHTML = `<span class="${runStatus === 'VERIFIED' ? 'status-ok-banner' : (runStatus === 'LOADING' ? 'status-loading-banner' : 'warning-banner analysis-error-banner')}"><strong>${escapeHtml(statusMeta.label)}:</strong> ${escapeHtml(statusMeta.text)}${detailText}</span>`;
     }
     const rowCard = el('analysisRowCard');
     if (rowCard) rowCard.innerHTML = '';
     const kpis = el('analysisKpis');
     if (kpis) kpis.innerHTML = '';
-    renderMiningGrid(rows, vaultCollection);
+    renderMiningGrid(rows, vaultCollection, { runStatus, resultVault: result?.vault || {}, resultRowLegId: row?.LEG_ID || '', statusText: statusMeta.text });
     const shieldPanel = el('shieldPanel');
     const shieldCard = shieldPanel ? shieldPanel.closest('.card') : null;
     if (shieldPanel) {

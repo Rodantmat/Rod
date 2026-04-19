@@ -72,3 +72,10 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .player-status-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.mini-flag{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px}.mini-flag-ok{background:#123c2a;color:#aef0cc}.mini-flag-warn{background:#433517;color:#ffd989}.compact-proof{display:none}
 
 .static-player-card{border:1px solid var(--border);background:#121c34;border-radius:14px;padding:14px;min-width:0}.player-static-header{display:grid;gap:8px;margin-bottom:10px}.player-collapsible-body{display:grid;gap:10px}.player-summary-head{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}.player-status-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.player-header-line{color:var(--text)}
+
+
+.player-block-collapsible{padding:0;overflow:hidden}
+.player-block-collapsible .player-summary{list-style:none;cursor:pointer;margin:0;padding:14px}
+.player-block-collapsible .player-summary::-webkit-details-marker{display:none}
+.player-block-collapsible .player-collapsible-body{padding:0 14px 14px}
+.player-block-collapsible[open]>.player-summary .collapsible-arrow{transform:rotate(90deg)}
