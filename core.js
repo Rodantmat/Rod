@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.12 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.13 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -125,7 +125,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (!input || !input.value.trim()) return;
     const parsed = Parser.parseBoard(input.value);
 
-    if ((parsed.rows || []).length > 0) {
+    if (parsed.rows.length > 0) {
       const previousCount = state.cleanPool.length;
       const combined = [...state.cleanPool, ...parsed.rows];
       const overflow = Math.max(0, combined.length - 16);
@@ -151,11 +151,11 @@ window.PickCalcCore = window.PickCalcCore || {};
       };
       if (addedCount > 0) input.value = '';
       if (overflow > 0) UI.showToast(`Remaining ${overflow} legs ignored (16 Max)`);
-      else UI.showToast(`Ingested ${parsed.rows.length} legs successfully.`);
+      else UI.showToast(`Ingested ${parsed.rows.length} legs`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
-      UI.showToast('No valid legs detected. Check board format.');
+      UI.showToast('No valid legs found.');
     }
     UI.renderFeedStatus(state.cleanPool, state.auditRows);
     UI.renderPoolTable(state.cleanPool);

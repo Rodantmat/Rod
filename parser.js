@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.12 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.13 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -423,81 +423,42 @@ window.PickCalcParser = (() => {
 
 
   function parseCluster(cluster) {
-    const NUM_ANCHOR_RX = /^\d+(?:\.\d+)?$/;
-    const TEAM_PIVOT_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|SS|OF|IF|DH|UTIL)\b/i;
-    const NOISE_RX = /\b(?:Goblin|Demon|Taco|Promo|Less|More)\b/gi;
-    const MATCHUP_RX = /(?:\bvs\.?\b|@)/i;
-    const TIME_DATE_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\b|\b\d{1,2}:\d{2}\s*(?:am|pm)?\b|\b\d{1,2}\s*(?:am|pm)\b|\b(?:am|pm)\b)/i;
-
-    const rawLines = (cluster || []).map((item) => {
-      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(NOISE_RX, '').replace(/\b\d+(?:\.\d+)?K\b/gi, '').trim();
+    const DECON = /(Demon|Goblin|Taco|Free Pick|Promo|Trending|Hot|Boost|Popular|Insurance|Less|More)/gi;
+    const lines = (cluster || []).map((entry) => {
+      const raw = typeof entry === 'string' ? entry : (entry?.raw || entry?.clean || '');
+      return String(raw || '').replace(DECON, '').trim();
     });
 
-    let line = 0;
-    let anchorIndex = -1;
-    for (let i = 0; i < rawLines.length; i += 1) {
-      if (NUM_ANCHOR_RX.test(rawLines[i])) {
-        line = parseFloat(rawLines[i]);
-        anchorIndex = i;
-        break;
-      }
-    }
+    let player = '', team = '', prop = '', line = 0;
+    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|SS|OF|IF|DH|UTIL)\b/i;
+    const JUNK = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
 
-    let team = '';
-    let teamIdx = -1;
-    if (anchorIndex !== -1) {
-      const start = Math.max(0, anchorIndex - 15);
-      const end = Math.min(rawLines.length - 1, anchorIndex + 5);
-      for (let i = start; i <= end; i += 1) {
-        const candidate = rawLines[i];
-        if (!candidate) continue;
-        const match = candidate.match(TEAM_PIVOT_RX);
-        if (match) {
-          team = (match[1] || '').toUpperCase();
-          teamIdx = i;
-          break;
+    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
+
+    for (let i = 0; i < lines.length; i += 1) {
+      if (TEAM_RX.test(lines[i])) {
+        team = (lines[i].match(TEAM_RX)?.[1] || '').toUpperCase();
+        const hunt = [i - 1, i + 1, i - 2, i + 2];
+        for (const idx of hunt) {
+          const c = lines[idx];
+          if (c && c.length > 3 && !TEAM_RX.test(c) && !JUNK.test(c) && !/^\d/.test(c)) {
+            player = sanitizePlayerName(c);
+            break;
+          }
         }
       }
     }
 
-    let player = '';
-    if (teamIdx !== -1) {
-      const scored = [];
-      for (let offset = -3; offset <= 3; offset += 1) {
-        if (offset === 0) continue;
-        const idx = teamIdx + offset;
-        if (idx < 0 || idx >= rawLines.length) continue;
-        const candidate = cleanWhitespace(rawLines[idx]);
-        if (!candidate) continue;
-        if (/\d/.test(candidate)) continue;
-        if (MATCHUP_RX.test(candidate)) continue;
-        if (TIME_DATE_RX.test(candidate)) continue;
-        if (TEAM_PIVOT_RX.test(candidate)) continue;
-        if (candidate.length < 3 || candidate.length > 25) continue;
-        const distance = Math.abs(offset);
-        let score = 100 - (distance * 10);
-        if (/^[A-Za-z'.-]+(?:\s+[A-Za-z'.-]+){1,2}$/.test(candidate)) score += 25;
-        if (/^[A-Z]/.test(candidate)) score += 5;
-        scored.push({ candidate, score, distance, idx });
-      }
-      scored.sort((a, b) => b.score - a.score || a.distance - b.distance || a.idx - b.idx);
-      player = scored.length ? sanitizePlayerName(scored[0].candidate) : '';
-    }
-
-    const blob = rawLines.join(' ');
-    let prop = '';
-    if (/\b(?:Ks|K's|Strikeouts)\b/i.test(blob)) prop = 'Pitcher Strikeouts';
-    else if (/\b(?:Total Bases|TB)\b/i.test(blob)) prop = 'Total Bases';
-    else if (/\b(?:Outs|PO|Pitching Outs)\b/i.test(blob)) prop = 'Pitching Outs';
-    else if (/Fantasy/i.test(blob)) prop = 'Pitcher Fantasy Score';
+    const blob = lines.join(' ');
+    if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
+    else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
 
     return {
       parsedPlayer: player,
       team,
       prop: prop || 'MLB Prop',
       line,
-      accepted: Boolean(player && player.length > 2 && team && line > 0)
+      accepted: (player.length > 2 && line > 0 && !!team)
     };
   }
 
