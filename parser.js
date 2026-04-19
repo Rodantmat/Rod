@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.11 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.12 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -408,7 +408,7 @@ window.PickCalcParser = (() => {
     return '';
   }
 
-  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 12) {
+  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 5) {
     const cluster = [];
     const start = Math.max(0, anchorIndex - aboveRadius);
     const end = Math.min(lines.length - 1, anchorIndex + belowRadius);
@@ -423,55 +423,54 @@ window.PickCalcParser = (() => {
 
   function parseCluster(cluster) {
     const NOISE = /(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b|Less|More)/gi;
-    const lines = (cluster || [])
-      .map((item) => {
-        const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-        return String(raw || '').replace(NOISE, '').trim();
-      })
-      .filter((entry) => entry.length > 0);
-
-    let player = '';
-    let team = '';
-    let prop = '';
-    let line = 0;
-    const TEAM_RX = /\b([A-Z]{2,3})\s*.?\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|G|D|LW|RW)\b/i;
-    const IGNORE_RX = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
-
-    lines.forEach((entry) => {
-      if (STANDALONE_NUMBER_RX.test(entry)) line = parseFloat(entry);
+    // Clean noise but DO NOT filter empty lines yet to preserve verticality
+    const lines = (cluster || []).map((item) => {
+      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
+      return String(raw || '').replace(NOISE, '').trim();
     });
 
+    let player = '', team = '', prop = '', line = 0;
+    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|SS|OF|IF|DH|UTIL)\b/i;
+    const JUNK_RX = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
+
+    // 1. Find the Line (The number is our absolute anchor)
+    lines.forEach((l) => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
+
+    // 2. Find Team Line
+    let teamIdx = -1;
     for (let i = 0; i < lines.length; i += 1) {
-      if (!TEAM_RX.test(lines[i])) continue;
-      const match = lines[i].match(TEAM_RX);
-      team = String(match?.[1] || team || '').toUpperCase();
-      const searchIndices = [i - 1, i + 1, i - 2, i + 2];
-      for (const idx of searchIndices) {
-        const candidate = lines[idx];
-        if (!candidate) continue;
-        if (candidate.length <= 3) continue;
-        if (TEAM_RX.test(candidate)) continue;
-        if (IGNORE_RX.test(candidate)) continue;
-        if (/^\d/.test(candidate)) continue;
-        const sanitized = sanitizePlayerName(candidate);
-        if (sanitized) {
-          player = sanitized;
+      if (TEAM_RX.test(lines[i])) {
+        const match = lines[i].match(TEAM_RX);
+        team = (match?.[1] || '').toUpperCase();
+        teamIdx = i;
+        break;
+      }
+    }
+
+    // 3. Name Hunter: Look for the best candidate that isn't Team, Junk, or Number
+    if (teamIdx !== -1) {
+      // Priority: Look at the line immediately above or below the team
+      const candidates = [lines[teamIdx - 1], lines[teamIdx + 1], lines[teamIdx - 2], lines[teamIdx + 2]];
+      for (const c of candidates) {
+        if (c && c.length > 3 && !TEAM_RX.test(c) && !JUNK_RX.test(c) && !/^\d/.test(c)) {
+          player = sanitizePlayerName(c);
           break;
         }
       }
-      if (player) break;
     }
 
+    // 4. Prop Mapping
     const blob = lines.join(' ');
     if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
     else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
     else if (/Outs/i.test(blob)) prop = 'Pitching Outs';
+    else if (/Fantasy/i.test(blob)) prop = 'Pitcher Fantasy Score';
 
     return {
       parsedPlayer: player,
-      team,
+      team: team,
       prop: prop || 'MLB Prop',
-      line,
+      line: line,
       accepted: (player.length > 2 && line > 0 && !!team)
     };
   }

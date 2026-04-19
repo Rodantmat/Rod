@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.11 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.12 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -64,12 +64,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.LEG_ID = row?.LEG_ID || vault.LEG_ID;
     vault.idx = row?.idx || vault.idx;
     vault.terminalState = 'Data Ingress Error';
-    vault.isReal = true;
-    vault.source = 'real';
+    vault.isReal = false;
+    vault.source = 'error';
     BRANCH_KEYS.forEach((key) => {
       if (!vault.branches[key]) return;
       vault.branches[key].status = 'WARNING';
-      vault.branches[key].source = 'real';
+      vault.branches[key].source = 'error';
       vault.branches[key].note = detail;
       updateBranchMeta(vault.branches[key]);
     });
@@ -77,8 +77,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return {
       vault,
       row,
-      isReal: true,
-      source: 'real',
       shield: computeShieldFromVault(vault),
       analysisHint: detail,
       connectorState: {
@@ -97,10 +95,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function rowHasIngressIdentityError(row = {}) {
     const player = String(row?.parsedPlayer || '').trim();
-    if (!player) return true;
-    if (hasNumericNoiseInIdentity(player)) return true;
-    if (/\b(?:@|vs\.?|sun|mon|tue|wed|thu|fri|sat)\b/i.test(player)) return true;
-    return false;
+    return !player || player.length < 3;
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -759,10 +754,9 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
-    // If the parser failed to provide a clean name, ABORT to prevent fake sequential data
-    if (rowHasIngressIdentityError(row) || !row.parsedPlayer || row.parsedPlayer.length < 3 || /\b(?:vs\.?|@|sun|mon|tue|wed|thu|fri|sat)\b/i.test(row.parsedPlayer)) {
+    if (!row.parsedPlayer || row.parsedPlayer.length < 3) {
       try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
-      const result = buildIngressErrorResult(row, stateRef, 'Data Ingress Error');
+      const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
       hooks.onComplete?.({ results: [result], totalRows: 1, lastResult: result });
       return result;

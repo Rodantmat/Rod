@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.11 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.12 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -113,9 +113,9 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function refreshIntake() {
     state.cleanPool = state.rows.slice();
-    const rows = filteredRows(state.rows);
+    const rows = filteredRows(state.cleanPool);
     const auditRows = filteredAuditRows(state.auditRows);
-    UI.renderFeedStatus(rows, auditRows);
+    UI.renderFeedStatus(state.cleanPool, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
   }
@@ -240,7 +240,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
 
-    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar','runOverlay','overlaySub','overlayBody','miningGrid','connectorSvg'].forEach((id) => {
+    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       if ('value' in node) node.value = '';
