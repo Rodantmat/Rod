@@ -255,8 +255,13 @@ window.PickCalcUI = window.PickCalcUI || {};
     return ` <span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
   }
 
+  function isReliableVault(vault = {}) {
+    return Boolean(vault && vault.isReal === true && vault.reliable === true && vault.source === 'gemini_verified' && String(vault.terminalState || '').toLowerCase().includes('verified'));
+  }
+
   function resolveCobaltScore(vault = {}, row = {}) {
-    return window.PickCalcCore?.calcCobaltEdge?.(vault, row) || { score: 0 };
+    if (!isReliableVault(vault)) return { score: null, displaySide: '', unavailable: true };
+    return window.PickCalcCore?.calcCobaltEdge?.(vault, row) || { score: null, unavailable: true };
   }
 
   function resolveScoreEmoji(score = 0) {
@@ -297,9 +302,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
-    const hardError = vault?.isReal !== true || /error|unavailable|retry/i.test(String(vault?.terminalState || '')) || Object.keys(vault?.branches || {}).length === 0;
-    if (hardError) {
-      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner">Real data was not confirmed for this leg. Matrix hidden. Check API availability / payload integrity and rerun.</div></article>`;
+    const reliable = isReliableVault(vault);
+    if (!reliable) {
+      const reason = purgeUiNoise(String(vault?.terminalState || 'Payload not verified from Gemini API.'));
+      return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div><div class="status-panel warning-banner"><strong>ERROR:</strong> Data was not verified as real Gemini output. Matrix hidden. ${escapeHtml(reason)}</div></article>`;
     }
     const branches = vault?.branches || {};
     const scoreMeta = resolveCobaltScore(vault, row);
@@ -312,11 +318,11 @@ window.PickCalcUI = window.PickCalcUI || {};
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       const branchHeader = branchKey === 'E'
-        ? '<div class="branch-title"><strong>Branch E</strong> <span class="card-type-tag market">MARKET</span></div>'
-        : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      return `<details class="branch-block ${tone.card}${warningClass}"><summary class="branch-summary">${branchHeader}</summary><div class="branch-body">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
+        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">MARKET</span></div>`
+        : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+      return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
     }).join('');
-    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>Score: ${escapeHtml(String(score))}/100</strong>${pickTypeMarkup}<strong>${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>Score: ${escapeHtml(String(score))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div>${matrixMarkup}</article>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -378,60 +384,65 @@ window.PickCalcUI = window.PickCalcUI || {};
     let derived = 0;
     let simulated = 0;
     let warnings = 0;
-    Object.values(vaultCollection || {}).forEach((vault) => {
-      const vaultIsReal = vault?.isReal === true;
+    const reliableVaults = Object.values(vaultCollection || {}).filter((vault) => isReliableVault(vault));
+    reliableVaults.forEach((vault) => {
       BRANCH_KEYS.forEach((key) => {
         const branch = vault?.branches?.[key] || {};
-        const branchValues = Object.keys(branch)
-          .filter((k) => /^([abcde])\d{2}$/i.test(k))
-          .map((k) => Number(branch[k]) || 0);
-        const branchTotal = branchValues.length || (key === 'A' ? 20 : key === 'B' ? 18 : key === 'C' ? 12 : key === 'D' ? 10 : 12);
-        const branchNonZero = branchValues.filter((v) => v !== 0).length;
+        const parsedValues = Object.values(branch?.parsed || {}).map((v) => Number(v) || 0);
+        const branchTotal = parsedValues.length || (BRANCH_TARGETS[key] || 0);
+        const branchNonZero = parsedValues.filter((v) => v !== 0).length;
         total += branchTotal;
         nonZero += branchNonZero;
+        real += Number(branch.realCount || branchTotal);
+        derived += Number(branch.derivedCount || 0);
+        simulated += Number(branch.simulatedCount || 0);
         warnings += Math.max(0, branchTotal - branchNonZero);
-        if (vaultIsReal) {
-          real += branchTotal;
-        } else {
-          real += Number(branch.realCount || 0);
-          derived += Number(branch.derivedCount || 0);
-          simulated += Number(branch.simulatedCount || 0);
-        }
       });
     });
     const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';
-    const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status !== 'WARNING').length, 0);
-    const purityScore = Object.keys(vaultCollection || {}).length ? ((purityUnits / (Object.keys(vaultCollection || {}).length * BRANCH_KEYS.length)) * 100).toFixed(2) : '0.00';
+    const purityScore = total ? ((real / total) * 100).toFixed(2) : '0.00';
     const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
-    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
+    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total, reliableVaults: reliableVaults.length };
   }
 
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {
     if (el('analysisTitle')) el('analysisTitle').textContent = `Run Analysis ${version}`;
-    if (el('analysisVersion')) el('analysisVersion').textContent = version;
+    if (el('analysisVersion')) el('analysisVersion').textContent = '';
     if (el('shieldTitle')) el('shieldTitle').textContent = `Alpha Shield ${version}`;
 
     const row = result?.row || rows[0] || {};
     const vaultCollection = result?.vaultCollection || (row?.LEG_ID && result?.vault ? { [row.LEG_ID]: result.vault } : {});
     const shield = summarizeShield(vaultCollection);
+    const reliableLegs = rows.filter((r) => isReliableVault(vaultCollection?.[r.LEG_ID] || {})).length;
+    const allReliable = rows.length > 0 && reliableLegs === rows.length;
     const summary = el('analysisSummary');
-    if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">REAL: ${escapeHtml(shield.real)}</div>`,`<div class="pill">SIMULATED: ${escapeHtml(shield.simulated)}</div>`].join('');
+    if (summary) {
+      summary.innerHTML = allReliable
+        ? [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`].join('')
+        : [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`,`<div class="pill">Status: ERROR</div>`].join('');
+    }
     const hint = el('analysisHint');
-    if (hint) hint.textContent = purgeUiNoise(result?.analysisHint || 'OXYGEN-COBALT recovery active.');
+    if (hint) {
+      hint.innerHTML = allReliable
+        ? escapeHtml(purgeUiNoise(result?.analysisHint || 'Gemini verified payload received.'))
+        : `<span class="warning-banner analysis-error-banner"><strong>ERROR:</strong> Payload was not verified as real and reliable Gemini output. Matrix, scores, and Alpha Shield are hidden for any affected leg. Rerun required.</span>`;
+    }
     const rowCard = el('analysisRowCard');
-    if (rowCard) {
-      const rowScoreMeta = resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row);
-      const rowSide = rowScoreMeta?.displaySide ? ` [${rowScoreMeta.displaySide}]` : '';
-      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(purgeUiNoise(row.prop || ''))} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
-    }
+    if (rowCard) rowCard.innerHTML = '';
     const kpis = el('analysisKpis');
-    if (kpis) {
-      if (result?.isReal === false) kpis.innerHTML = `<div class="pill">Matrix Hidden</div><div class="pill">Reason: API / payload not confirmed real</div>`;
-      else kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
-    }
+    if (kpis) kpis.innerHTML = '';
     renderMiningGrid(rows, vaultCollection);
     const shieldPanel = el('shieldPanel');
-    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>Signal Mix</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
+    const shieldCard = shieldPanel ? shieldPanel.closest('.card') : null;
+    if (shieldPanel) {
+      if (!allReliable || !shield.total) {
+        shieldPanel.innerHTML = '';
+        if (shieldCard) shieldCard.classList.add('hidden');
+      } else {
+        if (shieldCard) shieldCard.classList.remove('hidden');
+        shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>Signal Mix</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
+      }
+    }
     const body = el('analysisResultsBody');
     if (body) body.innerHTML = rows.map((item) => `<tr><td>${escapeHtml(item.idx)}</td><td>${escapeHtml(item.sport)}</td><td>${escapeHtml(item.league)}</td><td>${escapeHtml(item.parsedPlayer)}</td><td>${escapeHtml(item.team || '')}</td><td>${escapeHtml(item.opponent || '')}</td><td>${escapeHtml(item.prop || '')}</td><td>${escapeHtml(item.line || '')}</td><td>${escapeHtml(item.type || '')}</td></tr>`).join('');
     renderConsole(result.logs || []);
@@ -489,11 +500,20 @@ window.PickCalcUI = window.PickCalcUI || {};
     const sections = legIds.map((legId, index) => {
       const row = rowIndex[legId]?.row || {};
       const vault = vaultCollection[legId] || {};
+      if (!isReliableVault(vault)) {
+        return [
+          `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
+          `LEG_ID: ${legId}`,
+          `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'}`,
+          `ERROR: Non-real / non-reliable Gemini payload. Matrix hidden.`
+        ].join('\n');
+      }
       const branchKeys = ['A', 'B', 'C', 'D', 'E'];
       const summary = branchKeys.map((k) => {
         const active = Object.values(vault.branches?.[k]?.parsed || {}).filter((val) => Number(val) !== 0).length;
         return `${k}:${active}`;
       }).join('|');
+      const scoreMeta = resolveCobaltScore(vault, row);
       const matrixLines = branchKeys.map((k) => {
         const parsed = vault.branches?.[k]?.parsed || {};
         const parsedLine = Object.entries(parsed).map(([key, value], idx) => {
@@ -514,16 +534,15 @@ window.PickCalcUI = window.PickCalcUI || {};
       return [
         `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
         `LEG_ID: ${legId}`,
-        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'} | SCORE: ${(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}/100 ${resolveScoreEmoji(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}`,
+        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'} | SCORE: ${(scoreMeta?.score ?? 0)}/100 ${resolveScoreEmoji(scoreMeta?.score ?? 0)}`,
         `SATURATION: ${summary}`,
         ...matrixLines,
         `PROJECTIONS: ${JSON.stringify(vault.branches?.E?.providerMap || {})}`
-      ].join('\n');
+        ].join('\n');
     });
 
     return sections.join('\n\n');
   }
-
 
 
 
@@ -562,6 +581,6 @@ window.PickCalcUI = window.PickCalcUI || {};
     }, 4000);
   }
 
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast, isReliableVault });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();

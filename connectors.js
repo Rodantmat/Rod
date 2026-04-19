@@ -6,7 +6,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
-  const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17'];
+  const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash'];
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -66,6 +66,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.idx = row?.idx || vault.idx;
     vault.terminalState = 'Data Ingress Error';
     vault.isReal = false;
+    vault.reliable = false;
     vault.source = 'error';
     BRANCH_KEYS.forEach((key) => {
       if (!vault.branches[key]) return;
@@ -78,6 +79,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return {
       vault,
       row,
+      isReal: false,
+      isReliable: false,
       shield: computeShieldFromVault(vault),
       analysisHint: detail,
       connectorState: {
@@ -160,8 +163,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       version: SYSTEM_VERSION,
       timestamp: new Date().toISOString(),
       branches,
-      source: 'real',
-      isReal: true,
+      source: 'pending',
+      isReal: false,
+      reliable: false,
       terminalState: 'INITIALIZING'
     };
   }
@@ -400,6 +404,25 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return Array.isArray(v) ? v.map((n) => Number(n).toFixed(3)).join('|') : '';
   }
 
+  function entryStats(v = []) {
+    const nums = Array.isArray(v) ? v.map((n) => Number(n)).filter(Number.isFinite) : [];
+    if (!nums.length) return { distinct2: 0, stddev: 0, meanAbsDiff: 0 };
+    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+    const variance = nums.reduce((sum, n) => sum + ((n - mean) ** 2), 0) / nums.length;
+    const distinct2 = new Set(nums.map((n) => n.toFixed(2))).size;
+    return { distinct2, stddev: Math.sqrt(variance) };
+  }
+
+  function vectorsTooSimilar(a = [], b = []) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return false;
+    const meanAbs = a.reduce((sum, n, idx) => sum + Math.abs(Number(n) - Number(b[idx])), 0) / a.length;
+    let near = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (Math.abs(Number(a[i]) - Number(b[i])) <= 0.02) near += 1;
+    }
+    return meanAbs < 0.035 || near >= 62;
+  }
+
   function validateGeminiPayload(payload) {
     const entries = Array.isArray(payload?.data) ? payload.data : [];
     if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.' };
@@ -408,11 +431,23 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
-      const sig = vectorSignature(entry.v);
+      if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
+      const stats = entryStats(entry.v);
+      if (stats.distinct2 < 12 || stats.stddev < 0.035) return { ok: false, reason: 'Low-variance factor payload detected.' };
+      const providers = entry.v.slice(60, 65).map((n) => Number(n));
+      if (providers.some((n) => !Number.isFinite(n))) return { ok: false, reason: 'Missing provider slots.' };
+      if (new Set(providers.map((n) => n.toFixed(2))).size < 2) return { ok: false, reason: 'Provider payload lacks variance.' };
+      if (providers.every((n) => Math.abs(n - 0.5) <= 0.001)) return { ok: false, reason: 'Neutral provider payload detected.' };
+      const sig = vectorSignature(entry.v.map((n) => Number(n).toFixed(2)));
       if (sig) signatures.set(sig, (signatures.get(sig) || 0) + 1);
     }
     const dup = Array.from(signatures.values()).some((count) => count > 1);
     if (dup && entries.length > 1) return { ok: false, reason: 'Duplicate factor payload detected.' };
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.' };
+      }
+    }
     return { ok: true };
   }
 
@@ -701,7 +736,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       };
 
       vault.isReal = true;
-      vault.source = 'real';
+      vault.reliable = true;
+      vault.source = 'gemini_verified';
       vault.timestamp = Date.now();
 
       const branchStatus = 'REAL';
@@ -714,8 +750,9 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       BRANCH_KEYS.forEach((key) => {
         if (vault.branches[key]) {
           vault.branches[key].status = 'REAL';
-          vault.branches[key].source = 'real';
+          vault.branches[key].source = 'gemini_verified';
           vault.branches[key].isReal = true;
+          vault.branches[key].isReliable = true;
           vault.branches[key].confidence = 1.0;
           updateBranchMeta(vault.branches[key]);
         }
@@ -726,7 +763,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       });
 
       const found = vals.filter((n) => Number(n) !== 0).length;
-      vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated';
+      vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Gemini Verified';
 
       commitVault(stateRef, row, vault);
       console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
@@ -739,10 +776,11 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         vault,
         row,
         isReal: true,
-        source: 'real',
+        isReliable: true,
+        source: 'gemini_verified',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: 'Atomic Matrix Saturated',
+        analysisHint: 'Gemini Verified payload received.',
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,

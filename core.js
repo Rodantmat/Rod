@@ -235,7 +235,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
 
-    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
+    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       if ('value' in node) node.value = '';
@@ -292,7 +292,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const shieldTitle = document.getElementById('shieldTitle');
     if (title) title.textContent = 'PickCalc Multi-Sport Engine';
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
-    if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
+    if (analysisVersion) analysisVersion.textContent = '';
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
     refreshIntake();
     bindEvents();
