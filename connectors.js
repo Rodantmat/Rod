@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.15 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.16 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -84,6 +84,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       isReliable: false,
       shield: computeShieldFromVault(vault),
       analysisHint: detail,
+      runStatus: /temporary api unavailable|non-real gemini payload|payload not verified from gemini api/i.test(detail) ? 'FAILED_PAYLOAD' : 'FAILED_CONNECTOR',
+      finalized: true,
       connectorState: {
         version: SYSTEM_VERSION,
         completedRows: 0,
@@ -892,6 +894,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.',
+        runStatus: proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY',
+        finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,

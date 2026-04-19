@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.15 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.16 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -165,7 +165,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     state.miningVault = {};
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
+    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Wait bar active. Probing and retrieving payload...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
     UI.startHeartbeat?.();
 
@@ -177,7 +177,10 @@ window.PickCalcCore = window.PickCalcCore || {};
       vault: starterVault,
       vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
-      analysisHint: 'Firing Atomic Ingress...'
+      analysisHint: 'Wait bar active. Probing and retrieving payload...',
+      runStatus: 'LOADING',
+      analysisPhase: 'loading',
+      finalized: false
     };
     state.lastResult = starter;
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
@@ -192,7 +195,10 @@ window.PickCalcCore = window.PickCalcCore || {};
             vault,
             vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
             shield,
-            analysisHint: branchKey === 'INIT' ? 'Zero-fill vault primed.' : `Streaming Branch ${branchKey} for ${row?.parsedPlayer || row?.LEG_ID}.`,
+            analysisHint: 'Wait bar active. Probing and retrieving payload...',
+            runStatus: 'LOADING',
+            analysisPhase: 'loading',
+            finalized: false,
             connectorState: { completedRows: 0, completedProbes, totalProbes },
             logs: logs || [{ level: 'info', text: `[SYSTEM] Branch ${branchKey} hydrated.` }]
           };
@@ -201,12 +207,16 @@ window.PickCalcCore = window.PickCalcCore || {};
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
           result.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
+          result.analysisPhase = 'final';
+          result.finalized = true;
           state.lastResult = result;
           UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
         },
         onComplete: ({ lastResult }) => {
           if (lastResult) {
             lastResult.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
+            lastResult.analysisPhase = 'final';
+            lastResult.finalized = true;
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
             UI.updateProgressBar(rows.length * 5, rows.length * 5, lastResult?.analysisHint || 'Atomic Matrix Saturated');

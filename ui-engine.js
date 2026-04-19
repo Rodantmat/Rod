@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.15 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.16 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -261,8 +261,35 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderProofFlags(vault = {}) {
     const failures = Array.isArray(vault?.proofFlags?.failures) ? vault.proofFlags.failures : [];
-    if (!failures.length) return '<div class="proof-pass">Brutal Honesty Proof: PASS</div>';
-    return `<div class="proof-fail"><strong>Brutal Honesty Flags:</strong><div class="proof-list">${failures.map((item) => `<div class="proof-line">• ${escapeHtml(item.message || item.label || 'Checkpoint failed')}</div>`).join('')}</div></div>`;
+    if (!failures.length) return '<div class="proof-pass compact-proof">Integrity Flags: PASS</div>';
+    return `<div class="proof-fail compact-proof"><strong>Integrity Flags:</strong> ${escapeHtml(String(failures.length))} checkpoint(s) failed</div>`;
+  }
+
+  function deriveRunStatus(result = {}, rows = [], vaultCollection = {}) {
+    if (String(result?.runStatus || '').trim()) return result.runStatus;
+    const completed = Number(result?.connectorState?.completedProbes || 0);
+    const total = Math.max(1, Number(result?.connectorState?.totalProbes || 0));
+    const phase = String(result?.analysisPhase || '').toLowerCase();
+    if (phase === 'loading' || (!result?.finalized && completed < total)) return 'LOADING';
+    if (Number(result?.errorStatus || 0) >= 500) return 'FAILED_CONNECTOR';
+    if (/temporary api unavailable|payload not verified from gemini api|non-real gemini payload|malformed factor payload/i.test(String(result?.analysisHint || '') + ' ' + String(result?.errorText || ''))) return 'FAILED_PAYLOAD';
+    const reliableLegs = rows.filter((r) => isReliableVault(vaultCollection?.[r.LEG_ID] || {})).length;
+    if (rows.length > 0 && reliableLegs === rows.length) return 'VERIFIED';
+    if (Object.keys(vaultCollection || {}).length > 0) return 'FAILED_INTEGRITY';
+    return 'LOADING';
+  }
+
+  function getRunStatusMeta(status = 'LOADING', result = {}) {
+    const map = {
+      LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
+      FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
+      FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
+      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload decoded, but integrity checkpoints failed. Data is present but not trustworthy yet.' },
+      VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
+    };
+    const meta = map[status] || map.LOADING;
+    const detail = String(result?.analysisHint || '').trim();
+    return { ...meta, detail: status === 'LOADING' ? '' : detail };
   }
 
   function resolveCobaltScore(vault = {}, row = {}) {
@@ -328,7 +355,7 @@ window.PickCalcUI = window.PickCalcUI || {};
         : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
       return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
     }).join('');
-    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${renderProofFlags(vault)}${matrixMarkup}</div></details>`;
+    return `<details class="player-mining-card matrix-collapsible player-collapsible"><summary class="player-summary collapsible-trigger"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${isReliableVault(vault) ? 'mini-flag-ok' : 'mini-flag-warn'}">${isReliableVault(vault) ? 'Verified' : (vault?.proofFlags?.failures?.length ? 'Integrity Flagged' : 'Waiting')}</span><span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span></span></div></summary><div class="player-collapsible-body collapsible-content"><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${isReliableVault(vault) ? matrixMarkup : ''}</div></details>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -421,17 +448,15 @@ window.PickCalcUI = window.PickCalcUI || {};
     const shield = summarizeShield(vaultCollection);
     const reliableLegs = rows.filter((r) => isReliableVault(vaultCollection?.[r.LEG_ID] || {})).length;
     const allReliable = rows.length > 0 && reliableLegs === rows.length;
+    const runStatus = deriveRunStatus(result, rows, vaultCollection);
+    const statusMeta = getRunStatusMeta(runStatus, result);
     const summary = el('analysisSummary');
     if (summary) {
-      summary.innerHTML = allReliable
-        ? [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`].join('')
-        : [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`,`<div class="pill">Status: ERROR</div>`].join('');
+      summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Reliable: ${escapeHtml(String(reliableLegs))}/${escapeHtml(String(rows.length))}</div>`,`<div class="pill ${statusMeta.tone}">Status: ${escapeHtml(statusMeta.label)}</div>`,`<div class="pill">Transport: ${escapeHtml(runStatus === 'FAILED_CONNECTOR' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Payload: ${escapeHtml(runStatus === 'FAILED_PAYLOAD' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : 'OK'))}</div>`,`<div class="pill">Integrity: ${escapeHtml(runStatus === 'FAILED_INTEGRITY' ? 'FAIL' : (runStatus === 'LOADING' ? 'WAIT' : (allReliable ? 'PASS' : 'PENDING')))}</div>`].join('');
     }
     const hint = el('analysisHint');
     if (hint) {
-      hint.innerHTML = allReliable
-        ? escapeHtml(purgeUiNoise(result?.analysisHint || 'Gemini verified payload received.'))
-        : `<span class="warning-banner analysis-error-banner"><strong>ERROR:</strong> Payload was not verified as real and reliable Gemini output. Matrix, scores, and Alpha Shield are hidden for any affected leg. Rerun required.</span>`;
+      hint.innerHTML = `<span class="${runStatus === 'VERIFIED' ? 'status-ok-banner' : (runStatus === 'LOADING' ? 'status-loading-banner' : 'warning-banner analysis-error-banner')}"><strong>${escapeHtml(statusMeta.label)}:</strong> ${escapeHtml(statusMeta.text)}${statusMeta.detail ? ` ${escapeHtml(purgeUiNoise(statusMeta.detail))}` : ''}</span>`;
     }
     const rowCard = el('analysisRowCard');
     if (rowCard) rowCard.innerHTML = '';
@@ -461,7 +486,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const safeIndex = Math.max(0, Math.min(safeTotal, Number(index) || 0));
     const pct = Math.floor((safeIndex / safeTotal) * 100);
     if (!mount.querySelector('.progress-bar-shell')) {
-      mount.innerHTML = `<div class="progress-bar-shell"><div class="progress-bar-fill"></div></div><div class="progress-bar-meta"><strong>0%</strong><span>Preparing oxygen stream...</span><span>0/0 probes</span></div>`;
+      mount.innerHTML = `<div class="progress-bar-shell wait-shell"><div class="progress-bar-fill wait-fill"></div></div><div class="progress-bar-meta"><strong>0%</strong><span>Wait bar active. Preparing oxygen stream...</span><span>0/0 probes</span></div>`;
     }
     const fill = mount.querySelector('.progress-bar-fill');
     const strong = mount.querySelector('.progress-bar-meta strong');
@@ -469,10 +494,11 @@ window.PickCalcUI = window.PickCalcUI || {};
     window.requestAnimationFrame(() => {
       if (fill) {
         fill.style.width = `${pct}%`;
-        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'OXYGEN-COBALT recovery active.')}</span></div>`;
+        fill.classList.toggle('wait-fill', pct < 100);
+        fill.innerHTML = `<div class="progress-inner"><span>⏳ ${pct}% | ${escapeHtml(message || 'Wait bar active. Probing and retrieving payload...')}</span></div>`;
       }
       if (strong) strong.textContent = `${pct}%`;
-      if (spans[0]) spans[0].textContent = `📡 ${message || 'OXYGEN-COBALT recovery active.'}`;
+      if (spans[0]) spans[0].textContent = `⏳ ${message || 'Wait bar active. Probing and retrieving payload...'}`;
       if (spans[1]) spans[1].textContent = `${safeIndex}/${safeTotal} probes`;
     });
   }

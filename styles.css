@@ -62,3 +62,11 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .proof-fail{border-color:#5c4720;color:#ffd989}
 .proof-list{display:grid;gap:6px;margin-top:8px}
 .proof-line{overflow-wrap:anywhere}
+
+
+.wait-shell{position:relative}
+.wait-fill{background:linear-gradient(90deg,#2b74ff,#66e0a3);animation:waitPulse 1.6s linear infinite;background-size:200% 100%}
+@keyframes waitPulse{0%{background-position:200% 0}100%{background-position:-200% 0}}
+.status-loading{background:#2a365b;color:#d7e7ff}.status-ok-pill{background:#123c2a;color:#aef0cc}.status-error{background:#433517;color:#ffd989}
+.status-loading-banner,.status-ok-banner{display:block;margin-top:10px;padding:10px 12px;border-radius:12px}.status-loading-banner{border:1px solid #35538b;background:#162543;color:#d7e7ff}.status-ok-banner{border:1px solid #295b43;background:#123c2a;color:#aef0cc}
+.player-status-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.mini-flag{display:inline-flex;align-items:center;padding:4px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px}.mini-flag-ok{background:#123c2a;color:#aef0cc}.mini-flag-warn{background:#433517;color:#ffd989}.compact-proof{display:none}
