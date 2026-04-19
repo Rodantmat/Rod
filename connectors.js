@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.1 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.2 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -655,6 +655,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const warnings = [];
     for (const entry of entries) {
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
+      if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) return { ok: false, reason: 'Missing id_confirm in batch payload.' };
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
       if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
@@ -716,14 +717,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Opponent: ${opponent} | Prop: ${prop} | Line: ${line} | PickType: ${pickType} | Direction: ${direction || 'Undecided'} | GameTime: ${gameTime || 'Unknown'} | Type: ${type} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
     }).join('\n');
     const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
-Perform a high-resolution data extraction for the provided batch. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
-CRITICAL BATCH RULES:
-- Evaluate each Index independently.
-- Preserve subject order exactly.
-- Same team or same prop family does NOT justify similar vectors.
-- Any mirrored, cloned, blurred, or recycled vector across indices is a FAILURE.
-- If one subject is weak, keep the rest of the batch intact and still return that subject with a 72-float vector based on best available evidence.
-CRITICAL: Any response containing identical or near-identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
+Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
+CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
 CRITICAL SLOT MAP:
 - v[38] = c07 Air Density (temperature + altitude + humidity ball-flight multiplier)
 - v[39] = c08 Umpire Zone (numeric strike-call frequency)
@@ -737,8 +732,7 @@ CRITICAL SLOT MAP:
 Return five specific sportsbook floats for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle in that exact order. Do not collapse unknown values to 0.5 unless the profile is truly neutral after analysis.
 Subjects:
 ${uniqueSubjects}
-Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}. Each data entry must contain the exact index requested.
-${String(options?.retrySuffix || "").trim()}`;
+Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(options?.retrySuffix || "").trim()}`;
 
     if (!activeKey) {
       return { ok: false, errorStatus: 0, errorText: 'Missing Gemini API key.', temporaryFailure: false, modelId: GEMINI_MODEL };

@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.1 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.2 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -161,17 +161,6 @@ window.PickCalcParser = (() => {
     return { hour, minute };
   }
 
-  function formatDisplayTime(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-    const dayLabel = DAY_NAMES[date.getDay()] || '';
-    let hour = date.getHours();
-    const minute = pad2(date.getMinutes());
-    const ampm = hour >= 12 ? 'pm' : 'am';
-    hour = hour % 12;
-    if (hour === 0) hour = 12;
-    return `${dayLabel.charAt(0).toUpperCase() + dayLabel.slice(1)} ${hour}:${minute}${ampm}`;
-  }
-
   function nextDateForWeekday(now, targetDayIndex) {
     const candidate = new Date(now);
     candidate.setFullYear(PARSE_YEAR);
@@ -222,16 +211,7 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b(\d{1,3})m(?:\s+(\d{1,2})s)?\b/i);
-    if (match) {
-      const minutes = Number(match[1] || '0');
-      const seconds = Number(match[2] || '0');
-      const date = new Date(now.getTime() + (minutes * 60000) + (seconds * 1000));
-      date.setSeconds(0, 0);
-      return { found: true, token: formatDisplayTime(date), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, countdownToken: cleanWhitespace(match[0]) };
-    }
-
-    match = source.match(/\b(?:\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)\b/i);
+    match = source.match(/\b(?:\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)\b/i);
     if (match) {
       return { found: false, token: cleanWhitespace(match[0]), eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'Countdown timer ignored.' };
     }
@@ -832,6 +812,62 @@ window.PickCalcParser = (() => {
   }
 
 
+  function buildFenceBlocks(lines = []) {
+    const fences = [];
+    const teamRoleIndexes = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const clean = cleanClusterLine(lines[i]);
+      if (!clean) continue;
+      if (TEAM_ROLE_RX.test(clean)) teamRoleIndexes.push(i);
+    }
+    if (!teamRoleIndexes.length) return fences;
+
+    const blockStartForTeamRole = (teamRoleIndex) => {
+      for (let i = Math.max(0, teamRoleIndex - 2); i < teamRoleIndex; i += 1) {
+        const clean = cleanClusterLine(lines[i]);
+        if (!clean || isNoiseLine(clean)) continue;
+        if (isLikelyPlayerName(clean)) return i;
+      }
+      return teamRoleIndex;
+    };
+
+    for (let idx = 0; idx < teamRoleIndexes.length; idx += 1) {
+      const teamRoleIndex = teamRoleIndexes[idx];
+      const start = blockStartForTeamRole(teamRoleIndex);
+      const nextTeamRole = idx < teamRoleIndexes.length - 1 ? teamRoleIndexes[idx + 1] : lines.length;
+      let end = nextTeamRole - 1;
+      while (end > start) {
+        const clean = cleanClusterLine(lines[end]);
+        if (clean) break;
+        end -= 1;
+      }
+      const block = [];
+      for (let i = start; i <= end; i += 1) {
+        const clean = cleanClusterLine(lines[i]);
+        if (!clean) continue;
+        block.push(clean);
+      }
+      if (!block.length) continue;
+      const anchorCount = countBlockAnchors(block);
+      const playerCount = block.filter((line) => isLikelyPlayerName(line)).length;
+      if (anchorCount !== 1) continue;
+      if (playerCount < 1) continue;
+      fences.push({ start, end, block });
+    }
+    return fences;
+  }
+
+  function buildFenceSignature(row = {}) {
+    return [
+      normalizeName(row.parsedPlayer || ''),
+      normalizeName(row.team || ''),
+      normalizeName(row.opponent || ''),
+      normalizeName(row.prop || row.propFamily || ''),
+      String(row.line || ''),
+      String(row.gameTimeText || '')
+    ].join('|');
+  }
+
   function splitStructuredBlocks(lines = []) {
     const blocks = [];
     let current = [];
@@ -995,10 +1031,13 @@ window.PickCalcParser = (() => {
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
     const lines = preprocessBoardText(nonPipeText);
+    const fenceBlocks = buildFenceBlocks(lines);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
     audit.rejectedLines = [];
     const rowMap = new Map();
+    const consumedLineIndexes = new Set();
+    const rowSignatures = new Set();
 
 
     const acceptParsed = (parsed) => {
@@ -1010,11 +1049,14 @@ window.PickCalcParser = (() => {
         return;
       }
       const legId = String(parsed.row.legId || parsed.row.LEG_ID || parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0);
-      const key = [normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
+      const key = [normalizeName(parsed.row.parsedPlayer), normalizeName(parsed.row.team || ''), normalizeName(parsed.row.opponent || ''), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
+      const signature = buildFenceSignature(parsed.row);
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
+      if (rowSignatures.has(signature) && !existing) return;
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {
         rowMap.set(key, Object.assign({}, parsed.row, { __completeness: completeness }));
+        rowSignatures.add(signature);
       }
     };
 
@@ -1030,8 +1072,23 @@ window.PickCalcParser = (() => {
       }
     });
 
+    fenceBlocks.forEach((entry, blockIndex) => {
+      if (!entry?.block?.length) return;
+      const parsed = parseStructuredBlock(entry.block, dayScope, now, blockIndex);
+      if (parsed?.row) {
+        parsed.row.sourceStart = entry.start;
+        parsed.row.sourceEnd = entry.end;
+        acceptParsed(parsed);
+        for (let i = entry.start; i <= entry.end; i += 1) consumedLineIndexes.add(i);
+        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
+      } else if (parsed?.audit) {
+        acceptParsed(parsed);
+      }
+    });
+
     blocks.forEach((block, blockIndex) => {
       if (!block.length) return;
+      if (fenceBlocks.length) return;
       const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
       if (parsed?.row) {
         acceptParsed(parsed);
@@ -1043,6 +1100,7 @@ window.PickCalcParser = (() => {
 
     const candidates = buildAnchorCandidates(lines);
     candidates.forEach((candidate) => {
+      if (consumedLineIndexes.has(candidate.anchorLineIndex)) return;
       const parsed = parseCandidate(candidate, dayScope, now);
       const signature = String(parsed?.row?.line || parsed?.audit?.line || '') + '|' + normalizeName(parsed?.row?.parsedPlayer || parsed?.audit?.parsedPlayer || '') + '|' + normalizeName(parsed?.row?.prop || parsed?.audit?.prop || '');
       if (consumedAnchors.has(signature)) return;
