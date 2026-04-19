@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.18 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -180,6 +180,29 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     updateBranchMeta(branch);
   }
 
+
+  function buildBranchESlotAudit(payloadValues = []) {
+    const slotNames = {
+      61: 'Sportsbook Value 1 (DraftKings)',
+      62: 'Sportsbook Value 2 (FanDuel)',
+      63: 'Sportsbook Value 3 (BetMGM)',
+      64: 'Sportsbook Value 4 (Caesars/365 Slot)',
+      65: 'Sportsbook Value 5 (Pinnacle)',
+      66: 'Market Mean',
+      67: 'Market Median',
+      68: 'Market High',
+      69: 'Market Low',
+      70: 'Market Spread (High-Low)',
+      71: 'Line Delta (Prop Line vs. Mean)',
+      72: 'Market Confidence Score'
+    };
+    const audit = [];
+    for (let idx = 60; idx < 72; idx += 1) {
+      audit.push({ slot: idx + 1, name: slotNames[idx + 1] || `Slot ${idx + 1}`, value: safeNumber(payloadValues[idx], 0) });
+    }
+    return audit;
+  }
+
   function buildProofFlags(vault = {}, row = {}, payloadValues = []) {
     const checks = [];
     const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => Number(value)) : [];
@@ -221,6 +244,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       checks,
       failures,
       localMarket: metrics,
+      slotAudit: buildBranchESlotAudit(numericValues),
       statusLabel: failures.length === 0 ? 'PROOF_PASS' : 'PROOF_FAIL'
     };
   }
@@ -623,8 +647,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
             if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`);
             else logger({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`, modelId, pre: errorText });
             if (isRetryableStatus(response.status) && attempt < 3) {
-              try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
-              await delay(700 * attempt);
+                            await delay(700 * attempt);
               continue;
             }
             break;
@@ -651,8 +674,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
           else logger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`, modelId, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
           if (attempt < 3) {
-            try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/3...`); } catch (_) {}
-            await delay(700 * attempt);
+                        await delay(700 * attempt);
             continue;
           }
         }
@@ -684,7 +706,6 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       if (!response.ok) {
         const err = await response.json();
         const message = (((err || {}).error || {}).message || 'Unknown error');
-        alert('GOOGLE_ERROR: ' + message);
         if (logger === console.log) console.log(`[SYSTEM] DEBUG_FAIL ${response.status}: ${message}`);
         else logger({ level: 'warning', text: `[SYSTEM] DEBUG_FAIL ${response.status}: ${message}`, modelId: GEMINI_MODEL });
         return { ok: false, status: response.status, errorText: message };
@@ -869,6 +890,14 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
       const proofFlags = buildProofFlags(vault, row, vals);
       stampLocalBranchEMetrics(vault, proofFlags.localMarket || {});
+      const slotAuditLine = (proofFlags.slotAudit || []).map((item) => `S${item.slot}=${safeNumber(item.value, 0).toFixed(3)}`).join(' | ');
+      if (logger === console.log) logger(`[OXYGEN] BRANCH_E_SLOT_AUDIT: ${row.parsedPlayer} :: ${slotAuditLine}`);
+      else logger({ level: 'info', text: `[OXYGEN] BRANCH_E_SLOT_AUDIT: ${row.parsedPlayer} :: ${slotAuditLine}` });
+      const local = proofFlags.localMarket || {};
+      const rawBookLine = [providerMap.DraftKings || 0, providerMap.FanDuel || 0, providerMap.BetMGM || 0, providerMap.Bet365 || 0, providerMap.Pinnacle || 0].map((v) => safeNumber(v, 0).toFixed(3)).join(', ');
+      const expectedLine = `mean=${safeNumber(local.mean,0).toFixed(3)} median=${safeNumber(local.median,0).toFixed(3)} high=${safeNumber(local.high,0).toFixed(3)} low=${safeNumber(local.low,0).toFixed(3)} spread=${safeNumber(local.spread,0).toFixed(3)} lineDelta=${safeNumber(local.lineDelta,0).toFixed(3)} conf=${safeNumber(local.marketConfidence,0).toFixed(3)}`;
+      if (logger === console.log) logger(`[OXYGEN] BRANCH_E_EXPECTED_FROM_RAW: ${row.parsedPlayer} :: books=[${rawBookLine}] :: ${expectedLine}`);
+      else logger({ level: 'info', text: `[OXYGEN] BRANCH_E_EXPECTED_FROM_RAW: ${row.parsedPlayer} :: books=[${rawBookLine}] :: ${expectedLine}` });
       vault.proofFlags = proofFlags;
       vault.reliable = proofFlags.passed;
       vault.isReal = proofFlags.passed;
@@ -893,7 +922,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         source: proofFlags.passed ? 'gemini_verified' : 'proof_rejected',
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.',
+        analysisHint: proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Payload arrived, but Branch E market slots 66-72 disagree with the raw market slots 61-65. Data is not trustworthy yet.',
         runStatus: proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY',
         finalized: true,
         connectorState: {
@@ -937,8 +966,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
     if (!row.parsedPlayer || row.parsedPlayer.length < 3 || /\b(?:vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri)\b/i.test(row.parsedPlayer)) {
-      try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
-      const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
+            const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
       hooks.onComplete?.({ results: [result], totalRows: 1, lastResult: result });
       return result;

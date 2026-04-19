@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.17 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.18 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -284,7 +284,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
       FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
       FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
-      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload decoded, but integrity checkpoints failed. Data is present but not trustworthy yet.' },
+      FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload arrived and decoded, but Branch E integrity checkpoints failed. Raw data is present; final market-slot meaning is still not trustworthy.' },
       VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
     };
     const meta = map[status] || map.LOADING;
