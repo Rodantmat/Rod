@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.38 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -101,7 +101,6 @@ window.PickCalcParser = (() => {
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
-      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
@@ -147,6 +146,18 @@ window.PickCalcParser = (() => {
     const delta = (targetDayIndex - candidate.getDay() + 7) % 7;
     candidate.setDate(candidate.getDate() + delta);
     return candidate;
+  }
+
+
+  function formatEventToken(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const day = DAY_NAMES[date.getDay()] || '';
+    let hour = date.getHours();
+    const minute = pad2(date.getMinutes());
+    const ampm = hour >= 12 ? 'pm' : 'am';
+    hour = hour % 12;
+    if (hour === 0) hour = 12;
+    return `${day.charAt(0).toUpperCase() + day.slice(1)} ${hour}:${minute}${ampm}`;
   }
 
   function extractTimeContext(text, now = new Date()) {
@@ -195,11 +206,10 @@ window.PickCalcParser = (() => {
       const hours = Number(match[1] || '0');
       const minutes = Number(match[2] || '0');
       const seconds = Number(match[3] || '0');
-      const date = new Date(now);
+      const date = new Date(now.getTime() + (((hours * 60 + minutes) * 60) + seconds) * 1000);
       date.setFullYear(PARSE_YEAR);
       date.setSeconds(0, 0);
-      date.setTime(date.getTime() + (((hours * 60) + minutes) * 60 + seconds) * 1000);
-      return { found: true, token: cleanWhitespace(match[0]), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, countdown: true };
+      return { found: true, token: formatEventToken(date), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, reason: 'Countdown timer resolved.' };
     }
 
     match = source.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);

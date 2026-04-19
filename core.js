@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.39 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.38 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -228,8 +228,6 @@ window.PickCalcCore = window.PickCalcCore || {};
 
 
   function handleResetAll() {
-    const savedKey = (() => { try { return localStorage.getItem('OXYGEN_GEMINI_KEY') || ''; } catch (_) { return ''; } })();
-    const sessionKey = (() => { try { return sessionStorage.getItem('OXYGEN_GEMINI_KEY') || ''; } catch (_) { return ''; } })();
     state.rows = [];
     state.cleanPool = [];
     state.auditRows = [];
@@ -240,9 +238,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.ingestLogs = [];
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
-
-    try { if (savedKey) localStorage.setItem('OXYGEN_GEMINI_KEY', savedKey); } catch (_) {}
-    try { if (sessionKey) sessionStorage.setItem('OXYGEN_GEMINI_KEY', sessionKey); } catch (_) {}
 
     ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisRowCard','analysisKpis','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
       const node = UI.el(id);
