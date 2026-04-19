@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.3 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.4 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -656,6 +656,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     for (const entry of entries) {
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
       if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) warnings.push('Missing id_confirm in batch payload.');
+      if (entries.length > 1 && !String(entry?.prop_confirm || '').trim()) warnings.push('Missing prop_confirm in batch payload.');
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
       if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
@@ -741,7 +742,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
     const logger = getConsoleLogger();
     const body = JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15 }
+      generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15, maxOutputTokens: 8192 }
     });
 
     async function tryModel(modelId, maxAttempts = 3) {
@@ -775,13 +776,16 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
           const parsed = parsedEnvelope.parsed;
           if (!parsed) {
             sawPayloadShapeFailure = true;
-            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: attempt < maxAttempts, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            if (attempt < maxAttempts) { await delay(500 * attempt); continue; }
             break;
           }
           const validation = validateGeminiPayload(parsed);
           if (!validation.ok) {
             sawPayloadShapeFailure = true;
-            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            const retryablePayload = /Malformed factor payload|Duplicate factor payload|Near-duplicate factor payload|Provider payload lacks variance|Neutral provider payload/i.test(validation.reason || '');
+            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: retryablePayload && attempt < maxAttempts, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            if (retryablePayload && attempt < maxAttempts) { await delay(500 * attempt); continue; }
             break;
           }
           logConnectorStep('JSON_PARSING', `Parsed ${(parsed.data || []).length} subject payload(s) via ${modelId}`);
@@ -994,7 +998,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
       hooks.onComplete?.({ results, totalRows, lastResult });
       return { results, lastResult };
     }
-    const responseData = { data: Array.isArray(payload?.data) ? payload.data.map((entry) => Object.assign({}, entry, { id_confirm: String(entry?.id_confirm || validBatch[Number(entry?.i)]?.parsedPlayer || '').trim() })) : [] };
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data.map((entry) => Object.assign({}, entry, { id_confirm: String(entry?.id_confirm || validBatch[Number(entry?.i)]?.parsedPlayer || '').trim(), prop_confirm: String(entry?.prop_confirm || validBatch[Number(entry?.i)]?.prop || validBatch[Number(entry?.i)]?.propFamily || '').trim() })) : [] };
     payloadWarnings = Array.isArray(payload?.warnings) ? payload.warnings.slice() : [];
     lowVarianceWarning = payloadWarnings.some((warning) => /low-variance/i.test(String(warning)));
 

@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.3 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.4 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -96,6 +96,28 @@ window.PickCalcParser = (() => {
       .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
 
+  function stripUnsupportedComboBlocks(text) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const clean = cleanWhitespace(stripAccents(lines[i] || ''));
+      if (/\+/.test(clean) && !resolvePropAlias(clean, 'MLB') && !/hits\s*\+\s*runs\s*\+\s*rbis?|h\+r\+rbi?s?|hrr/i.test(clean)) {
+        i += 1;
+        while (i < lines.length) {
+          const probe = cleanWhitespace(stripAccents(lines[i] || ''));
+          const next = cleanWhitespace(stripAccents(lines[i + 1] || ''));
+          if (probe && isLikelyPlayerName(probe) && TEAM_ROLE_RX.test(next || '')) break;
+          i += 1;
+        }
+        continue;
+      }
+      out.push(lines[i]);
+      i += 1;
+    }
+    return out.join('\n');
+  }
+
   function preprocessBoardText(text) {
     const normalized = String(text || '')
       .replace(/\r\n?/g, '\n')
@@ -107,7 +129,7 @@ window.PickCalcParser = (() => {
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
-      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?|pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
       .map((line) => /^\d{3,4}$/.test(String(line || '').trim()) ? ' ' : line)
       .map((line) => line.replace(/\b(?:LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|In\s+Lineup|Probable|Top\s+\d+(?:st|nd|rd|th)|Bot\s+\d+(?:st|nd|rd|th)|Mid\s+\d+(?:st|nd|rd|th)|Extra\s+Innings|Next\s+Half\s+Inning|Current\s+Inning|\d+(?:st|nd|rd|th)\s+Inning\s+Stretch|Inning\s*\d+|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
@@ -170,6 +192,29 @@ window.PickCalcParser = (() => {
     return candidate;
   }
 
+  function formatDisplayTime(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getDay()];
+    let hour = date.getHours();
+    const minute = pad2(date.getMinutes());
+    const suffix = hour >= 12 ? 'pm' : 'am';
+    hour = hour % 12 || 12;
+    return `${day} ${hour}:${minute}${suffix}`;
+  }
+
+  function countdownToDate(match, now = new Date()) {
+    const source = String(match || '').trim();
+    const h = source.match(/(\d+)h/i);
+    const m = source.match(/(\d+)m/i);
+    const s = source.match(/(\d+)s/i);
+    const total = (h ? Number(h[1]) * 3600 : 0) + (m ? Number(m[1]) * 60 : 0) + (s ? Number(s[1]) : 0);
+    if (!total) return null;
+    const date = new Date(now.getTime() + (total * 1000));
+    date.setFullYear(PARSE_YEAR);
+    date.setSeconds(0, 0);
+    return date;
+  }
+
   function extractTimeContext(text, now = new Date()) {
     const source = cleanWhitespace(text);
     if (!source) return { found: false, token: '', eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'No game time found.' };
@@ -211,9 +256,12 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b(?:\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)\b/i);
+    match = source.match(/\b((?:\d+h\s*\d{1,2}m(?:\s*\d{1,2}s)?)|(?:\d{1,3}m(?:\s+\d{1,2}s)?))\b/i);
     if (match) {
-      return { found: false, token: cleanWhitespace(match[0]), eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'Countdown timer ignored.' };
+      const date = countdownToDate(match[1], now);
+      if (date) {
+        return { found: true, token: formatDisplayTime(date), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, sourceToken: cleanWhitespace(match[1]), transformed: true };
+      }
     }
 
     match = source.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
@@ -1031,7 +1079,7 @@ window.PickCalcParser = (() => {
     const pipeBlocks = splitPipeBlocks(text);
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
-    const lines = preprocessBoardText(nonPipeText);
+    const lines = preprocessBoardText(stripUnsupportedComboBlocks(nonPipeText));
     const fenceBlocks = buildFenceBlocks(lines);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
@@ -1089,7 +1137,6 @@ window.PickCalcParser = (() => {
 
     blocks.forEach((block, blockIndex) => {
       if (!block.length) return;
-      if (fenceBlocks.length) return;
       const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
       if (parsed?.row) {
         acceptParsed(parsed);
