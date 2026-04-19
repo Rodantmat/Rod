@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.14 (OXYGEN-COBALT)';
 
 
   const state = {
@@ -123,32 +123,23 @@ window.PickCalcCore = window.PickCalcCore || {};
   function ingestBoard() {
     const input = UI.el('boardInput');
     if (!input || !input.value.trim()) return;
-    const parsed = Parser.parseBoard(input.value);
-    if (parsed.rows.length > 0) {
-      const previousCount = state.cleanPool.length;
-      state.cleanPool = [...state.cleanPool, ...parsed.rows].slice(0, 16).map((row, index) => Object.assign({}, row, {
-        idx: Number(index + 1),
-        LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`,
-        pickType: row.pickType || 'Regular Line'
+    const parsed = Parser.parseBoard(input.value, { dayScope: 'both' });
+    const incoming = Array.isArray(parsed.rows) ? parsed.rows : [];
+    if (incoming.length > 0) {
+      const combined = [...state.cleanPool, ...incoming];
+      const overflow = Math.max(0, combined.length - 16);
+      state.cleanPool = combined.slice(0, 16).map((row, index) => Object.assign({}, row, {
+        idx: index + 1,
+        LEG_ID: row.LEG_ID || `LEG-${index + 1}`
       }));
       state.rows = state.cleanPool.slice();
       state.auditRows = parsed.audit || [];
       state.lastResult = null;
       state.miningVault = {};
       state.ingestLogs = buildIngestLogs(state.auditRows);
-      state.lastIngestMeta = {
-        acceptedCount: state.rows.length,
-        totalAnchors: state.auditRows.length,
-        rejectedCount: state.auditRows.filter((item) => !item.accepted).length,
-        dayScope: getDayScopeValue(),
-        timestamp: new Date().toISOString(),
-        parseYear: Parser.PARSE_YEAR
-      };
-      if (state.cleanPool.length > previousCount) {
-        input.value = '';
-      }
-      if (previousCount + parsed.rows.length > 16) UI.showToast(`Remaining ${previousCount + parsed.rows.length - 16} legs ignored (16 Max)`);
-      else UI.showToast(`Ingested ${parsed.rows.length} legs`);
+      input.value = '';
+      if (overflow > 0) UI.showToast(`Remaining ${overflow} legs ignored (16 Max)`);
+      else UI.showToast(`Ingested ${incoming.length} legs`);
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);

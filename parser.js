@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.14 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -73,7 +73,9 @@ window.PickCalcParser = (() => {
     'TRIPLES': { label: 'Triples', key: 'triples', role: 'Batter' },
     'WALKS': { label: 'Walks', key: 'walks', role: 'Batter' },
     'STOLEN BASES': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
-    'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' }
+    'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
+    'HITTER KS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
+    "HITTER K'S": { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' }
   };
 
   const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
@@ -102,8 +104,8 @@ window.PickCalcParser = (() => {
     return normalized
       .split('\n')
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
-      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?)\b/gi, ' '))
-      .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:\d{2}:\d{2}:\d{2}|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?|pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|In\s+Lineup|Probable|Top\s+\d+(?:st|nd|rd|th)|Bot\s+\d+(?:st|nd|rd|th)|Mid\s+\d+(?:st|nd|rd|th)|Extra\s+Innings|Next\s+Half\s+Inning|Current\s+Inning|\d+(?:st|nd|rd|th)\s+Inning\s+Stretch|Inning\s*\d+|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|Period)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
@@ -191,7 +193,7 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b\d{1,3}m(?:\s+\d{1,2}s)?\b/i);
+    match = source.match(/\b(?:\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)\b/i);
     if (match) {
       return { found: false, token: cleanWhitespace(match[0]), eventDate: null, isoLocal: '', parseYear: PARSE_YEAR, reason: 'Countdown timer ignored.' };
     }
@@ -324,7 +326,7 @@ window.PickCalcParser = (() => {
     const joined = cleanWhitespace((context || []).map((item) => item?.raw || item || '').join(' '));
     if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
 
-    const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
+    const direct = joined.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
     if (direct && direct[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
       return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
     }
@@ -344,7 +346,7 @@ window.PickCalcParser = (() => {
     const lines = Array.isArray(context) ? context : [];
     for (let i = 0; i < lines.length; i += 1) {
       const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
-      const match = raw.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
+      const match = raw.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
       if (match && match[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
         return { opponent: match[1].toUpperCase(), indicator: /@/.test(match[0]) ? '@' : 'vs', token: cleanWhitespace(match[0]), team: teamHint || '' };
       }
@@ -380,7 +382,7 @@ window.PickCalcParser = (() => {
     return (cluster || [])
       .map((item) => {
         const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\d+K)/gi, '').trim();
+        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi, '').trim();
       })
       .filter(Boolean);
   }
@@ -424,47 +426,85 @@ window.PickCalcParser = (() => {
 
   function parseCluster(cluster) {
     const DECON = /(Demon|Goblin|Taco|Free Pick|Promo|Trending|Hot|Boost|Popular|Insurance|Less|More)/gi;
-    const lines = cluster.map(l => {
-      const raw = typeof l === 'string' ? l : (l?.raw || l?.clean || '');
+    const rawLines = (cluster || []).map((item) => {
+      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
       return String(raw || '').replace(DECON, '').trim();
     });
-    
+
     let player = '', team = '', prop = '', line = 0;
-    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|SS|OF|IF|DH|UTIL)\b/i;
-    const JUNK = /vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri|\d{1,2}:\d{2}/i;
+    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
+    const JUNK = /(?:\bvs\.?\b|@|\b(?:Sat|Sun|Mon|Tue|Wed|Thu|Fri|Today|Tomorrow|LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|Probable)\b|\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)/i;
+    const NAME_SCORE_RX = /^[A-Za-z'.\-\s]{3,25}$/;
 
-    // 1. Find Anchor (Number)
-    lines.forEach(l => { if (/^\d+(?:\.\d+)?$/.test(l)) line = parseFloat(l); });
+    rawLines.forEach((value) => {
+      const clean = cleanWhitespace(value);
+      if (STANDALONE_NUMBER_RX.test(clean)) line = parseFloat(clean);
+    });
 
-    // 2. Find Pivot (Team) & Hunt for Player
-    for (let i = 0; i < lines.length; i++) {
-      if (TEAM_RX.test(lines[i])) {
-        team = (lines[i].match(TEAM_RX)?.[1] || '').toUpperCase();
-        // Hunt Bidirectionally: Search 2 lines above or below for the best name candidate
-        let hunt = [i-1, i+1, i-2, i+2];
-        for (let idx of hunt) {
-          let c = lines[idx];
-          if (c && c.length > 3 && !TEAM_RX.test(c) && !JUNK.test(c) && !/^\d/.test(c)) {
-            player = sanitizePlayerName(c);
-            break;
-          }
-        }
-      }
+    const teamEntries = [];
+    rawLines.forEach((value, index) => {
+      const clean = cleanWhitespace(value);
+      const match = clean.match(TEAM_RX);
+      if (match) teamEntries.push({ index, team: String(match[1] || '').toUpperCase() });
+    });
+
+    const scoreNameCandidate = (value, pivotIndex, idx) => {
+      const clean = sanitizePlayerName(value);
+      if (!clean || clean.includes('+')) return { clean: '', score: -1 };
+      if (!NAME_SCORE_RX.test(clean)) return { clean: '', score: -1 };
+      if (TEAM_RX.test(clean) || JUNK.test(clean) || /^\d/.test(clean)) return { clean: '', score: -1 };
+      if (!isLikelyPlayerName(clean)) return { clean: '', score: -1 };
+      let score = 100 - Math.abs(idx - pivotIndex) * 12;
+      if (idx === pivotIndex - 1 || idx === pivotIndex + 1) score += 35;
+      else if (idx === pivotIndex - 2 || idx === pivotIndex + 2) score += 22;
+      else if (idx === pivotIndex - 3 || idx === pivotIndex + 3) score += 12;
+      return { clean, score };
+    };
+
+    let best = { clean: '', score: -1, team: '' };
+    teamEntries.forEach((entry) => {
+      const hunt = [entry.index - 1, entry.index + 1, entry.index - 2, entry.index + 2, entry.index - 3, entry.index + 3];
+      hunt.forEach((idx) => {
+        if (idx < 0 || idx >= rawLines.length) return;
+        const candidate = scoreNameCandidate(rawLines[idx], entry.index, idx);
+        if (candidate.score > best.score) best = { ...candidate, team: entry.team };
+      });
+    });
+
+    if (best.clean) {
+      player = best.clean;
+      team = best.team;
+    } else if (teamEntries[0]) {
+      team = teamEntries[0].team;
     }
 
-    // 3. Prop Registry Scan
-    const blob = lines.join(' ');
-    if (/Ks|Strikeouts/i.test(blob)) prop = 'Pitcher Strikeouts';
-    else if (/Total Bases|TB/i.test(blob)) prop = 'Total Bases';
-    else if (/Outs/i.test(blob)) prop = 'Pitching Outs';
-    else if (/Fantasy/i.test(blob)) prop = 'Pitcher Fantasy Score';
+    const blob = rawLines.join(' ');
+    if (/\b(?:Ks|K's|Strikeouts)\b/i.test(blob)) prop = 'Pitcher Strikeouts';
+    else if (/\b(?:Total Bases|TB)\b/i.test(blob)) prop = 'Total Bases';
+    else if (/\b(?:Pitching Outs|PO|Outs)\b/i.test(blob)) prop = 'Pitching Outs';
+    else if (/\b(?:Pitcher Fantasy Score|PFS|Fantasy)\b/i.test(blob)) prop = 'Pitcher Fantasy Score';
+    else if (/\b(?:Walks Allowed|BB Allowed|BB)\b/i.test(blob)) prop = 'Walks Allowed';
+    else if (/\b(?:Hits Allowed|HA)\b/i.test(blob)) prop = 'Hits Allowed';
+    else if (/\b(?:Earned Runs Allowed|Earned Runs|ER)\b/i.test(blob)) prop = 'Earned Runs Allowed';
+    else if (/\b(?:Hitter Fantasy Score|HFS)\b/i.test(blob)) prop = 'Hitter Fantasy Score';
+    else if (/\b(?:Hits\+Runs\+RBIs|H\+R\+RBI|HRR)\b/i.test(blob)) prop = 'Hits+Runs+RBIs';
+    else if (/\bHits\b/i.test(blob)) prop = 'Hits';
+    else if (/\bRuns\b/i.test(blob)) prop = 'Runs';
+    else if (/\b(?:RBIs|RBI)\b/i.test(blob)) prop = 'RBIs';
+    else if (/\b(?:Home Runs|Home Run|HR)\b/i.test(blob)) prop = 'Home Runs';
+    else if (/\bSingles\b/i.test(blob)) prop = 'Singles';
+    else if (/\bDoubles\b/i.test(blob)) prop = 'Doubles';
+    else if (/\bTriples\b/i.test(blob)) prop = 'Triples';
+    else if (/\bWalks\b/i.test(blob)) prop = 'Walks';
+    else if (/\bStolen Bases\b/i.test(blob)) prop = 'Stolen Bases';
+    else if (/\b(?:Hitter Strikeouts|Hitter Ks|Hitter K's)\b/i.test(blob)) prop = 'Hitter Strikeouts';
 
-    return { 
-      parsedPlayer: player, 
-      team: team, 
-      prop: prop || 'MLB Prop', 
-      line: line, 
-      accepted: (player.length > 2 && line > 0 && !!team) 
+    return {
+      parsedPlayer: player,
+      team,
+      prop: prop || 'MLB Prop',
+      line,
+      accepted: (player.length > 2 && line > 0 && !!team)
     };
   }
 
@@ -559,7 +599,7 @@ window.PickCalcParser = (() => {
       let score = 100 + Math.max(0, (anchorLineIndex - item.absIndex)) * 2;
       if (item.absIndex === anchorLineIndex - 1) score += 12;
       if (item.absIndex === anchorLineIndex - 2) score += 8;
-      if (!/(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)/i.test(item.clean)) score += 15;
+      if (!/\b(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)\b/i.test(item.clean)) score += 15;
       return score;
     };
 
@@ -622,13 +662,19 @@ window.PickCalcParser = (() => {
     return resolvePropAlias(forwardJoin, sportHint);
   }
 
-  function chooseDirection(context, anchorLineIndex) {
+  function chooseDirection(context, anchorLineIndex, pickType = 'Regular Line') {
+    if (/^(goblin|demon|free pick|taco)$/i.test(String(pickType || ''))) return 'More';
     const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
     for (const item of ordered) {
       const match = item.clean.match(DIRECTION_RX);
       if (match) return /less|lower/i.test(match[1]) ? 'Less' : 'More';
     }
-    return 'More';
+    return '';
+  }
+
+  function isComboEntity(value = '') {
+    const raw = String(value || '').trim();
+    return /\+/.test(raw) || /\b[A-Z]{2,3}\/[A-Z]{2,3}\b/.test(raw);
   }
 
   function parseCandidate(candidate, dayScope, now) {
@@ -643,7 +689,7 @@ window.PickCalcParser = (() => {
     const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint) || resolvePropAlias(clusterIdentity.prop || '', sportHint);
     const identityPlayer = clusterIdentity.parsedPlayer || resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
     const parsedPlayer = identityPlayer || choosePlayer(context, candidate.anchorLineIndex);
-    const direction = chooseDirection(context, candidate.anchorLineIndex);
+    const direction = chooseDirection(context, candidate.anchorLineIndex, pickType);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
@@ -682,6 +728,10 @@ window.PickCalcParser = (() => {
     }
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) {
       audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.';
+      return { audit, row: null };
+    }
+    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) {
+      audit.rejectionReason = 'Rejected: combo or paired legs are not supported.';
       return { audit, row: null };
     }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) {
@@ -776,8 +826,7 @@ window.PickCalcParser = (() => {
     const anchorValue = findPrimaryAnchor(block);
     const anchorIndex = Math.max(0, block.findIndex((line) => cleanWhitespace(line) === String(anchorValue)));
     const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(parsedCluster.prop || '', sportHint) || resolvePropAlias(joined, sportHint);
-    const directionTokens = block.filter((line) => /^(more|less|higher|lower)$/i.test(line));
-    const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
+    const direction = chooseDirection(contextItems, anchorIndex, pickType);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const identityPlayer = parsedCluster.parsedPlayer || resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
@@ -817,6 +866,7 @@ window.PickCalcParser = (() => {
     if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
+    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) { audit.rejectionReason = 'Rejected: combo or paired legs are not supported.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
@@ -846,10 +896,20 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
       sourceIndex: audit.idx,
-      blockIndex: audit.idx
+      blockIndex: audit.idx,
+      geminiSubject: {
+        name: parsedPlayer,
+        team,
+        opponent,
+        prop: propMeta.label,
+        line: String(anchorValue),
+        gameTime: timeContext.token || '',
+        pickType,
+        direction,
+        type
+      }
     }};
   }
-
 
   function splitPipeBlocks(text = '') {
     return String(text || '')
@@ -864,7 +924,7 @@ window.PickCalcParser = (() => {
 
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
-    const dayScope = options.dayScope || 'today';
+    const dayScope = options.dayScope || 'both';
     const pipeBlocks = splitPipeBlocks(text);
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');

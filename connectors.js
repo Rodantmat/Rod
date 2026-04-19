@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.13 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.14 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -402,8 +402,13 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const parsedPlayer = p?.parsedPlayer || `Subject ${idx}`;
       const type = p?.type || 'Unknown';
       const team = p?.team || 'Unknown Team';
+      const opponent = p?.opponent || 'Unknown Opponent';
+      const prop = p?.prop || p?.propFamily || 'Unknown Prop';
+      const gameTime = p?.gameTimeText || p?.gameTime || '';
+      const pickType = p?.pickType || 'Regular Line';
+      const direction = p?.direction || (String(pickType).match(/goblin|demon/i) ? 'More' : '');
       const line = p?.line || p?.lineValue || 0;
-      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Type: ${type} | Line: ${line} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
+      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Opponent: ${opponent} | Prop: ${prop} | Line: ${line} | PickType: ${pickType} | Direction: ${direction || 'Undecided'} | GameTime: ${gameTime || 'Unknown'} | Type: ${type} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
     }).join('\n');
     const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
 Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
