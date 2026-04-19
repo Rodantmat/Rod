@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.78.27 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v13.78.28 (OXYGEN-COBALT)';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
@@ -256,7 +256,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function isReliableVault(vault = {}) {
-    return Boolean(vault && vault.isReal === true && vault.reliable === true && vault.source === 'gemini_verified' && vault?.proofFlags?.passed === true && String(vault.terminalState || '').toLowerCase().includes('verified'));
+    return Boolean(vault && vault.isReal === true && vault.reliable === true && ['gemini_verified','gemini_verified_core'].includes(vault.source) && vault?.proofFlags?.passed === true && String(vault.terminalState || '').toLowerCase().includes('verified'));
   }
 
   function isPartialVault(vault = {}) {
@@ -291,10 +291,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       LOADING: { label: 'LOADING', tone: 'status-loading', text: 'Wait bar active. Probing, retrieving, and validating payload. No errors until retrieval completes.' },
       FAILED_CONNECTOR: { label: 'FAILED_CONNECTOR', tone: 'status-error', text: 'Connector failed. No valid Gemini payload was received from the API path.' },
       FAILED_PAYLOAD: { label: 'FAILED_PAYLOAD', tone: 'status-error', text: 'Payload arrived in a non-usable shape. The model response could not be decoded into a trusted factor matrix.' },
-      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived, decoded, and mapped. Raw market slots 61-65 are usable. Tail slots 66-72 are modeled sentiment signals.' },
+      PARTIAL_DECODE: { label: 'PARTIAL_DECODE', tone: 'status-loading', text: 'Payload arrived and decoded. Core slots are usable, but this row is still under audit.' },
       WEAK_SIGNAL: { label: 'WEAK_SIGNAL', tone: 'status-loading', text: 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.' },
       FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload arrived and decoded, but a hard integrity checkpoint failed. Data is not trustworthy yet.' },
-      VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and verified by integrity checkpoints.' }
+      VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and core-verified. Slots 1-65 are trusted for scoring; tail slots 66-72 remain audit-only sentiment signals.' }
     };
     const meta = map[status] || map.LOADING;
     const detail = String(result?.analysisHint || '').trim();
@@ -388,13 +388,13 @@ window.PickCalcUI = window.PickCalcUI || {};
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
       const branchHeader = branchKey === 'E'
-        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${partial && !reliable ? 'RAW + TAIL' : 'MARKET'}</span></div>`
+        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${reliable ? 'RAW + TAIL' : (partial && !reliable ? 'RAW + TAIL' : 'MARKET')}</span></div>`
         : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
-      const factorMarkup = branchKey === 'E' && partial && !reliable ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots 66-72 are treated as modeled sentiment signals. They are displayed separately below and are no longer judged as arithmetic summaries of 61-65.</div>` : factorMeta.map(renderFactorLine).join('');
-      const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + (partial && !reliable ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
+      const factorMarkup = branchKey === 'E' && (partial || reliable) ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots 66-72 are treated as modeled sentiment signals. They are displayed separately below and are not judged as arithmetic summaries of 61-65.</div>` : factorMeta.map(renderFactorLine).join('');
+      const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + ((partial || reliable) ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
       return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchExtra}</div></details>`;
     }).join('');
-    const statusLabel = reliable ? 'Verified' : ((effectiveVault?.weakSignal || fallbackStatus === 'WEAK_SIGNAL') ? 'Weak Signal' : (partial ? 'Partial Decode' : (effectiveVault?.proofFlags?.failures?.length ? 'Integrity Flagged' : (fallbackStatus === 'LOADING' ? 'Loading' : 'Waiting'))));
+    const statusLabel = reliable ? 'Verified Core' : ((effectiveVault?.weakSignal || fallbackStatus === 'WEAK_SIGNAL') ? 'Weak Signal' : (partial ? 'Partial Decode' : (effectiveVault?.proofFlags?.failures?.length ? 'Integrity Flagged' : (fallbackStatus === 'LOADING' ? 'Loading' : 'Waiting'))));
     const scoreMarkup = (reliable || partial) && Number.isFinite(score) ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
     const playerHeader = `<div class="player-static-header"><div class="player-summary-head"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></span><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span>${scoreMarkup}</span></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div></div>`;
     return `<details class="player-mining-card static-player-card player-block-collapsible matrix-collapsible"><summary class="player-summary collapsible-trigger">${playerHeader}</summary><div class="player-collapsible-body collapsible-content">${matrixMarkup}</div></details>`;
