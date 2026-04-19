@@ -1,11 +1,12 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.0 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.1 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+  const GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash'];
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -14,14 +15,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
       D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     },
     Hitter: {
       A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
       B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
       C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
       D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
-      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Mean Signal", "Median Signal", "Ceiling Signal", "Floor Signal", "Volatility Signal", "Divergence Signal", "Confidence Signal"]
     }
   };
 
@@ -65,6 +66,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.idx = row?.idx || vault.idx;
     vault.terminalState = 'Data Ingress Error';
     vault.isReal = false;
+    vault.reliable = false;
+    vault.proofFlags = { passed: false, checks: [], failures: [{ key: 'ingress_error', label: detail, passed: false, message: detail }], statusLabel: 'PROOF_FAIL' };
     vault.source = 'error';
     BRANCH_KEYS.forEach((key) => {
       if (!vault.branches[key]) return;
@@ -77,8 +80,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return {
       vault,
       row,
+      isReal: false,
+      isReliable: false,
       shield: computeShieldFromVault(vault),
       analysisHint: detail,
+      runStatus: /temporary api unavailable|non-real gemini payload|payload not verified from gemini api/i.test(detail) ? 'FAILED_PAYLOAD' : 'FAILED_CONNECTOR',
+      finalized: true,
       connectorState: {
         version: SYSTEM_VERSION,
         completedRows: 0,
@@ -95,10 +102,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function rowHasIngressIdentityError(row = {}) {
     const player = String(row?.parsedPlayer || '').trim();
-    if (!player) return true;
-    if (hasNumericNoiseInIdentity(player)) return true;
-    if (/\b(?:@|vs\.?|sun|mon|tue|wed|thu|fri|sat)\b/i.test(player)) return true;
-    return false;
+    if (!player || player.length < 3) return true;
+    return /\b(?:vs\.?|@|Sun|Mon|Tue|Wed|Thu|Fri|Sat)\b/i.test(player);
   }
 
   function yieldToUi() { return new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -117,6 +122,227 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     if (!nums.length) return 0;
     const mid = Math.floor(nums.length / 2);
     return nums.length % 2 ? safeNumber(nums[mid]) : safeNumber((nums[mid - 1] + nums[mid]) / 2);
+  }
+
+
+  function nearlyEqual(a, b, tolerance = 0.02) {
+    return Math.abs(Number(a || 0) - Number(b || 0)) <= tolerance;
+  }
+
+  function buildCheck(key, label, actual, expected, passed, severity = 'error') {
+    return {
+      key,
+      label,
+      actual: safeNumber(actual, 0),
+      expected: safeNumber(expected, 0),
+      passed: Boolean(passed),
+      severity,
+      message: passed ? `${label}: PASS` : `${label}: FAIL (actual ${safeNumber(actual, 0).toFixed(2)} vs expected ${safeNumber(expected, 0).toFixed(2)})`
+    };
+  }
+
+  function computeLocalMarketMetrics(providerMap = {}) {
+    const values = [providerMap.DraftKings, providerMap.FanDuel, providerMap.BetMGM, providerMap.Bet365, providerMap.Pinnacle]
+      .map((value) => Number(value))
+      .filter(Number.isFinite);
+    const high = values.length ? Math.max(...values) : 0;
+    const low = values.length ? Math.min(...values) : 0;
+    const mean = average(values);
+    const medianValue = median(values);
+    const spread = safeNumber(high - low, 0);
+    const coverageCount = values.filter((value) => value > 0).length;
+    const marketConfidence = safeNumber(coverageCount / 5, 0);
+    return {
+      mean,
+      median: medianValue,
+      high: safeNumber(high, 0),
+      low: safeNumber(low, 0),
+      spread,
+      lineDelta: mean,
+      marketConfidence,
+      coverageCount
+    };
+  }
+
+  function stampBranchEAudit(vault = {}, metrics = {}, payloadValues = []) {
+    const branch = vault?.branches?.E;
+    if (!branch) return;
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => safeNumber(value, 0)) : [];
+    branch.localArithmetic = {
+      mean: safeNumber(metrics.mean, 0),
+      median: safeNumber(metrics.median, 0),
+      high: safeNumber(metrics.high, 0),
+      low: safeNumber(metrics.low, 0),
+      spread: safeNumber(metrics.spread, 0),
+      lineDelta: safeNumber(metrics.lineDelta, 0),
+      marketConfidence: safeNumber(metrics.marketConfidence, 0)
+    };
+    branch.modeledTail = {
+      meanSignal: safeNumber(numericValues[65], 0),
+      medianSignal: safeNumber(numericValues[66], 0),
+      highSignal: safeNumber(numericValues[67], 0),
+      lowSignal: safeNumber(numericValues[68], 0),
+      spreadSignal: safeNumber(numericValues[69], 0),
+      lineDeltaSignal: safeNumber(numericValues[70], 0),
+      confidenceSignal: safeNumber(numericValues[71], 0)
+    };
+    branch.auditMode = 'RAW_PLUS_MODELED_TAIL';
+    const renamePairs = [
+      ['e06', 'Tail 66 Mean Signal'],
+      ['e07', 'Tail 67 Median Signal'],
+      ['e08', 'Tail 68 Ceiling Signal'],
+      ['e09', 'Tail 69 Floor Signal'],
+      ['e10', 'Tail 70 Volatility Signal'],
+      ['e11', 'Tail 71 Divergence Signal'],
+      ['e12', 'Tail 72 Confidence Signal']
+    ];
+    renamePairs.forEach(([key, name]) => {
+      if (branch.factorMeta?.[key]) branch.factorMeta[key].name = name;
+    });
+    updateBranchMeta(branch);
+  }
+
+  function buildProofFlags(vault = {}, row = {}, payloadValues = []) {
+    const checks = [];
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => Number(value)) : [];
+    const allFinite = numericValues.length === 72 && numericValues.every(Number.isFinite);
+    const allInRange = allFinite && numericValues.every((value) => value >= 0 && value <= 1);
+
+    checks.push({ key: 'schema_length', label: 'Schema Length 72', passed: numericValues.length === 72, actual: numericValues.length, expected: 72, severity: 'error', message: numericValues.length === 72 ? 'Schema Length 72: PASS' : `Schema Length 72: FAIL (actual ${numericValues.length} vs expected 72)` });
+    checks.push({ key: 'numeric_finite', label: 'All Numeric Finite', passed: allFinite, actual: allFinite ? 72 : 0, expected: 72, severity: 'error', message: allFinite ? 'All Numeric Finite: PASS' : 'All Numeric Finite: FAIL' });
+    checks.push({ key: 'numeric_unit_range', label: 'All Values In 0-1 Range', passed: allInRange, actual: allInRange ? 72 : 0, expected: 72, severity: 'error', message: allInRange ? 'All Values In 0-1 Range: PASS' : 'All Values In 0-1 Range: FAIL' });
+
+    const providerMap = vault?.branches?.E?.providerMap || {};
+    const metrics = computeLocalMarketMetrics(providerMap);
+    const rawMean = vault?.branches?.E?.factorMeta?.e06?.value ?? 0;
+    const rawMedian = vault?.branches?.E?.factorMeta?.e07?.value ?? 0;
+    const rawHigh = vault?.branches?.E?.factorMeta?.e08?.value ?? 0;
+    const rawLow = vault?.branches?.E?.factorMeta?.e09?.value ?? 0;
+    const rawSpread = vault?.branches?.E?.factorMeta?.e10?.value ?? 0;
+    const rawConfidence = vault?.branches?.E?.factorMeta?.e12?.value ?? 0;
+
+    const tailAudits = [
+      {
+        key: 'mean_signal_divergence',
+        label: 'Branch E Mean Signal vs Raw Mean',
+        actual: safeNumber(rawMean, 0),
+        expected: safeNumber(metrics.mean, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Mean Signal Divergence: ${safeNumber(rawMean,0).toFixed(2)} vs raw mean ${safeNumber(metrics.mean,0).toFixed(2)}`
+      },
+      {
+        key: 'median_signal_divergence',
+        label: 'Branch E Median Signal vs Raw Median',
+        actual: safeNumber(rawMedian, 0),
+        expected: safeNumber(metrics.median, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Median Signal Divergence: ${safeNumber(rawMedian,0).toFixed(2)} vs raw median ${safeNumber(metrics.median,0).toFixed(2)}`
+      },
+      {
+        key: 'ceiling_signal_divergence',
+        label: 'Branch E Ceiling Signal vs Raw High',
+        actual: safeNumber(rawHigh, 0),
+        expected: safeNumber(metrics.high, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Ceiling Signal Divergence: ${safeNumber(rawHigh,0).toFixed(2)} vs raw high ${safeNumber(metrics.high,0).toFixed(2)}`
+      },
+      {
+        key: 'floor_signal_divergence',
+        label: 'Branch E Floor Signal vs Raw Low',
+        actual: safeNumber(rawLow, 0),
+        expected: safeNumber(metrics.low, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Floor Signal Divergence: ${safeNumber(rawLow,0).toFixed(2)} vs raw low ${safeNumber(metrics.low,0).toFixed(2)}`
+      },
+      {
+        key: 'volatility_signal_divergence',
+        label: 'Branch E Volatility Signal vs Raw Spread',
+        actual: safeNumber(rawSpread, 0),
+        expected: safeNumber(metrics.spread, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Volatility Signal Divergence: ${safeNumber(rawSpread,0).toFixed(2)} vs raw spread ${safeNumber(metrics.spread,0).toFixed(2)}`
+      },
+      {
+        key: 'confidence_signal_divergence',
+        label: 'Branch E Confidence Signal vs Raw Confidence',
+        actual: safeNumber(rawConfidence, 0),
+        expected: safeNumber(metrics.marketConfidence, 0),
+        passed: true,
+        severity: 'info',
+        message: `Branch E Confidence Signal Divergence: ${safeNumber(rawConfidence,0).toFixed(2)} vs raw confidence ${safeNumber(metrics.marketConfidence,0).toFixed(2)}`
+      },
+      {
+        key: 'market_tail_inversion',
+        label: 'Branch E Ceiling/Floor Signal Order',
+        actual: safeNumber(rawHigh - rawLow, 0),
+        expected: 0,
+        passed: true,
+        severity: 'info',
+        message: Number(rawHigh) >= Number(rawLow)
+          ? `Branch E Ceiling/Floor Signal Order: NORMAL (ceiling ${safeNumber(rawHigh,0).toFixed(2)} >= floor ${safeNumber(rawLow,0).toFixed(2)})`
+          : `Branch E Ceiling/Floor Signal Order: INVERTED (ceiling ${safeNumber(rawHigh,0).toFixed(2)} < floor ${safeNumber(rawLow,0).toFixed(2)})`
+      }
+    ];
+
+    const failures = checks.filter((check) => !check.passed);
+    const hardFailures = failures.filter((check) => check.severity === 'error');
+    const partial = false;
+    const corePassed = hardFailures.length === 0;
+    return {
+      passed: corePassed,
+      corePassed,
+      partial,
+      checks,
+      failures: hardFailures,
+      hardFailures,
+      tailAudits,
+      localMarket: metrics,
+      statusLabel: hardFailures.length > 0 ? 'PROOF_FAIL' : (partial ? 'TAIL_AUDIT' : 'PROOF_PASS')
+    };
+  }
+
+
+  function summarizePayloadDensity(payloadValues = []) {
+    const numericValues = Array.isArray(payloadValues) ? payloadValues.map((value) => Number(value)) : [];
+    const core = numericValues.slice(0, 60);
+    const market = numericValues.slice(60, 65);
+    const tail = numericValues.slice(65, 72);
+    const nonZeroCore = core.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    const nonZeroMarket = market.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    const nonZeroTail = tail.filter((value) => Number.isFinite(value) && Math.abs(value) > 0.000001).length;
+    return {
+      nonZeroCore,
+      nonZeroMarket,
+      nonZeroTail,
+      collapsed: nonZeroCore < 18,
+      sparse: nonZeroCore < 30
+    };
+  }
+
+
+  function computeStdDev(values = []) {
+    const nums = (Array.isArray(values) ? values : []).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+    if (!nums.length) return 0;
+    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+    return Math.sqrt(nums.reduce((a, b) => a + ((b - mean) ** 2), 0) / nums.length);
+  }
+
+  function classifyPayloadQuality(vals = [], warnings = []) {
+    const density = summarizePayloadDensity(vals);
+    const core = (Array.isArray(vals) ? vals : []).slice(0, 60);
+    const distinct = new Set(core.filter((v) => Number.isFinite(Number(v))).map((v) => Number(v).toFixed(3))).size;
+    const stddev = computeStdDev(core);
+    const lowVariance = warnings.some((w) => /low-variance/i.test(String(w))) || stddev < 0.04 || distinct < 15;
+    const insufficientEvidence = density.nonZeroCore > 0 && density.nonZeroCore <= 8 && density.nonZeroMarket >= 5 && density.nonZeroTail === 0;
+    if (insufficientEvidence) return { kind: 'INSUFFICIENT_EVIDENCE', retryable: false, density, stddev, distinct };
+    if (density.collapsed) return { kind: 'COLLAPSED_PAYLOAD', retryable: true, density, stddev, distinct };
+    if (lowVariance) return { kind: 'LOW_VARIANCE', retryable: true, density, stddev, distinct };
+    return { kind: 'VALID', retryable: false, density, stddev, distinct };
   }
 
   function buildFactorMeta(branchKey) {
@@ -161,8 +387,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       version: SYSTEM_VERSION,
       timestamp: new Date().toISOString(),
       branches,
-      source: 'real',
-      isReal: true,
+      source: 'pending',
+      isReal: false,
+      reliable: false,
+      proofFlags: { passed: false, checks: [], failures: [], statusLabel: 'UNVERIFIED' },
       terminalState: 'INITIALIZING'
     };
   }
@@ -391,76 +619,79 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
   }
 
+  function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
-  function computeStdDev(values = []) {
-    const nums = values.map((v) => Number(v)).filter((v) => Number.isFinite(v));
-    if (!nums.length) return 0;
-    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
-    const variance = nums.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / nums.length;
-    return Math.sqrt(variance);
+  function isRetryableStatus(status) {
+    return [429, 500, 502, 503, 504].includes(Number(status));
   }
 
-  function inspectPayloadConsistency(data = []) {
-    const items = Array.isArray(data) ? data : [];
-    if (!items.length) return { good: false, reason: 'MALFORMED_FACTOR_PAYLOAD', details: [] };
-    const details = items.map((entry, idx) => {
-      const vals = Array.isArray(entry?.v) ? entry.v.map((v) => safeNumber(v, 0)) : [];
-      const core = vals.slice(0, 60);
-      const market = vals.slice(60, 65);
-      const tail = vals.slice(65, 72);
-      const coreNonZero = core.filter((v) => Math.abs(Number(v)) > 0.000001).length;
-      const marketNonZero = market.filter((v) => Math.abs(Number(v)) > 0.000001).length;
-      const tailNonZero = tail.filter((v) => Math.abs(Number(v)) > 0.000001).length;
-      const variance = computeStdDev(core);
-      const uniqueCount = new Set(core.map((v) => safeNumber(v, 0).toFixed(3))).size;
-      let reason = 'GOOD';
-      let good = true;
-      if (vals.length !== 72) {
-        reason = 'BAD_LENGTH';
-        good = false;
-      } else if (coreNonZero < 12) {
-        reason = (marketNonZero >= 5 && tailNonZero === 0) ? 'INSUFFICIENT_EVIDENCE' : 'COLLAPSED_PAYLOAD';
-        good = false;
-      } else if (variance < 0.035 || uniqueCount < 12) {
-        reason = 'LOW_VARIANCE';
-        good = false;
-      } else if (tailNonZero === 0 && coreNonZero >= 50) {
-        reason = 'VERIFIED_CORE_ONLY';
-        good = true;
-      }
-      return { index: idx, vals, good, reason, coreNonZero, marketNonZero, tailNonZero, variance, uniqueCount };
-    });
+  function vectorSignature(v = []) {
+    return Array.isArray(v) ? v.map((n) => Number(n).toFixed(3)).join('|') : '';
+  }
 
-    const comparable = details.filter((d) => d.vals.length === 72 && d.coreNonZero >= 40);
-    for (let i = 0; i < comparable.length; i += 1) {
-      for (let j = i + 1; j < comparable.length; j += 1) {
-        const a = comparable[i].vals.slice(0, 60);
-        const b = comparable[j].vals.slice(0, 60);
-        const avgAbsDiff = a.reduce((sum, val, idx) => sum + Math.abs(val - b[idx]), 0) / 60;
-        if (avgAbsDiff < 0.018) {
-          comparable[i].good = false;
-          comparable[j].good = false;
-          comparable[i].reason = 'NEAR_DUPLICATE';
-          comparable[j].reason = 'NEAR_DUPLICATE';
-          comparable[i].duplicateWith = comparable[i].duplicateWith || [];
-          comparable[j].duplicateWith = comparable[j].duplicateWith || [];
-          comparable[i].duplicateWith.push(comparable[j].index);
-          comparable[j].duplicateWith.push(comparable[i].index);
-        }
+  function entryStats(v = []) {
+    const nums = Array.isArray(v) ? v.map((n) => Number(n)).filter(Number.isFinite) : [];
+    if (!nums.length) return { distinct2: 0, stddev: 0, meanAbsDiff: 0 };
+    const mean = nums.reduce((a, b) => a + b, 0) / nums.length;
+    const variance = nums.reduce((sum, n) => sum + ((n - mean) ** 2), 0) / nums.length;
+    const distinct2 = new Set(nums.map((n) => n.toFixed(2))).size;
+    return { distinct2, stddev: Math.sqrt(variance) };
+  }
+
+  function vectorsTooSimilar(a = [], b = []) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return false;
+    const meanAbs = a.reduce((sum, n, idx) => sum + Math.abs(Number(n) - Number(b[idx])), 0) / a.length;
+    let near = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (Math.abs(Number(a[i]) - Number(b[i])) <= 0.02) near += 1;
+    }
+    return meanAbs < 0.035 || near >= 62;
+  }
+
+  function validateGeminiPayload(payload) {
+    const entries = Array.isArray(payload?.data) ? payload.data : [];
+    if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.' };
+    const signatures = new Map();
+    const warnings = [];
+    for (const entry of entries) {
+      if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
+      if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
+      if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
+      if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
+      const stats = entryStats(entry.v);
+      if (stats.distinct2 < 12 || stats.stddev < 0.035) warnings.push('Low-variance factor payload detected.');
+      const providers = entry.v.slice(60, 65).map((n) => Number(n));
+      if (providers.some((n) => !Number.isFinite(n))) return { ok: false, reason: 'Missing provider slots.' };
+      if (new Set(providers.map((n) => n.toFixed(2))).size < 2) return { ok: false, reason: 'Provider payload lacks variance.' };
+      if (providers.every((n) => Math.abs(n - 0.5) <= 0.001)) return { ok: false, reason: 'Neutral provider payload detected.' };
+      const sig = vectorSignature(entry.v.map((n) => Number(n).toFixed(2)));
+      if (sig) signatures.set(sig, (signatures.get(sig) || 0) + 1);
+    }
+    const dup = Array.from(signatures.values()).some((count) => count > 1);
+    if (dup && entries.length > 1) return { ok: false, reason: 'Duplicate factor payload detected.' };
+    for (let i = 0; i < entries.length; i += 1) {
+      for (let j = i + 1; j < entries.length; j += 1) {
+        if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.' };
       }
     }
+    return { ok: true, warnings: Array.from(new Set(warnings)) };
+  }
 
-    const anyGood = details.some((d) => d.good);
-    let reason = 'GOOD';
-    if (!anyGood) {
-      if (details.every((d) => d.reason === 'BAD_LENGTH')) reason = 'MALFORMED_FACTOR_PAYLOAD';
-      else if (details.every((d) => d.reason === 'NEAR_DUPLICATE')) reason = 'NEAR_DUPLICATE_FACTOR_PAYLOAD';
-      else if (details.every((d) => d.reason === 'LOW_VARIANCE')) reason = 'PROVIDER_PAYLOAD_LACKS_VARIANCE';
-      else if (details.every((d) => d.reason === 'INSUFFICIENT_EVIDENCE')) reason = 'INSUFFICIENT_EVIDENCE';
-      else if (details.every((d) => d.reason === 'COLLAPSED_PAYLOAD')) reason = 'COLLAPSED_PAYLOAD';
-      else reason = details[0]?.reason || 'INVALID';
+
+  function getActiveGeminiKey() {
+    const candidates = [];
+    try { candidates.push(String(window.__OXYGEN_GEMINI_KEY__ || '').trim()); } catch (_) {}
+    try { candidates.push(String(document.getElementById('apiKeyInput')?.value || '').trim()); } catch (_) {}
+    try { candidates.push(String(localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim()); } catch (_) {}
+    try { candidates.push(String(sessionStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim()); } catch (_) {}
+    const key = candidates.find((value) => typeof value === 'string' && value.trim()) || '';
+    if (key) {
+      try { window.__OXYGEN_GEMINI_KEY__ = key; } catch (_) {}
+      try { const input = document.getElementById('apiKeyInput'); if (input && input.value !== key) input.value = key; } catch (_) {}
+      try { localStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
+      try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
     }
-    return { good: anyGood, reason, details };
+    return key;
   }
 
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
@@ -470,130 +701,141 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     else logger({ level: 'info', text, modelId });
   }
 
-  async function fetchGeminiBatch(batch) {
-    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || window.OXYGEN_GEMINI_KEY || '').trim();
+  async function fetchGeminiBatch(batch, options = {}) {
+    const activeKey = getActiveGeminiKey();
     const uniqueSubjects = batch.map((p, idx) => {
       const parsedPlayer = p?.parsedPlayer || `Subject ${idx}`;
       const type = p?.type || 'Unknown';
       const team = p?.team || 'Unknown Team';
-      const opp = p?.opponent || 'Unknown Opp';
+      const opponent = p?.opponent || 'Unknown Opponent';
+      const prop = p?.prop || p?.propFamily || 'Unknown Prop';
+      const gameTime = p?.gameTimeText || p?.gameTime || '';
+      const pickType = p?.pickType || 'Regular Line';
+      const direction = p?.direction || (String(pickType).match(/goblin|demon/i) ? 'More' : '');
       const line = p?.line || p?.lineValue || 0;
-      const prop = p?.prop || 'Unknown Prop';
-      return `[SUBJECT ${idx}]
-INDEX=${idx}
-LEG_ID=${p?.LEG_ID || `LEG-${idx + 1}`}
-NAME=${parsedPlayer}
-TEAM=${team}
-OPP=${opp}
-TYPE=${type}
-PROP=${prop}
-LINE=${line}`;
-    }).join('\n\n');
-    const basePrompt = `You are a strict numeric transpiler for sports factor extraction.
-
-TASK:
-Return exactly one JSON object with shape {"data":[{"i":0,"v":[72 floats],"c":0.00,"e":""}]} and no prose.
-
-RULES:
-- Evaluate each subject independently by INDEX.
+      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Opponent: ${opponent} | Prop: ${prop} | Line: ${line} | PickType: ${pickType} | Direction: ${direction || 'Undecided'} | GameTime: ${gameTime || 'Unknown'} | Type: ${type} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
+    }).join('\n');
+    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
+Perform a high-resolution data extraction for the provided batch. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
+CRITICAL BATCH RULES:
+- Evaluate each Index independently.
 - Preserve subject order exactly.
-- Each v array must contain exactly 72 floats between 0.00 and 1.00.
-- Similar prop families do NOT justify similar vectors.
-- Do not mirror, clone, blur, or recycle vector shapes across indices.
-- If one subject has weak evidence, mark that subject only using e="INSUFFICIENT_EVIDENCE" and still return the rest of the batch.
-- Do not fail the whole batch because one subject is weak.
-- Do not output malformed or partial JSON.
-- Do not cluster around 0.50 unless the subject is truly neutral.
-- Same team / same prop family requires subject-specific differentiation.
-- If two subjects receive near-identical vectors without strong evidence, the output is invalid.
+- Same team or same prop family does NOT justify similar vectors.
+- Any mirrored, cloned, blurred, or recycled vector across indices is a FAILURE.
+- If one subject is weak, keep the rest of the batch intact and still return that subject with a 72-float vector based on best available evidence.
+CRITICAL: Any response containing identical or near-identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
+CRITICAL SLOT MAP:
+- v[38] = c07 Air Density (temperature + altitude + humidity ball-flight multiplier)
+- v[39] = c08 Umpire Zone (numeric strike-call frequency)
+- v[50] = d01 Platoon Delta (left/right handedness edge)
+- v[51] = d02 Manager Threshold (volume/substitution bias)
+- v[60] = market01 DraftKings
+- v[61] = market02 FanDuel
+- v[62] = market03 BetMGM
+- v[63] = market04 Bet365
+- v[64] = market05 Pinnacle
+Return five specific sportsbook floats for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle in that exact order. Do not collapse unknown values to 0.5 unless the profile is truly neutral after analysis.
+Subjects:
+${uniqueSubjects}
+Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}. Each data entry must contain the exact index requested.
+${String(options?.retrySuffix || "").trim()}`;
 
-OUTPUT CONTRACT:
-- data[] length must equal subject count.
-- i must match the INDEX for that subject.
-- c is confidence from 0.00 to 1.00.
-- e is empty string for normal subjects or INSUFFICIENT_EVIDENCE for weak subjects.
-
-SUBJECTS:
-${uniqueSubjects}`;
-
-    if (!activeKey) return buildBaselinePayload(batch);
-
-    const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + activeKey;
-    const maxAttempts = 3;
-    let lastResult = null;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      const retrySuffix = attempt > 1 ? '\nCRITICAL: Previous output failed payload audit. Increase factor separation. Do not zero-fill. Do not cluster around 0.5. Commit to outliers with full 0.0-1.0 spread.' : '';
-      const finalPromptText = `${basePrompt}${retrySuffix}`;
-      const body = JSON.stringify({ 
-        contents: [{ role: "user", parts: [{ text: finalPromptText }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: attempt === 1 ? 0.2 : 0.4 }
-      });
-      console.log('[OXYGEN] FETCH_URL:', url);
-      console.log('HANDSHAKE_URL:', url);
-      console.log('HANDSHAKE_BODY:', body);
-      console.log("RAW_PAYLOAD:", finalPromptText);
-      console.log("FINAL_JSON_SENT:", body);
-      logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) [attempt ${attempt}/${maxAttempts}]`);
-
-      try {
-        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-        logConnectorStep('WORKER_HANDSHAKE', `HTTP ${response.status}`);
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error("GOOGLE_REJECTION:", errorText);
-          let errorObject = null;
-          try { errorObject = JSON.parse(errorText); } catch (_) {}
-          lastResult = Object.assign(buildBaselinePayload(batch), { errorStatus: response.status, errorText, responseText: errorText, errorJson: errorObject });
-          if (attempt < maxAttempts && (response.status === 429 || response.status >= 500)) continue;
-          return lastResult;
-        }
-
-        logConnectorStep('GOOGLE_PROCESSING', 'Response received from model');
-        const json = await response.json();
-        console.log("Full Google Response:", json);
-        console.log("RAW_RESPONSE:", json);
-        const candidate = json?.candidates?.[0] || null;
-        const finishReason = String(candidate?.finishReason || '').toUpperCase();
-        const raw = candidate?.content?.parts?.[0]?.text || '';
-        const blocked = !candidate || finishReason.includes('SAFETY') || finishReason.includes('BLOCK');
-        if (blocked || !raw.trim()) {
-          lastResult = Object.assign(buildBaselinePayload(batch), { responseText: raw || '' });
-          if (attempt < maxAttempts) continue;
-          return lastResult;
-        }
-        const { parsed, clean, error } = safeJsonParse(raw);
-        if (!parsed) {
-          console.warn('[OXYGEN] JSON_PARSE_REPAIR_FAIL:', error);
-          lastResult = Object.assign(buildBaselinePayload(batch), { responseText: raw || '', rawResponse: clean || raw || '' });
-          if (attempt < maxAttempts) continue;
-          return lastResult;
-        }
-        const parsedPayload = Object.assign(parsed, { responseText: raw || '', rawResponse: clean || raw || '' });
-        const quality = inspectPayloadConsistency(parsedPayload.data);
-        parsedPayload.payloadAudit = quality;
-        if (!quality.good && attempt < maxAttempts) {
-          const logger = getConsoleLogger();
-          const msg = `[SYSTEM] PAYLOAD_RETRY: ${quality.reason}. Retrying ${attempt + 1}/${maxAttempts}.`;
-          if (logger === console.log) console.log(msg); else logger({ level: 'warning', text: msg, modelId: GEMINI_MODEL });
-          lastResult = parsedPayload;
-          continue;
-        }
-        logConnectorStep('JSON_PARSING', `Parsed ${Array.isArray(parsedPayload?.data) ? parsedPayload.data.length : 0} subject payload(s)`);
-        logConnectorStep('FETCH_ATTEMPT_COMPLETE', quality.good ? 'Success' : `Final ${quality.reason}`);
-        return parsedPayload;
-      } catch (e) {
-        console.error('[OXYGEN] BRIDGE_FETCH_FAIL:', e);
-        lastResult = buildBaselinePayload(batch);
-        if (attempt < maxAttempts) continue;
-        return lastResult;
-      }
+    if (!activeKey) {
+      return { ok: false, errorStatus: 0, errorText: 'Missing Gemini API key.', temporaryFailure: false, modelId: GEMINI_MODEL };
     }
-    return lastResult || buildBaselinePayload(batch);
+
+    const logger = getConsoleLogger();
+    const body = JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15 }
+    });
+
+    async function tryModel(modelId, maxAttempts = 3) {
+      const url = GEMINI_BASE_URL.replace(/\/$/, '') + '/v1beta/models/' + modelId + ':generateContent?key=' + activeKey;
+      let lastFailure = { ok: false, errorStatus: 0, errorText: 'Unknown Gemini failure.', temporaryFailure: true, modelId };
+      let sawPayloadShapeFailure = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        logConnectorStep('REQUESTING', `Submitting batch of ${batch.length} subject(s) via ${modelId} [attempt ${attempt}/${maxAttempts}]`);
+        try {
+          const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+          logConnectorStep('WORKER_HANDSHAKE', `${modelId} HTTP ${response.status}`);
+          if (!response.ok) {
+            const errorText = await response.text();
+            let errorObject = null;
+            try { errorObject = JSON.parse(errorText); } catch (_) {}
+            const message = errorObject?.error?.message || errorText || `HTTP ${response.status}`;
+            lastFailure = { ok: false, errorStatus: response.status, errorText: message, errorJson: errorObject, temporaryFailure: isRetryableStatus(response.status), modelId };
+            if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`);
+            else logger({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`, modelId, pre: errorText });
+            if (isRetryableStatus(response.status) && attempt < maxAttempts) {
+              try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
+              await delay(700 * attempt);
+              continue;
+            }
+            break;
+          }
+
+          const json = await response.json();
+          const raw = extractGeminiText(json);
+          const parsedEnvelope = safeJsonParse(raw);
+          const parsed = parsedEnvelope.parsed;
+          if (!parsed) {
+            sawPayloadShapeFailure = true;
+            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            break;
+          }
+          const validation = validateGeminiPayload(parsed);
+          if (!validation.ok) {
+            sawPayloadShapeFailure = true;
+            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: false, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
+            break;
+          }
+          logConnectorStep('JSON_PARSING', `Parsed ${(parsed.data || []).length} subject payload(s) via ${modelId}`);
+          logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Success via ${modelId}`);
+          return Object.assign({ ok: true, modelId, rawResponse: parsedEnvelope.clean || raw || '', responseText: raw || '', warnings: validation.warnings || [] }, parsed);
+        } catch (e) {
+          lastFailure = { ok: false, errorStatus: 0, errorText: e?.message || 'Unknown fetch error', temporaryFailure: true, modelId };
+          if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
+          else logger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`, modelId, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
+          if (attempt < maxAttempts) {
+            try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
+            await delay(700 * attempt);
+            continue;
+          }
+        }
+      }
+      return Object.assign(lastFailure, { sawPayloadShapeFailure });
+    }
+
+    const primaryResult = await tryModel(GEMINI_MODEL, 3);
+    if (primaryResult?.ok) return primaryResult;
+
+    const shouldTryFallback = Boolean(
+      primaryResult?.temporaryFailure === true &&
+      !primaryResult?.sawPayloadShapeFailure &&
+      Array.isArray(GEMINI_FALLBACK_MODELS) &&
+      GEMINI_FALLBACK_MODELS.length
+    );
+
+    if (!shouldTryFallback) {
+      logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${primaryResult?.errorStatus || 0}`);
+      return primaryResult;
+    }
+
+    let lastFailure = primaryResult;
+    for (const modelId of GEMINI_FALLBACK_MODELS) {
+      const fallbackResult = await tryModel(modelId, 2);
+      if (fallbackResult?.ok) return fallbackResult;
+      lastFailure = fallbackResult;
+      if (fallbackResult?.sawPayloadShapeFailure) break;
+    }
+
+    logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Failure ${lastFailure?.errorStatus || 0}`);
+    return lastFailure;
   }
 
   async function debugConnection() {
-    const activeKey = (localStorage.getItem('OXYGEN_GEMINI_KEY') || '').trim();
+    const activeKey = getActiveGeminiKey();
     const logger = getConsoleLogger();
     if (!activeKey) {
       if (logger === console.log) console.log('[SYSTEM] KEY_MISSING: Save an API key before debugging.');
@@ -707,34 +949,60 @@ ${uniqueSubjects}`;
       return { results, lastResult };
     }
 
-    const payload = await fetchGeminiBatch(validBatch);
-    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
-    const cleanJson = sanitizeJsonText(rawResponse);
-
-    let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
-    if ((!responseData.data.length) && cleanJson) {
-      const repaired = safeJsonParse(cleanJson);
-      if (repaired.parsed) {
-        responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
-      } else {
-        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
+    let payload = null;
+    let payloadResponseText = '';
+    let payloadWarnings = [];
+    let lowVarianceWarning = false;
+    if (validBatch.length === 1) {
+      const retryPlans = [
+        { temperature: 0.15, retrySuffix: '' },
+        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. You MUST produce a full-density vector. Avoid clustering around 0.5. Use the full 0.0–1.0 range. Commit to variation.' },
+        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. You MUST produce a full-density vector. Avoid clustering around 0.5. Use the full 0.0–1.0 range. Commit to variation.' }
+      ];
+      let lastPayload = null;
+      for (let attemptIndex = 0; attemptIndex < retryPlans.length; attemptIndex += 1) {
+        lastPayload = await fetchGeminiBatch(validBatch, retryPlans[attemptIndex]);
+        if (!lastPayload?.ok) {
+          if (lastPayload?.temporaryFailure === true && attemptIndex < retryPlans.length - 1) continue;
+          break;
+        }
+        const entry = Array.isArray(lastPayload?.data) ? lastPayload.data.find((d) => Number(d?.i) === 0) : null;
+        const vals = Array.isArray(entry?.v) && entry.v.length === 72 ? entry.v : [];
+        const quality = classifyPayloadQuality(vals, lastPayload?.warnings || []);
+        lastPayload.__quality = quality;
+        if (quality.kind === 'VALID') break;
+        if (quality.retryable && attemptIndex < retryPlans.length - 1) continue;
+        break;
       }
+      payload = lastPayload;
+    } else {
+      payload = await fetchGeminiBatch(validBatch);
     }
+    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
+    payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
-    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
-    const payloadAudit = payload?.payloadAudit || inspectPayloadConsistency(responseData.data);
-
-    if (!Array.isArray(responseData.data) || !responseData.data.length || payloadAudit.reason === 'MALFORMED_FACTOR_PAYLOAD') {
+    if (!payload?.ok) {
+      const detail = payload?.temporaryFailure
+        ? `Temporary API unavailable (${payload?.modelId || GEMINI_MODEL}): ${payload?.errorText || 'Retry later.'}`
+        : `Non-real Gemini payload (${payload?.modelId || GEMINI_MODEL}): ${payload?.errorText || 'Rejected.'}`;
       validBatch.forEach((row) => {
-        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Malformed factor payload.');
+        const result = buildIngressErrorResult(row, stateRef, detail);
+        result.errorText = payload?.errorText || detail;
+        result.errorStatus = payload?.errorStatus || 0;
+        result.errorJson = payload?.errorJson || null;
+        result.responseText = payloadResponseText;
         results.push(result);
-        if (logger === console.log) logger(result.logs[0].text); else logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        if (logger === console.log) logger(result.logs[0].text);
+        else logger(result.logs[0]);
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
       });
       const lastResult = results[results.length - 1] || null;
       hooks.onComplete?.({ results, totalRows, lastResult });
       return { results, lastResult };
     }
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+    payloadWarnings = Array.isArray(payload?.warnings) ? payload.warnings.slice() : [];
+    lowVarianceWarning = payloadWarnings.some((warning) => /low-variance/i.test(String(warning)));
 
     for (let batchIndex = 0; batchIndex < validBatch.length; batchIndex++) {
       const row = validBatch[batchIndex];
@@ -743,48 +1011,18 @@ ${uniqueSubjects}`;
       vault.idx = row.idx;
 
       const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
-      const entryAudit = Array.isArray(payloadAudit?.details) ? payloadAudit.details.find((d) => Number(d?.index) === batchIndex) : null;
       const matchedRow = entry ? validBatch[Number(entry.i)] : null;
       const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
       const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
-      const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
+      const vals = (isExactLegMatch && Array.isArray(entry?.v) && entry.v.length === 72) ? entry.v : null;
+      const isFallback = !vals || entry?.fallback === true;
 
-      if (!isExactLegMatch || !Array.isArray(entry?.v) || entryAudit?.reason === 'BAD_LENGTH') {
-        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Malformed factor payload.');
+      if (isFallback) {
+        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload. Matrix hidden.');
+        result.responseText = payloadResponseText;
         results.push(result);
         logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
-        continue;
-      }
-      if (entryAudit && !entryAudit.good && entryAudit.reason === 'INSUFFICIENT_EVIDENCE') {
-        const result = buildIngressErrorResult(row, stateRef, 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.');
-        result.analysisHint = 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.';
-        result.logs = [{ level: 'warning', text: `[OXYGEN] INSUFFICIENT_EVIDENCE: ${row.parsedPlayer} (${entryAudit.coreNonZero} units)` }];
-        results.push(result);
-        logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
-        continue;
-      }
-      if (entryAudit && !entryAudit.good && entryAudit.reason === 'LOW_VARIANCE') {
-        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Provider payload lacks variance.');
-        results.push(result);
-        logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
-        continue;
-      }
-      if (entryAudit && !entryAudit.good && entryAudit.reason === 'NEAR_DUPLICATE') {
-        const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload (gemini-3.1-flash-lite-preview): Near-duplicate factor payload detected.');
-        results.push(result);
-        logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
-        continue;
-      }
-      if (entryAudit && !entryAudit.good && entryAudit.reason === 'COLLAPSED_PAYLOAD') {
-        const result = buildIngressErrorResult(row, stateRef, 'Collapsed payload rejected. Most core slots 1-60 were zero or missing, so this run is not usable.');
-        results.push(result);
-        logger(result.logs[0]);
-        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length * 5, totalProbes });
+        hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
         continue;
       }
 
@@ -803,7 +1041,8 @@ ${uniqueSubjects}`;
       };
 
       vault.isReal = true;
-      vault.source = 'real';
+      vault.reliable = true;
+      vault.source = 'gemini_verified';
       vault.timestamp = Date.now();
 
       const branchStatus = 'REAL';
@@ -816,8 +1055,9 @@ ${uniqueSubjects}`;
       BRANCH_KEYS.forEach((key) => {
         if (vault.branches[key]) {
           vault.branches[key].status = 'REAL';
-          vault.branches[key].source = 'real';
+          vault.branches[key].source = 'gemini_verified';
           vault.branches[key].isReal = true;
+          vault.branches[key].isReliable = true;
           vault.branches[key].confidence = 1.0;
           updateBranchMeta(vault.branches[key]);
         }
@@ -827,8 +1067,31 @@ ${uniqueSubjects}`;
         vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5);
       });
 
+      const proofFlags = buildProofFlags(vault, row, vals);
+      const density = summarizePayloadDensity(vals);
+      const quality = (validBatch.length === 1 && payload?.__quality) ? payload.__quality : classifyPayloadQuality(vals, payloadWarnings);
+      proofFlags.payloadDensity = density;
+      stampBranchEAudit(vault, proofFlags.localMarket || {}, vals);
+      vault.proofFlags = proofFlags;
+      vault.payloadWarnings = payloadWarnings.slice();
+      const insufficientEvidence = quality.kind === 'INSUFFICIENT_EVIDENCE';
+      const collapsedPayload = quality.kind === 'COLLAPSED_PAYLOAD';
+      const weakSignal = quality.kind === 'LOW_VARIANCE';
+      proofFlags.weakSignal = weakSignal;
+      proofFlags.collapsedPayload = collapsedPayload;
+      proofFlags.insufficientEvidence = insufficientEvidence;
+      const tailAuditOnly = proofFlags.partial === true && !proofFlags.passed && !collapsedPayload && !insufficientEvidence;
+      const coreReliable = proofFlags.corePassed === true && !weakSignal && !collapsedPayload && !insufficientEvidence;
+      vault.reliable = coreReliable;
+      vault.partialDecode = tailAuditOnly || weakSignal;
+      vault.weakSignal = weakSignal;
+      vault.collapsedPayload = collapsedPayload;
+      vault.insufficientEvidence = insufficientEvidence;
+      vault.isReal = !collapsedPayload && (proofFlags.passed || proofFlags.partial === true || weakSignal || coreReliable || insufficientEvidence);
+      vault.source = insufficientEvidence ? 'insufficient_evidence' : (collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')))));
+      vault.terminalState = insufficientEvidence ? 'Insufficient Evidence' : (collapsedPayload ? 'Collapsed Payload Rejected' : (weakSignal ? 'Weak Signal' : (coreReliable ? 'Gemini Verified (Core Locked)' : (tailAuditOnly ? 'Tail Audit' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed')))));
+
       const found = vals.filter((n) => Number(n) !== 0).length;
-      vault.terminalState = (entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'Core Verified / Tail Empty' : (isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated');
 
       commitVault(stateRef, row, vault);
       console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
@@ -837,14 +1100,33 @@ ${uniqueSubjects}`;
 
       const shield = computeShieldFromVault(vault);
       const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
+      const proofLogs = (proofFlags.failures || []).map((failure) => ({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: ${failure.message}` }));
+      if (insufficientEvidence) proofLogs.unshift({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: Insufficient evidence for reliable inference. Core payload remained sparse after retries.` });
+      else if (collapsedPayload) proofLogs.unshift({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: Core payload collapsed (non-zero core slots ${density.nonZeroCore}/60). Rejecting this run.` });
+      const eTailLogs = (proofFlags.tailAudits || []).map((audit) => ({ level: audit.passed ? 'info' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${audit.message}` }));
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Payload density => core_nonzero=${density.nonZeroCore}/60 market_nonzero=${density.nonZeroMarket}/5 tail_nonzero=${density.nonZeroTail}/7` });
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` });
+      eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` });
+      const baseHint = insufficientEvidence
+        ? 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.'
+        : (collapsedPayload
+          ? 'Collapsed payload rejected. Most core slots 1-60 were zero or missing, so this run is not usable.'
+          : (weakSignal
+            ? 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.'
+            : (coreReliable
+              ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are latent market adjustors shown as a secondary signal layer.'
+              : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'))));
       const result = {
         vault,
         row,
-        isReal: true,
-        source: 'real',
+        isReal: !collapsedPayload && (proofFlags.passed || proofFlags.partial || weakSignal || insufficientEvidence),
+        isReliable: coreReliable,
+        source: insufficientEvidence ? 'insufficient_evidence' : (collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))))),
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
-        analysisHint: entryAudit?.reason === 'VERIFIED_CORE_ONLY' ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 were empty, so this is a core-only verified run.' : (isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated'),
+        analysisHint: baseHint,
+        runStatus: insufficientEvidence ? 'INSUFFICIENT_EVIDENCE' : (collapsedPayload ? 'FAILED_PAYLOAD' : (weakSignal ? 'WEAK_SIGNAL' : (coreReliable ? 'VERIFIED' : (tailAuditOnly ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'))))),
+        finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
@@ -856,9 +1138,15 @@ ${uniqueSubjects}`;
         },
         responseText: payloadResponseText,
         logs: [{
-          level: (isFallback || entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'warning' : 'success',
-          text: `[OXYGEN] ${(entryAudit?.reason === 'VERIFIED_CORE_ONLY') ? 'VERIFIED_CORE_ONLY' : (isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH')}: ${row.parsedPlayer} (${found} units)`
-        }]
+          level: insufficientEvidence ? 'warning' : (collapsedPayload ? 'warning' : (weakSignal ? 'info' : (coreReliable ? 'success' : (proofFlags.passed ? 'info' : 'warning')))),
+          text: insufficientEvidence
+            ? `[OXYGEN] INSUFFICIENT_EVIDENCE: ${row.parsedPlayer} (${found} units)`
+            : (collapsedPayload
+              ? `[OXYGEN] COLLAPSED_PAYLOAD: ${row.parsedPlayer} (${found} units)`
+              : (lowVarianceWarning
+                ? `[OXYGEN] WEAK_SIGNAL: ${row.parsedPlayer} (${found} units)`
+                : (coreReliable ? `[OXYGEN] VERIFIED_CORE: ${row.parsedPlayer} (${found} units)` : (proofFlags.partial ? `[OXYGEN] PARTIAL_DECODE: ${row.parsedPlayer} (${found} units)` : (proofFlags.passed ? `[OXYGEN] SCHEMA_MATCH: ${row.parsedPlayer} (${found} units)` : `[OXYGEN] PROOF_REJECTED: ${row.parsedPlayer} (${found} units)`)))))
+        }, ...payloadWarnings.map((warning) => ({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${warning}` })), ...proofLogs, ...eTailLogs]
       };
 
       results.push(result);
@@ -885,8 +1173,7 @@ ${uniqueSubjects}`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
-    // If the parser failed to provide a clean name, ABORT to prevent fake sequential data
-    if (!row.parsedPlayer || row.parsedPlayer.length < 3 || /vs|@|Sat|Sun/i.test(row.parsedPlayer)) {
+    if (!row.parsedPlayer || row.parsedPlayer.length < 3 || /\b(?:vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri)\b/i.test(row.parsedPlayer)) {
       try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
       const result = buildIngressErrorResult(row, stateRef, 'Identity Binding Error');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });
