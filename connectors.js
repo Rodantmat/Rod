@@ -1,6 +1,7 @@
 window.PickCalcConnectors = (() => {
   const STORAGE_KEY = 'oxygen-cobalt-v15.2-config';
   const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
+  const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
   const FORBIDDEN_FILLER = [
     'talented','due','breakout','looking to','momentum','matchup favors','run production','flexibility','opportunities'
   ];
@@ -112,26 +113,24 @@ window.PickCalcConnectors = (() => {
     if (!keys.length) throw new Error('No Gemini API keys saved.');
     const model = clean(config?.model) || DEFAULT_MODEL;
     let lastErr = null;
+    const body = JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Return JSON only.' }] }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0, maxOutputTokens: 6144 }
+    });
     for (const key of keys) {
       try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+        const endpoint = `${GEMINI_BASE_URL.replace(/\/$/, '')}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              responseMimeType: 'application/json',
-              temperature: 0
-            }
-          })
+          body
         });
         if (!res.ok) {
-          const body = await res.text();
-          throw new Error(`Gemini ${res.status}: ${body.slice(0, 180)}`);
+          const bodyText = await res.text();
+          throw new Error(`Worker failed (${res.status}) ${bodyText.slice(0, 180)}`);
         }
         const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || '';
+        const text = (data?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || '').join('').trim();
         if (!text) throw new Error('Empty Gemini response.');
         return text;
       } catch (err) {

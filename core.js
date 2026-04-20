@@ -49,6 +49,20 @@ window.addEventListener('DOMContentLoaded', () => {
     UI.appendConsole(`CONFIG_SAVED keys=${saved.apiKeys.length}`);
   });
 
+  el('debugConnectionBtn')?.addEventListener('click', async () => {
+    const saved = Connectors.saveConfig({
+      apiKeys: el('apiKeysInput').value
+    });
+    try {
+      const result = await Connectors.debugConnection(saved);
+      setMessage('configMessage', `Debug OK (${Array.isArray(result) ? result.length : 1} row).`);
+      UI.appendConsole('DEBUG_CONNECTION ok.');
+    } catch (err) {
+      setMessage('configMessage', `Debug failed: ${err.message}`);
+      UI.appendConsole(`DEBUG_CONNECTION failed: ${err.message}`);
+    }
+  });
+
   el('runBtn')?.addEventListener('click', async () => {
     if (!state.rows.length) {
       setMessage('ingestMessage', 'Ingest at least one row first.');
