@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.4 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.5 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -131,7 +131,7 @@ window.PickCalcParser = (() => {
       .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
       .map((line) => line.replace(/\b(?:pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
       .map((line) => /^\d{3,4}$/.test(String(line || '').trim()) ? ' ' : line)
-      .map((line) => line.replace(/\b(?:LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|In\s+Lineup|Probable|Top\s+\d+(?:st|nd|rd|th)|Bot\s+\d+(?:st|nd|rd|th)|Mid\s+\d+(?:st|nd|rd|th)|Extra\s+Innings|Next\s+Half\s+Inning|Current\s+Inning|\d+(?:st|nd|rd|th)\s+Inning\s+Stretch|Inning\s*\d+|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:Projected|Confirmed|In\s+Lineup|Probable)\b/gi, ' '))
       .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
       .map((line) => line.replace(BADGE_RX, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
@@ -156,13 +156,14 @@ window.PickCalcParser = (() => {
     const source = String(text || '').trim();
     if (!source) return false;
     const compact = source.replace(/\s+/g, ' ');
-    if (/\bStarting\b/i.test(compact)) return true;
+    if (/\b(?:Starting|Started|Live|Final|PPD|Postponed|Delayed|Susp\.?|Warmup)\b/i.test(compact)) return true;
     if (/\bCur\.\s*\d+/i.test(compact)) return true;
     if (/\b(?:Top|Bot|Mid)\s*\d+(?:st|nd|rd|th)?\b/i.test(compact)) return true;
+    if (/\b(?:Quarter|Period|Round|Inning|OT)\b/i.test(compact)) return true;
     if (/\b[A-Z]{2,3}\s*\d+\s*(?:@|vs\.?|v)\s*[A-Z]{2,3}\s*\d+\b/i.test(compact)) return true;
-    if (/\b[A-Z]{2,3}\s*\d+(?:@|vs\.?|v)\s*[A-Z]{2,3}\s*\d+\b/i.test(compact)) return true;
     return false;
   }
+
 
 
   function normalizeDayScope(value) {
@@ -301,7 +302,7 @@ window.PickCalcParser = (() => {
     if (sportHint !== 'MLB') return null;
     const raw = cleanWhitespace(text).toUpperCase();
     const normalized = raw
-      .replace(/[A-Z]{2,3}\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)/g, ' ')
+      .replace(/\b[A-Z]{2,3}\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/g, ' ')
       .replace(/\s*\+\s*/g, '+')
       .replace(/\s+/g, ' ')
       .trim();
@@ -549,26 +550,26 @@ window.PickCalcParser = (() => {
     }
 
     const blob = rawLines.join(' ');
-    if (/(?:Pitches Thrown|Pitch Count)/i.test(blob)) prop = 'Pitches Thrown';
-    else if (/(?:Walks Allowed|BB Allowed)/i.test(blob)) prop = 'Walks Allowed';
-    else if (/(?:Hits Allowed|HA)/i.test(blob)) prop = 'Hits Allowed';
-    else if (/(?:Earned Runs Allowed|Earned Runs|ER)/i.test(blob)) prop = 'Earned Runs Allowed';
-    else if (/(?:Hitter Fantasy Score|Hitter FS|HFS)/i.test(blob)) prop = 'Hitter Fantasy Score';
-    else if (/(?:Pitcher Fantasy Score|Pitcher FS|PFS)/i.test(blob)) prop = 'Pitcher Fantasy Score';
-    else if (/(?:Hitter Strikeouts|Hitter Ks|Hitter K's)/i.test(blob)) prop = 'Hitter Strikeouts';
-    else if (/(?:Hits\+Runs\+RBIs|H\+R\+RBI|HRR)/i.test(blob)) prop = 'Hits+Runs+RBIs';
-    else if (/(?:Home Runs|Home Run|HR)/i.test(blob)) prop = 'Home Runs';
-    else if (/(?:Pitching Outs|PO|Outs)/i.test(blob)) prop = 'Pitching Outs';
-    else if (/Total Bases/i.test(blob) || /TB(?!\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL))/i.test(blob)) prop = 'Total Bases';
-    else if (/(?:Stolen Bases|SB)/i.test(blob)) prop = 'Stolen Bases';
-    else if (/(?:Ks|K's|Strikeouts)/i.test(blob)) prop = 'Pitcher Strikeouts';
-    else if (/Hits/i.test(blob)) prop = 'Hits';
-    else if (/Runs/i.test(blob)) prop = 'Runs';
-    else if (/(?:RBIs|RBI)/i.test(blob)) prop = 'RBIs';
-    else if (/Singles/i.test(blob)) prop = 'Singles';
-    else if (/Doubles/i.test(blob)) prop = 'Doubles';
-    else if (/Triples/i.test(blob)) prop = 'Triples';
-    else if (/Walks/i.test(blob)) prop = 'Walks';
+    if (/\b(?:Pitches Thrown|Pitch Count)\b/i.test(blob)) prop = 'Pitches Thrown';
+    else if (/\b(?:Walks Allowed|BB Allowed)\b/i.test(blob)) prop = 'Walks Allowed';
+    else if (/\b(?:Hits Allowed|HA)\b/i.test(blob)) prop = 'Hits Allowed';
+    else if (/\b(?:Earned Runs Allowed|Earned Runs|ER)\b/i.test(blob)) prop = 'Earned Runs Allowed';
+    else if (/\b(?:Hitter Fantasy Score|Hitter FS|HFS)\b/i.test(blob)) prop = 'Hitter Fantasy Score';
+    else if (/\b(?:Pitcher Fantasy Score|Pitcher FS|PFS)\b/i.test(blob)) prop = 'Pitcher Fantasy Score';
+    else if (/\b(?:Hitter Strikeouts|Hitter Ks|Hitter K's)\b/i.test(blob)) prop = 'Hitter Strikeouts';
+    else if (/\b(?:Hits\+Runs\+RBIs|H\+R\+RBI|HRR)\b/i.test(blob)) prop = 'Hits+Runs+RBIs';
+    else if (/\b(?:Home Runs|Home Run|HR)\b/i.test(blob)) prop = 'Home Runs';
+    else if (/\b(?:Pitching Outs|PO|Outs)\b/i.test(blob)) prop = 'Pitching Outs';
+    else if (/\bTotal Bases\b/i.test(blob) || /\bTB\b(?!\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL))/i.test(blob)) prop = 'Total Bases';
+    else if (/\b(?:Stolen Bases|SB)\b/i.test(blob)) prop = 'Stolen Bases';
+    else if (/\b(?:Ks|K's|Strikeouts)\b/i.test(blob)) prop = 'Pitcher Strikeouts';
+    else if (/\bHits\b/i.test(blob)) prop = 'Hits';
+    else if (/\bRuns\b/i.test(blob)) prop = 'Runs';
+    else if (/\b(?:RBIs|RBI)\b/i.test(blob)) prop = 'RBIs';
+    else if (/\bSingles\b/i.test(blob)) prop = 'Singles';
+    else if (/\bDoubles\b/i.test(blob)) prop = 'Doubles';
+    else if (/\bTriples\b/i.test(blob)) prop = 'Triples';
+    else if (/\bWalks\b/i.test(blob)) prop = 'Walks';
 
 
     return {
@@ -747,14 +748,14 @@ window.PickCalcParser = (() => {
   function isComboEntity(value = '') {
     const raw = cleanWhitespace(String(value || ''));
     if (!raw) return false;
-    if (/[A-Z]{2,3}\/[A-Z]{2,3}/.test(raw)) return true;
-    if (/(?:and|\&)/i.test(raw) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(raw)) return true;
+    if (/\b[A-Z]{2,3}\/[A-Z]{2,3}\b/.test(raw)) return true;
+    if (/\b(?:and|\&)\b/i.test(raw) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(raw)) return true;
     const strippedPropText = raw
-      .replace(/(?:Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\+Runs\+RBIs|H\+R\+RBI|HRR|Total Bases|Pitcher Strikeouts|Pitching Outs|Pitcher Fantasy Score|Hitter Fantasy Score|Walks Allowed|Hits Allowed|Earned Runs Allowed|Walks|Hits|Runs|RBIs?|Home Runs?|Singles|Doubles|Triples|Stolen Bases|Hitter Strikeouts|Ks|K's|Outs|Fantasy)/gi, ' ')
+      .replace(/\b(?:Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\+Runs\+RBIs|H\+R\+RBI|HRR|Total Bases|Pitcher Strikeouts|Pitching Outs|Pitcher Fantasy Score|Hitter Fantasy Score|Walks Allowed|Hits Allowed|Earned Runs Allowed|Walks|Hits|Runs|RBIs?|Home Runs?|Singles|Doubles|Triples|Stolen Bases|Hitter Strikeouts|Ks|K's|Outs|Fantasy)\b/gi, ' ')
       .replace(/\+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-    if (/(?:and|\&)/i.test(strippedPropText) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(strippedPropText)) return true;
+    if (/\b(?:and|\&)\b/i.test(strippedPropText) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(strippedPropText)) return true;
     return false;
   }
 
@@ -823,6 +824,10 @@ window.PickCalcParser = (() => {
       audit.rejectionReason = 'Player name could not be resolved from block cluster.';
       return { audit, row: null };
     }
+    if (!timeContext.found) {
+      audit.rejectionReason = 'Rejected: no future game time or countdown found.';
+      return { audit, row: null };
+    }
     if (timeContext.found && !timeFilter.accepted) {
       audit.rejectionReason = timeFilter.detail;
       return { audit, row: null };
@@ -854,7 +859,8 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
-      sourceIndex: audit.idx
+      sourceIndex: audit.idx,
+      row_key: [normalizeName(parsedPlayer), String(propMeta.label || '').toLowerCase(), String(candidate.anchorValue), String(timeContext.isoLocal || timeContext.token || ''), String(candidate.anchorLineIndex)].join('|')
     };
     return { audit, row };
   }
@@ -1014,6 +1020,7 @@ window.PickCalcParser = (() => {
     if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
     if (isComboEntity(parsedPlayer) || isComboEntity(joined)) { audit.rejectionReason = 'Rejected: combo or paired legs are not supported.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
+    if (!timeContext.found) { audit.rejectionReason = 'Rejected: no future game time or countdown found.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
     return { audit, row: {
@@ -1043,6 +1050,7 @@ window.PickCalcParser = (() => {
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
       sourceIndex: audit.idx,
       blockIndex: audit.idx,
+      row_key: [normalizeName(parsedPlayer), String(propMeta.label || '').toLowerCase(), String(anchorValue), String(timeContext.isoLocal || timeContext.token || ''), String(blockIndex)].join('|'),
       geminiSubject: {
         name: parsedPlayer,
         team,
@@ -1071,11 +1079,6 @@ window.PickCalcParser = (() => {
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
     const dayScope = options.dayScope || 'both';
-    if (isLiveGameText(text)) {
-      const audit = [{ idx: 1, rawText: String(text || ''), cleanedRawText: cleanWhitespace(text), accepted: false, rejectionReason: 'Rejected: live or in-progress leg detected.', parseYear: PARSE_YEAR }];
-      audit.rejectedLines = [cleanWhitespace(text)];
-      return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows: [], audit };
-    }
     const pipeBlocks = splitPipeBlocks(text);
     const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');

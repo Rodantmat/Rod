@@ -296,7 +296,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       WEAK_SIGNAL: { label: 'WEAK_SIGNAL', tone: 'status-loading', text: 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.' },
       INSUFFICIENT_EVIDENCE: { label: 'INSUFFICIENT_EVIDENCE', tone: 'status-error', text: 'Insufficient evidence. The subject did not provide enough stable signal for reliable inference after retries.' },
       FAILED_INTEGRITY: { label: 'FAILED_INTEGRITY', tone: 'status-error', text: 'Payload arrived and decoded, but a hard integrity checkpoint failed. Data is not trustworthy yet.' },
-      VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and core-verified. Slots 1-65 are trusted for scoring; tail slots 66-72 remain audit-only sentiment signals.' }
+      VERIFIED: { label: 'VERIFIED', tone: 'status-ok-pill', text: 'Payload received, decoded, and core-verified. Slots 1-65 are trusted for scoring; tail slots 66-72 remain audit-only sentiment signals.' },
+      VERIFIED_CORE_ONLY: { label: 'VERIFIED_CORE_ONLY', tone: 'status-ok-pill', text: 'Payload received, decoded, and core-verified. Slots 1-65 are trusted for scoring; tail slots 66-72 were flagged as filler and ignored.' }
     };
     const meta = map[status] || map.LOADING;
     const detail = String(result?.analysisHint || '').trim();

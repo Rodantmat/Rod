@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.4 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.5 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -459,15 +459,31 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function safeJsonParse(raw) {
-    const clean = sanitizeJsonText(raw)
+    let clean = sanitizeJsonText(raw)
       .replace(/,\s*([}\]])/g, '$1')
       .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
     try {
       return { parsed: JSON.parse(clean), clean };
     } catch (error) {
+      const trimmed = clean.trim();
+      try {
+        if (trimmed.endsWith('}') && !trimmed.endsWith(']}')) {
+          const repaired = `${trimmed}]}`;
+          return { parsed: JSON.parse(repaired), clean: repaired, repaired: true };
+        }
+      } catch (_) {}
+      try {
+        const lastObj = trimmed.lastIndexOf('}');
+        const dataStart = trimmed.indexOf('[');
+        if (dataStart >= 0 && lastObj > dataStart) {
+          const repaired = trimmed.slice(0, lastObj + 1) + ']}';
+          return { parsed: JSON.parse(repaired), clean: repaired, repaired: true };
+        }
+      } catch (_) {}
       return { parsed: null, clean, error };
     }
   }
+
 
   function buildGeminiPrompt(players, mode = 'primary') {
     const compact = (players || []).map((row) => ({
@@ -629,6 +645,15 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return Array.isArray(v) ? v.map((n) => Number(n).toFixed(3)).join('|') : '';
   }
 
+  function tailIsFlat(v = []) {
+    const tail = Array.isArray(v) ? v.slice(65, 72).map((n) => Number(n).toFixed(3)) : [];
+    return tail.length === 7 && new Set(tail).size === 1;
+  }
+
+  function makeAlert(code, message, severity = 'warning', retryable = false) {
+    return { code, message, severity, retryable };
+  }
+
   function entryStats(v = []) {
     const nums = Array.isArray(v) ? v.map((n) => Number(n)).filter(Number.isFinite) : [];
     if (!nums.length) return { distinct2: 0, stddev: 0, meanAbsDiff: 0 };
@@ -650,33 +675,42 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function validateGeminiPayload(payload) {
     const entries = Array.isArray(payload?.data) ? payload.data : [];
-    if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.' };
+    if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.', alerts: [makeAlert('FAILED_PAYLOAD','No data returned from Gemini.','warning',true)] };
     const signatures = new Map();
     const warnings = [];
+    const alerts = [];
+    let flatTailCount = 0;
     for (const entry of entries) {
-      if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.' };
+      if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Malformed factor payload.','warning',true)] };
       if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) warnings.push('Missing id_confirm in batch payload.');
       if (entries.length > 1 && !String(entry?.prop_confirm || '').trim()) warnings.push('Missing prop_confirm in batch payload.');
-      if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.' };
-      if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.' };
-      if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.' };
+      if (entries.length > 1 && !String(entry?.row_key || '').trim()) warnings.push('Missing row_key in batch payload.');
+      if (entries.length > 1 && !String(entry?.line_confirm || '').trim()) warnings.push('Missing line_confirm in batch payload.');
+      if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.', alerts: [makeAlert('FAILED_PAYLOAD','Fallback payload detected.','warning',false)] };
+      if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Non-numeric factor payload.','warning',false)] };
+      if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Out-of-range factor payload.','warning',false)] };
       const stats = entryStats(entry.v);
       if (stats.distinct2 < 12 || stats.stddev < 0.035) warnings.push('Low-variance factor payload detected.');
       const providers = entry.v.slice(60, 65).map((n) => Number(n));
-      if (providers.some((n) => !Number.isFinite(n))) return { ok: false, reason: 'Missing provider slots.' };
-      if (new Set(providers.map((n) => n.toFixed(2))).size < 2) return { ok: false, reason: 'Provider payload lacks variance.' };
-      if (providers.every((n) => Math.abs(n - 0.5) <= 0.001)) return { ok: false, reason: 'Neutral provider payload detected.' };
+      if (providers.some((n) => !Number.isFinite(n))) return { ok: false, reason: 'Missing provider slots.', alerts: [makeAlert('FAILED_PAYLOAD','Missing provider slots.','warning',false)] };
+      if (new Set(providers.map((n) => n.toFixed(2))).size < 2) return { ok: false, reason: 'Provider payload lacks variance.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Provider payload lacks variance.','warning',true)] };
+      if (providers.every((n) => Math.abs(n - 0.5) <= 0.001)) return { ok: false, reason: 'Neutral provider payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Neutral provider payload detected.','warning',true)] };
+      if (tailIsFlat(entry.v)) flatTailCount += 1;
       const sig = vectorSignature(entry.v.map((n) => Number(n).toFixed(2)));
       if (sig) signatures.set(sig, (signatures.get(sig) || 0) + 1);
     }
     const dup = Array.from(signatures.values()).some((count) => count > 1);
-    if (dup && entries.length > 1) return { ok: false, reason: 'Duplicate factor payload detected.' };
+    if (dup && entries.length > 1) return { ok: false, reason: 'Duplicate factor payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Duplicate factor payload detected.','warning',true)] };
     for (let i = 0; i < entries.length; i += 1) {
       for (let j = i + 1; j < entries.length; j += 1) {
-        if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.' };
+        if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Near-duplicate factor payload detected.','warning',true)] };
       }
     }
-    return { ok: true, warnings: Array.from(new Set(warnings)) };
+    if (entries.length >= 3 && flatTailCount >= 3) {
+      warnings.push('Tail slots 66-72 look flat across the batch.');
+      alerts.push(makeAlert('TAIL_NULLIFIED','Tail slots 66-72 flagged as filler and will be ignored for scoring.','warning',false));
+    }
+    return { ok: true, warnings: Array.from(new Set(warnings)), alerts };
   }
 
 
@@ -715,25 +749,30 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const pickType = p?.pickType || 'Regular Line';
       const direction = p?.direction || (String(pickType).match(/goblin|demon/i) ? 'More' : '');
       const line = p?.line || p?.lineValue || 0;
-      return `Index ${idx} | LEG_ID: ${p?.LEG_ID || `LEG-${idx + 1}`} | Name: ${parsedPlayer} | Team: ${team} | Opponent: ${opponent} | Prop: ${prop} | Line: ${line} | PickType: ${pickType} | Direction: ${direction || 'Undecided'} | GameTime: ${gameTime || 'Unknown'} | Type: ${type} | Instruction: Generate a unique ${type}-specific weight distribution. DO NOT mirror other indices.`;
+      const rowKey = p?.row_key || `${p?.LEG_ID || `LEG-${idx + 1}`}|${prop}|${line}`;
+      return `[S${idx}] i=${idx}|row_key=${rowKey}|Name=${parsedPlayer}|Team=${team}|Opponent=${opponent}|Prop=${prop}|Line=${line}|GameTime=${gameTime || 'Unknown'}|PickType=${pickType}|Direction=${direction || 'Undecided'}|Type=${type}|IDENTITY_DIVERGENCE: For same-player multi-prop entries, treat each row_key as a distinct tactical scenario.|DIVERGENCE_ENFORCEMENT: maximize inter-subject differentiation and never mirror another subject.|VARY_TAIL_SIGNALS: Slots 66-72 must reflect the specific market volatility of each unique subject.[/S${idx}]`;
     }).join('\n');
-    const prompt = `You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
-Perform a high-resolution data extraction for the provided subject. Assign a probability-based weight (0.0 to 1.0) to each defined metric using player-specific variance, opponent context, venue context, handedness, and current-market texture.
-CRITICAL: Any response containing identical float sequences across different player indices will be flagged as a FAILURE. Ensure statistical variance between Hitter and Pitcher profiles.
+    const prompt = `Return minified JSON only. No markdown. No prose. Max 3 decimals. End with ]}.
+You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
+Perform a high-resolution extraction for each subject capsule. Use the row_key as the primary identity anchor, then id_confirm, prop_confirm, and line_confirm before generating v.
+CRITICAL: Any response containing identical or near-identical float sequences across different indices will be flagged as a failure.
+CRITICAL: Same player on different props must produce meaningfully different vectors.
 CRITICAL SLOT MAP:
-- v[38] = c07 Air Density (temperature + altitude + humidity ball-flight multiplier)
-- v[39] = c08 Umpire Zone (numeric strike-call frequency)
-- v[50] = d01 Platoon Delta (left/right handedness edge)
-- v[51] = d02 Manager Threshold (volume/substitution bias)
+- v[38] = c07 Air Density
+- v[39] = c08 Umpire Zone
+- v[50] = d01 Platoon Delta
+- v[51] = d02 Manager Threshold
 - v[60] = market01 DraftKings
 - v[61] = market02 FanDuel
 - v[62] = market03 BetMGM
 - v[63] = market04 Bet365
 - v[64] = market05 Pinnacle
-Return five specific sportsbook floats for DraftKings, FanDuel, BetMGM, Bet365, and Pinnacle in that exact order. Do not collapse unknown values to 0.5 unless the profile is truly neutral after analysis.
 Subjects:
 ${uniqueSubjects}
-Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(options?.retrySuffix || "").trim()}`;
+MANDATORY: Ensure the JSON response is complete and terminates with the correct closing characters ]}.
+Return only valid minified JSON with shape {"batch_count":${batch.length},"data":[{"i":0,"row_key":"...","id_confirm":"...","prop_confirm":"...","line_confirm":"...","v":[72 floats]}]}.
+${String(options?.retrySuffix || "").trim()}`;
+
 
     if (!activeKey) {
       return { ok: false, errorStatus: 0, errorText: 'Missing Gemini API key.', temporaryFailure: false, modelId: GEMINI_MODEL };
@@ -742,7 +781,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
     const logger = getConsoleLogger();
     const body = JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
-      generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15, maxOutputTokens: 8192 }
+      generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15, maxOutputTokens: 6144 }
     });
 
     async function tryModel(modelId, maxAttempts = 3) {
@@ -954,8 +993,8 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
     if (validBatch.length === 1) {
       const retryPlans = [
         { temperature: 0.15, retrySuffix: '' },
-        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. You MUST produce a full-density vector. Avoid clustering around 0.5. Use the full 0.0–1.0 range. Commit to variation.' },
-        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. You MUST produce a full-density vector. Avoid clustering around 0.5. Use the full 0.0–1.0 range. Commit to variation.' }
+        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, increase differentiation, avoid clustering around 0.5, and complete the JSON envelope.' },
+        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. Preserve schema, increase differentiation, vary tail signals, and complete the JSON envelope.' }
       ];
       let lastPayload = null;
       for (let attemptIndex = 0; attemptIndex < retryPlans.length; attemptIndex += 1) {
@@ -998,7 +1037,12 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
       hooks.onComplete?.({ results, totalRows, lastResult });
       return { results, lastResult };
     }
-    const responseData = { data: Array.isArray(payload?.data) ? payload.data.map((entry) => Object.assign({}, entry, { id_confirm: String(entry?.id_confirm || validBatch[Number(entry?.i)]?.parsedPlayer || '').trim(), prop_confirm: String(entry?.prop_confirm || validBatch[Number(entry?.i)]?.prop || validBatch[Number(entry?.i)]?.propFamily || '').trim() })) : [] };
+    const responseData = { data: Array.isArray(payload?.data) ? payload.data.map((entry) => Object.assign({}, entry, {
+      row_key: String(entry?.row_key || validBatch[Number(entry?.i)]?.row_key || '').trim(),
+      id_confirm: String(entry?.id_confirm || validBatch[Number(entry?.i)]?.parsedPlayer || '').trim(),
+      prop_confirm: String(entry?.prop_confirm || validBatch[Number(entry?.i)]?.prop || validBatch[Number(entry?.i)]?.propFamily || '').trim(),
+      line_confirm: String(entry?.line_confirm || validBatch[Number(entry?.i)]?.line || '').trim()
+    })) : [] };
     payloadWarnings = Array.isArray(payload?.warnings) ? payload.warnings.slice() : [];
     lowVarianceWarning = payloadWarnings.some((warning) => /low-variance/i.test(String(warning)));
 
@@ -1078,15 +1122,20 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
       proofFlags.weakSignal = weakSignal;
       proofFlags.collapsedPayload = collapsedPayload;
       proofFlags.insufficientEvidence = insufficientEvidence;
+      const flatTail = tailIsFlat(vals);
       const tailAuditOnly = proofFlags.partial === true && !proofFlags.passed && !collapsedPayload && !insufficientEvidence;
       const coreReliable = proofFlags.corePassed === true && !weakSignal && !collapsedPayload && !insufficientEvidence;
+      if (flatTail) {
+        for (let ti = 65; ti < 72; ti += 1) vals[ti] = 0.5;
+        proofFlags.tailFlattened = true;
+      }
       vault.reliable = coreReliable;
       vault.partialDecode = tailAuditOnly || weakSignal;
       vault.weakSignal = weakSignal;
       vault.collapsedPayload = collapsedPayload;
       vault.insufficientEvidence = insufficientEvidence;
       vault.isReal = !collapsedPayload && (proofFlags.passed || proofFlags.partial === true || weakSignal || coreReliable || insufficientEvidence);
-      vault.source = insufficientEvidence ? 'insufficient_evidence' : (collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected')))));
+      vault.source = insufficientEvidence ? 'insufficient_evidence' : (collapsedPayload ? 'payload_collapsed' : (weakSignal ? 'gemini_weak_signal' : ((coreReliable && proofFlags.tailFlattened) ? 'gemini_verified_core' : (coreReliable ? 'gemini_verified_core' : (tailAuditOnly ? 'gemini_latent_adjustors' : (proofFlags.passed ? 'gemini_verified' : 'proof_rejected'))))));
       vault.terminalState = insufficientEvidence ? 'Insufficient Evidence' : (collapsedPayload ? 'Collapsed Payload Rejected' : (weakSignal ? 'Weak Signal' : (coreReliable ? 'Gemini Verified (Core Locked)' : (tailAuditOnly ? 'Tail Audit' : (proofFlags.passed ? 'Gemini Verified' : 'Integrity Check Failed')))));
 
       const found = vals.filter((n) => Number(n) !== 0).length;
@@ -1102,6 +1151,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
       if (insufficientEvidence) proofLogs.unshift({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: Insufficient evidence for reliable inference. Core payload remained sparse after retries.` });
       else if (collapsedPayload) proofLogs.unshift({ level: 'warning', text: `[OXYGEN] ${row.parsedPlayer}: Core payload collapsed (non-zero core slots ${density.nonZeroCore}/60). Rejecting this run.` });
       const eTailLogs = (proofFlags.tailAudits || []).map((audit) => ({ level: audit.passed ? 'info' : 'info', text: `[OXYGEN] ${row.parsedPlayer}: ${audit.message}` }));
+      eTailLogs.unshift({ level: proofFlags.tailFlattened ? 'warning' : 'info', text: proofFlags.tailFlattened ? `[ALERT] TAIL_NULLIFIED: ${row.parsedPlayer} :: Tail slots 66-72 flattened and were nullified.` : `[OXYGEN] ${row.parsedPlayer}: Payload density => core_nonzero=${density.nonZeroCore}/60 market_nonzero=${density.nonZeroMarket}/5 tail_nonzero=${density.nonZeroTail}/7` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Payload density => core_nonzero=${density.nonZeroCore}/60 market_nonzero=${density.nonZeroMarket}/5 tail_nonzero=${density.nonZeroTail}/7` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E raw slots 61-72 => ${vals.slice(60,72).map((value, idx) => `${60 + idx + 1}=${safeNumber(value,0).toFixed(3)}`).join(' | ')}` });
       eTailLogs.unshift({ level: 'info', text: `[OXYGEN] ${row.parsedPlayer}: Branch E arithmetic from 61-65 => mean=${safeNumber((proofFlags.localMarket||{}).mean,0).toFixed(3)} median=${safeNumber((proofFlags.localMarket||{}).median,0).toFixed(3)} high=${safeNumber((proofFlags.localMarket||{}).high,0).toFixed(3)} low=${safeNumber((proofFlags.localMarket||{}).low,0).toFixed(3)} spread=${safeNumber((proofFlags.localMarket||{}).spread,0).toFixed(3)} conf=${safeNumber((proofFlags.localMarket||{}).marketConfidence,0).toFixed(3)}` });
@@ -1112,7 +1162,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
           : (weakSignal
             ? 'Payload arrived and decoded, but factor variance is low. Core slots remain visible for review. Score uses A-D plus raw market slots 61-65 only.'
             : (coreReliable
-              ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are latent market adjustors shown as a secondary signal layer.'
+              ? (proofFlags.tailFlattened ? 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 were flagged as filler and nullified.' : 'Payload arrived, decoded, and mapped. Core slots 1-65 are trusted for scoring. Tail slots 66-72 are latent market adjustors shown as a secondary signal layer.')
               : (proofFlags.passed ? 'Gemini Verified payload received. Brutal honesty checks passed.' : 'Integrity Check Failed. Data flagged fake, bad, corrupted, or unreliable.'))));
       const result = {
         vault,
@@ -1123,7 +1173,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.\n${String(
         vaultCollection: JSON.parse(JSON.stringify(currentVaults)),
         shield,
         analysisHint: baseHint,
-        runStatus: insufficientEvidence ? 'INSUFFICIENT_EVIDENCE' : (collapsedPayload ? 'FAILED_PAYLOAD' : (weakSignal ? 'WEAK_SIGNAL' : (coreReliable ? 'VERIFIED' : (tailAuditOnly ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY'))))),
+        runStatus: insufficientEvidence ? 'INSUFFICIENT_EVIDENCE' : (collapsedPayload ? 'FAILED_PAYLOAD' : (weakSignal ? 'WEAK_SIGNAL' : ((coreReliable && proofFlags.tailFlattened) ? 'VERIFIED_CORE_ONLY' : (coreReliable ? 'VERIFIED' : (tailAuditOnly ? 'PARTIAL_DECODE' : (proofFlags.passed ? 'VERIFIED' : 'FAILED_INTEGRITY')))))),
         finalized: true,
         connectorState: {
           version: SYSTEM_VERSION,
