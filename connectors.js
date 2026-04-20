@@ -1,7 +1,6 @@
 window.PickCalcConnectors = (() => {
   const STORAGE_KEY = 'oxygen-cobalt-v15.2-config';
   const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
-  const DEFAULT_WORKER_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
   const FORBIDDEN_FILLER = [
     'talented','due','breakout','looking to','momentum','matchup favors','run production','flexibility','opportunities'
   ];
@@ -24,18 +23,16 @@ window.PickCalcConnectors = (() => {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
       return {
         apiKeys: Array.isArray(parsed.apiKeys) ? parsed.apiKeys.filter(Boolean) : [],
-        workerUrl: DEFAULT_WORKER_URL,
         model: DEFAULT_MODEL
       };
     } catch {
-      return { apiKeys: [], workerUrl: DEFAULT_WORKER_URL, model: DEFAULT_MODEL };
+      return { apiKeys: [], model: DEFAULT_MODEL };
     }
   }
 
-  function saveConfig({ apiKeys, workerUrl, model }) {
+  function saveConfig({ apiKeys, model }) {
     const payload = {
       apiKeys: parseKeys(apiKeys),
-      workerUrl: clean(workerUrl),
       model: clean(model) || DEFAULT_MODEL
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -111,18 +108,6 @@ window.PickCalcConnectors = (() => {
   }
 
   async function requestGemini(prompt, config) {
-    const workerUrl = clean(config?.workerUrl);
-    if (workerUrl) {
-      const res = await fetch(workerUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, model: clean(config?.model) || DEFAULT_MODEL })
-      });
-      if (!res.ok) throw new Error(`Worker failed (${res.status}).`);
-      const text = await res.text();
-      return unwrapWorkerText(text);
-    }
-
     const keys = parseKeys((config?.apiKeys || []).join('\n'));
     if (!keys.length) throw new Error('No Gemini API keys saved.');
     const model = clean(config?.model) || DEFAULT_MODEL;
@@ -154,15 +139,6 @@ window.PickCalcConnectors = (() => {
       }
     }
     throw lastErr || new Error('All Gemini keys failed.');
-  }
-
-  function unwrapWorkerText(raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed?.text || parsed?.output || parsed?.response || parsed?.content || raw;
-    } catch {
-      return raw;
-    }
   }
 
   function parseJsonLoose(text) {
