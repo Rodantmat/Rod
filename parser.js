@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.5 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.6 (OXYGEN-COBALT)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -923,6 +923,43 @@ window.PickCalcParser = (() => {
     ].join('|');
   }
 
+
+  function resolveRowConflicts(rows = [], audit = {}) {
+    const accepted = [];
+    const fingerprintMap = new Map();
+    const alerts = Array.isArray(audit?.alerts) ? audit.alerts.slice() : [];
+    rows.forEach((row) => {
+      const fingerprint = [
+        normalizeName(row.parsedPlayer || ''),
+        normalizeName(row.prop || row.propFamily || ''),
+        String(row.line || ''),
+        String(row.gameTimeISO || row.gameTimeText || '')
+      ].join('|');
+      const existing = fingerprintMap.get(fingerprint);
+      if (!existing) {
+        fingerprintMap.set(fingerprint, row);
+        accepted.push(row);
+        return;
+      }
+      const sameOpponent = normalizeName(existing.opponent || '') === normalizeName(row.opponent || '');
+      const sameTeam = normalizeName(existing.team || '') === normalizeName(row.team || '');
+      if (!sameOpponent || !sameTeam) {
+        pushRejectedLine(audit.rejectedLines || (audit.rejectedLines = []), `${row.parsedPlayer || 'Unknown'} conflict ${existing.opponent || '?'} -> ${row.opponent || '?'}`);
+        alerts.push({ code: 'CONFLICT_IDENTITY_OPP_DRIFT', severity: 'warning', message: `Rejected conflicting duplicate for ${row.parsedPlayer || 'Unknown'} (${row.prop || row.propFamily || 'Unknown'} ${row.line || '?'}) due to opponent drift.` });
+        return;
+      }
+      const scoreRow = [Boolean(row.team), Boolean(row.opponent), Boolean(row.gameTimeText || row.gameTimeISO), Boolean(row.direction), String(row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
+      const scoreExisting = [Boolean(existing.team), Boolean(existing.opponent), Boolean(existing.gameTimeText || existing.gameTimeISO), Boolean(existing.direction), String(existing.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
+      if (scoreRow > scoreExisting) {
+        const idx = accepted.indexOf(existing);
+        if (idx >= 0) accepted.splice(idx, 1, row);
+        fingerprintMap.set(fingerprint, row);
+      }
+    });
+    audit.alerts = alerts;
+    return accepted;
+  }
+
   function splitStructuredBlocks(lines = []) {
     const blocks = [];
     let current = [];
@@ -1164,6 +1201,8 @@ window.PickCalcParser = (() => {
       cleanRow.idx = index + 1;
       return cleanRow;
     });
+
+    rows = resolveRowConflicts(rows, audit).map((row, index) => Object.assign({}, row, { idx: index + 1 }));
 
     if (!rows.length && blocks.length) {
       blocks.forEach((block, blockIndex) => {

@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.5 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.6 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -673,6 +673,70 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return meanAbs < 0.035 || near >= 62;
   }
 
+
+  function pearsonCorrelation(a = [], b = []) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) return 0;
+    const xs = a.map((n) => Number(n)).filter(Number.isFinite);
+    const ys = b.map((n) => Number(n)).filter(Number.isFinite);
+    if (xs.length !== a.length || ys.length !== b.length) return 0;
+    const meanX = xs.reduce((s, n) => s + n, 0) / xs.length;
+    const meanY = ys.reduce((s, n) => s + n, 0) / ys.length;
+    let num = 0;
+    let denX = 0;
+    let denY = 0;
+    for (let i = 0; i < xs.length; i += 1) {
+      const dx = xs[i] - meanX;
+      const dy = ys[i] - meanY;
+      num += dx * dy;
+      denX += dx * dx;
+      denY += dy * dy;
+    }
+    if (!denX || !denY) return 0;
+    return num / Math.sqrt(denX * denY);
+  }
+
+  function detectSyntheticPattern(entries = []) {
+    const vectors = entries.map((entry) => Array.isArray(entry?.v) ? entry.v.map((n) => Number(n)) : []).filter((v) => v.length === 72);
+    if (!vectors.length) return { flagged: false, reason: '', metrics: {} };
+    let lowPaletteCount = 0;
+    let mirroredPairs = 0;
+    let recurringMotifVectors = 0;
+    const motifSubjects = new Map();
+    vectors.forEach((vector, idx) => {
+      const formatted = vector.map((n) => n.toFixed(3));
+      const unique3 = new Set(formatted);
+      if ((unique3.size / vector.length) < 0.40 || unique3.size < 28) lowPaletteCount += 1;
+      const localFour = new Map();
+      const subjectMotifs = new Set();
+      for (let i = 0; i <= formatted.length - 4; i += 1) {
+        const motif = formatted.slice(i, i + 4).join('|');
+        localFour.set(motif, (localFour.get(motif) || 0) + 1);
+        subjectMotifs.add(motif);
+      }
+      if (Array.from(localFour.values()).some((count) => count >= 3)) recurringMotifVectors += 1;
+      subjectMotifs.forEach((motif) => {
+        if (!motifSubjects.has(motif)) motifSubjects.set(motif, new Set());
+        motifSubjects.get(motif).add(idx);
+      });
+    });
+    let motifReuse = 0;
+    const crossThreshold = Math.max(2, Math.ceil(vectors.length * 0.30));
+    motifSubjects.forEach((subjects) => {
+      if (subjects.size > crossThreshold) motifReuse += 1;
+    });
+    for (let i = 0; i < vectors.length; i += 1) {
+      for (let j = i + 1; j < vectors.length; j += 1) {
+        if (pearsonCorrelation(vectors[i], vectors[j]) > 0.96) mirroredPairs += 1;
+      }
+    }
+    const flagged = lowPaletteCount > 0 || motifReuse > 0 || mirroredPairs > 0 || recurringMotifVectors > 0;
+    return {
+      flagged,
+      reason: flagged ? 'Synthetic pattern payload detected.' : '',
+      metrics: { lowPaletteCount, recurringMotifVectors, motifReuse, mirroredPairs }
+    };
+  }
+
   function validateGeminiPayload(payload) {
     const entries = Array.isArray(payload?.data) ? payload.data : [];
     if (!entries.length) return { ok: false, reason: 'No data returned from Gemini.', alerts: [makeAlert('FAILED_PAYLOAD','No data returned from Gemini.','warning',true)] };
@@ -705,6 +769,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       for (let j = i + 1; j < entries.length; j += 1) {
         if (vectorsTooSimilar(entries[i].v, entries[j].v)) return { ok: false, reason: 'Near-duplicate factor payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Near-duplicate factor payload detected.','warning',true)] };
       }
+    }
+    const synthetic = detectSyntheticPattern(entries);
+    if (synthetic.flagged) {
+      return { ok: false, reason: 'Synthetic pattern payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Synthetic pattern payload detected.','warning',true)], warnings: [`Synthetic metrics => palette=${synthetic.metrics.lowPaletteCount}|recurring=${synthetic.metrics.recurringMotifVectors}|motifs=${synthetic.metrics.motifReuse}|pairs=${synthetic.metrics.mirroredPairs}`] };
     }
     if (entries.length >= 3 && flatTailCount >= 3) {
       warnings.push('Tail slots 66-72 look flat across the batch.');
@@ -822,7 +890,7 @@ ${String(options?.retrySuffix || "").trim()}`;
           const validation = validateGeminiPayload(parsed);
           if (!validation.ok) {
             sawPayloadShapeFailure = true;
-            const retryablePayload = /Malformed factor payload|Duplicate factor payload|Near-duplicate factor payload|Provider payload lacks variance|Neutral provider payload/i.test(validation.reason || '');
+            const retryablePayload = /Malformed factor payload|Duplicate factor payload|Near-duplicate factor payload|Provider payload lacks variance|Neutral provider payload|Synthetic pattern payload/i.test(validation.reason || '');
             lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: retryablePayload && attempt < maxAttempts, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
             if (retryablePayload && attempt < maxAttempts) { await delay(500 * attempt); continue; }
             break;
@@ -990,19 +1058,19 @@ ${String(options?.retrySuffix || "").trim()}`;
     let payloadResponseText = '';
     let payloadWarnings = [];
     let lowVarianceWarning = false;
-    if (validBatch.length === 1) {
-      const retryPlans = [
-        { temperature: 0.15, retrySuffix: '' },
-        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, increase differentiation, avoid clustering around 0.5, and complete the JSON envelope.' },
-        { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. Preserve schema, increase differentiation, vary tail signals, and complete the JSON envelope.' }
-      ];
-      let lastPayload = null;
-      for (let attemptIndex = 0; attemptIndex < retryPlans.length; attemptIndex += 1) {
-        lastPayload = await fetchGeminiBatch(validBatch, retryPlans[attemptIndex]);
-        if (!lastPayload?.ok) {
-          if (lastPayload?.temporaryFailure === true && attemptIndex < retryPlans.length - 1) continue;
-          break;
-        }
+    const retryPlans = [
+      { temperature: 0.15, retrySuffix: '' },
+      { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, increase differentiation, avoid clustering around 0.5, and complete the JSON envelope.' },
+      { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. Preserve schema, increase differentiation, vary tail signals, and complete the JSON envelope. PREVIOUS_FAILURE: Pattern-Template Mirroring detected. Use a high-entropy, diverse range of unique 3-decimal values for every subject.' }
+    ];
+    let lastPayload = null;
+    for (let attemptIndex = 0; attemptIndex < retryPlans.length; attemptIndex += 1) {
+      lastPayload = await fetchGeminiBatch(validBatch, retryPlans[attemptIndex]);
+      if (!lastPayload?.ok) {
+        if (lastPayload?.temporaryFailure === true && attemptIndex < retryPlans.length - 1) continue;
+        break;
+      }
+      if (validBatch.length === 1) {
         const entry = Array.isArray(lastPayload?.data) ? lastPayload.data.find((d) => Number(d?.i) === 0) : null;
         const vals = Array.isArray(entry?.v) && entry.v.length === 72 ? entry.v : [];
         const quality = classifyPayloadQuality(vals, lastPayload?.warnings || []);
@@ -1011,10 +1079,9 @@ ${String(options?.retrySuffix || "").trim()}`;
         if (quality.retryable && attemptIndex < retryPlans.length - 1) continue;
         break;
       }
-      payload = lastPayload;
-    } else {
-      payload = await fetchGeminiBatch(validBatch);
+      break;
     }
+    payload = lastPayload;
     const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
     payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
@@ -1250,6 +1317,9 @@ ${String(options?.retrySuffix || "").trim()}`;
     minePlayer,
     neutronSearch,
     performGroundedMining,
-    debugConnection
+    debugConnection,
+    detectSyntheticPattern,
+    validateGeminiPayload,
+    pearsonCorrelation
   });
 })();
