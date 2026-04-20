@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v14.0.3 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.5 (OXYGEN-COBALT)';
 
 
   const state = {
