@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v14.0.6 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'v14.0.7 (OXYGEN-COBALT)';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
@@ -458,18 +458,36 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return (start >= 0 && end > start) ? text.slice(start, end + 1) : text;
   }
 
-  function safeJsonParse(raw) {
+  function safeJsonParse(raw, options = {}) {
+    const expectSingle = Boolean(options?.expectSingle);
     let clean = sanitizeJsonText(raw)
       .replace(/,\s*([}\]])/g, '$1')
       .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '');
+    const wrapSingle = (parsed) => {
+      if (!expectSingle || !parsed || typeof parsed !== 'object') return parsed;
+      if (Array.isArray(parsed?.data)) return parsed;
+      if (Array.isArray(parsed?.v) && parsed.v.length === 72) {
+        return { batch_count: 1, data: [{ i: 0, row_key: String(parsed?.row_key || parsed?.id || '').trim(), v: parsed.v }] };
+      }
+      return parsed;
+    };
     try {
-      return { parsed: JSON.parse(clean), clean };
+      return { parsed: wrapSingle(JSON.parse(clean)), clean };
     } catch (error) {
       const trimmed = clean.trim();
+      if (expectSingle) {
+        const vectorMatch = trimmed.match(/\[(?:\s*-?\d+(?:\.\d+)?\s*,?){72}\s*\]/);
+        if (vectorMatch) {
+          try {
+            const arr = JSON.parse(vectorMatch[0]);
+            return { parsed: { batch_count: 1, data: [{ i: 0, row_key: '', v: arr }] }, clean: vectorMatch[0], repaired: true };
+          } catch (_) {}
+        }
+      }
       try {
         if (trimmed.endsWith('}') && !trimmed.endsWith(']}')) {
           const repaired = `${trimmed}]}`;
-          return { parsed: JSON.parse(repaired), clean: repaired, repaired: true };
+          return { parsed: wrapSingle(JSON.parse(repaired)), clean: repaired, repaired: true };
         }
       } catch (_) {}
       try {
@@ -477,7 +495,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         const dataStart = trimmed.indexOf('[');
         if (dataStart >= 0 && lastObj > dataStart) {
           const repaired = trimmed.slice(0, lastObj + 1) + ']}';
-          return { parsed: JSON.parse(repaired), clean: repaired, repaired: true };
+          return { parsed: wrapSingle(JSON.parse(repaired)), clean: repaired, repaired: true };
         }
       } catch (_) {}
       return { parsed: null, clean, error };
@@ -697,15 +715,19 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function detectSyntheticPattern(entries = []) {
     const vectors = entries.map((entry) => Array.isArray(entry?.v) ? entry.v.map((n) => Number(n)) : []).filter((v) => v.length === 72);
-    if (!vectors.length) return { flagged: false, reason: '', metrics: {} };
+    const count = vectors.length;
+    if (count < 2) return { flagged: false, retryable: false, reason: '', metrics: { count } };
+
     let lowPaletteCount = 0;
     let mirroredPairs = 0;
     let recurringMotifVectors = 0;
     const motifSubjects = new Map();
+
     vectors.forEach((vector, idx) => {
       const formatted = vector.map((n) => n.toFixed(3));
       const unique3 = new Set(formatted);
-      if ((unique3.size / vector.length) < 0.40 || unique3.size < 28) lowPaletteCount += 1;
+      const ratio = unique3.size / vector.length;
+      if ((count >= 4 && (ratio < 0.30 || unique3.size < 20)) || (count >= 2 && count <= 3 && ratio < 0.15)) lowPaletteCount += 1;
       const localFour = new Map();
       const subjectMotifs = new Set();
       for (let i = 0; i <= formatted.length - 4; i += 1) {
@@ -713,29 +735,36 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         localFour.set(motif, (localFour.get(motif) || 0) + 1);
         subjectMotifs.add(motif);
       }
-      if (Array.from(localFour.values()).some((count) => count >= 3)) recurringMotifVectors += 1;
+      if (count >= 4 && Array.from(localFour.values()).some((c) => c >= 3)) recurringMotifVectors += 1;
       subjectMotifs.forEach((motif) => {
         if (!motifSubjects.has(motif)) motifSubjects.set(motif, new Set());
         motifSubjects.get(motif).add(idx);
       });
     });
+
     let motifReuse = 0;
-    const crossThreshold = Math.max(2, Math.ceil(vectors.length * 0.30));
+    const crossThreshold = count >= 4 ? 2 : 99;
     motifSubjects.forEach((subjects) => {
       if (subjects.size > crossThreshold) motifReuse += 1;
     });
+
     for (let i = 0; i < vectors.length; i += 1) {
       for (let j = i + 1; j < vectors.length; j += 1) {
-        if (pearsonCorrelation(vectors[i], vectors[j]) > 0.96) mirroredPairs += 1;
+        const r = pearsonCorrelation(vectors[i], vectors[j]);
+        if ((count >= 4 && r > 0.96) || (count <= 3 && r > 0.99)) mirroredPairs += 1;
       }
     }
+
+    if (count <= 3) {
+      const exactDuplicate = vectors.some((a, i) => vectors.some((b, j) => j > i && vectorSignature(a) === vectorSignature(b)));
+      const flagged = exactDuplicate || mirroredPairs > 0;
+      return { flagged, retryable: flagged, reason: flagged ? 'Synthetic pattern payload detected.' : '', metrics: { count, lowPaletteCount, recurringMotifVectors, motifReuse, mirroredPairs } };
+    }
+
     const flagged = lowPaletteCount > 0 || motifReuse > 0 || mirroredPairs > 0 || recurringMotifVectors > 0;
-    return {
-      flagged,
-      reason: flagged ? 'Synthetic pattern payload detected.' : '',
-      metrics: { lowPaletteCount, recurringMotifVectors, motifReuse, mirroredPairs }
-    };
+    return { flagged, retryable: flagged, reason: flagged ? 'Synthetic pattern payload detected.' : '', metrics: { count, lowPaletteCount, recurringMotifVectors, motifReuse, mirroredPairs } };
   }
+
 
   function validateGeminiPayload(payload) {
     const entries = Array.isArray(payload?.data) ? payload.data : [];
@@ -746,10 +775,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     let flatTailCount = 0;
     for (const entry of entries) {
       if (!Array.isArray(entry?.v) || entry.v.length !== 72) return { ok: false, reason: 'Malformed factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Malformed factor payload.','warning',true)] };
-      if (entries.length > 1 && !String(entry?.id_confirm || '').trim()) warnings.push('Missing id_confirm in batch payload.');
-      if (entries.length > 1 && !String(entry?.prop_confirm || '').trim()) warnings.push('Missing prop_confirm in batch payload.');
       if (entries.length > 1 && !String(entry?.row_key || '').trim()) warnings.push('Missing row_key in batch payload.');
-      if (entries.length > 1 && !String(entry?.line_confirm || '').trim()) warnings.push('Missing line_confirm in batch payload.');
       if (entry?.fallback === true) return { ok: false, reason: 'Fallback payload detected.', alerts: [makeAlert('FAILED_PAYLOAD','Fallback payload detected.','warning',false)] };
       if (entry.v.some((n) => !Number.isFinite(Number(n)))) return { ok: false, reason: 'Non-numeric factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Non-numeric factor payload.','warning',false)] };
       if (entry.v.some((n) => Number(n) < 0 || Number(n) > 1)) return { ok: false, reason: 'Out-of-range factor payload.', alerts: [makeAlert('FAILED_PAYLOAD','Out-of-range factor payload.','warning',false)] };
@@ -772,7 +798,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }
     const synthetic = detectSyntheticPattern(entries);
     if (synthetic.flagged) {
-      return { ok: false, reason: 'Synthetic pattern payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Synthetic pattern payload detected.','warning',true)], warnings: [`Synthetic metrics => palette=${synthetic.metrics.lowPaletteCount}|recurring=${synthetic.metrics.recurringMotifVectors}|motifs=${synthetic.metrics.motifReuse}|pairs=${synthetic.metrics.mirroredPairs}`] };
+      return { ok: false, reason: 'Synthetic pattern payload detected.', alerts: [makeAlert('AUTO_RETRY_TRIGGERED','Synthetic pattern payload detected.','warning',Boolean(synthetic.retryable))], warnings: [`Synthetic metrics => count=${synthetic.metrics.count}|palette=${synthetic.metrics.lowPaletteCount}|recurring=${synthetic.metrics.recurringMotifVectors}|motifs=${synthetic.metrics.motifReuse}|pairs=${synthetic.metrics.mirroredPairs}`] };
     }
     if (entries.length >= 3 && flatTailCount >= 3) {
       warnings.push('Tail slots 66-72 look flat across the batch.');
@@ -820,9 +846,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       const rowKey = p?.row_key || `${p?.LEG_ID || `LEG-${idx + 1}`}|${prop}|${line}`;
       return `[S${idx}] i=${idx}|row_key=${rowKey}|Name=${parsedPlayer}|Team=${team}|Opponent=${opponent}|Prop=${prop}|Line=${line}|GameTime=${gameTime || 'Unknown'}|PickType=${pickType}|Direction=${direction || 'Undecided'}|Type=${type}|IDENTITY_DIVERGENCE: For same-player multi-prop entries, treat each row_key as a distinct tactical scenario.|DIVERGENCE_ENFORCEMENT: maximize inter-subject differentiation and never mirror another subject.|VARY_TAIL_SIGNALS: Slots 66-72 must reflect the specific market volatility of each unique subject.[/S${idx}]`;
     }).join('\n');
-    const prompt = `Return minified JSON only. No markdown. No prose. Max 3 decimals. End with ]}.
+    const prompt = `${batch.length === 1
+      ? 'Return minified JSON only. No markdown. No prose. Max 3 decimals. Extract one 72-slot feature vector for the single subject capsule. Use row_key as the primary identity anchor. Output only valid minified JSON with shape {"row_key":"...","v":[72 floats]}.'
+      : `Return minified JSON only. No markdown. No prose. Max 3 decimals. End with ]}.
 You are an elite sharp analyst. Generate weighted floats (0.0 to 1.0) based on 2026 Statcast and environmental data. High Air Density must penalize Power; Wide Umpire Zones must boost Strikeouts. 0.5 is the fail-state.
-Perform a high-resolution extraction for each subject capsule. Use the row_key as the primary identity anchor, then id_confirm, prop_confirm, and line_confirm before generating v.
+Perform a high-resolution extraction for each subject capsule. Use the row_key as the primary identity anchor before generating v.
 CRITICAL: Any response containing identical or near-identical float sequences across different indices will be flagged as a failure.
 CRITICAL: Same player on different props must produce meaningfully different vectors.
 CRITICAL SLOT MAP:
@@ -838,7 +866,7 @@ CRITICAL SLOT MAP:
 Subjects:
 ${uniqueSubjects}
 MANDATORY: Ensure the JSON response is complete and terminates with the correct closing characters ]}.
-Return only valid minified JSON with shape {"batch_count":${batch.length},"data":[{"i":0,"row_key":"...","id_confirm":"...","prop_confirm":"...","line_confirm":"...","v":[72 floats]}]}.
+Return only valid minified JSON with shape {"batch_count":${batch.length},"data":[{"i":0,"row_key":"...","v":[72 floats]}]}.`}
 ${String(options?.retrySuffix || "").trim()}`;
 
 
@@ -879,7 +907,7 @@ ${String(options?.retrySuffix || "").trim()}`;
 
           const json = await response.json();
           const raw = extractGeminiText(json);
-          const parsedEnvelope = safeJsonParse(raw);
+          const parsedEnvelope = safeJsonParse(raw, { expectSingle: batch.length === 1 });
           const parsed = parsedEnvelope.parsed;
           if (!parsed) {
             sawPayloadShapeFailure = true;
@@ -1058,11 +1086,21 @@ ${String(options?.retrySuffix || "").trim()}`;
     let payloadResponseText = '';
     let payloadWarnings = [];
     let lowVarianceWarning = false;
-    const retryPlans = [
-      { temperature: 0.15, retrySuffix: '' },
-      { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, increase differentiation, avoid clustering around 0.5, and complete the JSON envelope.' },
-      { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. Preserve schema, increase differentiation, vary tail signals, and complete the JSON envelope. PREVIOUS_FAILURE: Pattern-Template Mirroring detected. Use a high-entropy, diverse range of unique 3-decimal values for every subject.' }
-    ];
+    const retryPlans = validBatch.length === 1
+      ? [
+          { temperature: 0.15, retrySuffix: '' },
+          { temperature: 0.0, retrySuffix: 'CRITICAL: Previous attempt failed structure. Output only the single JSON object with row_key and a 72-float v array. No prose. No markdown. No extra keys.' }
+        ]
+      : (validBatch.length <= 3
+        ? [
+            { temperature: 0.15, retrySuffix: '' },
+            { temperature: 0.0, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, complete the JSON envelope, and avoid malformed output.' }
+          ]
+        : [
+            { temperature: 0.15, retrySuffix: '' },
+            { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempt failed quality checks. Preserve schema, increase differentiation, avoid clustering around 0.5, and complete the JSON envelope.' },
+            { temperature: 0.45, retrySuffix: 'CRITICAL: Previous attempts failed quality checks. Preserve schema, increase differentiation, vary tail signals, and complete the JSON envelope. PREVIOUS_FAILURE: Pattern-Template Mirroring detected. Use a high-entropy, diverse range of unique 3-decimal values for every subject.' }
+          ]);
     let lastPayload = null;
     for (let attemptIndex = 0; attemptIndex < retryPlans.length; attemptIndex += 1) {
       lastPayload = await fetchGeminiBatch(validBatch, retryPlans[attemptIndex]);
