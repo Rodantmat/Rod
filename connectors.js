@@ -1,6 +1,7 @@
 window.PickCalcConnectors = (() => {
   const STORAGE_KEY = 'oxygen-cobalt-v15.2-config';
-  const DEFAULT_MODEL = 'gemini-2.5-flash';
+  const DEFAULT_MODEL = 'gemini-3.1-flash-lite-preview';
+  const DEFAULT_WORKER_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
   const FORBIDDEN_FILLER = [
     'talented','due','breakout','looking to','momentum','matchup favors','run production','flexibility','opportunities'
   ];
@@ -23,11 +24,11 @@ window.PickCalcConnectors = (() => {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
       return {
         apiKeys: Array.isArray(parsed.apiKeys) ? parsed.apiKeys.filter(Boolean) : [],
-        workerUrl: clean(parsed.workerUrl || ''),
-        model: clean(parsed.model || DEFAULT_MODEL) || DEFAULT_MODEL
+        workerUrl: DEFAULT_WORKER_URL,
+        model: DEFAULT_MODEL
       };
     } catch {
-      return { apiKeys: [], workerUrl: '', model: DEFAULT_MODEL };
+      return { apiKeys: [], workerUrl: DEFAULT_WORKER_URL, model: DEFAULT_MODEL };
     }
   }
 

@@ -135,11 +135,7 @@ window.PickCalcUI = (() => {
 
   function renderConfig(config) {
     const keys = el('apiKeysInput');
-    const worker = el('workerUrlInput');
-    const model = el('modelInput');
     if (keys) keys.value = (config.apiKeys || []).join('\n');
-    if (worker) worker.value = config.workerUrl || '';
-    if (model) model.value = config.model || '';
   }
 
   return { renderPool, renderProgress, renderResults, appendConsole, copyReport, showScreen, renderConfig };

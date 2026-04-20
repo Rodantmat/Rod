@@ -26,30 +26,6 @@
       </section>
 
       <section class="card">
-        <h2>API Configuration</h2>
-        <p class="mini-muted">Paste one Gemini API key per line. The app will auto-failover across keys. Worker URL is optional.</p>
-        <div class="config-stack top-gap">
-          <label class="config-label" for="apiKeysInput">Gemini API Keys (one per line)</label>
-          <textarea id="apiKeysInput" rows="5" placeholder="AIza...&#10;AIza..."></textarea>
-        </div>
-        <div class="config-grid top-gap">
-          <label class="config-field">
-            <span>Optional Worker URL</span>
-            <input id="workerUrlInput" type="text" placeholder="https://your-worker.example/run" />
-          </label>
-          <label class="config-field">
-            <span>Gemini Model</span>
-            <input id="modelInput" type="text" value="gemini-2.5-flash" />
-          </label>
-        </div>
-        <div class="btn-row top-gap">
-          <button id="saveKeyBtn">Save Config</button>
-          <button id="debugConnectionBtn" class="secondary">Debug Connection</button>
-        </div>
-        <div id="configMessage" class="message"></div>
-      </section>
-
-      <section class="card">
         <h2>Current Clean Pool</h2>
         <div class="btn-row top-gap pool-toolbar">
           <div id="poolCounts" class="pool-counts">Accepted: 0&nbsp;&nbsp;&nbsp;Rejected: 0</div>
@@ -60,6 +36,20 @@
           <button id="runBtn" class="run-btn">Run Analysis</button>
         </div>
       </section>
+
+      <section class="card">
+        <h2>Gemini API Key</h2>
+        <p class="mini-muted">Paste one Gemini API key per line. The app will auto-failover across keys. Model and connector are fixed internally.</p>
+        <div class="config-stack top-gap">
+          <label class="config-label" for="apiKeysInput">Gemini API Keys (one per line)</label>
+          <textarea id="apiKeysInput" rows="5" placeholder="AIza...&#10;AIza..."></textarea>
+        </div>
+        <div class="btn-row top-gap">
+          <button id="saveKeyBtn">Save Key</button>
+        </div>
+        <div id="configMessage" class="message"></div>
+      </section>
+
     </section>
 
     <section id="analysisScreen" class="hidden">

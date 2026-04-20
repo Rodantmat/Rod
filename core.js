@@ -42,30 +42,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   el('saveKeyBtn')?.addEventListener('click', () => {
     const saved = Connectors.saveConfig({
-      apiKeys: el('apiKeysInput').value,
-      workerUrl: el('workerUrlInput').value,
-      model: el('modelInput').value
+      apiKeys: el('apiKeysInput').value
     });
     UI.renderConfig(saved);
     setMessage('configMessage', `Config saved. Keys loaded: ${saved.apiKeys.length}.`);
-    UI.appendConsole(`CONFIG_SAVED keys=${saved.apiKeys.length} model=${saved.model}`);
-  });
-
-  el('debugConnectionBtn')?.addEventListener('click', async () => {
-    try {
-      setMessage('configMessage', 'Debugging Gemini connection…');
-      const saved = Connectors.saveConfig({
-        apiKeys: el('apiKeysInput').value,
-        workerUrl: el('workerUrlInput').value,
-        model: el('modelInput').value
-      });
-      await Connectors.debugConnection(saved);
-      setMessage('configMessage', 'Debug connection passed.');
-      UI.appendConsole('DEBUG_CONNECTION passed.');
-    } catch (err) {
-      setMessage('configMessage', `Debug failed: ${err.message}`);
-      UI.appendConsole(`DEBUG_CONNECTION failed: ${err.message}`);
-    }
+    UI.appendConsole(`CONFIG_SAVED keys=${saved.apiKeys.length}`);
   });
 
   el('runBtn')?.addEventListener('click', async () => {
@@ -74,9 +55,7 @@ window.addEventListener('DOMContentLoaded', () => {
       return;
     }
     const saved = Connectors.saveConfig({
-      apiKeys: el('apiKeysInput').value,
-      workerUrl: el('workerUrlInput').value,
-      model: el('modelInput').value
+      apiKeys: el('apiKeysInput').value
     });
     try {
       UI.showScreen('analysis');
