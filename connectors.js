@@ -108,6 +108,21 @@ window.PickCalcConnectors = (() => {
     ].join('\n');
   }
 
+  function extractGeminiText(data) {
+    const direct = clean(data?.text || data?.responseText || data?.output || '');
+    if (direct) return direct;
+    const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+    for (const candidate of candidates) {
+      const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+      for (const part of parts) {
+        const text = clean(part?.text || '');
+        if (text) return text;
+      }
+    }
+    const nested = clean(data?.result?.text || data?.data?.text || '');
+    return nested;
+  }
+
   async function requestGemini(prompt, config) {
     const keys = parseKeys((config?.apiKeys || []).join('\n'));
     if (!keys.length) throw new Error('No Gemini API keys saved.');
@@ -130,7 +145,7 @@ window.PickCalcConnectors = (() => {
           throw new Error(`Worker failed (${res.status}) ${bodyText.slice(0, 180)}`);
         }
         const data = await res.json();
-        const text = (data?.candidates?.[0]?.content?.parts || []).map((part) => part?.text || '').join('').trim();
+        const text = extractGeminiText(data);
         if (!text) throw new Error('Empty Gemini response.');
         return text;
       } catch (err) {
@@ -154,7 +169,51 @@ window.PickCalcConnectors = (() => {
     if (firstObj !== -1 && lastObj > firstObj) {
       try { return JSON.parse(raw.slice(firstObj, lastObj + 1)); } catch {}
     }
+    const blockParsed = parseScoringBlocks(raw);
+    if (Array.isArray(blockParsed) && blockParsed.length) return blockParsed;
     return null;
+  }
+
+  function parseScoringBlocks(text) {
+    const raw = String(text || '').replace(/\r/g, '').trim();
+    if (!raw) return [];
+    const chunks = raw.split(/\n(?=L\d+\s*\|)/).map((x) => x.trim()).filter(Boolean);
+    const out = [];
+    for (const chunk of chunks) {
+      const lines = chunk.split('\n').map((x) => x.trim()).filter(Boolean);
+      const head = lines[0] || '';
+      const m = head.match(/^L(\d+)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)$/i);
+      if (!m) continue;
+      const idx = Number(m[1]) - 1;
+      const player = clean(m[2]);
+      const prop = clean(m[3]);
+      const direction = clean(m[4]).toUpperCase().replace('OVER', 'MORE').replace('UNDER', 'LESS');
+      const score = Number(String(m[5]).replace(/[^\d.\-]/g, ''));
+      const confidence = clean(m[6]).toUpperCase();
+      const anchorLine = lines.find((x) => /^ANCHOR:/i.test(x)) || '';
+      const groundLine = lines.find((x) => /^GROUND:/i.test(x)) || '';
+      const statusLine = lines.find((x) => /^STATUS:/i.test(x)) || '';
+      const anchorText = anchorLine.replace(/^ANCHOR:\s*/i, '');
+      const anchorMatch = anchorText.match(/^\[?([^\]]+?)\]?\s+vs\s+\[?([^\]]+?)\]?\s*->\s*\[?([^\]]+?)\]?$/i) || anchorText.match(/^(.+?)\s+vs\s+(.+?)\s*->\s*(.+)$/i);
+      const groundText = groundLine.replace(/^GROUND:\s*/i, '');
+      const groundParts = groundText.split('|').map((x) => clean(x));
+      out.push({
+        leg_id: '',
+        batch_slot: idx + 1,
+        player,
+        prop,
+        direction,
+        score,
+        confidence,
+        trait: anchorMatch ? clean(anchorMatch[1]) : '',
+        opponent_behavior: anchorMatch ? clean(anchorMatch[2]) : '',
+        logic_path: anchorMatch ? clean(anchorMatch[3]) : '',
+        season_grounding: groundParts[0] || '',
+        recent_trend: groundParts[1] || '',
+        status: clean(statusLine.replace(/^STATUS:\s*/i, ''))
+      });
+    }
+    return out;
   }
 
   function mergeBatchRuns(batch, runs) {
@@ -166,7 +225,11 @@ window.PickCalcConnectors = (() => {
 
     return batch.map((row) => {
       const candidates = runs.map((run) => {
-        const match = (run || []).find((item) => clean(item.leg_id) === clean(row.LEG_ID || row.legId));
+        const list = Array.isArray(run) ? run : [];
+        let match = list.find((item) => clean(item.leg_id) === clean(row.LEG_ID || row.legId));
+        if (!match) match = list.find((item) => slug(item.player) === slug(row.parsedPlayer) && slug(item.prop) === slug(row.prop));
+        if (!match) match = list.find((item) => Number(item.batch_slot) === Number((batch.indexOf(row)) + 1));
+        if (!match && list.length === batch.length) match = list[batch.indexOf(row)] || null;
         return validateModelLeg(match, row);
       });
       const valid = candidates.filter((c) => c.valid);
@@ -226,6 +289,7 @@ window.PickCalcConnectors = (() => {
   function validateModelLeg(item, row) {
     const errors = [];
     if (!item || typeof item !== 'object') return { valid: false, errors: ['Missing model row.'] };
+    if (clean(item.status).toUpperCase() === 'REJECT') return { valid: false, errors: ['Model rejected row.'] };
     const legId = clean(item.leg_id);
     if (legId !== clean(row.LEG_ID || row.legId)) errors.push('Leg ID mismatch.');
 
