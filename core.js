@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.12 "Chromium Fang"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
 
 
   const state = {
@@ -20,19 +20,28 @@ window.PickCalcCore = window.PickCalcCore || {};
   };
 
   function calcCobaltEdge(vault = {}, row = {}) {
-    const direct = Number(vault?.finalScore);
-    const scores = [vault?.categoryScores?.identity, vault?.categoryScores?.trend, vault?.categoryScores?.stress, vault?.categoryScores?.risk]
-      .map((v) => Number(v))
-      .filter(Number.isFinite);
+    const scores = [
+      vault?.categoryScores?.identity,
+      vault?.categoryScores?.trend,
+      vault?.categoryScores?.stress,
+      vault?.categoryScores?.risk
+    ].map(v => {
+      let n = Number(v);
+      // Translation Logic: If AI sends a penalty (e.g. -15), subtract from 100 base.
+      if (n < 0) return 100 + n;
+      return n;
+    }).filter(Number.isFinite);
+
     const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-    const final = Number.isFinite(direct) ? Math.max(0, Math.min(100, Math.round(direct))) : computed;
+    const direct = Number(vault?.finalScore);
+    const final = Number.isFinite(direct) ? Math.round(direct) : computed;
     const chosenSide = String(row?.direction || '').trim() || 'More';
     return {
-      score: final,
+      score: Math.max(0, Math.min(100, final)),
       side: chosenSide,
       displaySide: chosenSide,
-      overScore: final / 100,
-      underScore: (100 - final) / 100,
+      overScore: Math.max(0, Math.min(100, final)) / 100,
+      underScore: (100 - Math.max(0, Math.min(100, final))) / 100,
       player: row?.parsedPlayer || '',
       legId: row?.LEG_ID || ''
     };

@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.12 "Chromium Fang"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -98,23 +98,15 @@ window.PickCalcUI = window.PickCalcUI || {};
       </div>`;
   }
 
-  function categoryValue(vault = {}, key = '') {
-    const normalizedKey = String(key || '').toLowerCase();
-    const scoreSet = vault?.categoryScores || {};
-    const categoryNode = vault?.categories?.[normalizedKey];
-    const direct = scoreSet?.[normalizedKey];
-    if (Number.isFinite(Number(direct))) return Math.round(Number(direct));
-    if (Number.isFinite(Number(categoryNode?.value))) return Math.round(Number(categoryNode.value));
-    return null;
+  function categoryValue(vault, key) {
+    // Access scores directly. Return null if missing to prevent fake '25' display.
+    const score = vault?.categoryScores?.[key];
+    return (score !== undefined && score !== null) ? score : null;
   }
 
-  function finalValue(vault = {}) {
-    if (Number.isFinite(Number(vault?.finalScore))) return Math.round(Number(vault.finalScore));
-    const values = ['identity', 'trend', 'stress', 'risk']
-      .map((key) => categoryValue(vault, key))
-      .filter((value) => Number.isFinite(Number(value)));
-    if (!values.length) return null;
-    return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  function finalValue(vault) {
+    // Extract the direct finalScore provided by the AI.
+    return vault?.finalScore !== undefined ? Math.round(vault.finalScore) : null;
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {

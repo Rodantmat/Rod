@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.12 "Chromium Fang"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -83,38 +83,22 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.12 - CHROMIUM FANG).',
+      'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR).',
       'Context: April 21, 2026.',
-      'Constraint: HOSTILE DEDUCTIVE AUDIT.',
-      '',
-      '[SCORING MANDATE]',
-      'Start every player at 100. You MUST find 2026-specific reasons to subtract points. If you do not subtract, you are failing the audit.',
-      '',
-      '1. IDENTITY: Fixed 100.',
-      '2. TREND (2026 Stats):',
-      '- Subtract 15 if last 3 games AVG < .220 or ERA > 4.50.',
-      '- Subtract 10 if Season K/9 < 7.0.',
-      '3. STRESS (Matchup):',
-      '- Subtract 20 for Top-5 Opponent OPS.',
-      '- Subtract 15 for LHP/RHP disadvantage.',
-      '4. RISK (Volatility):',
-      '- Subtract 45 for HOME RUNS (Mandatory Cap).',
-      '- Subtract 25 for Strikeout Lines > 6.5.',
-      '',
-      '[MAPPING LOCK]',
-      'JSON keys MUST be: "identity", "trend", "stress", "risk".',
-      'Summary Format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" (No adjectives).',
-      '</System_Instruction>',
+      'Mandate: Start every category at 100. Subtract points for flaws. ',
+      'Output keys MUST be: "identity", "trend", "stress", "risk".',
+      'Example: If Trend flaw is found, output: "trend": 85 (NOT -15).',
+      'Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.12",',
-      '  "codename": "Chromium Fang",',
+  "version": "v0.0.13",
+  "codename": "Cobalt Razor",
       '  "legs": [{',
       '    "player": "Full Name",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "ID: 100 | T: -0 | S: -0 | R: -0"',
+    "summary": "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"
       '  }],',
       '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
@@ -156,7 +140,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.12 - CHROMIUM FANG). Context: April 21, 2026. Constraint: HOSTILE DEDUCTIVE AUDIT. [SCORING MANDATE] Start every player at 100. You MUST find 2026-specific reasons to subtract points. If you do not subtract, you are failing the audit. 1. IDENTITY: Fixed 100. 2. TREND (2026 Stats): - Subtract 15 if last 3 games AVG < .220 or ERA > 4.50. - Subtract 10 if Season K/9 < 7.0. 3. STRESS (Matchup): - Subtract 20 for Top-5 Opponent OPS. - Subtract 15 for LHP/RHP disadvantage. 4. RISK (Volatility): - Subtract 45 for HOME RUNS (Mandatory Cap). - Subtract 25 for Strikeout Lines > 6.5. [MAPPING LOCK] JSON keys MUST be: "identity", "trend", "stress", "risk". Summary Format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" (No adjectives). Output JSON only.'
+          text: 'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR). Context: April 21, 2026. Mandate: Start every category at 100. Subtract points for flaws. Output keys MUST be: "identity", "trend", "stress", "risk". Example: If Trend flaw is found, output: "trend": 85 (NOT -15). Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -309,20 +293,32 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function hydrateVaultFromLeg(row = {}, leg = {}) {
     const correctedLeg = applyGroundedIdentity(row, leg);
     const vault = createZeroFilledVault(row);
-    const normalizedScores = normalizeLegScores(correctedLeg);
-    const identity = normalizedScores.identity;
-    const trend = normalizedScores.trend;
-    const stress = normalizedScores.stress;
-    const risk = normalizedScores.risk;
-    const finalScore = stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
+    const vaultEntry = {
+      finalScore: Number(correctedLeg?.final_score),
+      categoryScores: {
+        identity: Number(correctedLeg?.scores?.identity || 0),
+        trend: Number(correctedLeg?.scores?.trend || 0),
+        stress: Number(correctedLeg?.scores?.stress || 0),
+        risk: Number(correctedLeg?.scores?.risk || 0)
+      },
+      summary: String(correctedLeg?.summary || ''),
+      reliable: true
+    };
+    const identity = vaultEntry.categoryScores.identity;
+    const trend = vaultEntry.categoryScores.trend;
+    const stress = vaultEntry.categoryScores.stress;
+    const risk = vaultEntry.categoryScores.risk;
+    const finalScore = Number.isFinite(vaultEntry.finalScore)
+      ? Math.round(vaultEntry.finalScore)
+      : stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, vaultEntry.categoryScores));
 
     vault.isReal = true;
     vault.reliable = true;
     vault.terminalState = 'Verified';
     vault.source = 'gemini';
-    vault.categoryScores = { identity, trend, stress, risk };
+    vault.categoryScores = vaultEntry.categoryScores;
     vault.finalScore = finalScore;
-    vault.summary = String(correctedLeg?.summary || '').trim();
+    vault.summary = vaultEntry.summary.trim();
     vault.auditMeta = {
       sport: String(correctedLeg?.sport || '').trim(),
       player: String(correctedLeg?.player || '').trim(),
