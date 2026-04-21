@@ -1,0 +1,10 @@
+OXYGEN-COBALT v14.0.7 CHECKPOINTS
+
+Base: v14.0.6 final attached by user.
+Checkpoint 1: Version sync updated to v14.0.7 across parser.js, connectors.js, core.js, ui-engine.js, index.html.
+Checkpoint 2: Synthetic detector recalibrated by batch size. Disabled for 1-leg, exact-duplication only for 2-3 legs, full detector for 4+ legs.
+Checkpoint 3: Single-leg Gemini contract simplified to {"row_key":"...","v":[72 floats]}.
+Checkpoint 4: Single-leg parser now recovers direct 72-float arrays and object-only responses into internal batch_count/data format.
+Checkpoint 5: Retry plans updated by batch size with single-leg temp 0.0 structural retry.
+Checkpoint 6: Multi-leg contract reduced to batch_count + i + row_key + v to reduce schema bloat.
+Checkpoint 7: Audit completed on syntax and targeted validation flow.

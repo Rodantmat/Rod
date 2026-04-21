@@ -4,20 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AlphaDog v0.0.1</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <section id="intakeScreen" class="hidden">
+      <img src="logo.png" class="app-logo" alt="AlphaDog">
       <header class="hero">
-        <h1 id="intakeTitle">PickCalc Multi-Sport Engine</h1>
+        <h1 id="intakeTitle">AlphaDog v0.0.1</h1>
         <p>Paste board chunks, ingest MLB props, track feed status, then run the clean pool.</p>
       </header>
-
 
       <section class="card">
         <h2>Paste Board Text</h2>
         <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
+        <div id="runSummary" class="feed-status-inline"></div>
         <div id="feedStatus" class="feed-status-inline"></div>
         <div class="btn-row top-gap">
           <button id="clearBoxBtn" class="secondary">Clear box</button>
@@ -42,9 +44,10 @@
     </section>
 
     <section id="analysisScreen" class="hidden">
+      <img src="logo.png" class="app-logo" alt="AlphaDog">
       <header class="hero hero-inline">
         <div>
-          <h1 id="analysisTitle">Run Analysis AlphaDog v0.0.1</h1>
+          <h1 id="analysisTitle">AlphaDog v0.0.1</h1>
         </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
@@ -54,13 +57,12 @@
 
       <div id="progressBar" class="progress-bar-container"></div>
 
-      <section class="card">
-        <h2>Run Snapshot</h2>
+      <section class="card analysis-status-card">
         <div id="analysisSummary" class="summary-pills"></div>
         <div id="analysisHint" class="message"></div>
         <div id="runOverlay" class="run-overlay hidden">
           <div class="run-overlay-card">
-            <div class="overlay-title">Fusion Recovery Mining</div>
+            <div class="overlay-title">AlphaDog Stream</div>
             <div id="overlaySub" class="overlay-sub">Initializing…</div>
             <div id="overlayBody" class="message">Preparing factor cards.</div>
           </div>
@@ -68,37 +70,9 @@
       </section>
 
       <section class="card">
-        <h2>AlphaDog Output</h2>
-                <div class="analysis-connector-wrap">
+        <div class="analysis-connector-wrap">
           <svg id="connectorSvg" class="connector-lines" aria-hidden="true"></svg>
           <div id="miningGrid" class="mining-grid"></div>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2 id="shieldTitle">Overall Auditor Score</h2>
-        <div id="shieldPanel" class="shield-grid"></div>
-      </section>
-
-      <section class="card">
-        <h2>Current Clean Pool</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Sport</th>
-                <th>League</th>
-                <th>Player / Entity</th>
-                <th>Team</th>
-                <th>Opponent</th>
-                <th>Prop</th>
-                <th>Line</th>
-                <th>Type</th>
-              </tr>
-            </thead>
-            <tbody id="analysisResultsBody"></tbody>
-          </table>
         </div>
       </section>
 
@@ -114,6 +88,11 @@
       <section class="card">
         <h2>System Console</h2>
         <div id="systemConsole" class="console-wrap"></div>
+      </section>
+
+      <section class="card alphadog-footer-card">
+        <h2>Audit Footer</h2>
+        <div id="auditFooterGrade" class="audit-footer-grade"></div>
       </section>
     </section>
   </div>
