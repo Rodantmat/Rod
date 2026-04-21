@@ -1,0 +1,19 @@
+ALPHADOG v0.0.3 "STEROID SQUIRREL" - FINAL COMPLIANCE CHECKLIST
+
+[OK] Version bumped globally to v0.0.3 "Steroid Squirrel" in index.html, ui-engine.js, core.js, and connectors.js.
+[OK] Header logo/icon sizing updated to 52px logo and 32x32 icon shell.
+[OK] Screen 1 summary kept as a vertical sport badge + prop metric stack with no player-name list.
+[OK] Ingested Pool section removed from intake UI.
+[OK] Probe/snapshot text removed from visible progress UI.
+[OK] Progress bar still initializes at 10, creeps to 90, and completes at 100 on success.
+[OK] Player result cards remain one-player-per-block with identical headline/subline font sizing.
+[OK] Score colors map to green/yellow/red thresholds.
+[OK] Raw payload debug block retained at the bottom.
+[OK] Primary model forced to gemini-3.1-pro-preview.
+[OK] Fallback model set to gemini-3.1-flash-lite-preview.
+[OK] x-goog-api-key header retained.
+[OK] 2026 roster shield facts updated for Keider Montero, Kyle Harrison, Parker Messick, and Shota Imanaga.
+[OK] Feed-listed players are forced to identity score 100 in connector hydration.
+[OK] Hit probability field added to JSON schema handling and card rendering.
+[OK] Final-score calibration and HR 0.5 cap logic added in connectors.js.
+[OK] Recursive corrected rerun now triggers when roster_accuracy < 85.

@@ -1,7 +1,7 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.2 "Iron Bite"';
-  const MODEL_ID = 'gemini-2.5-pro';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.3 "Steroid Squirrel"';
+  const MODEL_ID = 'gemini-3.1-pro-preview';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
     'Hits', 'Total Bases', 'Runs', 'RBIs', 'Hits+Runs+RBIs', 'Singles', 'Doubles', 'Home Runs', 'Stolen Bases'
@@ -43,9 +43,7 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderRunSummary(rows = []) {
     const mount = el('runSummary');
-    if (!mount) return;
-    const mlbRows = asArray(rows).filter((row) => String(row?.sport || '').toUpperCase() === 'MLB');
-    mount.innerHTML = mlbRows.length ? '<div class="feed-stack-spacer"></div>' : '';
+    if (mount) mount.innerHTML = '';
   }
 
   function renderPoolCounts(accepted = 0, rejected = 0) {
@@ -62,16 +60,13 @@ window.PickCalcUI = window.PickCalcUI || {};
       mount.innerHTML = '';
       return;
     }
-
     const counts = new Map();
     mlbRows.forEach((row) => {
       const prop = purgeUiNoise(row?.prop || 'Unknown Prop');
       counts.set(prop, (counts.get(prop) || 0) + 1);
     });
-
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop))
       .concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-
     mount.innerHTML = `
       <div class="status-panel iron-summary-stack">
         <div class="feed-badge-row"><div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div></div>
@@ -136,7 +131,8 @@ window.PickCalcUI = window.PickCalcUI || {};
       metric: purgeUiNoise(meta.metric || row?.prop || ''),
       line: purgeUiNoise(meta.line || row?.line || ''),
       direction: purgeUiNoise(meta.direction || row?.direction || ''),
-      type: purgeUiNoise(meta.type || row?.type || 'Regular')
+      type: purgeUiNoise(meta.type || row?.type || 'Regular'),
+      hitProb: purgeUiNoise(meta.hitProb || row?.hitProb || '')
     };
   }
 
@@ -148,6 +144,7 @@ window.PickCalcUI = window.PickCalcUI || {};
         <div class="alphadog-card-headline">${escapeHtml(display.sport)} - ${escapeHtml(display.player)} - ${escapeHtml(display.team || 'Unknown Team')}</div>
         <div class="alphadog-card-subline">@ ${escapeHtml(display.opponent || 'Unknown Opponent')} - ${escapeHtml(display.dateTime || 'Time Pending')}</div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} - ${escapeHtml(display.line || '—')} - ${escapeHtml(display.direction || '—')} - ${escapeHtml(display.type || 'Regular')}</div>
+        ${display.hitProb ? `<div class="alphadog-hit-prob">Hit Prob: ${escapeHtml(display.hitProb)}</div>` : ''}
         ${renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
