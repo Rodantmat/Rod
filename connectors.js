@@ -85,20 +85,21 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '<System_Instruction>',
       'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR).',
       'Context: April 21, 2026.',
-      'Mandate: Start every category at 100. Subtract points for flaws. ',
+      'Mandate: Start every category at 100. Subtract points for flaws.',
       'Output keys MUST be: "identity", "trend", "stress", "risk".',
       'Example: If Trend flaw is found, output: "trend": 85 (NOT -15).',
       'Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"',
+      '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-  "version": "v0.0.13",
-  "codename": "Cobalt Razor",
+      '  "version": "v0.0.13",',
+      '  "codename": "Cobalt Razor",',
       '  "legs": [{',
       '    "player": "Full Name",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-    "summary": "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"
+      '    "summary": "ID: 100 | T: -0 | S: -0 | R: -0"',
       '  }],',
       '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
@@ -140,7 +141,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR). Context: April 21, 2026. Mandate: Start every category at 100. Subtract points for flaws. Output keys MUST be: "identity", "trend", "stress", "risk". Example: If Trend flaw is found, output: "trend": 85 (NOT -15). Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" Output JSON only.'
+          text: 'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR). Context: April 21, 2026. Mandate: Start every category at 100. Subtract points for flaws. Output keys MUST be: "identity", "trend", "stress", "risk". Example: If Trend flaw is found, output: "trend": 85 (NOT -15). Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]". Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -294,26 +295,27 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const correctedLeg = applyGroundedIdentity(row, leg);
     const vault = createZeroFilledVault(row);
     const vaultEntry = {
-      finalScore: Number(correctedLeg?.final_score),
+      finalScore: Number(correctedLeg.final_score),
       categoryScores: {
         identity: Number(correctedLeg?.scores?.identity || 0),
         trend: Number(correctedLeg?.scores?.trend || 0),
         stress: Number(correctedLeg?.scores?.stress || 0),
         risk: Number(correctedLeg?.scores?.risk || 0)
       },
-      summary: String(correctedLeg?.summary || ''),
+      summary: String(correctedLeg.summary || ''),
       reliable: true
     };
-    const identity = vaultEntry.categoryScores.identity;
-    const trend = vaultEntry.categoryScores.trend;
-    const stress = vaultEntry.categoryScores.stress;
-    const risk = vaultEntry.categoryScores.risk;
+    const normalizedScores = normalizeLegScores({ scores: vaultEntry.categoryScores });
+    const identity = normalizedScores.identity;
+    const trend = normalizedScores.trend;
+    const stress = normalizedScores.stress;
+    const risk = normalizedScores.risk;
     const finalScore = Number.isFinite(vaultEntry.finalScore)
-      ? Math.round(vaultEntry.finalScore)
-      : stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, vaultEntry.categoryScores));
+      ? vaultEntry.finalScore
+      : stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
 
     vault.isReal = true;
-    vault.reliable = true;
+    vault.reliable = vaultEntry.reliable;
     vault.terminalState = 'Verified';
     vault.source = 'gemini';
     vault.categoryScores = vaultEntry.categoryScores;

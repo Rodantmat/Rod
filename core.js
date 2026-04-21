@@ -35,13 +35,14 @@ window.PickCalcCore = window.PickCalcCore || {};
     const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
     const direct = Number(vault?.finalScore);
     const final = Number.isFinite(direct) ? Math.round(direct) : computed;
+    const bounded = Math.max(0, Math.min(100, final));
     const chosenSide = String(row?.direction || '').trim() || 'More';
     return {
-      score: Math.max(0, Math.min(100, final)),
+      score: bounded,
       side: chosenSide,
       displaySide: chosenSide,
-      overScore: Math.max(0, Math.min(100, final)) / 100,
-      underScore: (100 - Math.max(0, Math.min(100, final))) / 100,
+      overScore: bounded / 100,
+      underScore: (100 - bounded) / 100,
       player: row?.parsedPlayer || '',
       legId: row?.LEG_ID || ''
     };
