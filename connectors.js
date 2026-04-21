@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.5 "Cyber Cobra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -73,60 +73,58 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         `DIRECTION: ${row.direction || ''}`,
         `TYPE: ${row.type || 'Regular'}`,
         `GAME_TIME: ${row.gameTimeText || row.gameTime || ''}`
-      ].join('\n');
-    }).join('\n\n');
+      ].join('\\n');
+    }).join('\\n\\n');
 
     const correctionLine = mode === 'corrected'
-      ? 'This is a Corrected Final Run. Re-score the full batch using penalty-first logic. Any weak roster grounding or hallucination risk must be corrected now.'
-      : 'Initial final run. Use penalty-first logic from 100 and deduct for matchup stress, fatigue, or high-variance line types.';
+      ? 'Recursive audit pass triggered. Re-score the full batch using the exact same deterministic scoring anchors. Outputs must remain within a ±2 point margin for the same legs.'
+      : 'Initial deterministic audit pass. Use the same scoring anchors for every leg and keep outputs mechanically stable across repeated runs.';
 
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
-      'You are AlphaDog v0.0.5 "Cyber Cobra". Analyze up to 24 legs. Resolve identities. Determine if More or Less is the superior play based on 2026 depth.',
-      'Assume all input feed data is already verified 2026 reality. Do not invalidate legs using 2024 or 2025 assumptions.',
-      'Grounded 2026 facts:',
-      '- Chase Burns (CIN): Active MLB Starter (1-1, 2.42 ERA).',
-      '- Nolan McLean (NYM): Active MLB Starter (1-1, 2.28 ERA).',
-      '- Munetaka Murakami (CWS): Active MLB 1B/3B (8 HRs, .918 OPS).',
-      'If a player matches one of those grounded names, identity must be 100.',
-      'Line detection must capture and resolve: Regular, Goblin, Demon, Taco, and Free Pick.',
-      'Do not reject shorthand names. Raw fragments like "J Smith" are valid and must be normalized in context, not refused.',
-      correctionLine,
-      'JSON schema:',
+      '<System_Instruction>',
+      'Role: Iron Bite Auditor (NEON HYDRA v0.0.6).',
+      'Context: April 21, 2026.',
+      'Objective: Provide deterministic, repeatable risk audits.',
+      '',
+      'GROUNDING RULES:',
+      '1. DETERMINISTIC SCORING: You must calculate scores using the Penalty-First Formula: [100 - (Stress*0.4) - (Risk*0.6)].',
+      '2. NO DRIFT: Consecutive runs for the same player MUST yield identical scores within a ±2 point margin.',
+      '3. ROSTER SHIELD: Assume 100% feed accuracy. All players = 100 Identity.',
+      '4. CALIBRATION: Use Hit Prob % internally to anchor the score, but DO NOT output Hit Prob in the player JSON.',
+      '5. BRUTALITY: 0.5 HR props are capped at a 55 Final Score unless 2026 Daily HR rate > 40%.',
+      '',
+      'RECURSIVE AUDIT:',
+      'If Auditor Score for Roster Accuracy or Logic Consistency is < 95, discard and regenerate.',
+      '</System_Instruction>',
+      '',
+      '<JSON_Schema>',
       '{',
+      '  "version": "v0.0.6",',
+      '  "codename": "Neon Hydra",',
       '  "legs": [',
       '    {',
       '      "row_key": "LEG-1",',
-      '      "sport": "MLB",',
-      '      "player": "Full player name",',
-      '      "team": "Full team name",',
-      '      "opponent": "Opponent team name",',
-      '      "date_time": "Tuesday 4:40pm",',
-      '      "metric": "Pitcher Strikeouts",',
-      '      "line": "4.5",',
-      '      "direction": "More",',
-      '      "hit_prob": "XX%",',
-      '      "type": "Goblin",',
-      '      "identity": 0,',
-      '      "trend": 0,',
-      '      "stress": 0,',
-      '      "risk": 0,',
+      '      "player": "Full Name",',
+      '      "team": "Team",',
+      '      "opponent": "OPP",',
+      '      "metric": "Prop",',
+      '      "line": "Value",',
+      '      "direction": "More/Less",',
+      '      "scores": {"id": 100, "trend": 0, "stress": 0, "risk": 0},',
       '      "final_score": 0,',
-      '      "summary": "brief one-line audit summary"',
+      '      "summary": "Brutal 1-sentence 2026 analysis."',
       '    }',
       '  ],',
-      '  "batch_audit": {',
-      '    "logic_consistency": 0,',
-      '    "bias_control": 0,',
-      '    "roster_accuracy": 0,',
-      '    "risk_buffer": 0',
-      '    "corrected_final_run": false',
-      '  }',
+      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0, "bias_control": 0 }',
       '}',
+      '</JSON_Schema>',
+      '',
+      correctionLine,
       '',
       'Subjects:',
       subjects
-    ].join('\n');
+    ].join('\\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -158,7 +156,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'You are AlphaDog v0.0.5 "Cyber Cobra". Analyze up to 24 legs using 2026 reality. Assume input feed data is valid 2026 truth. If a player is Chase Burns, Nolan McLean, or Munetaka Murakami, set identity to 100. Resolve More or Less. Score identity, trend, stress, risk, and final_score. Add batch_audit with logic_consistency, bias_control, roster_accuracy, and risk_buffer. Output JSON only.'
+          text: 'You are AlphaDog v0.0.6 "Neon Hydra". Use deterministic scoring only. Assume all feed data is accurate. Identity is 100 for all players. Final score must mechanically follow [100 - (Stress*0.4) - (Risk*0.6)] with a 0.5 HR cap at 55 unless daily HR rate exceeds 40%. Do not output hit probability in the player JSON. Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -252,14 +250,59 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     });
   }
 
+  const SCORE_CACHE = new Map();
+
+  function normalizeLegScores(leg = {}) {
+    const nested = leg?.scores || {};
+    const identity = clampScore(leg?.identity ?? nested?.id ?? 100);
+    const trend = clampScore(leg?.trend ?? nested?.trend ?? 0);
+    const stress = clampScore(leg?.stress ?? nested?.stress ?? 0);
+    const risk = clampScore(leg?.risk ?? nested?.risk ?? 0);
+    return { identity, trend, stress, risk };
+  }
+
+  function computeDeterministicFinalScore(row = {}, scorePack = {}) {
+    const stress = clampScore(scorePack?.stress) ?? 0;
+    const risk = clampScore(scorePack?.risk) ?? 0;
+    let finalScore = clampScore(Math.round(100 - (stress * 0.4) - (risk * 0.6)));
+    const metric = String(row?.prop || row?.metric || '').toLowerCase();
+    const line = String(row?.line || '').trim();
+    if (metric.includes('home run') && line === '0.5') {
+      finalScore = Math.min(finalScore ?? 0, 55);
+    }
+    return finalScore;
+  }
+
+  function makeReasonablenessKey(row = {}, correctedLeg = {}) {
+    return [
+      String(correctedLeg?.player || row?.parsedPlayer || row?.player || '').trim().toLowerCase(),
+      String(correctedLeg?.team || row?.team || '').trim().toLowerCase(),
+      String(correctedLeg?.opponent || row?.opponent || '').trim().toLowerCase(),
+      String(correctedLeg?.metric || row?.prop || '').trim().toLowerCase(),
+      String(correctedLeg?.line || row?.line || '').trim().toLowerCase(),
+      String(correctedLeg?.direction || row?.direction || '').trim().toLowerCase()
+    ].join('|');
+  }
+
+  function stabilizeFinalScore(cacheKey, computedScore) {
+    const prior = SCORE_CACHE.get(cacheKey);
+    if (Number.isFinite(prior) && Number.isFinite(computedScore) && Math.abs(prior - computedScore) > 3) {
+      SCORE_CACHE.set(cacheKey, prior);
+      return prior;
+    }
+    SCORE_CACHE.set(cacheKey, computedScore);
+    return computedScore;
+  }
+
   function hydrateVaultFromLeg(row = {}, leg = {}) {
     const correctedLeg = applyGroundedIdentity(row, leg);
     const vault = createZeroFilledVault(row);
-    const identity = clampScore(correctedLeg?.identity);
-    const trend = clampScore(correctedLeg?.trend);
-    const stress = clampScore(correctedLeg?.stress);
-    const risk = clampScore(correctedLeg?.risk);
-    const finalScore = clampScore(correctedLeg?.final_score);
+    const normalizedScores = normalizeLegScores(correctedLeg);
+    const identity = normalizedScores.identity;
+    const trend = normalizedScores.trend;
+    const stress = normalizedScores.stress;
+    const risk = normalizedScores.risk;
+    const finalScore = stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
 
     vault.isReal = true;
     vault.reliable = true;
@@ -277,8 +320,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       metric: String(correctedLeg?.metric || '').trim(),
       line: String(correctedLeg?.line || '').trim(),
       direction: String(correctedLeg?.direction || '').trim(),
-      type: String(correctedLeg?.type || '').trim(),
-      hitProb: String(correctedLeg?.hit_prob || '').trim()
+      type: String(correctedLeg?.type || '').trim()
     };
     vault.categories = {
       identity: makeCategory(identity, 'Identity'),
@@ -299,7 +341,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   function needsCorrectedRun(batchAudit = {}) {
-    return ['logicConsistency', 'biasControl', 'rosterAccuracy', 'riskBuffer'].some((key) => Number(batchAudit?.[key]) < 85);
+    return ['logicConsistency', 'biasControl', 'rosterAccuracy'].some((key) => Number(batchAudit?.[key]) < 95);
   }
 
   async function streamingIngress(pool = [], stateRef = null, hooks = {}) {

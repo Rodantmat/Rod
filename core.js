@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.5 "Cyber Cobra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
 
 
   const state = {
@@ -175,6 +175,20 @@ window.PickCalcCore = window.PickCalcCore || {};
   }
 
 
+  function handleBack() {
+    state.miningVault = {};
+    state.lastResult = null;
+    try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
+    ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results'].forEach((id) => {
+      const node = UI.el(id);
+      if (!node) return;
+      node.innerHTML = '';
+      if ('textContent' in node) node.textContent = '';
+    });
+    UI.stopHeartbeat?.();
+    UI.backToIntake?.();
+  }
+
   function handleResetAll() {
     let preservedKey = '';
     try { preservedKey = String(window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
@@ -252,12 +266,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (savedKey) { document.getElementById('apiKeyInput').value = savedKey; window.__OXYGEN_GEMINI_KEY__ = savedKey; }
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
-    UI.el('backBtn')?.addEventListener('click', () => {
-      state.miningVault = {};
-      state.lastResult = null;
-      try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
-      UI.backToIntake();
-    });
+    UI.el('backBtn')?.addEventListener('click', handleBack);
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
       handleResetAll();
@@ -283,6 +292,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, handleResetAll, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, handleBack, handleResetAll, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();

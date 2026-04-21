@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.5 "Cyber Cobra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -73,8 +73,10 @@ window.PickCalcUI = window.PickCalcUI || {};
 
     mount.innerHTML = `
       <div class="status-panel iron-summary-stack">
-        <div class="feed-badge-row"><div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div></div>
-        <div class="feed-summary-list vertical-metric-stack">${ordered.map((prop) => `<div class="feed-line">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
+        <div class="metric-stack-shell">
+          <div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div>
+          <div class="feed-summary-list vertical-metric-stack">${ordered.map((prop) => `<div class="feed-line prop-metric">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
+        </div>
       </div>`;
   }
 
@@ -109,27 +111,18 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
   }
 
-  function hitProbValue(vault = {}) {
-    const direct = vault?.auditMeta?.hitProb;
-    if (direct === null || direct === undefined || direct === '') return null;
-    const num = Number(String(direct).replace(/%/g, ''));
-    return Number.isFinite(num) ? Math.round(num) : null;
-  }
-
   function renderAlphaDogScoreGrid(vault = {}) {
-    const hitProb = hitProbValue(vault);
     const cells = [
       ['Identity', categoryValue(vault, 'identity')],
       ['Trend', categoryValue(vault, 'trend')],
       ['Stress', categoryValue(vault, 'stress')],
       ['Risk', categoryValue(vault, 'risk')],
-      ['Hit Prob', hitProb !== null ? `${hitProb}%` : '—'],
       ['Final', finalValue(vault), true]
     ];
-    return `<div class="alphadog-card-grid alphadog-card-grid--6">${cells.map(([label, value, isFinal]) => `
+    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
       <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
         <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(typeof value === 'string' ? Number(String(value).replace(/%/g, '')) : value)}">${escapeHtml(typeof value === 'string' ? value : formatScore(value))}</div>
+        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
       </div>`).join('')}</div>`;
   }
 
@@ -153,8 +146,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     const summary = purgeUiNoise(vault?.summary || '');
     return `
       <article class="alphadog-player-card">
-        <div class="alphadog-card-headline">${escapeHtml(display.sport)} - ${escapeHtml(display.player)} - ${escapeHtml(display.team || 'Unknown Team')}</div>
-        <div class="alphadog-card-subline">@ ${escapeHtml(display.opponent || 'Unknown Opponent')} - ${escapeHtml(display.dateTime || 'Time Pending')}</div>
+        <div class="alphadog-card-header">
+          <div class="alphadog-card-headline">${escapeHtml(display.sport)} - ${escapeHtml(display.player)} - ${escapeHtml(display.team || 'Unknown Team')}</div>
+          <div class="alphadog-card-subline">@ ${escapeHtml(display.opponent || 'Unknown Opponent')} - ${escapeHtml(display.dateTime || 'Time Pending')}</div>
+        </div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} - ${escapeHtml(display.line || '—')} - ${escapeHtml(display.direction || '—')} - ${escapeHtml(display.type || 'Regular')}</div>
         ${renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
