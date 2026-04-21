@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.7 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.10 "Obsidian Ghost"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -75,7 +75,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       <div class="status-panel iron-summary-stack">
         <div class="metric-stack-shell">
           <div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div>
-          <div class="feed-summary-list vertical-metric-stack">${ordered.map((prop) => `<div class="feed-line prop-metric">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
+          <div class="feed-summary-list vertical-metric-stack centered-metric-stack">${ordered.map((prop) => `<div class="feed-line prop-metric">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
         </div>
       </div>`;
   }
@@ -112,21 +112,33 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {
-    const scoreItems = [
+    const cells = [
       ['Identity', categoryValue(vault, 'identity')],
       ['Trend', categoryValue(vault, 'trend')],
       ['Stress', categoryValue(vault, 'stress')],
-      ['Risk', categoryValue(vault, 'risk')]
+      ['Risk', categoryValue(vault, 'risk')],
+      ['Final Score', finalValue(vault), true]
     ];
-    return `<div class="alphadog-card-grid">${scoreItems.map(([label, value]) => `
-      <div class="alphadog-score-tile">
+    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
+      <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
         <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-      </div>`).join('')}</div>
-      <div class="alphadog-final-score-bar">
-        <div class="alphadog-final-score-label">Final Score</div>
-        <div class="alphadog-final-score-value ${scoreClass(finalValue(vault))}">${escapeHtml(formatScore(finalValue(vault)))}</div>
-      </div>`;
+        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
+      </div>`).join('')}</div>`;
+  }
+
+  function getAuditDisplay(row = {}, vault = {}) {
+    const meta = vault?.auditMeta || {};
+    return {
+      sport: purgeUiNoise(meta.sport || row?.sport || 'MLB'),
+      player: purgeUiNoise(meta.player || row?.parsedPlayer || row?.player || 'Unknown Player'),
+      team: purgeUiNoise(meta.team || row?.teamFullName || row?.team || ''),
+      opponent: purgeUiNoise(meta.opponent || row?.opponentFullName || row?.opponent || ''),
+      dateTime: titleCaseDay(meta.dateTime || row?.gameDayTime || row?.gameTimeText || row?.gameTime || ''),
+      metric: purgeUiNoise(meta.metric || row?.prop || ''),
+      line: purgeUiNoise(meta.line || row?.line || ''),
+      direction: purgeUiNoise(meta.direction || row?.direction || ''),
+      type: purgeUiNoise(meta.type || row?.type || 'Regular')
+    };
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -135,10 +147,11 @@ window.PickCalcUI = window.PickCalcUI || {};
     return `
       <article class="alphadog-player-card">
         <div class="alphadog-card-header">
-          <div class="alphadog-card-headline">${escapeHtml(display.sport)} - ${escapeHtml(display.player)} - ${escapeHtml(display.team || 'Unknown Team')}</div>
-          <div class="alphadog-card-subline">@ ${escapeHtml(display.opponent || 'Unknown Opponent')} - ${escapeHtml(display.dateTime || 'Time Pending')}</div>
+          <div class="alphadog-card-headline">${escapeHtml(display.player)}</div>
+          <div class="alphadog-card-subline">${escapeHtml(display.team || 'Unknown Team')} • ${escapeHtml(display.sport || 'MLB')}</div>
         </div>
-        <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} - ${escapeHtml(display.line || '—')} - ${escapeHtml(display.direction || '—')} - ${escapeHtml(display.type || 'Regular')}</div>
+        <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} • ${escapeHtml(display.line || '—')} • ${escapeHtml(display.direction || '—')}</div>
+        <div class="alphadog-card-meta">${escapeHtml(display.opponent || 'Unknown Opponent')} • ${escapeHtml(display.dateTime || 'Time Pending')} • ${escapeHtml(display.type || 'Regular')}</div>
         ${renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
@@ -150,15 +163,20 @@ window.PickCalcUI = window.PickCalcUI || {};
       renderMiningGrid(rows, vaultCollection);
       return;
     }
-    auditResults.innerHTML = '<div id="miningGrid" class="mining-grid"></div>';
-    renderMiningGrid(rows, vaultCollection);
+    auditResults.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.id = 'miningGrid';
+    grid.className = 'mining-grid';
+    auditResults.appendChild(grid);
+    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
+    grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>'; 
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
     const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
-    mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>'; 
+    mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
   }
 
   function renderBatchAuditor(result = {}) {
@@ -245,7 +263,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('progressBar');
     if (!mount) return;
     const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-    const cleanMessage = String(message || 'Running audit...').replace(/probe/gi, 'audit');
+    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
     const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
     mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
   }
@@ -265,8 +283,8 @@ window.PickCalcUI = window.PickCalcUI || {};
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
     const message = result?.analysisHint || 'Running audit...';
-    const completed = Number(meta.completedProbes || 0);
-    const total = Math.max(1, Number(meta.totalProbes || 1));
+    const completed = Number(meta.completedProbes || meta.completedAudits || 0);
+    const total = Math.max(1, Number(meta.totalProbes || meta.totalAudits || 1));
     const pct = result?.runStatus === 'VERIFIED' ? 100 : Math.min(90, Math.max(10, Math.round((completed / total) * 80) + 10));
     updateProgressBar(pct, total, message);
   }

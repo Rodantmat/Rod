@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.7 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.10 "Obsidian Ghost"';
 
 
   const state = {
@@ -105,7 +105,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     state.miningVault = {};
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, 1, 'Audit live. Awaiting Gemini response...');
+    UI.initProgressBar(0, 1, 'Audit live. Awaiting response...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
     UI.startHeartbeat?.();
 
@@ -113,11 +113,11 @@ window.PickCalcCore = window.PickCalcCore || {};
     const starter = {
       row: rows[0],
       shield: { integrityScore: 0, purityScore: 0, confidenceAvg: 0, label: 'ATOMIC INITIALIZING' },
-      connectorState: { completedRows: 0, completedProbes: 0, totalProbes: rows.length * 4 },
+      connectorState: { completedRows: 0, completedAudits: 0, totalAudits: rows.length * 4 },
       vault: starterVault,
       vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
-      analysisHint: 'Audit live. Awaiting Gemini response...',
+      analysisHint: 'Audit live. Awaiting response...',
       runStatus: 'LOADING',
       analysisPhase: 'loading',
       finalized: false
@@ -136,7 +136,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             vault,
             vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
             
-            analysisHint: 'Audit live. Awaiting Gemini response...',
+            analysisHint: 'Audit live. Awaiting response...',
             runStatus: 'LOADING',
             analysisPhase: 'loading',
             finalized: false,
@@ -162,7 +162,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             lastResult.finalized = true;
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
-            UI.updateProgressBar(100, 100, lastResult?.analysisHint || '200 OK received. Audit complete.');
+            UI.updateProgressBar(100, 100, lastResult?.analysisHint || 'Audit complete.');
           }
           setTimeout(() => { UI.stopHeartbeat?.(); }, 500);
         }
@@ -177,10 +177,14 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function handleBack() {
     state.miningVault = {};
+    state.auditRows = [];
     state.lastResult = null;
+    state.rawPayload = '';
+    state.currentRawPayload = '';
+    state.connectorState = {};
     try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
-    try { window.__ALPHADOG_REASON_CACHE__ = {}; } catch (_) {}
-    ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results'].forEach((id) => {
+    try { window.__ALPHADOG_LAST_API_RESPONSE__ = null; } catch (_) {}
+    ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results','miningGrid','poolMount'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       node.innerHTML = '';
