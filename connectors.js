@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.11 "Silicon Predator"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.12 "Chromium Fang"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -83,29 +83,38 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.11 - SILICON PREDATOR).',
+      'Role: Iron Bite Auditor (v0.0.12 - CHROMIUM FANG).',
       'Context: April 21, 2026.',
-      'Constraint: ZERO-DRIFT. Match the JSON Schema keys exactly.',
+      'Constraint: HOSTILE DEDUCTIVE AUDIT.',
       '',
-      '[THE SUBTRACTION REQUISITION]',
-      'Identity: 100 (Hard Mandate for all feed players).',
-      'Trend: Subtract 10 if ERA > 4.00, Subtract 15 if K/9 < 7.0.',
-      'Stress: Subtract 20 if Opponent OPS is Top 3, Subtract 15 if "Demon/Taco".',
-      'Risk: Subtract 45 for HR Props, Subtract 25 for Strikeout lines > 6.5.',
+      '[SCORING MANDATE]',
+      'Start every player at 100. You MUST find 2026-specific reasons to subtract points. If you do not subtract, you are failing the audit.',
+      '',
+      '1. IDENTITY: Fixed 100.',
+      '2. TREND (2026 Stats):',
+      '- Subtract 15 if last 3 games AVG < .220 or ERA > 4.50.',
+      '- Subtract 10 if Season K/9 < 7.0.',
+      '3. STRESS (Matchup):',
+      '- Subtract 20 for Top-5 Opponent OPS.',
+      '- Subtract 15 for LHP/RHP disadvantage.',
+      '4. RISK (Volatility):',
+      '- Subtract 45 for HOME RUNS (Mandatory Cap).',
+      '- Subtract 25 for Strikeout Lines > 6.5.',
       '',
       '[MAPPING LOCK]',
-      'You MUST use these keys in the scores object: "identity", "trend", "stress", "risk".',
+      'JSON keys MUST be: "identity", "trend", "stress", "risk".',
+      'Summary Format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" (No adjectives).',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.11",',
-      '  "codename": "Silicon Predator",',
+      '  "version": "v0.0.12",',
+      '  "codename": "Chromium Fang",',
       '  "legs": [{',
       '    "player": "Full Name",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "ID: 100 | T: -[val] | S: -[val] | R: -[val]"',
+      '    "summary": "ID: 100 | T: -0 | S: -0 | R: -0"',
       '  }],',
       '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
@@ -147,7 +156,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.11 - SILICON PREDATOR). Context: April 21, 2026. Constraint: ZERO-DRIFT. Match the JSON Schema keys exactly. [THE SUBTRACTION REQUISITION] Identity: 100 (Hard Mandate for all feed players). Trend: Subtract 10 if ERA > 4.00, Subtract 15 if K/9 < 7.0. Stress: Subtract 20 if Opponent OPS is Top 3, Subtract 15 if "Demon/Taco". Risk: Subtract 45 for HR Props, Subtract 25 for Strikeout lines > 6.5. [MAPPING LOCK] You MUST use these keys in the scores object: "identity", "trend", "stress", "risk". Output JSON only.'
+          text: 'Role: Iron Bite Auditor (v0.0.12 - CHROMIUM FANG). Context: April 21, 2026. Constraint: HOSTILE DEDUCTIVE AUDIT. [SCORING MANDATE] Start every player at 100. You MUST find 2026-specific reasons to subtract points. If you do not subtract, you are failing the audit. 1. IDENTITY: Fixed 100. 2. TREND (2026 Stats): - Subtract 15 if last 3 games AVG < .220 or ERA > 4.50. - Subtract 10 if Season K/9 < 7.0. 3. STRESS (Matchup): - Subtract 20 for Top-5 Opponent OPS. - Subtract 15 for LHP/RHP disadvantage. 4. RISK (Volatility): - Subtract 45 for HOME RUNS (Mandatory Cap). - Subtract 25 for Strikeout Lines > 6.5. [MAPPING LOCK] JSON keys MUST be: "identity", "trend", "stress", "risk". Summary Format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]" (No adjectives). Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -246,7 +255,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function normalizeLegScores(leg = {}) {
     const nested = leg?.scores || {};
-    const identity = clampScore(leg?.identity ?? nested?.identity ?? nested?.id ?? 100);
+    const identity = clampScore(leg?.identity ?? nested?.identity ?? 100);
     const trend = clampScore(leg?.trend ?? nested?.trend ?? 0);
     const stress = clampScore(leg?.stress ?? nested?.stress ?? 0);
     const risk = clampScore(leg?.risk ?? nested?.risk ?? 0);

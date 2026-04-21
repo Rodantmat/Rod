@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.11 "Silicon Predator"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.12 "Chromium Fang"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -99,20 +99,20 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function categoryValue(vault = {}, key = '') {
-    const direct = vault?.categoryScores?.[key];
+    const normalizedKey = String(key || '').toLowerCase();
+    const scoreSet = vault?.categoryScores || {};
+    const categoryNode = vault?.categories?.[normalizedKey];
+    const direct = scoreSet?.[normalizedKey];
     if (Number.isFinite(Number(direct))) return Math.round(Number(direct));
-    const categoryNode = vault?.categories?.[key];
     if (Number.isFinite(Number(categoryNode?.value))) return Math.round(Number(categoryNode.value));
-    if (key === 'identity') {
-      const legacyId = vault?.categoryScores?.id ?? vault?.categories?.id?.value;
-      if (Number.isFinite(Number(legacyId))) return Math.round(Number(legacyId));
-    }
     return null;
   }
 
   function finalValue(vault = {}) {
     if (Number.isFinite(Number(vault?.finalScore))) return Math.round(Number(vault.finalScore));
-    const values = ['identity', 'trend', 'stress', 'risk'].map((key) => categoryValue(vault, key)).filter((value) => value !== null);
+    const values = ['identity', 'trend', 'stress', 'risk']
+      .map((key) => categoryValue(vault, key))
+      .filter((value) => Number.isFinite(Number(value)));
     if (!values.length) return null;
     return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
   }
@@ -285,7 +285,10 @@ window.PickCalcUI = window.PickCalcUI || {};
     });
   }
 
-  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) { renderAnalysisShell(result, rows, version); }
+  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) {
+    renderAnalysisShell(result, rows, version);
+    renderAuditResults(rows, result?.vaultCollection || {});
+  }
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
     const message = result?.analysisHint || 'Running audit...';

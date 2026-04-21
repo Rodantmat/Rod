@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v14.0.7 (OXYGEN-COBALT) / AlphaDog v0.0.11 "Silicon Predator"';
+  const SYSTEM_VERSION = 'v14.0.7 (OXYGEN-COBALT) / AlphaDog v0.0.12 "Chromium Fang"';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
@@ -87,7 +87,21 @@ window.PickCalcParser = (() => {
   function pad2(value) { return String(value).padStart(2, '0'); }
   function cleanWhitespace(value) { return String(value || '').replace(/\u00a0/g, ' ').replace(/[|•]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function stripAccents(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
-  function normalizeName(value) { return stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function normalizeName(value) {
+    const normalized = stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const known2026Stars = {
+      ellycruz: 'ellydelacruz',
+      delacruz: 'ellydelacruz',
+      ellydelacruz: 'ellydelacruz',
+      shohei: 'shoheiohtani',
+      ohtani: 'shoheiohtani',
+      shoheiohtani: 'shoheiohtani',
+      shota: 'shotaimanaga',
+      imanaga: 'shotaimanaga',
+      shotaimanaga: 'shotaimanaga'
+    };
+    return known2026Stars[normalized] || normalized;
+  }
   function splitGluedTokens(value) {
     return String(value || '')
       .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
