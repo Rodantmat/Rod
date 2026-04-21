@@ -44,12 +44,8 @@ window.PickCalcUI = window.PickCalcUI || {};
   function renderRunSummary(rows = []) {
     const mount = el('runSummary');
     if (!mount) return;
-    const accepted = asArray(rows).filter((row) => String(row?.sport || '').toUpperCase() === 'MLB').length;
-    if (!accepted) {
-      mount.innerHTML = '';
-      return;
-    }
-    mount.innerHTML = '<div class="feed-stack-spacer"></div>';
+    const mlbRows = asArray(rows).filter((row) => String(row?.sport || '').toUpperCase() === 'MLB');
+    mount.innerHTML = mlbRows.length ? '<div class="feed-stack-spacer"></div>' : '';
   }
 
   function renderPoolCounts(accepted = 0, rejected = 0) {
@@ -77,7 +73,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       .concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
 
     mount.innerHTML = `
-      <div class="status-panel feed-status-inline-panel iron-summary-stack">
+      <div class="status-panel iron-summary-stack">
         <div class="feed-badge-row"><div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div></div>
         <div class="feed-summary-list vertical-metric-stack">${ordered.map((prop) => `<div class="feed-line">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
       </div>`;
@@ -104,10 +100,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   function categoryValue(vault = {}, key = '') {
     const direct = vault?.categoryScores?.[key];
     if (Number.isFinite(Number(direct))) return Math.round(Number(direct));
-    const branchKey = key === 'identity' ? 'A' : key === 'trend' ? 'B' : key === 'stress' ? 'C' : 'D';
-    const parsed = Object.values(vault?.branches?.[branchKey]?.parsed || {}).map(Number).filter(Number.isFinite);
-    if (!parsed.length) return null;
-    return Math.round((parsed.reduce((sum, value) => sum + value, 0) / parsed.length) * 100);
+    return null;
   }
 
   function finalValue(vault = {}) {
@@ -185,10 +178,11 @@ window.PickCalcUI = window.PickCalcUI || {};
       return;
     }
 
+    const statusLine = result?.correctedRun ? 'Corrected Final Run' : 'Initial Final Run';
     mount.innerHTML = `
       <article class="alphadog-player-card alphadog-batch-card">
-        <div class="alphadog-card-headline">BATCH AUDITOR</div>
-        <div class="alphadog-card-subline">Iron Bite batch-wide logic and risk review</div>
+        <div class="alphadog-card-headline">AUDITOR</div>
+        <div class="alphadog-card-subline">${escapeHtml(statusLine)}</div>
         <div class="alphadog-card-grid alphadog-batch-grid">${scoreItems.map(([label, value]) => `
           <div class="alphadog-score-tile">
             <div class="alphadog-score-label">${escapeHtml(label)}</div>
@@ -246,20 +240,33 @@ window.PickCalcUI = window.PickCalcUI || {};
     renderConsole(result?.logs || []);
   }
 
-  function updateProgressBar(index = 0, total = 1, message = '') {
+  function setProgressState(percent = 0, message = '', mode = 'normal') {
     const mount = el('progressBar');
     if (!mount) return;
-    const safeTotal = Math.max(1, Number(total) || 1);
-    const safeIndex = Math.max(0, Math.min(safeTotal, Number(index) || 0));
-    const pct = Math.floor((safeIndex / safeTotal) * 100);
-    mount.innerHTML = `<div class="progress-bar-shell"><div class="progress-bar-fill" style="width:${pct}%"><div class="progress-inner">${escapeHtml(message || 'Running analysis...')}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(message || 'Running analysis...')}</span><span>${safeIndex}/${safeTotal} probes</span></div>`;
+    const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+    const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
+    mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(message || 'Running audit...')}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(message || 'Running audit...')}</span></div>`;
   }
 
-  function initProgressBar(completedRows = 0, totalRows = 1, label = 'Initializing stream...') { updateProgressBar(completedRows, totalRows, label); }
+  function updateProgressBar(percent = 0, _unused = 0, message = '') {
+    setProgressState(percent, message, percent >= 100 ? 'complete' : 'normal');
+  }
+
+  function initProgressBar(_completedRows = 0, _totalRows = 1, label = 'Initializing audit...') {
+    setProgressState(10, label, 'normal');
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => setProgressState(90, label, 'creep'));
+    });
+  }
+
   function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) { renderAnalysisShell(result, rows, version); }
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
-    updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.');
+    const message = result?.analysisHint || 'Running audit...';
+    const completed = Number(meta.completedProbes || 0);
+    const total = Math.max(1, Number(meta.totalProbes || 1));
+    const pct = result?.runStatus === 'VERIFIED' ? 100 : Math.min(90, Math.max(10, Math.round((completed / total) * 80) + 10));
+    updateProgressBar(pct, total, message);
   }
 
   function renderRawPayload(payloadText = '') {

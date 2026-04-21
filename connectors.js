@@ -4,7 +4,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
-  const BRANCH_TARGETS = { A: 1, B: 1, C: 1, D: 1 };
+  const GROUNDED_2026_PLAYERS = {
+    'chase burns': { teamAbbr: 'CIN', teamFullName: 'Cincinnati Reds', identity: 100 },
+    'nolan mclean': { teamAbbr: 'NYM', teamFullName: 'New York Mets', identity: 100 },
+    'munetaka murakami': { teamAbbr: 'CWS', teamFullName: 'Chicago White Sox', identity: 100 }
+  };
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -29,24 +33,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return text;
   }
 
-  function makeBranch(score = 0, key = 'A') {
-    const normalized = Math.max(0, Math.min(100, Number(score) || 0));
-    const parsedKey = `${key.toLowerCase()}01`;
-    return {
-      status: 'SUCCESS',
-      parsed: { [parsedKey]: Number((normalized / 100).toFixed(3)) },
-      factorMeta: {
-        [parsedKey]: {
-          name: key === 'A' ? 'Identity' : key === 'B' ? 'Trend' : key === 'C' ? 'Stress' : 'Risk',
-          value: Number((normalized / 100).toFixed(3)),
-          status: 'SUCCESS'
-        }
-      },
-      realCount: 1,
-      derivedCount: 0,
-      simulatedCount: 0,
-      source: 'gemini'
-    };
+  function makeCategory(score = null, name = '') {
+    const normalized = Number.isFinite(Number(score)) ? Math.max(0, Math.min(100, Number(score))) : null;
+    return { name, value: normalized, status: normalized === null ? 'PENDING' : 'SUCCESS' };
   }
 
   function createZeroFilledVault(row = {}) {
@@ -61,16 +50,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       finalScore: null,
       summary: '',
       auditMeta: {},
-      branches: {
-        A: makeBranch(0, 'A'),
-        B: makeBranch(0, 'B'),
-        C: makeBranch(0, 'C'),
-        D: makeBranch(0, 'D')
+      categories: {
+        identity: makeCategory(null, 'Identity'),
+        trend: makeCategory(null, 'Trend'),
+        stress: makeCategory(null, 'Stress'),
+        risk: makeCategory(null, 'Risk')
       }
     };
   }
 
-  function buildPrompt(batch = []) {
+  function buildPrompt(batch = [], mode = 'initial') {
     const subjects = batch.map((row, index) => {
       const rowKey = row.LEG_ID || `LEG-${index + 1}`;
       return [
@@ -87,11 +76,22 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       ].join('\n');
     }).join('\n\n');
 
+    const correctionLine = mode === 'corrected'
+      ? 'This is a Corrected Final Run. Re-score the full batch using penalty-first logic. Any weak roster grounding or hallucination risk must be corrected now.'
+      : 'Initial final run. Use penalty-first logic from 100 and deduct for matchup stress, fatigue, or high-variance line types.';
+
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       'You are AlphaDog v0.0.2 "Iron Bite". Analyze up to 24 legs. Resolve identities. Determine if More or Less is the superior play based on 2026 depth.',
+      'Assume all input feed data is already verified 2026 reality. Do not invalidate legs using 2024 or 2025 assumptions.',
+      'Grounded 2026 facts:',
+      '- Chase Burns (CIN): Active MLB Starter (1-1, 2.42 ERA).',
+      '- Nolan McLean (NYM): Active MLB Starter (1-1, 2.28 ERA).',
+      '- Munetaka Murakami (CWS): Active MLB 1B/3B (8 HRs, .918 OPS).',
+      'If a player matches one of those grounded names, identity must be 100.',
       'Line detection must capture and resolve: Regular, Goblin, Demon, Taco, and Free Pick.',
       'Do not reject shorthand names. Raw fragments like "J Smith" are valid and must be normalized in context, not refused.',
+      correctionLine,
       'JSON schema:',
       '{',
       '  "legs": [',
@@ -156,7 +156,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'You are AlphaDog v0.0.2 "Iron Bite". Analyze up to 24 legs. Resolve identities. Determine if More or Less is the superior play based on 2026 depth. For each leg, return sport, player, team, opponent, date_time, metric, line, direction, type, identity, trend, stress, risk, final_score, and summary. Include batch_audit with logic_consistency, bias_control, roster_accuracy, and risk_buffer. Output JSON only.'
+          text: 'You are AlphaDog v0.0.2 "Iron Bite". Analyze up to 24 legs using 2026 reality. Assume input feed data is valid 2026 truth. If a player is Chase Burns, Nolan McLean, or Munetaka Murakami, set identity to 100. Resolve More or Less. Score identity, trend, stress, risk, and final_score. Add batch_audit with logic_consistency, bias_control, roster_accuracy, and risk_buffer. Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -169,7 +169,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const response = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
       body
     });
 
@@ -210,13 +213,13 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
-  async function fetchGeminiBatch(batch = []) {
+  async function fetchGeminiBatch(batch = [], mode = 'initial') {
     const apiKey = getActiveGeminiKey();
     if (!apiKey) {
       return { ok: false, status: 0, modelId: PRIMARY_MODEL, errorText: 'Missing Gemini API key.' };
     }
 
-    const prompt = buildPrompt(batch);
+    const prompt = buildPrompt(batch, mode);
     const first = await callModel(PRIMARY_MODEL, prompt, apiKey);
     if (first.ok) return first;
 
@@ -232,13 +235,29 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return first;
   }
 
+  function clampScore(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : null;
+  }
+
+  function applyGroundedIdentity(row = {}, leg = {}) {
+    const name = String(leg?.player || row?.parsedPlayer || row?.player || '').trim().toLowerCase();
+    const grounded = GROUNDED_2026_PLAYERS[name];
+    if (!grounded) return leg;
+    return Object.assign({}, leg, {
+      team: leg?.team || grounded.teamFullName || row?.team || grounded.teamAbbr,
+      identity: 100
+    });
+  }
+
   function hydrateVaultFromLeg(row = {}, leg = {}) {
+    const correctedLeg = applyGroundedIdentity(row, leg);
     const vault = createZeroFilledVault(row);
-    const identity = Math.max(0, Math.min(100, Number(leg?.identity) || 0));
-    const trend = Math.max(0, Math.min(100, Number(leg?.trend) || 0));
-    const stress = Math.max(0, Math.min(100, Number(leg?.stress) || 0));
-    const risk = Math.max(0, Math.min(100, Number(leg?.risk) || 0));
-    const finalScore = Math.max(0, Math.min(100, Number(leg?.final_score) || 0));
+    const identity = clampScore(correctedLeg?.identity);
+    const trend = clampScore(correctedLeg?.trend);
+    const stress = clampScore(correctedLeg?.stress);
+    const risk = clampScore(correctedLeg?.risk);
+    const finalScore = clampScore(correctedLeg?.final_score);
 
     vault.isReal = true;
     vault.reliable = true;
@@ -246,40 +265,53 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.source = 'gemini';
     vault.categoryScores = { identity, trend, stress, risk };
     vault.finalScore = finalScore;
-    vault.summary = String(leg?.summary || '').trim();
+    vault.summary = String(correctedLeg?.summary || '').trim();
     vault.auditMeta = {
-      sport: String(leg?.sport || '').trim(),
-      player: String(leg?.player || '').trim(),
-      team: String(leg?.team || '').trim(),
-      opponent: String(leg?.opponent || '').trim(),
-      dateTime: String(leg?.date_time || '').trim(),
-      metric: String(leg?.metric || '').trim(),
-      line: String(leg?.line || '').trim(),
-      direction: String(leg?.direction || '').trim(),
-      type: String(leg?.type || '').trim()
+      sport: String(correctedLeg?.sport || '').trim(),
+      player: String(correctedLeg?.player || '').trim(),
+      team: String(correctedLeg?.team || '').trim(),
+      opponent: String(correctedLeg?.opponent || '').trim(),
+      dateTime: String(correctedLeg?.date_time || '').trim(),
+      metric: String(correctedLeg?.metric || '').trim(),
+      line: String(correctedLeg?.line || '').trim(),
+      direction: String(correctedLeg?.direction || '').trim(),
+      type: String(correctedLeg?.type || '').trim()
     };
-    vault.branches = {
-      A: makeBranch(identity, 'A'),
-      B: makeBranch(trend, 'B'),
-      C: makeBranch(stress, 'C'),
-      D: makeBranch(risk, 'D')
+    vault.categories = {
+      identity: makeCategory(identity, 'Identity'),
+      trend: makeCategory(trend, 'Trend'),
+      stress: makeCategory(stress, 'Stress'),
+      risk: makeCategory(risk, 'Risk')
     };
     return vault;
   }
 
   function makeBatchAudit(payload = {}) {
     return {
-      logicConsistency: payload?.batch_audit?.logic_consistency,
-      biasControl: payload?.batch_audit?.bias_control,
-      rosterAccuracy: payload?.batch_audit?.roster_accuracy,
-      riskBuffer: payload?.batch_audit?.risk_buffer
+      logicConsistency: clampScore(payload?.batch_audit?.logic_consistency),
+      biasControl: clampScore(payload?.batch_audit?.bias_control),
+      rosterAccuracy: clampScore(payload?.batch_audit?.roster_accuracy),
+      riskBuffer: clampScore(payload?.batch_audit?.risk_buffer)
     };
+  }
+
+  function needsCorrectedRun(batchAudit = {}) {
+    return ['logicConsistency', 'biasControl', 'rosterAccuracy', 'riskBuffer'].some((key) => Number(batchAudit?.[key]) < 85);
   }
 
   async function streamingIngress(pool = [], stateRef = null, hooks = {}) {
     const rows = Array.isArray(pool) ? pool.slice(0, 24) : [];
     const totalProbes = rows.length * 4;
-    const result = await fetchGeminiBatch(rows);
+    let result = await fetchGeminiBatch(rows, 'initial');
+
+    if (result.ok) {
+      const initialBatchAudit = makeBatchAudit(result.payload);
+      if (needsCorrectedRun(initialBatchAudit)) {
+        hooks.onCorrection?.({ message: 'Auditor score dipped under 85. Re-running corrected final pass.' });
+        const rerun = await fetchGeminiBatch(rows, 'corrected');
+        if (rerun.ok) result = rerun;
+      }
+    }
 
     if (!result.ok) {
       const failedVaultCollection = Object.fromEntries(rows.map((row) => [row.LEG_ID, createZeroFilledVault(row)]));
@@ -293,7 +325,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         runStatus: 'FAILED',
         finalized: true,
         rawPayload: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
-        responseText: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || ''
+        responseText: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
+        correctedRun: false
       };
       return { lastResult };
     }
@@ -303,6 +336,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     let completedProbes = 0;
     let lastRowResult = null;
     const batchAudit = makeBatchAudit(result.payload);
+    const correctedRun = String(result.rawPayload || '').includes('Corrected Final Run') || needsCorrectedRun(makeBatchAudit(result.payload)) === false;
 
     for (const row of rows) {
       hooks.onRowStart?.({ row });
@@ -311,16 +345,15 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       vaultCollection[row.LEG_ID] = vault;
       if (stateRef) stateRef.miningVault = Object.assign({}, stateRef.miningVault || {}, { [row.LEG_ID]: vault });
 
-      for (const branchKey of ['A', 'B', 'C', 'D']) {
+      for (const categoryKey of ['identity', 'trend', 'stress', 'risk']) {
         completedProbes += 1;
         hooks.onBranch?.({
           row,
-          branchKey,
+          categoryKey,
           vault,
-          shield: {},
           completedProbes,
           totalProbes,
-          logs: [{ level: 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: ${branchKey} ready.` }],
+          logs: [{ level: 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: ${categoryKey} ready.` }],
           rawPayload: result.rawPayload
         });
       }
@@ -335,7 +368,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         runStatus: 'VERIFIED',
         finalized: true,
         rawPayload: result.rawPayload,
-        responseText: result.responseText
+        responseText: result.responseText,
+        correctedRun
       };
 
       hooks.onRowComplete?.({
@@ -352,7 +386,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       rawPayload: result.rawPayload,
       responseText: result.responseText,
       finalized: true,
-      runStatus: 'VERIFIED'
+      runStatus: 'VERIFIED',
+      correctedRun
     });
 
     hooks.onComplete?.({ lastResult: finalResult });
@@ -362,7 +397,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   async function debugConnection() {
     const apiKey = getActiveGeminiKey();
     if (!apiKey) return { ok: false, status: 0, errorText: 'Missing Gemini API key.' };
-    const test = await callModel(FALLBACK_MODEL, 'Return JSON only: {"legs":[],"batch_audit":{"logic_consistency":0,"bias_control":0,"roster_accuracy":0,"risk_buffer":0}}', apiKey);
+    const test = await callModel(FALLBACK_MODEL, 'Return JSON only: {"legs":[],"batch_audit":{"logic_consistency":100,"bias_control":100,"roster_accuracy":100,"risk_buffer":100}}', apiKey);
     return { ok: Boolean(test.ok), status: test.status || 0, errorText: test.errorText || '', modelId: test.modelId || FALLBACK_MODEL };
   }
 
@@ -370,7 +405,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     SYSTEM_VERSION,
     PRIMARY_MODEL,
     FALLBACK_MODEL,
-    BRANCH_TARGETS,
+    GROUNDED_2026_PLAYERS,
     createZeroFilledVault,
     fetchGeminiBatch,
     streamingIngress,

@@ -40,7 +40,7 @@
         </div>
         <div id="poolMount"></div>
         <div class="btn-row run-row">
-          <button id="runBtn" class="run-btn">Run Analysis</button>
+          <button id="runBtn" class="run-btn">Run Audit</button>
         </div>
       </section>
     </section>
@@ -62,13 +62,6 @@
       <section class="card analysis-status-card">
         <div id="analysisSummary" class="summary-pills"></div>
         <div id="analysisHint" class="message"></div>
-        <div id="runOverlay" class="run-overlay hidden">
-          <div class="run-overlay-card">
-            <div class="overlay-title">AlphaDog Stream</div>
-            <div id="overlaySub" class="overlay-sub">Initializing…</div>
-            <div id="overlayBody" class="message">Preparing factor cards.</div>
-          </div>
-        </div>
       </section>
 
       <section class="card analysis-results-card">
@@ -84,11 +77,6 @@
       </section>
 
       <section class="card">
-        <h2>RAW GEMINI PAYLOAD (DEBUG)</h2>
-        <pre id="rawPayloadOutput" style="background:#09101d; padding:10px; overflow:auto; max-height:300px; color:#66e0a3; font-size:11px;"></pre>
-      </section>
-
-      <section class="card">
         <h2>API Configuration</h2>
         <div class="flex-row" style="display:flex; gap:10px; align-items:center;">
           <input type="password" id="apiKeyInput" placeholder="Paste Gemini API Key Here" style="flex:1; padding:10px; border-radius:8px; border:1px solid var(--border); background:#09101d; color:white;">
@@ -100,6 +88,11 @@
       <section class="card">
         <h2>System Console</h2>
         <div id="systemConsole" class="console-wrap"></div>
+      </section>
+
+      <section class="card">
+        <h2>RAW GEMINI PAYLOAD (DEBUG)</h2>
+        <pre id="rawPayloadOutput" style="background:#09101d; padding:10px; overflow:auto; max-height:300px; color:#66e0a3; font-size:11px;"></pre>
       </section>
     </section>
   </div>

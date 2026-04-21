@@ -105,7 +105,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     state.miningVault = {};
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Wait bar active. Probing and retrieving payload...');
+    UI.initProgressBar(0, 1, 'Audit live. Awaiting Gemini response...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
     UI.startHeartbeat?.();
 
@@ -113,11 +113,11 @@ window.PickCalcCore = window.PickCalcCore || {};
     const starter = {
       row: rows[0],
       shield: { integrityScore: 0, purityScore: 0, confidenceAvg: 0, label: 'ATOMIC INITIALIZING' },
-      connectorState: { liveBranches: 0, derivedBranches: 0, completedRows: 0, completedProbes: 0, totalProbes: rows.length * 5 },
+      connectorState: { completedRows: 0, completedProbes: 0, totalProbes: rows.length * 4 },
       vault: starterVault,
       vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
-      analysisHint: 'Wait bar active. Probing and retrieving payload...',
+      analysisHint: 'Audit live. Awaiting Gemini response...',
       runStatus: 'LOADING',
       analysisPhase: 'loading',
       finalized: false
@@ -130,21 +130,21 @@ window.PickCalcCore = window.PickCalcCore || {};
       const response = await Connectors.streamingIngress(rows, state, {
         verbose: isVerbose,
         onRowStart: ({ row }) => { UI.renderConsole([{ level: 'info', text: `[SYSTEM] Streaming ${row?.parsedPlayer || row?.LEG_ID}...` }]); },
-        onBranch: ({ row, vault, shield, completedProbes, totalProbes, branchKey, logs }) => {
+        onBranch: ({ row, vault, completedProbes, totalProbes, categoryKey, logs }) => {
           const payload = {
             row,
             vault,
             vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
-            shield,
-            analysisHint: 'Wait bar active. Probing and retrieving payload...',
+            
+            analysisHint: 'Audit live. Awaiting Gemini response...',
             runStatus: 'LOADING',
             analysisPhase: 'loading',
             finalized: false,
             connectorState: { completedRows: 0, completedProbes, totalProbes },
-            logs: logs || [{ level: 'info', text: `[SYSTEM] Branch ${branchKey} hydrated.` }]
+            logs: logs || [{ level: 'info', text: `[SYSTEM] ${categoryKey} hydrated.` }]
           };
           state.lastResult = payload;
-          UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, branchKey });
+          UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, categoryKey });
           UI.renderRawPayload?.(payload.rawPayload || payload.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
@@ -152,7 +152,7 @@ window.PickCalcCore = window.PickCalcCore || {};
           result.analysisPhase = 'final';
           result.finalized = true;
           state.lastResult = result;
-          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
+          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, categoryKey: 'DONE' });
           UI.renderRawPayload?.(result.rawPayload || result.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
         },
         onComplete: ({ lastResult }) => {
@@ -162,7 +162,7 @@ window.PickCalcCore = window.PickCalcCore || {};
             lastResult.finalized = true;
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
-            UI.updateProgressBar(rows.length * 5, rows.length * 5, lastResult?.analysisHint || 'Atomic Matrix Saturated');
+            UI.updateProgressBar(100, 100, lastResult?.analysisHint || '200 OK received. Audit complete.');
           }
           setTimeout(() => { UI.stopHeartbeat?.(); }, 500);
         }
@@ -209,7 +209,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.verboseMode = false;
     state.version = SYSTEM_VERSION;
 
-    ['boardInput','ingestMessage','feedStatus','poolMount','analysisSummary','analysisHint','analysisResultsBody','systemConsole','shieldPanel','progressBar'].forEach((id) => {
+    ['boardInput','ingestMessage','feedStatus','runSummary','poolMount','analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
       if (id === 'boardInput' && 'value' in node) {
@@ -258,7 +258,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       handleResetAll();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
-      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS, cobaltEdge: calcCobaltEdge() });
+      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
     });
   }

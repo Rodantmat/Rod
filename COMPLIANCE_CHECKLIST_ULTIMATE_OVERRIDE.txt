@@ -1,0 +1,20 @@
+AlphaDog v0.0.2 "Iron Bite" compliance checklist
+
+1. Header logo kept inline with title on both screens.
+2. logo.png styling updated to height 52px with inverted filter.
+3. favicon.ico linked in head.
+4. Progress bar removed probe count text and now creeps from 10% to 90%, then goes 100% on success.
+5. Screen 1 feed status uses vertical metric stack under MLB badge.
+6. Screen 1 summary removes player-name list and run snapshot text.
+7. Screen 2 shows one player per card block.
+8. Card header now uses 3-line brutal format.
+9. Score colors map to red/yellow/green thresholds.
+10. AUDITOR section remains after player cards.
+11. Recursive corrected pass added when any batch auditor score is under 85.
+12. RAW GEMINI PAYLOAD (DEBUG) kept at bottom.
+13. Primary model set to gemini-2.5-pro.
+14. Fallback model set to gemini-3.1-flash-lite-preview.
+15. x-goog-api-key header added to Gemini request.
+16. 2026 grounded identity facts injected for Chase Burns, Nolan McLean, and Munetaka Murakami.
+17. J Smith style fragments pass through to API raw.
+18. No visible probe counter or old Run Snapshot text remains in the rebuilt files.
