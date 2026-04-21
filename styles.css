@@ -107,3 +107,40 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .alphadog-player-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .alphadog-player-line .player-name,.alphadog-player-line .alphadog-matchup-inline{font-size:16px;font-weight:800;line-height:1.2}
 #rawPayloadOutput{white-space:pre-wrap;word-break:break-word;border:1px solid var(--border);border-radius:10px;min-height:72px}
+
+.brand-line{display:flex;align-items:center;gap:14px;flex-wrap:nowrap}
+.brand-icon{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 32px;overflow:visible}
+.app-logo{filter:brightness(0) invert(1);height:52px;width:auto;vertical-align:middle;margin-right:15px;max-width:none;display:block}
+.hero-brand h1{margin:0;line-height:1.1;white-space:nowrap}
+
+.iron-summary-stack{padding:14px 16px}
+.vertical-metric-stack{display:grid;gap:8px;margin-top:4px}
+.feed-line{font-weight:700}
+.feed-stack-spacer{height:0}
+
+.analysis-results-card .analysis-connector-wrap{min-height:0}
+#miningGrid{display:block}
+.dense-player-grid{display:grid;grid-template-columns:1fr;gap:16px}
+.alphadog-player-card{border:1px solid var(--border);background:#0c1427;border-radius:16px;padding:16px;display:grid;gap:10px}
+.alphadog-card-headline,.alphadog-card-subline{font-size:18px;font-weight:800;line-height:1.2}
+.alphadog-card-subline{font-size:16px}
+.alphadog-card-prop{margin-top:2px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:15px;font-weight:800;color:var(--text)}
+.alphadog-card-summary{padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#101a31;color:var(--muted)}
+.alphadog-card-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.alphadog-batch-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.alphadog-score-tile{border:1px solid var(--border);border-radius:12px;background:#121c34;padding:12px;text-align:center}
+.alphadog-score-label{font-size:11px;color:var(--muted);font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.alphadog-score-value{margin-top:6px;font-size:24px;font-weight:900;line-height:1}
+.alphadog-score-value.final{font-size:32px}
+.score-low{color:#ff7d7d}
+.score-mid{color:#ffcf66}
+.score-high{color:#66e0a3}
+.score-pending{color:var(--muted)}
+#auditorSection h2{margin-bottom:14px}
+
+@media (max-width:760px){
+  .brand-line{gap:10px}
+  .hero-brand h1{white-space:normal}
+  .alphadog-card-grid,.alphadog-batch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .alphadog-score-value.final{grid-column:auto}
+}

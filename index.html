@@ -11,7 +11,10 @@
   <div class="app-shell">
     <section id="intakeScreen" class="hidden">
       <header class="hero hero-brand">
-        <div class="brand-line"><img src="logo.png" class="app-logo" alt="AlphaDog"><h1 id="intakeTitle">AlphaDog v0.0.2 "Iron Bite"</h1></div>
+        <div class="brand-line">
+          <span class="brand-icon"><img src="logo.png" class="app-logo" alt="AlphaDog"></span>
+          <h1 id="intakeTitle">AlphaDog v0.0.2 "Iron Bite"</h1>
+        </div>
         <p>Paste board chunks, ingest MLB props, track feed status, then run the clean pool.</p>
       </header>
 
@@ -44,7 +47,10 @@
 
     <section id="analysisScreen" class="hidden">
       <header class="hero hero-inline hero-brand">
-        <div class="brand-line"><img src="logo.png" class="app-logo" alt="AlphaDog"><h1 id="analysisTitle">AlphaDog v0.0.2 "Iron Bite"</h1></div>
+        <div class="brand-line">
+          <span class="brand-icon"><img src="logo.png" class="app-logo" alt="AlphaDog"></span>
+          <h1 id="analysisTitle">AlphaDog v0.0.2 "Iron Bite"</h1>
+        </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
           <button id="copyBtn" class="primary">COPY ANALYSIS REPORT</button>
@@ -65,11 +71,16 @@
         </div>
       </section>
 
-      <section class="card">
+      <section class="card analysis-results-card">
         <div class="analysis-connector-wrap">
           <svg id="connectorSvg" class="connector-lines" aria-hidden="true"></svg>
           <div id="miningGrid" class="mining-grid"></div>
         </div>
+      </section>
+
+      <section class="card" id="auditorSection">
+        <h2>AUDITOR</h2>
+        <div id="batchAuditorOutput"></div>
       </section>
 
       <section class="card">
@@ -89,11 +100,6 @@
       <section class="card">
         <h2>System Console</h2>
         <div id="systemConsole" class="console-wrap"></div>
-      </section>
-
-      <section class="card alphadog-footer-card">
-        <h2>Audit Footer</h2>
-        <div id="auditFooterGrade" class="audit-footer-grade"></div>
       </section>
     </section>
   </div>

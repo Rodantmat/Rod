@@ -29,10 +29,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return text;
   }
 
-  function escapeRegExp(value = '') {
-    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
   function makeBranch(score = 0, key = 'A') {
     const normalized = Math.max(0, Math.min(100, Number(score) || 0));
     const parsedKey = `${key.toLowerCase()}01`;
@@ -64,6 +60,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       categoryScores: { identity: null, trend: null, stress: null, risk: null },
       finalScore: null,
       summary: '',
+      auditMeta: {},
       branches: {
         A: makeBranch(0, 'A'),
         B: makeBranch(0, 'B'),
@@ -76,40 +73,53 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function buildPrompt(batch = []) {
     const subjects = batch.map((row, index) => {
       const rowKey = row.LEG_ID || `LEG-${index + 1}`;
-      const player = row.parsedPlayer || row.player || '';
-      const matchup = `${row.team || ''}${row.opponent ? ` @ ${row.opponent}` : ''}`.trim();
-      const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
       return [
         `ROW_KEY: ${rowKey}`,
-        `PLAYER: ${player}`,
-        `MATCHUP: ${matchup}`,
-        `PROP_LINE: ${propLine}`,
         `SPORT: ${row.sport || ''}`,
-        `TYPE: ${row.type || ''}`,
+        `PLAYER: ${row.parsedPlayer || row.player || ''}`,
+        `TEAM: ${row.team || ''}`,
+        `OPPONENT: ${row.opponent || ''}`,
+        `METRIC: ${row.prop || ''}`,
+        `LINE: ${row.line || ''}`,
+        `DIRECTION: ${row.direction || ''}`,
+        `TYPE: ${row.type || 'Regular'}`,
         `GAME_TIME: ${row.gameTimeText || row.gameTime || ''}`
       ].join('\n');
     }).join('\n\n');
 
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
-      'Use the exact hostile auditor style, but the output must be valid JSON.',
-      'Analyze each row independently even when the same player appears more than once.',
+      'You are AlphaDog v0.0.2 "Iron Bite". Analyze up to 24 legs. Resolve identities. Determine if More or Less is the superior play based on 2026 depth.',
+      'Line detection must capture and resolve: Regular, Goblin, Demon, Taco, and Free Pick.',
       'Do not reject shorthand names. Raw fragments like "J Smith" are valid and must be normalized in context, not refused.',
       'JSON schema:',
       '{',
       '  "legs": [',
       '    {',
       '      "row_key": "LEG-1",',
-      '      "identity": 0-100,',
-      '      "trend": 0-100,',
-      '      "stress": 0-100,',
-      '      "risk": 0-100,',
-      '      "final_score": 0-100,',
+      '      "sport": "MLB",',
+      '      "player": "Full player name",',
+      '      "team": "Full team name",',
+      '      "opponent": "Opponent team name",',
+      '      "date_time": "Tuesday 4:40pm",',
+      '      "metric": "Pitcher Strikeouts",',
+      '      "line": "4.5",',
+      '      "direction": "More",',
+      '      "type": "Goblin",',
+      '      "identity": 0,',
+      '      "trend": 0,',
+      '      "stress": 0,',
+      '      "risk": 0,',
+      '      "final_score": 0,',
       '      "summary": "brief one-line audit summary"',
       '    }',
       '  ],',
-      '  "overall_auditor_score": 0-100,',
-      '  "batch_grade": "A-F"',
+      '  "batch_audit": {',
+      '    "logic_consistency": 0,',
+      '    "bias_control": 0,',
+      '    "roster_accuracy": 0,',
+      '    "risk_buffer": 0',
+      '  }',
       '}',
       '',
       'Subjects:',
@@ -146,14 +156,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'You are the AlphaDog v0.0.2 "Iron Bite" hostile auditor. Score each leg brutally using 2026 context. Output JSON only.'
+          text: 'You are AlphaDog v0.0.2 "Iron Bite". Analyze up to 24 legs. Resolve identities. Determine if More or Less is the superior play based on 2026 depth. For each leg, return sport, player, team, opponent, date_time, metric, line, direction, type, identity, trend, stress, risk, final_score, and summary. Include batch_audit with logic_consistency, bias_control, roster_accuracy, and risk_buffer. Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
         temperature: 0.15,
         responseMimeType: 'application/json',
-        maxOutputTokens: 4096
+        maxOutputTokens: 6144
       }
     });
 
@@ -237,6 +247,17 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.categoryScores = { identity, trend, stress, risk };
     vault.finalScore = finalScore;
     vault.summary = String(leg?.summary || '').trim();
+    vault.auditMeta = {
+      sport: String(leg?.sport || '').trim(),
+      player: String(leg?.player || '').trim(),
+      team: String(leg?.team || '').trim(),
+      opponent: String(leg?.opponent || '').trim(),
+      dateTime: String(leg?.date_time || '').trim(),
+      metric: String(leg?.metric || '').trim(),
+      line: String(leg?.line || '').trim(),
+      direction: String(leg?.direction || '').trim(),
+      type: String(leg?.type || '').trim()
+    };
     vault.branches = {
       A: makeBranch(identity, 'A'),
       B: makeBranch(trend, 'B'),
@@ -244,6 +265,15 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       D: makeBranch(risk, 'D')
     };
     return vault;
+  }
+
+  function makeBatchAudit(payload = {}) {
+    return {
+      logicConsistency: payload?.batch_audit?.logic_consistency,
+      biasControl: payload?.batch_audit?.bias_control,
+      rosterAccuracy: payload?.batch_audit?.roster_accuracy,
+      riskBuffer: payload?.batch_audit?.risk_buffer
+    };
   }
 
   async function streamingIngress(pool = [], stateRef = null, hooks = {}) {
@@ -257,6 +287,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         row: rows[0] || {},
         vault: createZeroFilledVault(rows[0] || {}),
         vaultCollection: failedVaultCollection,
+        batchAudit: {},
         logs: [{ level: 'warning', text: `[SYSTEM] ${result.errorText || 'Gemini request failed.'}` }],
         analysisHint: result.errorText || 'Gemini request failed.',
         runStatus: 'FAILED',
@@ -271,6 +302,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const vaultCollection = {};
     let completedProbes = 0;
     let lastRowResult = null;
+    const batchAudit = makeBatchAudit(result.payload);
 
     for (const row of rows) {
       hooks.onRowStart?.({ row });
@@ -297,12 +329,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         row,
         vault,
         vaultCollection: Object.assign({}, vaultCollection),
+        batchAudit,
         logs: [{ level: 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: audit complete.` }],
         analysisHint: leg?.summary || 'Audit complete.',
         runStatus: 'VERIFIED',
         finalized: true,
-        overallAuditorScore: result.payload.overall_auditor_score,
-        batchGrade: result.payload.batch_grade,
         rawPayload: result.rawPayload,
         responseText: result.responseText
       };
@@ -317,8 +348,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     const finalResult = Object.assign({}, lastRowResult || {}, {
       vaultCollection: Object.assign({}, vaultCollection),
-      overallAuditorScore: result.payload.overall_auditor_score,
-      batchGrade: result.payload.batch_grade,
+      batchAudit,
       rawPayload: result.rawPayload,
       responseText: result.responseText,
       finalized: true,
@@ -332,7 +362,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   async function debugConnection() {
     const apiKey = getActiveGeminiKey();
     if (!apiKey) return { ok: false, status: 0, errorText: 'Missing Gemini API key.' };
-    const test = await callModel(FALLBACK_MODEL, 'Return JSON only: {"legs":[],"overall_auditor_score":0,"batch_grade":"NA"}', apiKey);
+    const test = await callModel(FALLBACK_MODEL, 'Return JSON only: {"legs":[],"batch_audit":{"logic_consistency":0,"bias_control":0,"roster_accuracy":0,"risk_buffer":0}}', apiKey);
     return { ok: Boolean(test.ok), status: test.status || 0, errorText: test.errorText || '', modelId: test.modelId || FALLBACK_MODEL };
   }
 

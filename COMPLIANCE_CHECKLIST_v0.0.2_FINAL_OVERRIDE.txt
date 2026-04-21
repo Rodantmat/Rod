@@ -1,0 +1,22 @@
+ALPHADOG v0.0.2 "IRON BITE" - FINAL COMPLIANCE OVERRIDE CHECKLIST
+
+[OK] Branding/header updated on Screen 1 and Screen 2.
+[OK] Logo uses logo.png and inline header layout.
+[OK] Header icon wrapper forced to 32px x 32px.
+[OK] .app-logo updated to filter: brightness(0) invert(1); height: 52px; width: auto; vertical-align: middle; margin-right: 15px.
+[OK] Screen 1 feed summary is a clean vertical metric stack.
+[OK] Sport badge rendered above prop summary.
+[OK] No player names shown in Screen 1 summary.
+[OK] Screen 2 cards render one player per block.
+[OK] Screen 2 header lines split into 3 lines: player/team, opponent/day-time, prop/line/direction/type.
+[OK] All five score fields use threshold color coding.
+[OK] Ingested Pool section label removed from Screen 2 results.
+[OK] Old Audit Footer removed from Screen 2.
+[OK] AUDITOR section inserted after player cards and before RAW GEMINI PAYLOAD (DEBUG).
+[OK] AUDITOR section renders Logic Consistency, Bias Control, Roster Accuracy, Risk Buffer.
+[OK] Primary model set to gemini-2.5-pro.
+[OK] Fallback model set to gemini-3.1-flash-lite-preview.
+[OK] Prompt/system instruction updated for Iron Bite persona and line types.
+[OK] Raw payload debug field remains active.
+[OK] Run Snapshot / Legs count traces scrubbed from updated UI files.
+[OK] Syntax checked with node --check for connectors.js, ui-engine.js, core.js.
