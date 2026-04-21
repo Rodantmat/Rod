@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.7 "Titan Reaper"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -112,33 +112,21 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {
-    const cells = [
+    const scoreItems = [
       ['Identity', categoryValue(vault, 'identity')],
       ['Trend', categoryValue(vault, 'trend')],
       ['Stress', categoryValue(vault, 'stress')],
-      ['Risk', categoryValue(vault, 'risk')],
-      ['Final', finalValue(vault), true]
+      ['Risk', categoryValue(vault, 'risk')]
     ];
-    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
-      <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
+    return `<div class="alphadog-card-grid">${scoreItems.map(([label, value]) => `
+      <div class="alphadog-score-tile">
         <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-      </div>`).join('')}</div>`;
-  }
-
-  function getAuditDisplay(row = {}, vault = {}) {
-    const meta = vault?.auditMeta || {};
-    return {
-      sport: purgeUiNoise(meta.sport || row?.sport || 'MLB'),
-      player: purgeUiNoise(meta.player || row?.parsedPlayer || row?.player || 'Unknown Player'),
-      team: purgeUiNoise(meta.team || row?.teamFullName || row?.team || ''),
-      opponent: purgeUiNoise(meta.opponent || row?.opponentFullName || row?.opponent || ''),
-      dateTime: titleCaseDay(meta.dateTime || row?.gameDayTime || row?.gameTimeText || row?.gameTime || ''),
-      metric: purgeUiNoise(meta.metric || row?.prop || ''),
-      line: purgeUiNoise(meta.line || row?.line || ''),
-      direction: purgeUiNoise(meta.direction || row?.direction || ''),
-      type: purgeUiNoise(meta.type || row?.type || 'Regular')
-    };
+        <div class="alphadog-score-value ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
+      </div>`).join('')}</div>
+      <div class="alphadog-final-score-bar">
+        <div class="alphadog-final-score-label">Final Score</div>
+        <div class="alphadog-final-score-value ${scoreClass(finalValue(vault))}">${escapeHtml(formatScore(finalValue(vault)))}</div>
+      </div>`;
   }
 
   function renderPlayerMiningCard(row = {}, vault = {}) {
@@ -162,11 +150,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       renderMiningGrid(rows, vaultCollection);
       return;
     }
-    auditResults.innerHTML = '';
-    const grid = document.createElement('div');
-    grid.id = 'miningGrid';
-    grid.className = 'mining-grid';
-    auditResults.appendChild(grid);
+    auditResults.innerHTML = '<div id="miningGrid" class="mining-grid"></div>';
     renderMiningGrid(rows, vaultCollection);
   }
 
@@ -174,7 +158,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('miningGrid');
     if (!mount) return;
     const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
-    mount.innerHTML = `<div class="dense-player-grid">${cards || '<div class="mini-muted">Waiting for analysis.</div>'}</div>`;
+    mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>'; 
   }
 
   function renderBatchAuditor(result = {}) {

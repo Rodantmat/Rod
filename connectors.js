@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.7 "Titan Reaper"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -59,7 +59,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
-  function buildPrompt(batch = [], mode = 'initial') {
+  function buildPrompt(batch = [], mode = "initial") {
     const subjects = batch.map((row, index) => {
       const rowKey = row.LEG_ID || `LEG-${index + 1}`;
       return [
@@ -73,35 +73,37 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         `DIRECTION: ${row.direction || ''}`,
         `TYPE: ${row.type || 'Regular'}`,
         `GAME_TIME: ${row.gameTimeText || row.gameTime || ''}`
-      ].join('\\n');
-    }).join('\\n\\n');
+      ].join('\n');
+    }).join('\n\n');
 
     const correctionLine = mode === 'corrected'
-      ? 'Recursive audit pass triggered. Re-score the full batch using the exact same deterministic scoring anchors. Outputs must remain within a ±2 point margin for the same legs.'
-      : 'Initial deterministic audit pass. Use the same scoring anchors for every leg and keep outputs mechanically stable across repeated runs.';
+      ? 'Verification rerun triggered. Re-run the exact same players with zero creative drift. If any internal simulation varies by more than 1%, discard it and return the stable deterministic result only.'
+      : 'Initial deterministic audit pass. Same player and matchup must produce identical scores and hit probabilities on repeated runs.';
 
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (NEON HYDRA v0.0.6).',
+      'Role: Iron Bite Auditor (TITAN REAPER v0.0.7).',
       'Context: April 21, 2026.',
-      'Objective: Provide deterministic, repeatable risk audits.',
+      'Constraint: DETERMINISTIC OUTPUT ONLY.',
       '',
-      'GROUNDING RULES:',
-      '1. DETERMINISTIC SCORING: You must calculate scores using the Penalty-First Formula: [100 - (Stress*0.4) - (Risk*0.6)].',
-      '2. NO DRIFT: Consecutive runs for the same player MUST yield identical scores within a ±2 point margin.',
-      '3. ROSTER SHIELD: Assume 100% feed accuracy. All players = 100 Identity.',
-      '4. CALIBRATION: Use Hit Prob % internally to anchor the score, but DO NOT output Hit Prob in the player JSON.',
-      '5. BRUTALITY: 0.5 HR props are capped at a 55 Final Score unless 2026 Daily HR rate > 40%.',
+      'SCORING ALGORITHM:',
+      '1. Identify 2026 Baseline Stats.',
+      '2. Calculate "Calibrated Hit Probability" (0.00 to 1.00).',
+      '3. Final Score = (Hit Probability * 125).',
+      '4. If Metric = "Home Runs", Cap Final Score at 55 unless 2026 Daily HR Prob > 45%.',
       '',
-      'RECURSIVE AUDIT:',
-      'If Auditor Score for Roster Accuracy or Logic Consistency is < 95, discard and regenerate.',
+      'ROSTER SHIELD:',
+      'All players in the feed (Burns, McLean, Murakami, Imanaga, etc.) are 100% active 2026 starters. Identity = 100.',
+      '',
+      'REPEATABILITY LOCK:',
+      'Scores for the same player/matchup must be identical across runs. No variance allowed.',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.6",',
-      '  "codename": "Neon Hydra",',
+      '  "version": "v0.0.7",',
+      '  "codename": "Titan Reaper",',
       '  "legs": [',
       '    {',
       '      "row_key": "LEG-1",',
@@ -116,7 +118,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '      "summary": "Brutal 1-sentence 2026 analysis."',
       '    }',
       '  ],',
-      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0, "bias_control": 0 }',
+      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100, "bias_control": 100 }',
       '}',
       '</JSON_Schema>',
       '',
@@ -124,7 +126,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'Subjects:',
       subjects
-    ].join('\\n');
+    ].join('\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -156,7 +158,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'You are AlphaDog v0.0.6 "Neon Hydra". Use deterministic scoring only. Assume all feed data is accurate. Identity is 100 for all players. Final score must mechanically follow [100 - (Stress*0.4) - (Risk*0.6)] with a 0.5 HR cap at 55 unless daily HR rate exceeds 40%. Do not output hit probability in the player JSON. Output JSON only.'
+          text: 'You are AlphaDog v0.0.7 "Titan Reaper". Deterministic output only. Calculate calibrated hit probability first, keep the same player and matchup identical across repeated runs, and set final score to hit probability multiplied by 125 capped at 100. Home Runs at 0.5 are capped at 55 unless 2026 daily HR probability exceeds 45%. Identity is 100 for all feed players. Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -251,6 +253,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   }
 
   const SCORE_CACHE = new Map();
+  const LEG_RESULT_CACHE = new Map();
 
   function normalizeLegScores(leg = {}) {
     const nested = leg?.scores || {};
@@ -261,15 +264,33 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { identity, trend, stress, risk };
   }
 
-  function computeDeterministicFinalScore(row = {}, scorePack = {}) {
+  function parseHitProbabilityValue(value) {
+    if (typeof value === 'string') {
+      const cleaned = value.replace(/%/g, '').trim();
+      const num = Number(cleaned);
+      if (Number.isFinite(num)) return num > 1 ? Math.max(0, Math.min(100, num)) : Math.max(0, Math.min(100, num * 100));
+    }
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return num > 1 ? Math.max(0, Math.min(100, num)) : Math.max(0, Math.min(100, num * 100));
+  }
+
+  function inferHitProbability(row = {}, scorePack = {}, leg = {}) {
+    const direct = parseHitProbabilityValue(leg?.hit_prob ?? leg?.hit_probability ?? leg?.calibrated_hit_probability);
+    if (Number.isFinite(direct)) return direct;
+    const modelFinal = clampScore(leg?.final_score);
+    if (Number.isFinite(modelFinal)) return Math.max(0, Math.min(100, modelFinal / 1.25));
+    const trend = clampScore(scorePack?.trend) ?? 0;
     const stress = clampScore(scorePack?.stress) ?? 0;
     const risk = clampScore(scorePack?.risk) ?? 0;
-    let finalScore = clampScore(Math.round(100 - (stress * 0.4) - (risk * 0.6)));
+    return Math.max(0, Math.min(100, Math.round((trend * 0.55) + ((100 - stress) * 0.25) + ((100 - risk) * 0.20))));
+  }
+
+  function computeDeterministicFinalScore(row = {}, hitProbability = null) {
+    let finalScore = clampScore(Math.round((Number(hitProbability) || 0) * 1.25));
     const metric = String(row?.prop || row?.metric || '').toLowerCase();
     const line = String(row?.line || '').trim();
-    if (metric.includes('home run') && line === '0.5') {
-      finalScore = Math.min(finalScore ?? 0, 55);
-    }
+    if (metric.includes('home run') && line === '0.5') finalScore = Math.min(finalScore ?? 0, 55);
     return finalScore;
   }
 
@@ -286,7 +307,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function stabilizeFinalScore(cacheKey, computedScore) {
     const prior = SCORE_CACHE.get(cacheKey);
-    if (Number.isFinite(prior) && Number.isFinite(computedScore) && Math.abs(prior - computedScore) > 3) {
+    if (Number.isFinite(prior) && Number.isFinite(computedScore) && Math.abs(prior - computedScore) > 1) {
       SCORE_CACHE.set(cacheKey, prior);
       return prior;
     }
@@ -296,13 +317,22 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function hydrateVaultFromLeg(row = {}, leg = {}) {
     const correctedLeg = applyGroundedIdentity(row, leg);
+    const cacheKey = makeReasonablenessKey(row, correctedLeg);
+    const cached = LEG_RESULT_CACHE.get(cacheKey);
+    if (cached) {
+      const clone = JSON.parse(JSON.stringify(cached));
+      clone.LEG_ID = row?.LEG_ID || clone.LEG_ID || '';
+      clone.idx = row?.idx || clone.idx || 0;
+      return clone;
+    }
     const vault = createZeroFilledVault(row);
     const normalizedScores = normalizeLegScores(correctedLeg);
     const identity = normalizedScores.identity;
     const trend = normalizedScores.trend;
     const stress = normalizedScores.stress;
     const risk = normalizedScores.risk;
-    const finalScore = stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
+    const hitProbability = inferHitProbability(row, normalizedScores, correctedLeg);
+    const finalScore = stabilizeFinalScore(cacheKey, computeDeterministicFinalScore(row, hitProbability));
 
     vault.isReal = true;
     vault.reliable = true;
@@ -320,7 +350,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       metric: String(correctedLeg?.metric || '').trim(),
       line: String(correctedLeg?.line || '').trim(),
       direction: String(correctedLeg?.direction || '').trim(),
-      type: String(correctedLeg?.type || '').trim()
+      type: String(correctedLeg?.type || '').trim(),
+      hitProbability
     };
     vault.categories = {
       identity: makeCategory(identity, 'Identity'),
@@ -328,6 +359,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       stress: makeCategory(stress, 'Stress'),
       risk: makeCategory(risk, 'Risk')
     };
+    LEG_RESULT_CACHE.set(cacheKey, JSON.parse(JSON.stringify(vault)));
+    try { window.__ALPHADOG_REASON_CACHE__ = Object.fromEntries(LEG_RESULT_CACHE.entries()); } catch (_) {}
     return vault;
   }
 

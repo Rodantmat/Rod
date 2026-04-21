@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.6 "Neon Hydra"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.7 "Titan Reaper"';
 
 
   const state = {
@@ -179,6 +179,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.miningVault = {};
     state.lastResult = null;
     try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
+    try { window.__ALPHADOG_REASON_CACHE__ = {}; } catch (_) {}
     ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
