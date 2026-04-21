@@ -79,10 +79,3 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .player-block-collapsible .player-summary::-webkit-details-marker{display:none}
 .player-block-collapsible .player-collapsible-body{padding:0 14px 14px}
 .player-block-collapsible[open]>.player-summary .collapsible-arrow{transform:rotate(90deg)}
-
-.config-stack{display:grid;gap:8px}
-.config-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.config-field{display:grid;gap:6px}
-.config-label,.config-field span{font-weight:700;color:var(--text)}
-.config-field input{width:100%;border-radius:14px;border:1px solid var(--border);background:#0c1427;color:var(--text);padding:12px}
-.detail-stack{display:grid;gap:12px}
