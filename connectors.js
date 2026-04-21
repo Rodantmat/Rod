@@ -7,6 +7,18 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
   const GEMINI_MODEL = 'gemini-3.1-pro-preview';
   const GEMINI_FALLBACK_MODELS = ['gemini-3.1-flash-lite-preview'];
+  const SYSTEM_PROMPT = `<System_Prompt>
+You are the AlphaDog Hostile Auditor. Analyze up to 24 legs using 2026 context.
+Be brutal. For each leg, return:
+[Sport] - [Full Name] ([Team]) @ [Opponent] - [Date/Time]
+[Prop] [Metric] [Direction]
+Identity & Context Integrity: [x]/100
+Performance & Trend Variance: [x]/100
+Situational Stress-Testing: [x]/100
+Risk & Volatility Buffers: [x]/100
+Final Score: [x]/100
+[Batch Footer]: Overall Auditor Score: [x]/100
+</System_Prompt>`;
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -96,13 +108,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         branchStatus: Object.fromEntries(BRANCH_KEYS.map((key) => [key, vault.branches[key]?.status || 'WARNING']))
       },
       responseText: '',
+      rawPayload: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
       logs: [{ level: 'warning', text: `[OXYGEN] DATA_INGRESS_ERROR: ${row?.parsedPlayer || row?.LEG_ID || 'UNKNOWN_ROW'} :: ${detail}` }]
     };
   }
 
   function rowHasIngressIdentityError(row = {}) {
     const player = String(row?.parsedPlayer || '').trim();
-    if (!player || player.length < 3) return true;
+    if (!player) return true;
     return /\b(?:vs\.?|@|Sun|Mon|Tue|Wed|Thu|Fri|Sat)\b/i.test(player);
   }
 
@@ -824,6 +837,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return key;
   }
 
+
+  function stashRawPayload(text = '') {
+    const value = String(text || '');
+    try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = value; } catch (_) {}
+    try { window.PickCalcUI?.renderRawPayload?.(value); } catch (_) {}
+    return value;
+  }
+
   function logConnectorStep(step, detail = '', modelId = GEMINI_MODEL) {
     const logger = getConsoleLogger();
     const text = `[SYSTEM] ${step}${detail ? `: ${detail}` : ''}`;
@@ -876,6 +897,7 @@ ${String(options?.retrySuffix || "").trim()}`;
 
     const logger = getConsoleLogger();
     const body = JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: [{ role: 'user', parts: [{ text: String(prompt || '').trim() || 'Extract data for subject' }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: Number.isFinite(Number(options?.temperature)) ? Number(options.temperature) : 0.15, maxOutputTokens: 6144 }
     });
@@ -895,44 +917,45 @@ ${String(options?.retrySuffix || "").trim()}`;
             try { errorObject = JSON.parse(errorText); } catch (_) {}
             const message = errorObject?.error?.message || errorText || `HTTP ${response.status}`;
             lastFailure = { ok: false, errorStatus: response.status, errorText: message, errorJson: errorObject, temporaryFailure: isRetryableStatus(response.status), modelId };
+            stashRawPayload(errorText);
             if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`);
             else logger({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${message}`, modelId, pre: errorText });
             if (isRetryableStatus(response.status) && attempt < maxAttempts) {
               try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
-              await delay(attempt === 1 ? 3000 : 6000);
+              await delay(5000 * (2 ** (attempt - 1)));
               continue;
             }
             break;
           }
 
           const json = await response.json();
-          const raw = extractGeminiText(json);
+          const raw = stashRawPayload(extractGeminiText(json));
           const parsedEnvelope = safeJsonParse(raw, { expectSingle: batch.length === 1 });
           const parsed = parsedEnvelope.parsed;
           if (!parsed) {
             sawPayloadShapeFailure = true;
-            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: attempt < maxAttempts, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
-            if (attempt < maxAttempts) { await delay(attempt === 1 ? 3000 : 6000); continue; }
+            lastFailure = { ok: false, errorStatus: response.status, errorText: 'Malformed JSON envelope from Gemini.', temporaryFailure: attempt < maxAttempts, modelId, rawResponse: stashRawPayload(parsedEnvelope.clean || raw || '') };
+            if (attempt < maxAttempts) { await delay(5000 * (2 ** (attempt - 1))); continue; }
             break;
           }
           const validation = validateGeminiPayload(parsed);
           if (!validation.ok) {
             sawPayloadShapeFailure = true;
             const retryablePayload = /Malformed factor payload|Duplicate factor payload|Near-duplicate factor payload|Provider payload lacks variance|Neutral provider payload|Synthetic pattern payload/i.test(validation.reason || '');
-            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: retryablePayload && attempt < maxAttempts, modelId, rawResponse: parsedEnvelope.clean || raw || '' };
-            if (retryablePayload && attempt < maxAttempts) { await delay(attempt === 1 ? 3000 : 6000); continue; }
+            lastFailure = { ok: false, errorStatus: response.status, errorText: validation.reason, temporaryFailure: retryablePayload && attempt < maxAttempts, modelId, rawResponse: stashRawPayload(parsedEnvelope.clean || raw || '') };
+            if (retryablePayload && attempt < maxAttempts) { await delay(5000 * (2 ** (attempt - 1))); continue; }
             break;
           }
           logConnectorStep('JSON_PARSING', `Parsed ${(parsed.data || []).length} subject payload(s) via ${modelId}`);
           logConnectorStep('FETCH_ATTEMPT_COMPLETE', `Success via ${modelId}`);
-          return Object.assign({ ok: true, modelId, rawResponse: parsedEnvelope.clean || raw || '', responseText: raw || '', warnings: validation.warnings || [] }, parsed);
+          return Object.assign({ ok: true, modelId, rawResponse: stashRawPayload(parsedEnvelope.clean || raw || ''), responseText: raw || '', warnings: validation.warnings || [] }, parsed);
         } catch (e) {
           lastFailure = { ok: false, errorStatus: 0, errorText: e?.message || 'Unknown fetch error', temporaryFailure: true, modelId };
           if (logger === console.log) logger(`[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`);
           else logger({ level: 'error', text: `[SYSTEM] GOOGLE_REJECTION: ${modelId} :: ${e?.message || 'Unknown fetch error'}`, modelId, pre: String(e?.stack || e?.message || 'Unknown fetch error') });
           if (attempt < maxAttempts) {
             try { window.PickCalcUI?.showToast?.(`Model busy (${modelId}). Retrying ${attempt}/${maxAttempts}...`); } catch (_) {}
-            await delay(attempt === 1 ? 3000 : 6000);
+            await delay(5000 * (2 ** (attempt - 1)));
             continue;
           }
         }
@@ -957,7 +980,7 @@ ${String(options?.retrySuffix || "").trim()}`;
 
     let lastFailure = primaryResult;
     for (const modelId of GEMINI_FALLBACK_MODELS) {
-      const fallbackResult = await tryModel(modelId, 1);
+      const fallbackResult = await tryModel(modelId, 3);
       if (fallbackResult?.ok) return fallbackResult;
       lastFailure = fallbackResult;
       if (fallbackResult?.sawPayloadShapeFailure) break;
@@ -1120,7 +1143,7 @@ ${String(options?.retrySuffix || "").trim()}`;
       break;
     }
     payload = lastPayload;
-    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
+    const rawResponse = stashRawPayload(String(payload?.rawResponse || payload?.responseText || ''));
     payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
 
     if (!payload?.ok) {
@@ -1133,6 +1156,7 @@ ${String(options?.retrySuffix || "").trim()}`;
         result.errorStatus = payload?.errorStatus || 0;
         result.errorJson = payload?.errorJson || null;
         result.responseText = payloadResponseText;
+        result.rawPayload = rawResponse;
         results.push(result);
         if (logger === console.log) logger(result.logs[0].text);
         else logger(result.logs[0]);
@@ -1167,6 +1191,7 @@ ${String(options?.retrySuffix || "").trim()}`;
       if (isFallback) {
         const result = buildIngressErrorResult(row, stateRef, 'Non-real Gemini payload. Matrix hidden.');
         result.responseText = payloadResponseText;
+        result.rawPayload = rawResponse;
         results.push(result);
         logger(result.logs[0]);
         hooks.onRowComplete?.({ row, rowIndex: results.length - 1, result, completedRows: results.length, totalRows, completedProbes: results.length, totalProbes });
@@ -1326,7 +1351,7 @@ ${String(options?.retrySuffix || "").trim()}`;
   }
 
   async function minePlayer(row, stateRef = null, hooks = {}) {
-    if (!row.parsedPlayer || row.parsedPlayer.length < 3 || /\b(?:vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri)\b/i.test(row.parsedPlayer)) {
+    if (!row.parsedPlayer || /\b(?:vs\.?|@|Sat|Sun|Mon|Tue|Wed|Thu|Fri)\b/i.test(row.parsedPlayer)) {
       try { window.PickCalcUI?.showToast?.('Mining Blocked: Dirty Player Identity'); } catch (_) {}
       const result = buildIngressErrorResult(row, stateRef, 'Identity Unresolved');
       hooks.onRowComplete?.({ row, rowIndex: 0, result, completedRows: 1, totalRows: 1, completedProbes: 0, totalProbes: 5 });

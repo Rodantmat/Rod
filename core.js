@@ -134,6 +134,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.renderFeedStatus(state.cleanPool, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
+    UI.renderRawPayload?.('');
   }
 
   function ingestBoard() {
@@ -144,8 +145,8 @@ window.PickCalcCore = window.PickCalcCore || {};
     const rejectedCount = Array.isArray(parsed.audit?.rejectedLines) ? parsed.audit.rejectedLines.length : 0;
     if (incoming.length > 0) {
       const combined = [...state.cleanPool, ...incoming];
-      const overflow = Math.max(0, combined.length - 16);
-      state.cleanPool = combined.slice(0, 16).map((row, index) => Object.assign({}, row, {
+      const overflow = Math.max(0, combined.length - 24);
+      state.cleanPool = combined.slice(0, 24).map((row, index) => Object.assign({}, row, {
         idx: index + 1,
         LEG_ID: row.LEG_ID || `LEG-${index + 1}`
       }));
@@ -156,7 +157,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       state.ingestLogs = buildIngestLogs(state.auditRows);
       input.value = '';
       UI.renderPoolCounts?.(incoming.length, rejectedCount + overflow);
-      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (16 Max)` });
+      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (24 Max)` });
     } else {
       state.auditRows = parsed.audit || [];
       state.ingestLogs = buildIngestLogs(state.auditRows);
@@ -199,6 +200,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     };
     state.lastResult = starter;
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
+    UI.renderRawPayload?.('');
 
     try {
       const response = await Connectors.streamingIngress(rows, state, {
@@ -219,6 +221,7 @@ window.PickCalcCore = window.PickCalcCore || {};
           };
           state.lastResult = payload;
           UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, branchKey });
+          UI.renderRawPayload?.(payload.rawPayload || payload.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
           result.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
@@ -226,6 +229,7 @@ window.PickCalcCore = window.PickCalcCore || {};
           result.finalized = true;
           state.lastResult = result;
           UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
+          UI.renderRawPayload?.(result.rawPayload || result.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
         },
         onComplete: ({ lastResult }) => {
           if (lastResult) {

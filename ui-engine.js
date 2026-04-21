@@ -211,25 +211,20 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('feedStatus');
     if (!mount) return;
     const counts = new Map();
-    const acceptedPlayers = [];
     (rows || []).forEach((row) => {
       if (row?.sport !== 'MLB') return;
       const prop = String(row?.prop || '').trim();
       if (prop) counts.set(prop, (counts.get(prop) || 0) + 1);
-      const player = String(row?.parsedPlayer || '').trim();
-      const matchup = [String(row?.team || '').trim(), String(row?.opponent || '').trim()].filter(Boolean).join(' vs ');
-      const line = [String(row?.prop || '').trim(), String(row?.line || '').trim()].filter(Boolean).join(' ');
-      if (player) acceptedPlayers.push(`<div class="feed-player-item">${escapeHtml(player)}${matchup ? ` • ${escapeHtml(matchup)}` : ''}${line ? ` • ${escapeHtml(line)}` : ''}</div>`);
     });
     const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
-    if (!counts.size && !acceptedPlayers.length && !rejectedCount) {
+    if (!counts.size && !rejectedCount) {
       mount.innerHTML = '';
       return;
     }
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop)).concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
     const lines = ordered.map((prop) => `<div class="feed-line">${escapeHtml(purgeUiNoise(prop))}: [${counts.get(prop)}]</div>`);
     if (rejectedCount) lines.push(`<div class="feed-line">Rejected Lines: [${rejectedCount}]</div>`);
-    mount.innerHTML = `<div class="status-panel feed-status-inline-panel"><div class="status-panel-head"><strong>Summary of Legs</strong></div><div class="feed-summary-list">${lines.join('')}</div>${acceptedPlayers.length ? `<div class="feed-player-list">${acceptedPlayers.join('')}</div>` : ''}</div>`;
+    mount.innerHTML = `<div class="status-panel feed-status-inline-panel"><div class="status-panel-head"><strong>Summary of Legs</strong></div><div class="feed-summary-list">${lines.join('')}</div></div>`;
   }
 
   function renderPoolTable(rows) {
@@ -390,9 +385,10 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAlphaDogScoreGrid(branches = {}, finalScore = null) {
+    const LABELS = { A: 'Identity', B: 'Trend', C: 'Stress', D: 'Risk' };
     const cells = ['A','B','C','D'].map((key) => {
       const value = branchDisplayScore(branches?.[key] || {});
-      return `<div class="alphadog-score-tile"><div class="alphadog-score-label">${escapeHtml(key)} Score</div><div class="alphadog-score-value ${value === null ? 'pending' : ''}">${value === null ? '&mdash;' : escapeHtml(String(value))}</div></div>`;
+      return `<div class="alphadog-score-tile"><div class="alphadog-score-label">${escapeHtml(LABELS[key] || key)}</div><div class="alphadog-score-value ${value === null ? 'pending' : ''}">${value === null ? '&mdash;' : escapeHtml(String(value))}</div></div>`;
     });
     cells.push(`<div class="alphadog-score-tile"><div class="alphadog-score-label">Final Score</div><div class="alphadog-score-value ${Number.isFinite(Number(finalScore)) ? '' : 'pending'}">${Number.isFinite(Number(finalScore)) ? escapeHtml(String(finalScore)) : '&mdash;'}</div></div>`);
     return `<div class="alphadog-card-grid">${cells.join('')}</div>`;
@@ -400,7 +396,7 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderPlayerMiningCard(row = {}, vault = {}, context = {}) {
     const normalized = splitTeamRoleFromName(row);
-    const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
+    const matchupLine = `${normalized.team || row.team || ''}${row.opponent ? ` @ ${row.opponent}` : ''}`.trim();
     const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
     const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
     const fallbackStatus = String(context?.runStatus || '').trim();
@@ -419,9 +415,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       const tone = branchTone(branch);
       const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
       const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
+      const sectionNames = { A: 'Identity', B: 'Trend', C: 'Stress', D: 'Risk', E: 'Market Signals' };
       const branchHeader = branchKey === 'E'
-        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch E</strong></span> <span class="card-type-tag market">${reliable ? 'RAW + TAIL' : (partial && !reliable ? 'RAW + TAIL' : 'MARKET')}</span></div>`
-        : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>Branch ${escapeHtml(branchKey)}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+        ? `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(sectionNames[branchKey])}</strong></span> <span class="card-type-tag market">${reliable ? 'RAW + TAIL' : (partial && !reliable ? 'RAW + TAIL' : 'MARKET')}</span></div>`
+        : `<div class="branch-title"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(sectionNames[branchKey])}</strong></span> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
       const factorMarkup = branchKey === 'E' && (partial || reliable) ? factorMeta.slice(0, 5).map(renderFactorLine).join('') + `<div class="mini-muted audit-note">Tail slots 66-72 are treated as modeled sentiment signals. They are displayed separately below and are not judged as arithmetic summaries of 61-65.</div>` : factorMeta.map(renderFactorLine).join('');
       const branchExtra = branchKey === 'E' ? (renderMarketProviders(branch.providerMap || {}) + ((partial || reliable) ? renderMarketArithmetic(branch.localArithmetic || {}) + renderMarketTailSignals(branch.modeledTail || {}) : '')) : '';
       return `<details class="branch-block matrix-collapsible ${tone.card}${warningClass}"><summary class="branch-summary collapsible-trigger">${branchHeader}</summary><div class="branch-body collapsible-content">${factorMarkup}${branchExtra}</div></details>`;
@@ -429,7 +426,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const statusLabel = reliable ? 'Verified Core' : ((effectiveVault?.weakSignal || fallbackStatus === 'WEAK_SIGNAL') ? 'Weak Signal' : (partial ? 'Partial Decode' : (effectiveVault?.proofFlags?.failures?.length ? 'Integrity Flagged' : (fallbackStatus === 'LOADING' ? 'Loading' : 'Waiting'))));
     const scoreMarkup = (reliable || partial) && Number.isFinite(score) ? `<span class="card-type-tag ${score >= 70 ? 'live' : 'heuristic'}">Score: ${escapeHtml(String(score))}/100${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</span>` : '';
     const scoreGrid = renderAlphaDogScoreGrid(branches, (reliable || partial) && Number.isFinite(score) ? score : null);
-    const playerHeader = `<div class="player-static-header"><div class="player-summary-head"><div class="alphadog-player-line"><span class="branch-title-left"><span class="collapsible-arrow">▶</span><strong>${escapeHtml(normalized.playerName || row.parsedPlayer || '')}</strong></span><span class="alphadog-matchup-inline">${escapeHtml(matchupLine || ((normalized.team || row.team || '') + (row.opponent ? ` vs ${row.opponent}` : '')).trim())}</span></div><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span></span></div><div class="player-header-line alphadog-prop-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${scoreGrid}</div>`;
+    const playerHeader = `<div class="player-static-header"><div class="player-summary-head"><div class="alphadog-player-line"><span class="collapsible-arrow">▶</span><span class="player-name">${escapeHtml(normalized.playerName || row.parsedPlayer || '')}</span><span class="alphadog-matchup-inline">• ${escapeHtml(matchupLine)}</span></div><span class="player-status-row"><span class="mini-flag ${reliable ? 'mini-flag-ok' : 'mini-flag-warn'}">${escapeHtml(statusLabel)}</span></span></div><div class="player-header-line alphadog-prop-line"><strong>${escapeHtml(propLine)}</strong>${pickTypeMarkup}</div>${scoreGrid}</div>`;
     return `<details class="player-mining-card static-player-card player-block-collapsible matrix-collapsible"><summary class="player-summary collapsible-trigger">${playerHeader}</summary><div class="player-collapsible-body collapsible-content">${matrixMarkup}</div></details>`;
   }
 
@@ -594,6 +591,13 @@ window.PickCalcUI = window.PickCalcUI || {};
     }
   }
 
+
+  function renderRawPayload(payloadText = '') {
+    const mount = el('rawPayloadOutput');
+    if (!mount) return;
+    mount.textContent = String(payloadText || '').trim();
+  }
+
   function showAnalysisScreen() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (intake) { intake.classList.add('hidden'); intake.style.display = 'none'; } if (analysis) { analysis.classList.remove('hidden'); analysis.style.display = 'block'; } }
   function backToIntake() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (analysis) analysis.classList.add('hidden'); if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; } }
   function showOverlay(title, body) { if (el('runOverlay')) el('runOverlay').classList.remove('hidden'); if (el('overlaySub')) el('overlaySub').textContent = title; if (el('overlayBody')) el('overlayBody').textContent = body; }
@@ -688,6 +692,6 @@ window.PickCalcUI = window.PickCalcUI || {};
     }, 4000);
   }
 
-  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary, showToast, isReliableVault, isPartialVault });
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderPoolCounts, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, renderRawPayload, resolveFactorGlossary, showToast, isReliableVault, isPartialVault });
   window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();

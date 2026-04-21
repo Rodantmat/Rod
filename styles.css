@@ -81,7 +81,7 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .player-block-collapsible[open]>.player-summary .collapsible-arrow{transform:rotate(90deg)}
 
 
-.app-logo{display:block;margin:0 auto 20px;max-width:180px;height:auto}
+.app-logo{filter:brightness(0) invert(1);height:28px;width:auto;vertical-align:middle;margin-right:10px;display:inline-block;max-width:none}
 .analysis-status-card .summary-pills:empty,.analysis-status-card .message:empty{display:none}
 .feed-badge-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
 .feed-sport-badge{display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:#16203a;font-weight:800}
@@ -100,3 +100,9 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .audit-grade-box .label{font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .audit-grade-box .value{font-size:24px;font-weight:900;margin-top:6px}
 .alphadog-footer-card.hidden{display:none!important}
+
+.hero-brand .brand-line{display:flex;align-items:center;gap:0;flex-wrap:wrap}
+.hero-brand h1{margin:0;display:inline-flex;align-items:center}
+.alphadog-player-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.alphadog-player-line .player-name,.alphadog-player-line .alphadog-matchup-inline{font-size:16px;font-weight:800}
+#rawPayloadOutput{white-space:pre-wrap;word-break:break-word;border:1px solid var(--border);border-radius:10px;min-height:72px}
