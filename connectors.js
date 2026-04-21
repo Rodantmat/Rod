@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.10 "Obsidian Ghost"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.11 "Silicon Predator"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -83,51 +83,27 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.10 - OBSIDIAN GHOST).',
+      'Role: Iron Bite Auditor (v0.0.11 - SILICON PREDATOR).',
       'Context: April 21, 2026.',
-      'Constraint: STRICT DETERMINISM. No creative interpretation. No narrative drift. No sugar-coating.',
+      'Constraint: ZERO-DRIFT. Match the JSON Schema keys exactly.',
       '',
       '[THE SUBTRACTION REQUISITION]',
-      'You are a mathematical auditor. Start all scores at 100. Apply these exact subtractions based on the 2026 data provided. Do not approximate.',
+      'Identity: 100 (Hard Mandate for all feed players).',
+      'Trend: Subtract 10 if ERA > 4.00, Subtract 15 if K/9 < 7.0.',
+      'Stress: Subtract 20 if Opponent OPS is Top 3, Subtract 15 if "Demon/Taco".',
+      'Risk: Subtract 45 for HR Props, Subtract 25 for Strikeout lines > 6.5.',
       '',
-      '1. IDENTITY (Score: 100)',
-      '- Rule: All feed players are verified 2026 starters. Identity = 100.',
-      '',
-      '2. TREND (2026 Baseline Logic)',
-      '- Subtract 10 if 2026 ERA > 4.00.',
-      '- Subtract 15 if 2026 K/9 < 7.0.',
-      '- Subtract 5 for every Loss in the last 3 appearances.',
-      '- Subtract 20 if "Last 5" hit rate for prop is < 40%.',
-      '',
-      '3. STRESS (Matchup Physics)',
-      '- Subtract 20 if Opponent Team OPS is Top 3 in 2026.',
-      '- Subtract 15 if Pitcher vs. Batter handedness is a historical disadvantage.',
-      '- Subtract 10 if Park Factor for the specific prop is < 0.95.',
-      '- Subtract 15 if Line = "Demon" or "Taco".',
-      '',
-      '4. RISK (Stat Volatility)',
-      '- Home Run Props: AUTOMATIC subtraction of 45. (Final Risk Floor: 55).',
-      '- Strikeout Props (Line > 6.5): Subtract 25.',
-      '- Strikeout Props (Line < 4.0): Subtract 10.',
-      '- Any "Goblin" Line: Subtract 20.',
-      '',
-      '[FINAL CALCULUS]',
-      '- Final Score = Average(Identity, Trend, Stress, Risk).',
-      '- HARD CLAMP: If Metric = "Home Runs", the Final Score cannot exceed 55.',
-      '',
-      '[REPETITION LOCK]',
-      '- You are forbidden from using adjectives in the summary.',
-      '- Summary must follow this format: "ID: 100 | Trend: -X [Reason] | Stress: -Y [Reason] | Risk: -Z [Reason]."',
-      '- Any variance in score for the same input is a system failure.',
+      '[MAPPING LOCK]',
+      'You MUST use these keys in the scores object: "identity", "trend", "stress", "risk".',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.10",',
-      '  "codename": "Obsidian Ghost",',
+      '  "version": "v0.0.11",',
+      '  "codename": "Silicon Predator",',
       '  "legs": [{',
       '    "player": "Full Name",',
-      '    "scores": {"id": 100, "trend": 0, "stress": 0, "risk": 0},',
+      '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
       '    "summary": "ID: 100 | T: -[val] | S: -[val] | R: -[val]"',
       '  }],',
@@ -171,7 +147,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.10 - OBSIDIAN GHOST). Context: April 21, 2026. Constraint: STRICT DETERMINISM. No creative interpretation. No narrative drift. No sugar-coating. [THE SUBTRACTION REQUISITION] Start all scores at 100 and apply exact subtractions. [FINAL CALCULUS] Final Score = Average(Identity, Trend, Stress, Risk). HARD CLAMP: If Metric = Home Runs, the Final Score cannot exceed 55. [REPETITION LOCK] Summary must follow this format: ID: 100 | Trend: -X [Reason] | Stress: -Y [Reason] | Risk: -Z [Reason]. Output JSON only.'
+          text: 'Role: Iron Bite Auditor (v0.0.11 - SILICON PREDATOR). Context: April 21, 2026. Constraint: ZERO-DRIFT. Match the JSON Schema keys exactly. [THE SUBTRACTION REQUISITION] Identity: 100 (Hard Mandate for all feed players). Trend: Subtract 10 if ERA > 4.00, Subtract 15 if K/9 < 7.0. Stress: Subtract 20 if Opponent OPS is Top 3, Subtract 15 if "Demon/Taco". Risk: Subtract 45 for HR Props, Subtract 25 for Strikeout lines > 6.5. [MAPPING LOCK] You MUST use these keys in the scores object: "identity", "trend", "stress", "risk". Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -209,6 +185,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }
 
     const parsed = safeParsePayload(extracted || rawText);
+    try { window.__ALPHADOG_LAST_API_RESPONSE__ = parsed || json || null; } catch (_) {}
     if (!parsed || !Array.isArray(parsed.legs)) {
       return {
         ok: false,
@@ -269,7 +246,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   function normalizeLegScores(leg = {}) {
     const nested = leg?.scores || {};
-    const identity = clampScore(leg?.identity ?? nested?.id ?? 100);
+    const identity = clampScore(leg?.identity ?? nested?.identity ?? nested?.id ?? 100);
     const trend = clampScore(leg?.trend ?? nested?.trend ?? 0);
     const stress = clampScore(leg?.stress ?? nested?.stress ?? 0);
     const risk = clampScore(leg?.risk ?? nested?.risk ?? 0);

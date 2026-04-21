@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.10 "Obsidian Ghost"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.11 "Silicon Predator"';
 
 
   const state = {

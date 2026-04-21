@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.10 "Obsidian Ghost"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.11 "Silicon Predator"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -101,6 +101,12 @@ window.PickCalcUI = window.PickCalcUI || {};
   function categoryValue(vault = {}, key = '') {
     const direct = vault?.categoryScores?.[key];
     if (Number.isFinite(Number(direct))) return Math.round(Number(direct));
+    const categoryNode = vault?.categories?.[key];
+    if (Number.isFinite(Number(categoryNode?.value))) return Math.round(Number(categoryNode.value));
+    if (key === 'identity') {
+      const legacyId = vault?.categoryScores?.id ?? vault?.categories?.id?.value;
+      if (Number.isFinite(Number(legacyId))) return Math.round(Number(legacyId));
+    }
     return null;
   }
 
