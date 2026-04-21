@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.1';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.2 "Iron Bite"';
 
 
   const state = {
@@ -20,95 +20,19 @@ window.PickCalcCore = window.PickCalcCore || {};
   };
 
   function calcCobaltEdge(vault = {}, row = {}) {
-    const branches = vault?.branches || {};
-    const clamp01 = (value) => {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return 0;
-      if (n <= 1) return Math.max(0, Math.min(1, n));
-      if (n <= 100) return Math.max(0, Math.min(1, n / 100));
-      return 1;
-    };
-    const averageBranch = (branchKey, keys = null) => {
-      const parsed = branches?.[branchKey]?.parsed || {};
-      const values = Array.isArray(keys) && keys.length ? keys.map((key) => parsed[key]).filter((value) => value !== undefined) : Object.values(parsed);
-      if (!values.length) return 0;
-      return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
-    };
-    const resolveMarketComposite = () => {
-      const providerMap = branches?.E?.providerMap || {};
-      const rawBooks = [providerMap.DraftKings, providerMap.FanDuel, providerMap.BetMGM, providerMap.Bet365, providerMap.Pinnacle]
-        .map(clamp01)
-        .filter((v) => Number.isFinite(v));
-      const arithmetic = branches?.E?.localArithmetic || {};
-      const components = rawBooks.slice();
-      if (Number.isFinite(Number(arithmetic.mean))) components.push(clamp01(arithmetic.mean));
-      if (Number.isFinite(Number(arithmetic.marketConfidence))) components.push(clamp01(arithmetic.marketConfidence));
-      if (!components.length) return 0;
-      return components.reduce((sum, value) => sum + value, 0) / components.length;
-    };
-    const marketComposite = resolveMarketComposite();
-    const prop = String(row?.prop || '').toLowerCase();
-    const pickType = String(row?.pickType || '').toLowerCase();
-    const isFantasy = /fantasy score|\bpfs\b|\bhfs\b/.test(prop);
-    const isPitcherFantasy = /pitcher fantasy score|\bpfs\b/.test(prop);
-    const isHitterFantasy = /hitter fantasy score|\bhfs\b/.test(prop) || (isFantasy && String(row?.type || '').toLowerCase().includes('hit'));
-
-    let overScore = 0;
-    let underScore = 0;
-
-    if (isPitcherFantasy) {
-      const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
-      const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
-      const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
-      const market = marketComposite;
-      overScore = (kPulse * 0.30) + (environment * 0.20) + (leash * 0.40) + (market * 0.10);
-      underScore = ((1 - kPulse) * 0.30) + ((1 - environment) * 0.20) + ((1 - leash) * 0.40) + ((1 - market) * 0.10);
-    } else if (isHitterFantasy || isFantasy || /hits\+runs\+rbis|hrr/.test(prop)) {
-      const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
-      const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
-      const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
-      const market = marketComposite;
-      overScore = (clout * 0.30) + (setup * 0.20) + (upside * 0.40) + (market * 0.10);
-      underScore = ((1 - clout) * 0.30) + ((1 - setup) * 0.20) + ((1 - upside) * 0.40) + ((1 - market) * 0.10);
-    } else if (/home runs|triples|stolen bases/.test(prop)) {
-      const branchA = averageBranch('A');
-      const branchC = averageBranch('C');
-      const branchD = averageBranch('D');
-      const branchE = marketComposite;
-      overScore = (branchA * 0.60) + (branchC * 0.20) + (branchD * 0.15) + (branchE * 0.05);
-      underScore = ((1 - branchA) * 0.60) + ((1 - branchC) * 0.20) + ((1 - branchD) * 0.15) + ((1 - branchE) * 0.05);
-    } else {
-      const branchA = averageBranch('A');
-      const branchC = averageBranch('C');
-      const branchD = averageBranch('D');
-      const branchE = marketComposite;
-      overScore = (branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchE * 0.05);
-      underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchE) * 0.05);
-    }
-
-    let chosenProbability = overScore;
-    let chosenSide = 'More';
-    if (pickType === 'goblin' || pickType === 'demon') {
-      const requested = String(row?.direction || '').toLowerCase();
-      if (requested === 'less' || requested === 'under') {
-        chosenProbability = underScore;
-        chosenSide = 'Less';
-      } else {
-        chosenProbability = overScore;
-        chosenSide = 'More';
-      }
-    } else if (underScore > overScore) {
-      chosenProbability = underScore;
-      chosenSide = 'Less';
-    }
-
-    const final = Math.max(0, Math.min(100, Math.round(chosenProbability * 100)));
+    const direct = Number(vault?.finalScore);
+    const scores = [vault?.categoryScores?.identity, vault?.categoryScores?.trend, vault?.categoryScores?.stress, vault?.categoryScores?.risk]
+      .map((v) => Number(v))
+      .filter(Number.isFinite);
+    const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+    const final = Number.isFinite(direct) ? Math.max(0, Math.min(100, Math.round(direct))) : computed;
+    const chosenSide = String(row?.direction || '').trim() || 'More';
     return {
       score: final,
       side: chosenSide,
       displaySide: chosenSide,
-      overScore: Math.round(overScore * 1000) / 1000,
-      underScore: Math.round(underScore * 1000) / 1000,
+      overScore: final / 100,
+      underScore: (100 - final) / 100,
       player: row?.parsedPlayer || '',
       legId: row?.LEG_ID || ''
     };
