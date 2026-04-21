@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.3 "Steroid Squirrel"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.5 "Cyber Cobra"';
 
 
   const state = {
@@ -252,7 +252,12 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (savedKey) { document.getElementById('apiKeyInput').value = savedKey; window.__OXYGEN_GEMINI_KEY__ = savedKey; }
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
-    UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
+    UI.el('backBtn')?.addEventListener('click', () => {
+      state.miningVault = {};
+      state.lastResult = null;
+      try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
+      UI.backToIntake();
+    });
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
       handleResetAll();

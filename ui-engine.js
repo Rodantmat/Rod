@@ -1,7 +1,7 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.3 "Steroid Squirrel"';
-  const MODEL_ID = 'gemini-3.1-pro-preview';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.5 "Cyber Cobra"';
+  const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
     'Hits', 'Total Bases', 'Runs', 'RBIs', 'Hits+Runs+RBIs', 'Singles', 'Doubles', 'Home Runs', 'Stolen Bases'
@@ -24,7 +24,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const num = Number(value);
     if (!Number.isFinite(num)) return 'score-pending';
     if (num < 70) return 'score-low';
-    if (num < 80) return 'score-mid';
+    if (num < 85) return 'score-mid';
     return 'score-high';
   }
 
@@ -43,7 +43,8 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function renderRunSummary(rows = []) {
     const mount = el('runSummary');
-    if (mount) mount.innerHTML = '';
+    if (!mount) return;
+    mount.innerHTML = '';
   }
 
   function renderPoolCounts(accepted = 0, rejected = 0) {
@@ -60,13 +61,16 @@ window.PickCalcUI = window.PickCalcUI || {};
       mount.innerHTML = '';
       return;
     }
+
     const counts = new Map();
     mlbRows.forEach((row) => {
       const prop = purgeUiNoise(row?.prop || 'Unknown Prop');
       counts.set(prop, (counts.get(prop) || 0) + 1);
     });
+
     const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop))
       .concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
+
     mount.innerHTML = `
       <div class="status-panel iron-summary-stack">
         <div class="feed-badge-row"><div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div></div>
@@ -105,18 +109,27 @@ window.PickCalcUI = window.PickCalcUI || {};
     return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
   }
 
+  function hitProbValue(vault = {}) {
+    const direct = vault?.auditMeta?.hitProb;
+    if (direct === null || direct === undefined || direct === '') return null;
+    const num = Number(String(direct).replace(/%/g, ''));
+    return Number.isFinite(num) ? Math.round(num) : null;
+  }
+
   function renderAlphaDogScoreGrid(vault = {}) {
+    const hitProb = hitProbValue(vault);
     const cells = [
       ['Identity', categoryValue(vault, 'identity')],
       ['Trend', categoryValue(vault, 'trend')],
       ['Stress', categoryValue(vault, 'stress')],
       ['Risk', categoryValue(vault, 'risk')],
+      ['Hit Prob', hitProb !== null ? `${hitProb}%` : '—'],
       ['Final', finalValue(vault), true]
     ];
-    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
+    return `<div class="alphadog-card-grid alphadog-card-grid--6">${cells.map(([label, value, isFinal]) => `
       <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
         <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
+        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(typeof value === 'string' ? Number(String(value).replace(/%/g, '')) : value)}">${escapeHtml(typeof value === 'string' ? value : formatScore(value))}</div>
       </div>`).join('')}</div>`;
   }
 
@@ -131,8 +144,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       metric: purgeUiNoise(meta.metric || row?.prop || ''),
       line: purgeUiNoise(meta.line || row?.line || ''),
       direction: purgeUiNoise(meta.direction || row?.direction || ''),
-      type: purgeUiNoise(meta.type || row?.type || 'Regular'),
-      hitProb: purgeUiNoise(meta.hitProb || row?.hitProb || '')
+      type: purgeUiNoise(meta.type || row?.type || 'Regular')
     };
   }
 
@@ -144,10 +156,23 @@ window.PickCalcUI = window.PickCalcUI || {};
         <div class="alphadog-card-headline">${escapeHtml(display.sport)} - ${escapeHtml(display.player)} - ${escapeHtml(display.team || 'Unknown Team')}</div>
         <div class="alphadog-card-subline">@ ${escapeHtml(display.opponent || 'Unknown Opponent')} - ${escapeHtml(display.dateTime || 'Time Pending')}</div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} - ${escapeHtml(display.line || '—')} - ${escapeHtml(display.direction || '—')} - ${escapeHtml(display.type || 'Regular')}</div>
-        ${display.hitProb ? `<div class="alphadog-hit-prob">Hit Prob: ${escapeHtml(display.hitProb)}</div>` : ''}
         ${renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
+  }
+
+  function renderAuditResults(rows = [], vaultCollection = {}) {
+    const auditResults = el('audit-results');
+    if (!auditResults) {
+      renderMiningGrid(rows, vaultCollection);
+      return;
+    }
+    auditResults.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.id = 'miningGrid';
+    grid.className = 'mining-grid';
+    auditResults.appendChild(grid);
+    renderMiningGrid(rows, vaultCollection);
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -232,7 +257,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       hint.innerHTML = `<span class="${status.label === 'FAILED' ? 'warning-banner analysis-error-banner' : 'status-ok-banner'}"><strong>${escapeHtml(status.label)}:</strong> ${escapeHtml(status.text)}</span>`;
     }
     const vaultCollection = result?.vaultCollection || {};
-    renderMiningGrid(rows, vaultCollection);
+    renderAuditResults(rows, vaultCollection);
     renderBatchAuditor(result);
     renderConsole(result?.logs || []);
   }
@@ -241,8 +266,9 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('progressBar');
     if (!mount) return;
     const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+    const cleanMessage = String(message || 'Running audit...').replace(/probe/gi, 'audit');
     const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
-    mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(message || 'Running audit...')}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(message || 'Running audit...')}</span></div>`;
+    mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
   }
 
   function updateProgressBar(percent = 0, _unused = 0, message = '') {
@@ -250,7 +276,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function initProgressBar(_completedRows = 0, _totalRows = 1, label = 'Initializing audit...') {
-    setProgressState(10, label, 'normal');
+    setProgressState(0, label, 'normal');
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => setProgressState(90, label, 'creep'));
     });
@@ -281,6 +307,13 @@ window.PickCalcUI = window.PickCalcUI || {};
   function backToIntake() {
     const intake = el('intakeScreen');
     const analysis = el('analysisScreen');
+    ['analysisSummary','analysisHint','batchAuditorOutput','rawPayloadOutput','progressBar','systemConsole'].forEach((id) => {
+      const node = el(id);
+      if (!node) return;
+      if ('textContent' in node) node.textContent = '';
+      if ('innerHTML' in node) node.innerHTML = '';
+    });
+    renderAuditResults([], {});
     if (analysis) analysis.classList.add('hidden');
     if (intake) intake.classList.remove('hidden');
   }
