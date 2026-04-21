@@ -1,0 +1,49 @@
+ALPHADOG v0.0.2 "IRON BITE" - SELF AUDIT CHECKLIST
+
+1. VERSION BUMP
+[OK] Updated visible version text to AlphaDog v0.0.2 "Iron Bite" in index.html, core.js, connectors.js, and ui-engine.js.
+
+2. LOGO / HEADER
+[OK] Logo and header are on the same line via flex container.
+[OK] .app-logo uses height: 42px, width: auto, brightness/invert filter, and margin-right: 12px.
+[OK] favicon.ico linked in <head>.
+
+3. SCREEN 1 SUMMARY
+[OK] Restored metric-only summary flow.
+[OK] Row 1 = sport badge.
+[OK] Row 2 = Summary of Legs header.
+[OK] Row 3+ = prop breakdown only.
+[OK] No player-name list inside the summary block.
+
+4. CONNECTOR RESILIENCE
+[OK] Primary model = gemini-2.5-pro.
+[OK] Fallback model = gemini-3.1-flash-lite-preview.
+[OK] Retry flow = primary -> 4s wait -> primary retry -> fallback.
+[OK] Raw Gemini payload is captured and pushed to the debug field.
+[OK] Connector errors are not injected into result cards.
+
+5. RAW PAYLOAD DEBUG
+[OK] RAW GEMINI PAYLOAD (DEBUG) section present in index.html before API Configuration.
+[OK] ui-engine.js renders the full raw payload into #rawPayloadOutput.
+
+6. SCREEN 2 CARD UI
+[OK] Player name and matchup render on one line.
+[OK] Prop line is directly below.
+[OK] Grid shows Identity / Trend / Stress / Risk / Final Score.
+[OK] Final Score is the largest visual value.
+[OK] Run Snapshot block removed.
+[OK] Legs: X removed.
+[OK] AlphaDog audit completed message removed.
+[OK] Current Clean Pool table removed from results screen.
+[OK] Footer maps Overall Auditor Score and Batch Grade.
+
+7. PARSER / IDENTITY
+[OK] Intake capped at 24 legs in core.js.
+[OK] Raw name fragments are passed through to Gemini; no Binding Error block added.
+
+8. DOUBLE-CHECK BEFORE ZIP
+[OK] index.html updated.
+[OK] styles.css updated.
+[OK] connectors.js updated.
+[OK] ui-engine.js updated.
+[OK] core.js updated for final-score handling.
