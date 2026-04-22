@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -83,23 +83,31 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR).',
+      'Role: Iron Bite Auditor (v0.0.14 - OXYGEN COBALT).',
       'Context: April 21, 2026.',
-      'Mandate: Start every category at 100. Subtract points for flaws.',
-      'Output keys MUST be: "identity", "trend", "stress", "risk".',
-      'Example: If Trend flaw is found, output: "trend": 85 (NOT -15).',
+      'Mandate: Process up to 3 batches (8 legs each). Use XML tags <Batch_1>, <Batch_2>, <Batch_3>.',
+      'Followed by <Corrected_Final_Run> for the Auditor pass.',
+      '',
+      '[DETERMINISTIC SCORING]',
+      '- Start every category at 100.',
+      '- Subtract points for flaws.',
+      '- Output MUST be positive integers (e.g., 85, NOT -15).',
+      '- Output Keys: "identity", "trend", "stress", "risk".',
+      '',
+      '[REPETITION LOCK]',
       'Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"',
+      'No adjectives. No "Probes." No "Snapshots."',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.13",',
-      '  "codename": "Cobalt Razor",',
+      '  "version": "v0.0.14",',
+      '  "codename": "Oxygen Cobalt",',
       '  "legs": [{',
       '    "player": "Full Name",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "ID: 100 | T: -0 | S: -0 | R: -0"',
+      '    "summary": "String"',
       '  }],',
       '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
@@ -141,7 +149,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.13 - COBALT RAZOR). Context: April 21, 2026. Mandate: Start every category at 100. Subtract points for flaws. Output keys MUST be: "identity", "trend", "stress", "risk". Example: If Trend flaw is found, output: "trend": 85 (NOT -15). Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]". Output JSON only.'
+          text: 'Role: Iron Bite Auditor (v0.0.14 - OXYGEN COBALT). Context: April 21, 2026. Mandate: Process up to 3 batches (8 legs each). Use XML tags <Batch_1>, <Batch_2>, <Batch_3>, followed by <Corrected_Final_Run> for the Auditor pass. Start every category at 100. Subtract points for flaws. Output MUST be positive integers. Output Keys: "identity", "trend", "stress", "risk". Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]". No adjectives. No "Probes." No "Snapshots." Output JSON only.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -297,10 +305,10 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const vaultEntry = {
       finalScore: Number(correctedLeg.final_score),
       categoryScores: {
-        identity: Number(correctedLeg?.scores?.identity || 0),
-        trend: Number(correctedLeg?.scores?.trend || 0),
-        stress: Number(correctedLeg?.scores?.stress || 0),
-        risk: Number(correctedLeg?.scores?.risk || 0)
+        identity: Number(correctedLeg.scores.identity || 0),
+        trend: Number(correctedLeg.scores.trend || 0),
+        stress: Number(correctedLeg.scores.stress || 0),
+        risk: Number(correctedLeg.scores.risk || 0)
       },
       summary: String(correctedLeg.summary || ''),
       reliable: true

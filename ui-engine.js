@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -99,13 +99,13 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function categoryValue(vault, key) {
-    // Access scores directly. Return null if missing to prevent fake '25' display.
+    // Access scores directly from the hydrated vault.
     const score = vault?.categoryScores?.[key];
     return (score !== undefined && score !== null) ? score : null;
   }
 
   function finalValue(vault) {
-    // Extract the direct finalScore provided by the AI.
+    // Use the direct finalScore passed from the API.
     return vault?.finalScore !== undefined ? Math.round(vault.finalScore) : null;
   }
 

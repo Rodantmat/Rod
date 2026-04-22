@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.13 "Cobalt Razor"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
 
 
   const state = {
@@ -28,24 +28,14 @@ window.PickCalcCore = window.PickCalcCore || {};
     ].map(v => {
       let n = Number(v);
       // Translation Logic: If AI sends a penalty (e.g. -15), subtract from 100 base.
-      if (n < 0) return 100 + n;
+      if (n < 0) return 100 + n; 
       return n;
-    }).filter(Number.isFinite);
+    }).filter(v => v !== null && !isNaN(v));
 
     const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
     const direct = Number(vault?.finalScore);
     const final = Number.isFinite(direct) ? Math.round(direct) : computed;
-    const bounded = Math.max(0, Math.min(100, final));
-    const chosenSide = String(row?.direction || '').trim() || 'More';
-    return {
-      score: bounded,
-      side: chosenSide,
-      displaySide: chosenSide,
-      overScore: bounded / 100,
-      underScore: (100 - bounded) / 100,
-      player: row?.parsedPlayer || '',
-      legId: row?.LEG_ID || ''
-    };
+    return { score: Math.max(0, Math.min(100, final)) };
   }
 
   function buildAnalysisCopyText(context = {}) {
