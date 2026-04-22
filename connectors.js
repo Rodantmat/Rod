@@ -1,16 +1,64 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.15-R "Quantum Vortex"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.17 "Logic Cage"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
-  const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
+  const FALLBACK_MODEL = 'DISABLED_IN_LOGIC_CAGE';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
-  const GROUNDED_2026_PLAYERS = {
-    'chase burns': { teamAbbr: 'CIN', teamFullName: 'Cincinnati Reds', identity: 100 },
-    'nolan mclean': { teamAbbr: 'NYM', teamFullName: 'New York Mets', identity: 100 },
-    'munetaka murakami': { teamAbbr: 'CWS', teamFullName: 'Chicago White Sox', identity: 100 }
-  };
+  const DEBUG_SEED = 42;
 
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const LOGIC_CAGE_SYSTEM_INSTRUCTION = [
+    '<System_Instruction>',
+    'Role: Iron Bite Auditor (AlphaDog v0.0.17 "Logic Cage").',
+    'Context: April 21, 2026.',
+    'Mode: Structural Sensor.',
+    'Mission: Return enum-only structural signals for each leg. Do not calculate arithmetic. Do not output bonuses. Do not output prose outside the schema. Echo every supplied row_key exactly.',
+    '',
+    'Zero-Tolerance Rules:',
+    '1. row_key is mandatory and must be echoed exactly for every leg.',
+    '2. The supplied player/team/opponent/metric/line/roster_hint context is authoritative.',
+    '3. Output must contain only the schema fields. No extra keys. No renamed keys.',
+    '4. Do not calculate final_score. Do not infer hidden penalties. Do not add bonuses.',
+    '5. Return enum values only for matchup_tier, stress_level, and risk_level using LOW, MEDIUM, or HIGH.',
+    '6. Return roster_status using ACTIVE, UNKNOWN, or OUT.',
+    '7. summary must be one short factual sentence only.',
+    '</System_Instruction>'
+  ].join('\n');
+
+  const RESPONSE_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['version', 'codename', 'legs', 'batch_audit'],
+    properties: {
+      version: { type: 'string' },
+      codename: { type: 'string' },
+      legs: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['row_key', 'player', 'roster_status', 'matchup_tier', 'stress_level', 'risk_level', 'summary'],
+          properties: {
+            row_key: { type: 'string' },
+            player: { type: 'string' },
+            roster_status: { type: 'string', enum: ['ACTIVE', 'UNKNOWN', 'OUT'] },
+            matchup_tier: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+            stress_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+            risk_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+            summary: { type: 'string' }
+          }
+        }
+      },
+      batch_audit: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['logic_consistency', 'roster_accuracy'],
+        properties: {
+          logic_consistency: { type: 'integer' },
+          roster_accuracy: { type: 'integer' }
+        }
+      }
+    }
+  };
 
   function getActiveGeminiKey() {
     try {
@@ -38,31 +86,38 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { name, value: normalized, status: normalized === null ? 'PENDING' : 'SUCCESS' };
   }
 
-  function normalizeName(value = '') {
-    return String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
   function createZeroFilledVault(row = {}) {
+    const rowKey = String(row?.LEG_ID || row?.row_key || '').trim();
+    const player = String(row?.parsedPlayer || row?.player || '').trim();
     return {
-      LEG_ID: row?.LEG_ID || '',
+      LEG_ID: rowKey,
       idx: row?.idx || 0,
-      player: row?.parsedPlayer || row?.player || '',
-      sourcePlayer: row?.parsedPlayer || row?.player || '',
-      rowKey: row?.LEG_ID || row?.row_key || '',
+      player,
+      sourcePlayer: player,
+      rowKey,
       isReal: false,
       reliable: false,
       terminalState: 'Waiting',
       source: 'empty',
+      schemaState: 'EMPTY',
+      schemaErrors: [],
+      deductionCodes: null,
       scores: { identity: null, trend: null, stress: null, risk: null },
       categoryScores: { identity: null, trend: null, stress: null, risk: null },
       finalScore: null,
       final_score: null,
       summary: '',
-      auditMeta: {},
+      auditMeta: {
+        sport: String(row?.sport || '').trim(),
+        player,
+        team: String(row?.team || '').trim(),
+        opponent: String(row?.opponent || '').trim(),
+        dateTime: String(row?.gameTimeText || row?.gameTime || '').trim(),
+        metric: String(row?.prop || '').trim(),
+        line: String(row?.line || '').trim(),
+        direction: String(row?.direction || '').trim(),
+        type: String(row?.type || 'Regular').trim()
+      },
       categories: {
         identity: makeCategory(null, 'Identity'),
         trend: makeCategory(null, 'Trend'),
@@ -72,62 +127,66 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     };
   }
 
-  function buildPrompt(batch = [], mode = 'initial') {
-    const subjects = batch.map((row, index) => {
-      const rowKey = row.LEG_ID || `LEG-${index + 1}`;
+  function createSchemaErrorVault(row = {}, reason = 'Schema violation', leg = null) {
+    const vault = createZeroFilledVault(row);
+    vault.isReal = true;
+    vault.reliable = false;
+    vault.terminalState = 'Schema Error';
+    vault.source = 'gemini';
+    vault.schemaState = 'SCHEMA_ERROR';
+    vault.schemaErrors = [String(reason || 'Schema violation')];
+    vault.summary = String(reason || 'Schema violation');
+    vault.player = String(leg?.player || row?.parsedPlayer || row?.player || '').trim();
+    vault.sourcePlayer = vault.player;
+    vault.rowKey = String(leg?.row_key || row?.LEG_ID || row?.row_key || '').trim();
+    return vault;
+  }
+
+  function buildUserPrompt(batch = []) {
+    const legsXml = batch.map((row, index) => {
+      const rowKey = String(row?.LEG_ID || row?.row_key || `LEG-${index + 1}`).trim();
+      const player = String(row?.parsedPlayer || row?.player || '').trim();
+      const team = String(row?.team || '').trim();
+      const opponent = String(row?.opponent || '').trim();
+      const metric = String(row?.prop || '').trim();
+      const line = String(row?.line || '').trim();
+      const direction = String(row?.direction || '').trim();
+      const type = String(row?.type || 'Regular').trim();
+      const gameTime = String(row?.gameTimeText || row?.gameTime || '').trim();
+      const rosterHint = player ? 'ACTIVE' : 'UNKNOWN';
       return [
-        `ROW_KEY: ${rowKey}`,
-        `SPORT: ${row.sport || ''}`,
-        `PLAYER: ${row.parsedPlayer || row.player || ''}`,
-        `TEAM: ${row.team || ''}`,
-        `OPPONENT: ${row.opponent || ''}`,
-        `METRIC: ${row.prop || ''}`,
-        `LINE: ${row.line || ''}`,
-        `DIRECTION: ${row.direction || ''}`,
-        `TYPE: ${row.type || 'Regular'}`,
-        `GAME_TIME: ${row.gameTimeText || row.gameTime || ''}`
+        `<Leg row_key="${rowKey}">`,
+        `  <Player>${player}</Player>`,
+        `  <Sport>${String(row?.sport || 'MLB').trim()}</Sport>`,
+        `  <Team>${team}</Team>`,
+        `  <Opponent>${opponent}</Opponent>`,
+        `  <Metric>${metric}</Metric>`,
+        `  <Line>${line}</Line>`,
+        `  <Direction>${direction}</Direction>`,
+        `  <Type>${type}</Type>`,
+        `  <Game_Time>${gameTime}</Game_Time>`,
+        `  <Roster_Hint>${rosterHint}</Roster_Hint>`,
+        '  <Return_Only>',
+        '    <roster_status>ACTIVE|UNKNOWN|OUT</roster_status>',
+        '    <matchup_tier>LOW|MEDIUM|HIGH</matchup_tier>',
+        '    <stress_level>LOW|MEDIUM|HIGH</stress_level>',
+        '    <risk_level>LOW|MEDIUM|HIGH</risk_level>',
+        '    <summary>One short factual sentence.</summary>',
+        '  </Return_Only>',
+        '</Leg>'
       ].join('\n');
     }).join('\n\n');
 
-    const modeLine = mode === 'corrected'
-      ? 'Repeat identical scoring for the same inputs. Do not change any prior score unless the input changed.'
-      : 'Compute the first deterministic pass with no variance.';
-
     return [
-      'Return JSON only. No markdown. No prose outside the JSON.',
-      '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.15-R).',
-      'Condition: DETERMINISTIC CALCULATION ONLY.',
+      'Return structured JSON only.',
+      'Echo every row_key exactly.',
+      'Do not calculate final_score.',
+      'Do not output bonuses.',
+      'Do not output any prose outside the schema.',
       '',
-      'DEDUCTION TABLE (Start at 100):',
-      '1. ROSTER SHIELD: If player in feed, Identity = 100 (No deduction).',
-      '2. ELITE OFFENSE (LAD, ATL, PHI): Subtract 35.',
-      '3. MID-TIER OFFENSE (SF, TOR, CLE, MIN): Subtract 15.',
-      '4. VOLATILE LINE (0.5 Home Runs): Force Final Score Cap at 55.',
-      '5. LINE STRESS (>= 5.5 Ks or 1.5 HRR): Subtract 20.',
-      '',
-      'FORMULA: Final Score = 100 - (Stress + Risk + Trend).',
-      'MAPPING: Return JSON where "player" name matches the input exactly.',
-      '</System_Instruction>',
-      '',
-      '<JSON_Schema>',
-      '{',
-      '  "version": "v0.0.15-R",',
-      '  "codename": "Quantum Vortex",',
-      '  "legs": [{',
-      '    "player": "Name",',
-      '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
-      '    "final_score": 0,',
-      '    "summary": "1-sentence 2026 formulaic audit."',
-      '  }],',
-      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
-      '}',
-      '</JSON_Schema>',
-      '',
-      modeLine,
-      '',
-      'Subjects:',
-      subjects
+      '<Batch>',
+      legsXml,
+      '</Batch>'
     ].join('\n');
   }
 
@@ -149,58 +208,50 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }
   }
 
-  function isRetryableFailure(status = 0, message = '') {
-    const code = Number(status) || 0;
-    const text = String(message || '').toLowerCase();
-    return code === 429 || code === 500 || code === 503 || code === 504 || /busy|quota|prepayment|rate limit|overloaded|temporar/.test(text);
+  function buildRequestEnvelope(prompt = '') {
+    return {
+      systemInstruction: {
+        parts: [{ text: LOGIC_CAGE_SYSTEM_INSTRUCTION }]
+      },
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        topK: 1,
+        topP: 1,
+        seed: DEBUG_SEED,
+        candidateCount: 1,
+        maxOutputTokens: 2048,
+        responseMimeType: 'application/json',
+        responseSchema: RESPONSE_SCHEMA
+      }
+    };
+  }
+
+  function buildDebugText({ requestBody, rawText, extractedText, parsedPayload, forwardedBody }) {
+    return [
+      '=== LOGIC CAGE DEBUG ===',
+      '',
+      'REQUEST_BODY',
+      JSON.stringify(requestBody, null, 2),
+      '',
+      'FORWARDED_BODY',
+      forwardedBody ? JSON.stringify(forwardedBody, null, 2) : 'UNAVAILABLE_FROM_WORKER',
+      '',
+      'RAW_RESPONSE',
+      String(rawText || ''),
+      '',
+      'EXTRACTED_TEXT',
+      String(extractedText || ''),
+      '',
+      'PARSED_PAYLOAD',
+      JSON.stringify(parsedPayload || null, null, 2)
+    ].join('\n');
   }
 
   async function callModel(modelId, prompt, apiKey) {
     const url = `${GEMINI_BASE_URL.replace(/\/$/, '')}/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-    const generationConfig = {
-      temperature: 0,
-      topP: 0.1,
-      topK: 1,
-      maxOutputTokens: 2048,
-      responseMimeType: 'application/json'
-    };
-
-    const body = JSON.stringify({
-      systemInstruction: {
-        parts: [{
-          text: `<System_Instruction>
-Role: Iron Bite Auditor (v0.0.15-R).
-Condition: DETERMINISTIC CALCULATION ONLY.
-
-DEDUCTION TABLE (Start at 100):
-1. ROSTER SHIELD: If player in feed, Identity = 100 (No deduction).
-2. ELITE OFFENSE (LAD, ATL, PHI): Subtract 35.
-3. MID-TIER OFFENSE (SF, TOR, CLE, MIN): Subtract 15.
-4. VOLATILE LINE (0.5 Home Runs): Force Final Score Cap at 55.
-5. LINE STRESS (>= 5.5 Ks or 1.5 HRR): Subtract 20.
-
-FORMULA: Final Score = 100 - (Stress + Risk + Trend).
-MAPPING: Return JSON where "player" name matches the input exactly.
-</System_Instruction>
-
-<JSON_Schema>
-{
-  "version": "v0.0.15-R",
-  "codename": "Quantum Vortex",
-  "legs": [{
-    "player": "Name",
-    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},
-    "final_score": 0,
-    "summary": "1-sentence 2026 formulaic audit."
-  }],
-  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }
-}
-</JSON_Schema>`
-        }]
-      },
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: generationConfig
-    });
+    const requestBody = buildRequestEnvelope(prompt);
+    try { console.log('REQUEST_PAYLOAD', JSON.stringify(requestBody, null, 2)); } catch (_) {}
 
     const response = await fetch(url, {
       method: 'POST',
@@ -208,34 +259,44 @@ MAPPING: Return JSON where "player" name matches the input exactly.
         'Content-Type': 'application/json',
         'x-goog-api-key': apiKey
       },
-      body
+      body: JSON.stringify(requestBody)
     });
 
     const rawText = await response.text();
-    stashRawPayload(rawText);
+    let outerJson = null;
+    try { outerJson = JSON.parse(rawText); } catch (_) {}
 
-    let json = null;
-    try { json = JSON.parse(rawText); } catch (_) {}
-    const extracted = json ? parseGeminiText(json) : rawText;
-    stashRawPayload(extracted || rawText);
+    const forwardedBody = outerJson?.debug_request || outerJson?.forwarded_request || outerJson?.request_body || null;
+    const extractedText = outerJson ? parseGeminiText(outerJson) : rawText;
+    const parsedPayload = safeParsePayload(extractedText || rawText);
+    const debugText = buildDebugText({ requestBody, rawText, extractedText, parsedPayload, forwardedBody });
+    stashRawPayload(debugText);
+
+    try {
+      window.__ALPHADOG_LAST_API_RESPONSE__ = outerJson || parsedPayload || null;
+      window.__ALPHADOG_LAST_REQUEST_BODY__ = requestBody;
+      window.__ALPHADOG_LAST_FORWARDED_BODY__ = forwardedBody;
+    } catch (_) {}
 
     if (!response.ok) {
       return {
         ok: false,
         status: response.status,
         modelId,
-        errorText: extracted || rawText || `HTTP ${response.status}`
+        errorText: extractedText || rawText || `HTTP ${response.status}`,
+        rawPayload: debugText,
+        responseText: extractedText || rawText
       };
     }
 
-    const parsed = safeParsePayload(extracted || rawText);
-    try { window.__ALPHADOG_LAST_API_RESPONSE__ = parsed || json || null; } catch (_) {}
-    if (!parsed || !Array.isArray(parsed.legs)) {
+    if (!parsedPayload || !Array.isArray(parsedPayload.legs)) {
       return {
         ok: false,
         status: response.status,
         modelId,
-        errorText: 'Malformed JSON payload from Gemini.'
+        errorText: 'Malformed JSON payload from Gemini.',
+        rawPayload: debugText,
+        responseText: extractedText || rawText
       };
     }
 
@@ -243,245 +304,131 @@ MAPPING: Return JSON where "player" name matches the input exactly.
       ok: true,
       status: response.status,
       modelId,
-      payload: parsed,
-      responseText: extracted || rawText,
-      rawPayload: extracted || rawText
+      payload: parsedPayload,
+      rawPayload: debugText,
+      responseText: extractedText || rawText,
+      forwardedBody
     };
   }
 
-  async function fetchGeminiBatch(batch = [], mode = 'initial') {
+  async function fetchGeminiBatch(batch = []) {
     const apiKey = getActiveGeminiKey();
     if (!apiKey) {
       return { ok: false, status: 0, modelId: PRIMARY_MODEL, errorText: 'Missing Gemini API key.' };
     }
-
-    const prompt = buildPrompt(batch, mode);
-    const first = await callModel(PRIMARY_MODEL, prompt, apiKey);
-    if (first.ok) return first;
-
-    if (isRetryableFailure(first.status, first.errorText)) {
-      await delay(4000);
-      const second = await callModel(PRIMARY_MODEL, prompt, apiKey);
-      if (second.ok) return second;
-      const fallback = await callModel(FALLBACK_MODEL, prompt, apiKey);
-      if (fallback.ok) return fallback;
-      return fallback;
-    }
-
-    return first;
+    const prompt = buildUserPrompt(batch);
+    return callModel(PRIMARY_MODEL, prompt, apiKey);
   }
 
-  function clampScore(value) {
-    const num = Number(value);
-    return Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : null;
+  function coerceLeg(row = {}, leg = {}) {
+    return {
+      row_key: String(leg?.row_key || '').trim(),
+      player: String(leg?.player || '').trim(),
+      roster_status: String(leg?.roster_status || '').trim(),
+      matchup_tier: String(leg?.matchup_tier || '').trim(),
+      stress_level: String(leg?.stress_level || '').trim(),
+      risk_level: String(leg?.risk_level || '').trim(),
+      summary: String(leg?.summary || '').trim(),
+      sport: String(row?.sport || 'MLB').trim(),
+      team: String(row?.team || '').trim(),
+      opponent: String(row?.opponent || '').trim(),
+      date_time: String(row?.gameTimeText || row?.gameTime || '').trim(),
+      metric: String(row?.prop || '').trim(),
+      line: String(row?.line || '').trim(),
+      direction: String(row?.direction || '').trim(),
+      type: String(row?.type || 'Regular').trim()
+    };
   }
 
-  function applyGroundedIdentity(row = {}, leg = {}) {
-    const name = String(leg?.player || row?.parsedPlayer || row?.player || '').trim().toLowerCase();
-    const grounded = GROUNDED_2026_PLAYERS[name];
-    if (!grounded) return leg;
-    return Object.assign({}, leg, {
-      team: leg?.team || grounded.teamFullName || row?.team || grounded.teamAbbr,
-      identity: 100,
-      scores: Object.assign({}, leg?.scores || {}, { identity: 100 })
-    });
-  }
-
-  const SCORE_CACHE = new Map();
-
-  function normalizeLegScores(leg = {}) {
-    const nested = leg?.scores || {};
-    const identity = clampScore(leg?.identity ?? nested?.identity ?? 100);
-    const trend = clampScore(leg?.trend ?? nested?.trend ?? 0);
-    const stress = clampScore(leg?.stress ?? nested?.stress ?? 0);
-    const risk = clampScore(leg?.risk ?? nested?.risk ?? 0);
-    return { identity, trend, stress, risk };
-  }
-
-  function computeDeterministicHitProbability(row = {}, scorePack = {}) {
-    const identity = clampScore(scorePack?.identity) ?? 100;
-    const trend = clampScore(scorePack?.trend) ?? 0;
-    const stress = clampScore(scorePack?.stress) ?? 0;
-    const risk = clampScore(scorePack?.risk) ?? 0;
-    const average = (identity + trend + stress + risk) / 4;
-    const bounded = Math.max(0, Math.min(1, Number((average / 100).toFixed(4))));
-    return bounded;
-  }
-
-  function computeDeterministicFinalScore(row = {}, scorePack = {}) {
-    const trend = clampScore(scorePack?.trend) ?? 0;
-    const stress = clampScore(scorePack?.stress) ?? 0;
-    const risk = clampScore(scorePack?.risk) ?? 0;
-    let finalScore = clampScore(100 - (stress + risk + trend));
-    const metric = String(row?.prop || row?.metric || '').toLowerCase();
-    const team = String(row?.team || row?.teamAbbr || '').toUpperCase();
-    const numericLine = Number(row?.line);
-    if (['LAD', 'ATL', 'PHI'].includes(team)) {
-      finalScore = clampScore((finalScore ?? 100) - 35);
-    } else if (['SF', 'TOR', 'CLE', 'MIN'].includes(team)) {
-      finalScore = clampScore((finalScore ?? 100) - 15);
-    }
-    if (metric.includes('home run') && String(row?.line || '').includes('0.5')) {
-      finalScore = Math.min(finalScore ?? 0, 55);
-    }
-    if (/(strikeouts|ks)/i.test(metric) && numericLine >= 5.5) {
-      finalScore = clampScore((finalScore ?? 100) - 20);
-    }
-    if (/hrr/i.test(metric) && numericLine >= 1.5) {
-      finalScore = clampScore((finalScore ?? 100) - 20);
-    }
-    return finalScore;
-  }
-
-  function makeReasonablenessKey(row = {}, correctedLeg = {}) {
-    return [
-      String(correctedLeg?.player || row?.parsedPlayer || row?.player || '').trim().toLowerCase(),
-      String(correctedLeg?.team || row?.team || '').trim().toLowerCase(),
-      String(correctedLeg?.opponent || row?.opponent || '').trim().toLowerCase(),
-      String(correctedLeg?.metric || row?.prop || '').trim().toLowerCase(),
-      String(correctedLeg?.line || row?.line || '').trim().toLowerCase(),
-      String(correctedLeg?.direction || row?.direction || '').trim().toLowerCase()
-    ].join('|');
-  }
-
-  function stabilizeFinalScore(cacheKey, computedScore) {
-    const prior = SCORE_CACHE.get(cacheKey);
-    if (Number.isFinite(prior) && Number.isFinite(computedScore) && Math.abs(prior - computedScore) > 0) {
-      SCORE_CACHE.set(cacheKey, prior);
-      return prior;
-    }
-    SCORE_CACHE.set(cacheKey, computedScore);
-    return computedScore;
-  }
-
-  function hydrateVaultFromLeg(row = {}, leg = {}) {
-    const correctedLeg = applyGroundedIdentity(row, leg);
+  function createSensorVault(row = {}, leg = {}) {
+    const normalizedLeg = coerceLeg(row, leg);
     const vault = createZeroFilledVault(row);
-    const rawScores = correctedLeg?.scores || {};
-    const vaultEntry = {
-      player: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
-      sourcePlayer: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
-      rowKey: String(correctedLeg.row_key || row?.LEG_ID || row?.row_key || ''),
-      scores: {
-        identity: Number(rawScores.identity ?? 0),
-        trend: Number(rawScores.trend ?? 0),
-        stress: Number(rawScores.stress ?? 0),
-        risk: Number(rawScores.risk ?? 0)
-      },
-      categoryScores: {
-        identity: Number(rawScores.identity ?? 0),
-        trend: Number(rawScores.trend ?? 0),
-        stress: Number(rawScores.stress ?? 0),
-        risk: Number(rawScores.risk ?? 0)
-      },
-      finalScore: Number(correctedLeg.final_score),
-      final_score: Number(correctedLeg.final_score),
-      summary: String(correctedLeg.summary || ''),
-      reliable: true
-    };
-    const normalizedScores = normalizeLegScores({ scores: vaultEntry.scores });
-    const identity = normalizedScores.identity;
-    const trend = normalizedScores.trend;
-    const stress = normalizedScores.stress;
-    const risk = normalizedScores.risk;
-    const translatedFinalScore = Number.isFinite(vaultEntry.finalScore)
-      ? clampScore(vaultEntry.finalScore < 0 ? 100 + vaultEntry.finalScore : vaultEntry.finalScore)
-      : null;
-    const finalScore = Number.isFinite(translatedFinalScore)
-      ? translatedFinalScore
-      : stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
-
     vault.isReal = true;
-    vault.reliable = vaultEntry.reliable;
-    vault.terminalState = 'Verified';
+    vault.reliable = true;
+    vault.terminalState = 'Sensor Locked';
     vault.source = 'gemini';
-    vault.player = vaultEntry.player;
-    vault.sourcePlayer = vaultEntry.sourcePlayer;
-    vault.rowKey = vaultEntry.rowKey;
-    vault.scores = Object.assign({}, normalizedScores);
-    vault.categoryScores = Object.assign({}, normalizedScores);
-    vault.finalScore = finalScore;
-    vault.final_score = finalScore;
-    vault.summary = vaultEntry.summary.trim();
-    vault.auditMeta = {
-      sport: String(correctedLeg?.sport || '').trim(),
-      player: String(correctedLeg?.player || '').trim(),
-      team: String(correctedLeg?.team || '').trim(),
-      opponent: String(correctedLeg?.opponent || '').trim(),
-      dateTime: String(correctedLeg?.date_time || '').trim(),
-      metric: String(correctedLeg?.metric || '').trim(),
-      line: String(correctedLeg?.line || '').trim(),
-      direction: String(correctedLeg?.direction || '').trim(),
-      type: String(correctedLeg?.type || '').trim()
+    vault.schemaState = 'OK';
+    vault.player = normalizedLeg.player || vault.player;
+    vault.sourcePlayer = vault.player;
+    vault.rowKey = normalizedLeg.row_key || vault.rowKey;
+    vault.summary = normalizedLeg.summary;
+    vault.deductionCodes = {
+      roster_status: normalizedLeg.roster_status,
+      matchup_tier: normalizedLeg.matchup_tier,
+      stress_level: normalizedLeg.stress_level,
+      risk_level: normalizedLeg.risk_level
     };
-    vault.categories = {
-      identity: makeCategory(identity, 'Identity'),
-      trend: makeCategory(trend, 'Trend'),
-      stress: makeCategory(stress, 'Stress'),
-      risk: makeCategory(risk, 'Risk')
+    vault.auditMeta = {
+      sport: normalizedLeg.sport,
+      player: normalizedLeg.player,
+      team: normalizedLeg.team,
+      opponent: normalizedLeg.opponent,
+      dateTime: normalizedLeg.date_time,
+      metric: normalizedLeg.metric,
+      line: normalizedLeg.line,
+      direction: normalizedLeg.direction,
+      type: normalizedLeg.type
     };
     return vault;
   }
 
   function makeBatchAudit(payload = {}) {
+    const logicConsistency = Number(payload?.batch_audit?.logic_consistency);
+    const rosterAccuracy = Number(payload?.batch_audit?.roster_accuracy);
     return {
-      logicConsistency: clampScore(payload?.batch_audit?.logic_consistency),
-      biasControl: clampScore(payload?.batch_audit?.bias_control),
-      rosterAccuracy: clampScore(payload?.batch_audit?.roster_accuracy),
-      riskBuffer: clampScore(payload?.batch_audit?.risk_buffer)
+      logicConsistency: Number.isFinite(logicConsistency) ? Math.max(0, Math.min(100, logicConsistency)) : null,
+      biasControl: null,
+      rosterAccuracy: Number.isFinite(rosterAccuracy) ? Math.max(0, Math.min(100, rosterAccuracy)) : null,
+      riskBuffer: null
     };
-  }
-
-  function needsCorrectedRun(batchAudit = {}) {
-    return ['logicConsistency', 'biasControl', 'rosterAccuracy'].some((key) => Number(batchAudit?.[key]) < 95);
   }
 
   async function streamingIngress(pool = [], stateRef = null, hooks = {}) {
     const rows = Array.isArray(pool) ? pool.slice(0, 24) : [];
     const totalProbes = rows.length * 4;
-    let result = await fetchGeminiBatch(rows, 'initial');
-
-    if (result.ok) {
-      const initialBatchAudit = makeBatchAudit(result.payload);
-      if (needsCorrectedRun(initialBatchAudit)) {
-        hooks.onCorrection?.({ message: 'Determinism lock triggered corrected final pass.' });
-        const rerun = await fetchGeminiBatch(rows, 'corrected');
-        if (rerun.ok) result = rerun;
-      }
-    }
+    const result = await fetchGeminiBatch(rows);
 
     if (!result.ok) {
-      const failedVaultCollection = Object.fromEntries(rows.map((row) => [row.LEG_ID, createZeroFilledVault(row)]));
+      const failedVaultCollection = Object.fromEntries(rows.map((row) => [row.LEG_ID, createSchemaErrorVault(row, result.errorText || 'Gemini request failed.') ]));
       const lastResult = {
         row: rows[0] || {},
-        vault: createZeroFilledVault(rows[0] || {}),
+        vault: createSchemaErrorVault(rows[0] || {}, result.errorText || 'Gemini request failed.'),
         vaultCollection: failedVaultCollection,
         batchAudit: {},
         logs: [{ level: 'warning', text: `[SYSTEM] ${result.errorText || 'Gemini request failed.'}` }],
         analysisHint: result.errorText || 'Gemini request failed.',
         runStatus: 'FAILED',
         finalized: true,
-        rawPayload: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
-        responseText: window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
+        rawPayload: result.rawPayload || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '',
+        responseText: result.responseText || '',
         correctedRun: false
       };
+      hooks.onComplete?.({ lastResult });
       return { lastResult };
     }
 
-    const byKey = new Map((result.payload.legs || []).map((leg) => [String(leg?.row_key || ''), leg]));
-    const byPlayer = new Map((result.payload.legs || []).map((leg) => [normalizeName(leg?.player || ''), leg]));
+    const byKey = new Map((result.payload.legs || []).map((leg) => [String(leg?.row_key || '').trim(), leg]));
     const vaultCollection = {};
     let completedProbes = 0;
+    let completedRows = 0;
+    let schemaErrorCount = 0;
     let lastRowResult = null;
     const batchAudit = makeBatchAudit(result.payload);
-    const correctedRun = Boolean(result?.payload?.batch_audit?.corrected_final_run) || /Corrected[_ ]Final[_ ]Run/i.test(String(result.rawPayload || ''));
 
     for (const row of rows) {
       hooks.onRowStart?.({ row });
-      const leg = byKey.get(String(row.LEG_ID || '')) || byKey.get(String(row.row_key || '')) || byPlayer.get(normalizeName(row.parsedPlayer || row.player || '')) || {};
-      const vault = hydrateVaultFromLeg(row, leg);
-      vaultCollection[row.LEG_ID] = vault;
-      if (stateRef) stateRef.miningVault = Object.assign({}, stateRef.miningVault || {}, { [row.LEG_ID]: vault });
+      const rowKey = String(row?.LEG_ID || row?.row_key || '').trim();
+      const leg = byKey.get(rowKey);
+      let vault;
+      if (!leg) {
+        vault = createSchemaErrorVault(row, `Missing leg for ${rowKey}. Response must echo row_key exactly.`);
+        schemaErrorCount += 1;
+      } else {
+        vault = createSensorVault(row, leg);
+      }
+
+      vaultCollection[rowKey] = vault;
+      if (stateRef) stateRef.miningVault = Object.assign({}, stateRef.miningVault || {}, { [rowKey]: vault });
       try { window.__ALPHADOG_MINING_VAULT__ = Object.assign({}, stateRef?.miningVault || vaultCollection); } catch (_) {}
 
       for (const categoryKey of ['identity', 'trend', 'stress', 'risk']) {
@@ -492,28 +439,29 @@ MAPPING: Return JSON where "player" name matches the input exactly.
           vault,
           completedProbes,
           totalProbes,
-          logs: [{ level: 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: ${categoryKey} ready.` }],
+          logs: [{ level: vault.schemaState === 'SCHEMA_ERROR' ? 'warning' : 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: ${vault.schemaState === 'SCHEMA_ERROR' ? 'schema error' : `${categoryKey} locked`}.` }],
           rawPayload: result.rawPayload
         });
       }
 
+      completedRows += 1;
       lastRowResult = {
         row,
         vault,
         vaultCollection: Object.assign({}, vaultCollection),
         batchAudit,
-        logs: [{ level: 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: audit complete.` }],
-        analysisHint: leg?.summary || 'Audit complete.',
-        runStatus: 'VERIFIED',
+        logs: [{ level: vault.schemaState === 'SCHEMA_ERROR' ? 'warning' : 'info', text: `[SYSTEM] ${row.parsedPlayer || row.LEG_ID}: ${vault.schemaState === 'SCHEMA_ERROR' ? 'schema rejected' : 'sensor payload accepted'}.` }],
+        analysisHint: schemaErrorCount ? `${schemaErrorCount} leg(s) rejected by schema gate.` : 'Sensor payload accepted. JS accountant ready.',
+        runStatus: schemaErrorCount ? 'FAILED' : 'VERIFIED',
         finalized: true,
         rawPayload: result.rawPayload,
         responseText: result.responseText,
-        correctedRun
+        correctedRun: false
       };
 
       hooks.onRowComplete?.({
         result: lastRowResult,
-        completedRows: Object.keys(vaultCollection).length,
+        completedRows,
         completedProbes,
         totalProbes
       });
@@ -525,8 +473,9 @@ MAPPING: Return JSON where "player" name matches the input exactly.
       rawPayload: result.rawPayload,
       responseText: result.responseText,
       finalized: true,
-      runStatus: 'VERIFIED',
-      correctedRun
+      runStatus: schemaErrorCount ? 'FAILED' : 'VERIFIED',
+      correctedRun: false,
+      analysisHint: schemaErrorCount ? `${schemaErrorCount} leg(s) rejected by schema gate.` : 'Logic Cage run complete.'
     });
 
     hooks.onComplete?.({ lastResult: finalResult });
@@ -536,16 +485,20 @@ MAPPING: Return JSON where "player" name matches the input exactly.
   async function debugConnection() {
     const apiKey = getActiveGeminiKey();
     if (!apiKey) return { ok: false, status: 0, errorText: 'Missing Gemini API key.' };
-    const test = await callModel(FALLBACK_MODEL, 'Return JSON only: {"legs":[],"batch_audit":{"logic_consistency":100,"bias_control":100,"roster_accuracy":100,"risk_buffer":100}}', apiKey);
-    return { ok: Boolean(test.ok), status: test.status || 0, errorText: test.errorText || '', modelId: test.modelId || FALLBACK_MODEL };
+    const probeRows = [{ LEG_ID: 'LEG-1', parsedPlayer: 'Debug Probe', sport: 'MLB', team: 'NYY', opponent: 'BOS', prop: 'Hits', line: '0.5', direction: 'Over', type: 'Regular', gameTimeText: 'Debug' }];
+    const test = await fetchGeminiBatch(probeRows);
+    return { ok: Boolean(test.ok), status: test.status || 0, errorText: test.errorText || '', modelId: test.modelId || PRIMARY_MODEL };
   }
 
   Object.assign(window.PickCalcConnectors, {
     SYSTEM_VERSION,
     PRIMARY_MODEL,
     FALLBACK_MODEL,
-    GROUNDED_2026_PLAYERS,
+    LOGIC_CAGE_SYSTEM_INSTRUCTION,
+    RESPONSE_SCHEMA,
+    DEBUG_SEED,
     createZeroFilledVault,
+    createSchemaErrorVault,
     fetchGeminiBatch,
     streamingIngress,
     debugConnection

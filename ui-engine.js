@@ -1,11 +1,24 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.15-R "Quantum Vortex"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.17 "Logic Cage"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
     'Hits', 'Total Bases', 'Runs', 'RBIs', 'Hits+Runs+RBIs', 'Singles', 'Doubles', 'Home Runs', 'Stolen Bases'
   ];
+
+  const ENUMS = {
+    roster_status: ['ACTIVE', 'UNKNOWN', 'OUT'],
+    matchup_tier: ['LOW', 'MEDIUM', 'HIGH'],
+    stress_level: ['LOW', 'MEDIUM', 'HIGH'],
+    risk_level: ['LOW', 'MEDIUM', 'HIGH']
+  };
+
+  const PENALTIES = {
+    matchup_tier: { LOW: 0, MEDIUM: 35, HIGH: 35 },
+    stress_level: { LOW: 0, MEDIUM: 20, HIGH: 20 },
+    risk_level: { LOW: 0, MEDIUM: 25, HIGH: 25 }
+  };
 
   const el = (id) => document.getElementById(id);
   const asArray = (value) => Array.isArray(value) ? value : [];
@@ -98,60 +111,76 @@ window.PickCalcUI = window.PickCalcUI || {};
       </div>`;
   }
 
-  function normalizeName(value = '') {
-    return purgeUiNoise(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  function findVaultForRow(row = {}, vaultCollection = {}) {
+    const directKey = String(row?.LEG_ID || row?.row_key || '').trim();
+    return directKey ? (vaultCollection?.[directKey] || {}) : {};
   }
 
-  function getVal(vault, key) {
-    if (!vault) return 0;
-    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? 0;
-    return Number.isFinite(Number(value)) ? Number(value) : 0;
+  function validateEnum(value, key) {
+    return ENUMS[key].includes(String(value || '').trim());
   }
 
-  function normalizeFinalValue(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return null;
-    return Math.max(0, Math.min(100, Math.round(num < 0 ? 100 + num : num)));
+  function calculateScoresFromCodes(vault = {}) {
+    if (vault?.schemaState === 'SCHEMA_ERROR') {
+      throw new Error(vault?.schemaErrors?.[0] || 'Schema Violation');
+    }
+
+    const codes = vault?.deductionCodes || {};
+    if (!vault?.rowKey) throw new Error('Schema Violation: Missing row_key');
+    if (!codes || typeof codes !== 'object') throw new Error('Schema Violation: Missing deduction codes');
+
+    ['roster_status', 'matchup_tier', 'stress_level', 'risk_level'].forEach((key) => {
+      if (!validateEnum(codes[key], key)) {
+        throw new Error(`Enum Violation: ${key}`);
+      }
+    });
+
+    const identity = codes.roster_status === 'ACTIVE' ? 100 : 0;
+    const trend = PENALTIES.matchup_tier[codes.matchup_tier];
+    const stress = PENALTIES.stress_level[codes.stress_level];
+    const risk = PENALTIES.risk_level[codes.risk_level];
+    const finalScore = Math.max(0, 100 - trend - stress - risk);
+
+    return {
+      scores: { identity, trend, stress, risk },
+      finalScore,
+      final_score: finalScore,
+      schemaState: 'OK',
+      schemaErrors: []
+    };
+  }
+
+  function computeRenderableVault(vault = {}) {
+    try {
+      const computed = calculateScoresFromCodes(vault);
+      return Object.assign({}, vault, computed, {
+        categoryScores: Object.assign({}, computed.scores),
+        reliable: true,
+        terminalState: 'Verified'
+      });
+    } catch (error) {
+      return Object.assign({}, vault, {
+        reliable: false,
+        schemaState: 'SCHEMA_ERROR',
+        schemaErrors: [String(error.message || 'Schema Violation')],
+        terminalState: 'Schema Error',
+        scores: { identity: null, trend: null, stress: null, risk: null },
+        categoryScores: { identity: null, trend: null, stress: null, risk: null },
+        finalScore: null,
+        final_score: null,
+        summary: String(vault?.summary || error.message || 'Schema Violation')
+      });
+    }
   }
 
   function categoryValue(vault, key) {
-    return normalizeFinalValue(getVal(vault, key));
+    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? null;
+    return Number.isFinite(Number(value)) ? Number(value) : null;
   }
 
   function finalValue(vault) {
-    return normalizeFinalValue(vault?.final_score ?? vault?.finalScore ?? vault?.score);
-  }
-
-  function findVaultForRow(row = {}, vaultCollection = {}) {
-    const direct = vaultCollection?.[row?.LEG_ID];
-    if (direct) return direct;
-
-    const rowNames = [
-      row?.parsedPlayer,
-      row?.player,
-      row?.auditMeta?.player
-    ].map(normalizeName).filter(Boolean);
-
-    if (!rowNames.length) return {};
-
-    for (const key of Object.keys(vaultCollection || {})) {
-      const candidate = vaultCollection?.[key];
-      const candidateNames = [
-        candidate?.player,
-        candidate?.auditMeta?.player,
-        candidate?.rawPlayer,
-        candidate?.sourcePlayer
-      ].map(normalizeName).filter(Boolean);
-      if (candidateNames.some((name) => rowNames.includes(name))) {
-        return candidate;
-      }
-    }
-
-    return {};
+    const num = Number(vault?.final_score ?? vault?.finalScore);
+    return Number.isFinite(num) ? Math.max(0, Math.min(100, Math.round(num))) : null;
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {
@@ -184,18 +213,21 @@ window.PickCalcUI = window.PickCalcUI || {};
     };
   }
 
-  function renderPlayerMiningCard(row = {}, vault = {}) {
+  function renderPlayerMiningCard(row = {}, sourceVault = {}) {
+    const vault = computeRenderableVault(sourceVault || {});
     const display = getAuditDisplay(row, vault);
     const summary = purgeUiNoise(vault?.summary || '');
+    const schemaError = vault?.schemaState === 'SCHEMA_ERROR';
+
     return `
-      <article class="alphadog-player-card">
+      <article class="alphadog-player-card ${schemaError ? 'alphadog-player-card-error' : ''}">
         <div class="alphadog-card-header">
           <div class="alphadog-card-headline">${escapeHtml(display.player)}</div>
           <div class="alphadog-card-subline">${escapeHtml(display.team || 'Unknown Team')} • ${escapeHtml(display.sport || 'MLB')}</div>
         </div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} • ${escapeHtml(display.line || '—')} • ${escapeHtml(display.direction || '—')}</div>
         <div class="alphadog-card-meta">${escapeHtml(display.opponent || 'Unknown Opponent')} • ${escapeHtml(display.dateTime || 'Time Pending')} • ${escapeHtml(display.type || 'Regular')}</div>
-        ${renderAlphaDogScoreGrid(vault)}
+        ${schemaError ? `<div class="alphadog-schema-error">SCHEMA ERROR • ${escapeHtml(vault?.schemaErrors?.[0] || 'Rejected by gatekeeper')}</div>` : renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
   }
@@ -212,7 +244,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     grid.className = 'mining-grid';
     auditResults.appendChild(grid);
     const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
-    grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>'; 
+    grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
@@ -229,9 +261,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const batch = result?.batchAudit || {};
     const scoreItems = [
       ['Logic Consistency', batch.logicConsistency],
-      ['Bias Control', batch.biasControl],
-      ['Roster Accuracy', batch.rosterAccuracy],
-      ['Risk Buffer', batch.riskBuffer]
+      ['Roster Accuracy', batch.rosterAccuracy]
     ].filter(([, value]) => Number.isFinite(Number(value)));
 
     if (!scoreItems.length) {
@@ -240,11 +270,10 @@ window.PickCalcUI = window.PickCalcUI || {};
       return;
     }
 
-    const statusLine = result?.correctedRun ? 'Corrected Final Run' : 'Initial Final Run';
     mount.innerHTML = `
       <article class="alphadog-player-card alphadog-batch-card">
         <div class="alphadog-card-headline">AUDITOR</div>
-        <div class="alphadog-card-subline">${escapeHtml(statusLine)}</div>
+        <div class="alphadog-card-subline">Logic Cage Batch Audit</div>
         <div class="alphadog-card-grid alphadog-batch-grid">${scoreItems.map(([label, value]) => `
           <div class="alphadog-score-tile">
             <div class="alphadog-score-label">${escapeHtml(label)}</div>
@@ -306,7 +335,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('progressBar');
     if (!mount) return;
     const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
+    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g, ' ').trim();
     const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
     mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
   }
@@ -323,43 +352,10 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) {
-    const getV = (vault, key) => {
-      if (!vault) return 0;
-      return vault.scores?.[key] || vault.categoryScores?.[key] || 0;
-    };
-
-    const sourceVaults = result?.vaultCollection || {};
-    const normalizedVaultCollection = {};
-
-    Object.keys(sourceVaults).forEach((key) => {
-      const vault = sourceVaults[key] || {};
-      const idVal = getV(vault, 'identity') || 100;
-      const trendVal = getV(vault, 'trend');
-      const stressVal = getV(vault, 'stress');
-      const riskVal = getV(vault, 'risk');
-      const finalVal = vault.final_score || vault.finalScore || 0;
-      normalizedVaultCollection[key] = Object.assign({}, vault, {
-        scores: Object.assign({}, vault.scores || {}, {
-          identity: idVal,
-          trend: trendVal,
-          stress: stressVal,
-          risk: riskVal
-        }),
-        categoryScores: Object.assign({}, vault.categoryScores || {}, {
-          identity: idVal,
-          trend: trendVal,
-          stress: stressVal,
-          risk: riskVal
-        }),
-        finalScore: finalVal,
-        final_score: finalVal
-      });
-    });
-
-    const normalizedResult = Object.assign({}, result, { vaultCollection: normalizedVaultCollection });
-    renderAnalysisShell(normalizedResult, rows, version);
-    renderAuditResults(rows, normalizedVaultCollection);
+    renderAnalysisShell(result, rows, version);
+    renderAuditResults(rows, result?.vaultCollection || {});
   }
+
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
     const message = result?.analysisHint || 'Running audit...';
@@ -381,6 +377,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (intake) intake.classList.add('hidden');
     if (analysis) analysis.classList.remove('hidden');
   }
+
   function backToIntake() {
     const intake = el('intakeScreen');
     const analysis = el('analysisScreen');
@@ -394,27 +391,31 @@ window.PickCalcUI = window.PickCalcUI || {};
     if (analysis) analysis.classList.add('hidden');
     if (intake) intake.classList.remove('hidden');
   }
+
   function showOverlay() {}
   function hideOverlay() {}
   function bindResizeRedraw() {}
+
   function buildAnalysisCopyText(context = {}) {
     const rows = asArray(context.rows);
     const vaults = context.vault || {};
     return rows.map((row, index) => {
-      const vault = findVaultForRow(row, vaults || {});
+      const vault = computeRenderableVault(findVaultForRow(row, vaults || {}));
       const display = getAuditDisplay(row, vault);
       return [
         `${index + 1}. ${display.sport} - ${display.player} - ${display.team}`,
         `@ ${display.opponent} - ${display.dateTime}`,
         `${display.metric} - ${display.line} - ${display.direction} - ${display.type}`,
-        `Identity ${categoryValue(vault, 'identity') ?? '-'} | Trend ${categoryValue(vault, 'trend') ?? '-'} | Stress ${categoryValue(vault, 'stress') ?? '-'} | Risk ${categoryValue(vault, 'risk') ?? '-'} | Final ${finalValue(vault) ?? '-'}`,
+        vault.schemaState === 'SCHEMA_ERROR'
+          ? `SCHEMA ERROR - ${vault.schemaErrors?.[0] || 'Rejected by gatekeeper'}`
+          : `Identity ${categoryValue(vault, 'identity') ?? '-'} | Trend ${categoryValue(vault, 'trend') ?? '-'} | Stress ${categoryValue(vault, 'stress') ?? '-'} | Risk ${categoryValue(vault, 'risk') ?? '-'} | Final ${finalValue(vault) ?? '-'}`,
         vault?.summary || ''
       ].filter(Boolean).join('\n');
     }).join('\n\n');
   }
 
   function showToast(message) { appendConsole({ text: String(message || '') }); }
-  function isReliableVault(vault = {}) { return Boolean(vault?.reliable === true); }
+  function isReliableVault(vault = {}) { return Boolean(computeRenderableVault(vault).reliable === true); }
   function isPartialVault() { return false; }
 
   Object.assign(window.PickCalcUI, {
