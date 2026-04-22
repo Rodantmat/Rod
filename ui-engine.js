@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.16 "Titan Reaper"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -106,10 +106,9 @@ window.PickCalcUI = window.PickCalcUI || {};
       .trim();
   }
 
-  function getVal(vault, key) {
+  function getV(vault, key) {
     if (!vault) return 0;
-    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? 0;
-    return Number.isFinite(Number(value)) ? Number(value) : 0;
+    return vault?.scores?.[key] || vault?.categoryScores?.[key] || 0;
   }
 
   function normalizeFinalValue(value) {
@@ -119,7 +118,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function categoryValue(vault, key) {
-    return normalizeFinalValue(getVal(vault, key));
+    return normalizeFinalValue(getV(vault, key));
   }
 
   function finalValue(vault) {
@@ -155,12 +154,17 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {
+    const idVal = getV(vault, 'identity') || 100;
+    const trendVal = getV(vault, 'trend');
+    const stressVal = getV(vault, 'stress');
+    const riskVal = getV(vault, 'risk');
+    const finalVal = vault?.final_score || vault?.finalScore || 0;
     const cells = [
-      ['Identity', categoryValue(vault, 'identity')],
-      ['Trend', categoryValue(vault, 'trend')],
-      ['Stress', categoryValue(vault, 'stress')],
-      ['Risk', categoryValue(vault, 'risk')],
-      ['Final Score', finalValue(vault), true]
+      ['Identity', normalizeFinalValue(idVal)],
+      ['Trend', normalizeFinalValue(trendVal)],
+      ['Stress', normalizeFinalValue(stressVal)],
+      ['Risk', normalizeFinalValue(riskVal)],
+      ['Final Score', normalizeFinalValue(finalVal), true]
     ];
     return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
       <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">

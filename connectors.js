@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.16 "Titan Reaper"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -90,39 +90,41 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }).join('\n\n');
 
     const modeLine = mode === 'corrected'
-      ? 'Repeat identical scoring for the same inputs. Do not change any prior score unless the input changed.'
-      : 'Compute the first deterministic pass with no variance.';
+      ? 'Repeat identical scoring for identical inputs. Do not introduce score variance.'
+      : 'Run the initial deterministic pass with zero variance.';
 
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (QUANTUM VORTEX v0.0.15).',
+      'Role: Iron Bite Auditor (TITAN REAPER v0.0.16).',
       'Context: April 21, 2026.',
-      'Constraint: All feed players are 100% active 2026 MLB starters.',
+      'Mode: Deterministic Math Engine.',
       '',
-      'SCORING RULES:',
-      '1. ROSTER SHIELD: Identity MUST be 100 for all provided names.',
-      '2. DETERMINISM: Calculate % Hit Prob first. Final Score = (Prob * 1.25).',
-      '3. DATA BINDING: You MUST include the exact "player" name in the JSON for mapping.',
-      '4. Include "row_key" whenever a ROW_KEY is supplied in the subject block.',
-      '5. Output integer scores only. If you derive a penalty, convert it to a positive final score before returning JSON.',
+      'MANDATORY DEDUCTION TABLE (Start at 100):',
+      '- Identity Lock: 100 (If player is in feed, skip deduction).',
+      '- Elite Offense Penalty (LAD, ATL, PHI): -35.',
+      '- Mid-Tier Offense Penalty (MIN, SF, TEX): -15.',
+      '- Line Stress (1.5+ for H+R+RBI): -20.',
+      '- High Volatility (0.5 HR): Cap Final Score at 55.',
       '',
-      'RECURSIVE AUDIT:',
-      'If Auditor Logic Consistency or Roster Accuracy < 95, you must discard and emit a corrected final run.',
+      'FORMULA: Final Score = 100 - (Stress + Risk + Trend).',
+      'MAPPING: You MUST return the exact "player" name in the JSON keys.',
+      'OUTPUT: Include row_key whenever a ROW_KEY is supplied in the subject block.',
+      'OUTPUT: Use integer values only for identity, trend, stress, risk, and final_score.',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.15",',
-      '  "codename": "Quantum Vortex",',
+      '  "version": "v0.0.16",',
+      '  "codename": "Titan Reaper",',
       '  "legs": [{',
-      '    "player": "Full Name (EXACT MATCH)",',
+      '    "player": "Exact Match Name",',
       '    "row_key": "LEG-1",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "Brutal 1-sentence 2026 critique."',
+      '    "summary": "Brutal formulaic 2026 analysis."',
       '  }],',
-      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0 }',
+      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
       '</JSON_Schema>',
       '',
@@ -130,7 +132,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'Subjects:',
       subjects
-    ].join('\\n');
+    ].join('\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -159,18 +161,24 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function callModel(modelId, prompt, apiKey) {
     const url = `${GEMINI_BASE_URL.replace(/\/$/, '')}/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+
+    // FORCED DETERMINISM - ZERO DRIFT ALLOWED
+    const generationConfig = {
+      temperature: 0,
+      topP: 0,
+      topK: 1,
+      maxOutputTokens: 2048,
+      responseMimeType: 'application/json'
+    };
+
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (QUANTUM VORTEX v0.0.15). Context: April 21, 2026. All feed players are treated as active 2026 MLB starters. Identity must be 100. Return JSON only. Include the exact player name and supplied row_key for each leg. Use scores.identity, scores.trend, scores.stress, scores.risk, plus final_score and summary. Final score must be a positive integer. If your internal logic creates a penalty, convert it before returning JSON.'
+          text: 'Role: Iron Bite Auditor (TITAN REAPER v0.0.16). Context: April 21, 2026. Mode: Deterministic Math Engine. Start each leg at Identity 100. Deduct only from Trend, Stress, and Risk. Formula: Final Score = 100 - (Stress + Risk + Trend). Cap high-volatility home run legs at 55. Return JSON only. Include exact player and supplied row_key for each leg.'
         }]
       },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-        maxOutputTokens: 6144
-      }
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: generationConfig
     });
 
     const response = await fetch(url, {
@@ -269,27 +277,17 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { identity, trend, stress, risk };
   }
 
-  function computeDeterministicHitProbability(row = {}, scorePack = {}) {
-    const identity = clampScore(scorePack?.identity) ?? 100;
-    const trend = clampScore(scorePack?.trend) ?? 0;
-    const stress = clampScore(scorePack?.stress) ?? 0;
-    const risk = clampScore(scorePack?.risk) ?? 0;
-    const average = (identity + trend + stress + risk) / 4;
-    const bounded = Math.max(0, Math.min(1, Number((average / 100).toFixed(4))));
-    return bounded;
-  }
-
   function computeDeterministicFinalScore(row = {}, scorePack = {}) {
     const identity = clampScore(scorePack?.identity) ?? 100;
     const trend = clampScore(scorePack?.trend) ?? 0;
     const stress = clampScore(scorePack?.stress) ?? 0;
     const risk = clampScore(scorePack?.risk) ?? 0;
-    let finalScore = clampScore(Math.round((identity + trend + stress + risk) / 4));
+    let finalScore = clampScore(Math.round(identity - (trend + stress + risk)));
     const metric = String(row?.prop || row?.metric || '').toLowerCase();
     if (metric.includes('home run')) {
       finalScore = Math.min(finalScore ?? 0, 55);
     }
-    return finalScore;
+    return clampScore(finalScore);
   }
 
   function makeReasonablenessKey(row = {}, correctedLeg = {}) {
@@ -322,16 +320,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       sourcePlayer: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
       rowKey: String(correctedLeg.row_key || row?.LEG_ID || row?.row_key || ''),
       scores: {
-        identity: Number(rawScores.identity ?? 0),
-        trend: Number(rawScores.trend ?? 0),
-        stress: Number(rawScores.stress ?? 0),
-        risk: Number(rawScores.risk ?? 0)
+        identity: Number(correctedLeg.identity ?? rawScores.identity ?? 100),
+        trend: Number(correctedLeg.trend ?? rawScores.trend ?? 0),
+        stress: Number(correctedLeg.stress ?? rawScores.stress ?? 0),
+        risk: Number(correctedLeg.risk ?? rawScores.risk ?? 0)
       },
       categoryScores: {
-        identity: Number(rawScores.identity ?? 0),
-        trend: Number(rawScores.trend ?? 0),
-        stress: Number(rawScores.stress ?? 0),
-        risk: Number(rawScores.risk ?? 0)
+        identity: Number(correctedLeg.identity ?? rawScores.identity ?? 100),
+        trend: Number(correctedLeg.trend ?? rawScores.trend ?? 0),
+        stress: Number(correctedLeg.stress ?? rawScores.stress ?? 0),
+        risk: Number(correctedLeg.risk ?? rawScores.risk ?? 0)
       },
       finalScore: Number(correctedLeg.final_score),
       final_score: Number(correctedLeg.final_score),
@@ -344,7 +342,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const stress = normalizedScores.stress;
     const risk = normalizedScores.risk;
     const translatedFinalScore = Number.isFinite(vaultEntry.finalScore)
-      ? clampScore(vaultEntry.finalScore < 0 ? 100 + vaultEntry.finalScore : vaultEntry.finalScore)
+      ? clampScore(vaultEntry.finalScore)
       : null;
     const finalScore = Number.isFinite(translatedFinalScore)
       ? translatedFinalScore
@@ -365,12 +363,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.auditMeta = {
       sport: String(correctedLeg?.sport || '').trim(),
       player: String(correctedLeg?.player || '').trim(),
-      team: String(correctedLeg?.team || '').trim(),
-      opponent: String(correctedLeg?.opponent || '').trim(),
+      team: String(correctedLeg?.team || row?.team || '').trim(),
+      opponent: String(correctedLeg?.opponent || row?.opponent || '').trim(),
       dateTime: String(correctedLeg?.date_time || '').trim(),
-      metric: String(correctedLeg?.metric || '').trim(),
-      line: String(correctedLeg?.line || '').trim(),
-      direction: String(correctedLeg?.direction || '').trim(),
+      metric: String(correctedLeg?.metric || row?.prop || '').trim(),
+      line: String(correctedLeg?.line || row?.line || '').trim(),
+      direction: String(correctedLeg?.direction || row?.direction || '').trim(),
       type: String(correctedLeg?.type || '').trim()
     };
     vault.categories = {

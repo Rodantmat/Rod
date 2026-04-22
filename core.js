@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.16 "Titan Reaper"';
 
 
   const state = {
@@ -178,25 +178,14 @@ window.PickCalcCore = window.PickCalcCore || {};
 
   function handleBack() {
     state.miningVault = {};
-    state.auditRows = [];
     state.lastResult = null;
-    state.rawPayload = '';
-    state.currentRawPayload = '';
-    state.connectorState = {};
-    try { delete state.rawPayloadOutput; } catch (_) {}
+    const payloadEl = document.getElementById('rawPayloadOutput');
+    if (payloadEl) payloadEl.textContent = '';
     try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
     try { window.__ALPHADOG_LAST_API_RESPONSE__ = null; } catch (_) {}
     try { window.__ALPHADOG_MINING_VAULT__ = {}; } catch (_) {}
-    ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results','miningGrid','poolMount'].forEach((id) => {
-      const node = UI.el(id);
-      if (!node) return;
-      node.innerHTML = '';
-      if ('textContent' in node) node.textContent = '';
-    });
-    const rawPayloadOutput = UI.el('rawPayloadOutput');
-    if (rawPayloadOutput) rawPayloadOutput.textContent = '';
     UI.stopHeartbeat?.();
-    UI.backToIntake?.();
+    UI.backToIntake();
   }
 
   function handleResetAll() {

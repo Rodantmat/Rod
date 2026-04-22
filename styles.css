@@ -42,7 +42,7 @@ thead th{position:sticky;top:0;background:#121c34;z-index:1}
 .progress-bar-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px;color:var(--muted)}
 .analysis-connector-wrap{position:relative}
 .connector-lines{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.mining-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.mining-grid{display:grid!important;grid-template-columns:repeat(2,1fr)!important;gap:24px!important;width:100%;}
 .mining-grid-inner,.dense-player-grid{display:grid;grid-template-columns:repeat(2,1fr)!important;gap:20px;width:100%}
 .console-wrap{max-height:420px;overflow:auto;background:#09101d;border:1px solid var(--border);border-radius:14px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .console-line{padding:4px 0;border-bottom:1px dashed rgba(255,255,255,.06)}
@@ -61,7 +61,7 @@ thead th{position:sticky;top:0;background:#121c34;z-index:1}
 .alphadog-card-subline{margin-top:6px;color:#dbe6ff}
 .alphadog-card-prop{margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08);font-size:16px;font-weight:800;color:#dbe6ff}
 .alphadog-card-summary{margin-top:12px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#0d1529;color:var(--muted)}
-.alphadog-card-grid{display:flex;justify-content:space-between;gap:8px;margin-top:16px;align-items:stretch;flex-wrap:nowrap}
+.alphadog-card-grid{display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:10px;margin-top:16px;align-items:stretch;width:100%;}
 .alphadog-batch-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .alphadog-score-tile{border:1px solid var(--border);border-radius:12px;padding:14px;background:#0d1529;min-width:0;text-align:center;flex:1 1 0}
 .alphadog-score-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:800}
