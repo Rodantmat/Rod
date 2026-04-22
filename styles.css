@@ -64,6 +64,7 @@ thead th{position:sticky;top:0;background:#121c34;z-index:1}
 .alphadog-card-grid{display:grid!important;grid-template-columns:repeat(4,1fr)!important;gap:10px;margin-top:16px;align-items:stretch;width:100%;}
 .alphadog-batch-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .alphadog-score-tile{border:1px solid var(--border);border-radius:12px;padding:14px;background:#0d1529;min-width:0;text-align:center;flex:1 1 0}
+.alphadog-final-row{margin-top:10px;width:100%}.final-wide{width:100%}
 .alphadog-score-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:800}
 .alphadog-score-value{margin-top:6px;font-size:24px;line-height:1;font-weight:900}
 .alphadog-score-tile.final .alphadog-score-value,.alphadog-score-value.final{font-size:34px}

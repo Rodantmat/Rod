@@ -108,7 +108,8 @@ window.PickCalcUI = window.PickCalcUI || {};
 
   function getV(vault, key) {
     if (!vault) return 0;
-    return vault?.scores?.[key] || vault?.categoryScores?.[key] || 0;
+    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? 0;
+    return Number.isFinite(Number(value)) ? Number(value) : 0;
   }
 
   function normalizeFinalValue(value) {
@@ -121,8 +122,8 @@ window.PickCalcUI = window.PickCalcUI || {};
     return normalizeFinalValue(getV(vault, key));
   }
 
-  function finalValue(vault) {
-    return normalizeFinalValue(vault?.final_score ?? vault?.finalScore ?? vault?.score);
+  function finalValue(vault, leg = {}) {
+    return normalizeFinalValue(leg?.final_score ?? vault?.final_score ?? vault?.finalScore ?? vault?.score);
   }
 
   function findVaultForRow(row = {}, vaultCollection = {}) {
@@ -153,24 +154,30 @@ window.PickCalcUI = window.PickCalcUI || {};
     return {};
   }
 
-  function renderAlphaDogScoreGrid(vault = {}) {
-    const idVal = getV(vault, 'identity') || 100;
-    const trendVal = getV(vault, 'trend');
-    const stressVal = getV(vault, 'stress');
-    const riskVal = getV(vault, 'risk');
-    const finalVal = vault?.final_score || vault?.finalScore || 0;
+  function renderAlphaDogScoreGrid(vault = {}, leg = {}) {
+    const idVal = categoryValue(vault, 'identity') ?? 100;
+    const trendVal = categoryValue(vault, 'trend');
+    const stressVal = categoryValue(vault, 'stress');
+    const riskVal = categoryValue(vault, 'risk');
+    const finalVal = finalValue(vault, leg);
     const cells = [
-      ['Identity', normalizeFinalValue(idVal)],
-      ['Trend', normalizeFinalValue(trendVal)],
-      ['Stress', normalizeFinalValue(stressVal)],
-      ['Risk', normalizeFinalValue(riskVal)],
-      ['Final Score', normalizeFinalValue(finalVal), true]
+      ['Identity', idVal],
+      ['Trend', trendVal],
+      ['Stress', stressVal],
+      ['Risk', riskVal]
     ];
-    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
-      <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
-        <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-      </div>`).join('')}</div>`;
+    return `
+      <div class="alphadog-card-grid">${cells.map(([label, value]) => `
+        <div class="alphadog-score-tile">
+          <div class="alphadog-score-label">${escapeHtml(label)}</div>
+          <div class="alphadog-score-value ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
+        </div>`).join('')}</div>
+      <div class="alphadog-final-row">
+        <div class="alphadog-score-tile final final-wide">
+          <div class="alphadog-score-label">Final Score</div>
+          <div class="alphadog-score-value final ${scoreClass(finalVal)}">${escapeHtml(formatScore(finalVal))}</div>
+        </div>
+      </div>`;
   }
 
   function getAuditDisplay(row = {}, vault = {}) {
@@ -199,7 +206,7 @@ window.PickCalcUI = window.PickCalcUI || {};
         </div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} • ${escapeHtml(display.line || '—')} • ${escapeHtml(display.direction || '—')}</div>
         <div class="alphadog-card-meta">${escapeHtml(display.opponent || 'Unknown Opponent')} • ${escapeHtml(display.dateTime || 'Time Pending')} • ${escapeHtml(display.type || 'Regular')}</div>
-        ${renderAlphaDogScoreGrid(vault)}
+        ${renderAlphaDogScoreGrid(vault, row)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
   }
@@ -310,7 +317,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('progressBar');
     if (!mount) return;
     const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
+    const cleanMessage = String(message || 'Running audit...').replace(/(?:\d+\s*\/\s*\d+\s*)?probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
     const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
     mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
   }

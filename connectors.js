@@ -90,8 +90,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }).join('\n\n');
 
     const modeLine = mode === 'corrected'
-      ? 'Repeat identical scoring for identical inputs. Do not introduce score variance.'
-      : 'Run the initial deterministic pass with zero variance.';
+      ? 'Repeat identical scoring for the same inputs. Do not change any prior score unless the input changed.'
+      : 'Compute the first deterministic pass with no variance.';
 
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
@@ -109,8 +109,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'FORMULA: Final Score = 100 - (Stress + Risk + Trend).',
       'MAPPING: You MUST return the exact "player" name in the JSON keys.',
-      'OUTPUT: Include row_key whenever a ROW_KEY is supplied in the subject block.',
-      'OUTPUT: Use integer values only for identity, trend, stress, risk, and final_score.',
+      'Include "row_key" whenever a ROW_KEY is supplied in the subject block.',
+      'Output integer scores only.',
+      '',
+      'ENFORCEMENT:',
+      'If identical players are submitted, the returned scores must be identical.',
+      'If Auditor Logic Consistency or Roster Accuracy < 95, you must discard and emit a corrected final run.',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
@@ -118,13 +122,13 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '  "version": "v0.0.16",',
       '  "codename": "Titan Reaper",',
       '  "legs": [{',
-      '    "player": "Exact Match Name",',
+      '    "player": "Full Name (EXACT MATCH)",',
       '    "row_key": "LEG-1",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
       '    "summary": "Brutal formulaic 2026 analysis."',
       '  }],',
-      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
+      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0 }',
       '}',
       '</JSON_Schema>',
       '',
@@ -132,7 +136,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'Subjects:',
       subjects
-    ].join('\n');
+    ].join('\\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -161,24 +165,20 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function callModel(modelId, prompt, apiKey) {
     const url = `${GEMINI_BASE_URL.replace(/\/$/, '')}/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
-
-    // FORCED DETERMINISM - ZERO DRIFT ALLOWED
-    const generationConfig = {
-      temperature: 0,
-      topP: 0,
-      topK: 1,
-      maxOutputTokens: 2048,
-      responseMimeType: 'application/json'
-    };
-
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (TITAN REAPER v0.0.16). Context: April 21, 2026. Mode: Deterministic Math Engine. Start each leg at Identity 100. Deduct only from Trend, Stress, and Risk. Formula: Final Score = 100 - (Stress + Risk + Trend). Cap high-volatility home run legs at 55. Return JSON only. Include exact player and supplied row_key for each leg.'
+          text: 'Role: Iron Bite Auditor (TITAN REAPER v0.0.16). Context: April 21, 2026. Mode: Deterministic Math Engine. MANDATORY DEDUCTION TABLE (Start at 100): Identity Lock: 100. Elite Offense Penalty (LAD, ATL, PHI): -35. Mid-Tier Offense Penalty (MIN, SF, TEX): -15. Line Stress (1.5+ for H+R+RBI): -20. High Volatility (0.5 HR): Cap Final Score at 55. FORMULA: Final Score = 100 - (Stress + Risk + Trend). MAPPING: Return the exact player name in the JSON keys. Include row_key when supplied. Return JSON only with scores.identity, scores.trend, scores.stress, scores.risk, final_score, summary, and batch_audit.'
         }]
       },
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: generationConfig
+      generationConfig: {
+        temperature: 0,
+        topP: 0,
+        topK: 1,
+        maxOutputTokens: 2048,
+        responseMimeType: 'application/json'
+      }
     });
 
     const response = await fetch(url, {
@@ -277,17 +277,40 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { identity, trend, stress, risk };
   }
 
-  function computeDeterministicFinalScore(row = {}, scorePack = {}) {
+  function computeDeterministicHitProbability(row = {}, scorePack = {}) {
     const identity = clampScore(scorePack?.identity) ?? 100;
     const trend = clampScore(scorePack?.trend) ?? 0;
     const stress = clampScore(scorePack?.stress) ?? 0;
     const risk = clampScore(scorePack?.risk) ?? 0;
-    let finalScore = clampScore(Math.round(identity - (trend + stress + risk)));
+    const average = (identity + trend + stress + risk) / 4;
+    const bounded = Math.max(0, Math.min(1, Number((average / 100).toFixed(4))));
+    return bounded;
+  }
+
+  function computeDeterministicFinalScore(row = {}, scorePack = {}) {
+    const trend = clampScore(scorePack?.trend) ?? 0;
+    const stress = clampScore(scorePack?.stress) ?? 0;
+    const risk = clampScore(scorePack?.risk) ?? 0;
     const metric = String(row?.prop || row?.metric || '').toLowerCase();
-    if (metric.includes('home run')) {
+    const lineNumber = Number(row?.line);
+    const opponentTeam = String(row?.opponent || row?.opponentAbbr || '').trim().toUpperCase();
+
+    let stressTotal = stress;
+    let riskTotal = risk;
+    let trendTotal = trend;
+
+    if (['LAD', 'ATL', 'PHI'].includes(opponentTeam)) trendTotal += 35;
+    else if (['MIN', 'SF', 'TEX'].includes(opponentTeam)) trendTotal += 15;
+
+    if ((metric.includes('hits+runs+rbis') || metric.includes('hits+runs+rbi')) && Number.isFinite(lineNumber) && lineNumber >= 1.5) {
+      stressTotal += 20;
+    }
+
+    let finalScore = clampScore(Math.round(100 - (stressTotal + riskTotal + trendTotal)));
+    if (metric.includes('home run') && Number.isFinite(lineNumber) && lineNumber === 0.5) {
       finalScore = Math.min(finalScore ?? 0, 55);
     }
-    return clampScore(finalScore);
+    return finalScore;
   }
 
   function makeReasonablenessKey(row = {}, correctedLeg = {}) {
@@ -320,16 +343,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       sourcePlayer: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
       rowKey: String(correctedLeg.row_key || row?.LEG_ID || row?.row_key || ''),
       scores: {
-        identity: Number(correctedLeg.identity ?? rawScores.identity ?? 100),
-        trend: Number(correctedLeg.trend ?? rawScores.trend ?? 0),
-        stress: Number(correctedLeg.stress ?? rawScores.stress ?? 0),
-        risk: Number(correctedLeg.risk ?? rawScores.risk ?? 0)
+        identity: Number(rawScores.identity ?? 0),
+        trend: Number(rawScores.trend ?? 0),
+        stress: Number(rawScores.stress ?? 0),
+        risk: Number(rawScores.risk ?? 0)
       },
       categoryScores: {
-        identity: Number(correctedLeg.identity ?? rawScores.identity ?? 100),
-        trend: Number(correctedLeg.trend ?? rawScores.trend ?? 0),
-        stress: Number(correctedLeg.stress ?? rawScores.stress ?? 0),
-        risk: Number(correctedLeg.risk ?? rawScores.risk ?? 0)
+        identity: Number(rawScores.identity ?? 0),
+        trend: Number(rawScores.trend ?? 0),
+        stress: Number(rawScores.stress ?? 0),
+        risk: Number(rawScores.risk ?? 0)
       },
       finalScore: Number(correctedLeg.final_score),
       final_score: Number(correctedLeg.final_score),
@@ -342,7 +365,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const stress = normalizedScores.stress;
     const risk = normalizedScores.risk;
     const translatedFinalScore = Number.isFinite(vaultEntry.finalScore)
-      ? clampScore(vaultEntry.finalScore)
+      ? clampScore(vaultEntry.finalScore < 0 ? 100 + vaultEntry.finalScore : vaultEntry.finalScore)
       : null;
     const finalScore = Number.isFinite(translatedFinalScore)
       ? translatedFinalScore
@@ -363,12 +386,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.auditMeta = {
       sport: String(correctedLeg?.sport || '').trim(),
       player: String(correctedLeg?.player || '').trim(),
-      team: String(correctedLeg?.team || row?.team || '').trim(),
-      opponent: String(correctedLeg?.opponent || row?.opponent || '').trim(),
+      team: String(correctedLeg?.team || '').trim(),
+      opponent: String(correctedLeg?.opponent || '').trim(),
       dateTime: String(correctedLeg?.date_time || '').trim(),
-      metric: String(correctedLeg?.metric || row?.prop || '').trim(),
-      line: String(correctedLeg?.line || row?.line || '').trim(),
-      direction: String(correctedLeg?.direction || row?.direction || '').trim(),
+      metric: String(correctedLeg?.metric || '').trim(),
+      line: String(correctedLeg?.line || '').trim(),
+      direction: String(correctedLeg?.direction || '').trim(),
       type: String(correctedLeg?.type || '').trim()
     };
     vault.categories = {

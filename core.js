@@ -179,11 +179,22 @@ window.PickCalcCore = window.PickCalcCore || {};
   function handleBack() {
     state.miningVault = {};
     state.lastResult = null;
+    state.auditRows = [];
+    state.rawPayload = '';
+    state.currentRawPayload = '';
+    state.connectorState = {};
     const payloadEl = document.getElementById('rawPayloadOutput');
     if (payloadEl) payloadEl.textContent = '';
+    try { delete state.rawPayloadOutput; } catch (_) {}
     try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
     try { window.__ALPHADOG_LAST_API_RESPONSE__ = null; } catch (_) {}
     try { window.__ALPHADOG_MINING_VAULT__ = {}; } catch (_) {}
+    ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','audit-results','miningGrid'].forEach((id) => {
+      const node = UI.el(id);
+      if (!node) return;
+      node.innerHTML = '';
+      if ('textContent' in node) node.textContent = '';
+    });
     UI.stopHeartbeat?.();
     UI.backToIntake();
   }
