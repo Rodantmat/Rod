@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -98,15 +98,60 @@ window.PickCalcUI = window.PickCalcUI || {};
       </div>`;
   }
 
+  function normalizeName(value = '') {
+    return purgeUiNoise(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function getVal(vault, key) {
+    if (!vault) return 0;
+    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? 0;
+    return Number.isFinite(Number(value)) ? Number(value) : 0;
+  }
+
+  function normalizeFinalValue(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return Math.max(0, Math.min(100, Math.round(num < 0 ? 100 + num : num)));
+  }
+
   function categoryValue(vault, key) {
-    // Access scores directly from the hydrated vault.
-    const score = vault?.categoryScores?.[key];
-    return (score !== undefined && score !== null) ? score : null;
+    return normalizeFinalValue(getVal(vault, key));
   }
 
   function finalValue(vault) {
-    // Use the direct finalScore passed from the API.
-    return vault?.finalScore !== undefined ? Math.round(vault.finalScore) : null;
+    return normalizeFinalValue(vault?.final_score ?? vault?.finalScore ?? vault?.score);
+  }
+
+  function findVaultForRow(row = {}, vaultCollection = {}) {
+    const direct = vaultCollection?.[row?.LEG_ID];
+    if (direct) return direct;
+
+    const rowNames = [
+      row?.parsedPlayer,
+      row?.player,
+      row?.auditMeta?.player
+    ].map(normalizeName).filter(Boolean);
+
+    if (!rowNames.length) return {};
+
+    for (const key of Object.keys(vaultCollection || {})) {
+      const candidate = vaultCollection?.[key];
+      const candidateNames = [
+        candidate?.player,
+        candidate?.auditMeta?.player,
+        candidate?.rawPlayer,
+        candidate?.sourcePlayer
+      ].map(normalizeName).filter(Boolean);
+      if (candidateNames.some((name) => rowNames.includes(name))) {
+        return candidate;
+      }
+    }
+
+    return {};
   }
 
   function renderAlphaDogScoreGrid(vault = {}) {
@@ -166,14 +211,14 @@ window.PickCalcUI = window.PickCalcUI || {};
     grid.id = 'miningGrid';
     grid.className = 'mining-grid';
     auditResults.appendChild(grid);
-    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
+    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
     grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>'; 
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
-    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, vaultCollection?.[row.LEG_ID] || {})).join('');
+    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
     mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
   }
 
@@ -322,7 +367,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const rows = asArray(context.rows);
     const vaults = context.vault || {};
     return rows.map((row, index) => {
-      const vault = vaults[row.LEG_ID] || {};
+      const vault = findVaultForRow(row, vaults || {});
       const display = getAuditDisplay(row, vault);
       return [
         `${index + 1}. ${display.sport} - ${display.player} - ${display.team}`,

@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [

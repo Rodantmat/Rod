@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
 
 
   const state = {
@@ -33,8 +33,9 @@ window.PickCalcCore = window.PickCalcCore || {};
     }).filter(v => v !== null && !isNaN(v));
 
     const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-    const direct = Number(vault?.finalScore);
-    const final = Number.isFinite(direct) ? Math.round(direct) : computed;
+    const direct = Number(vault?.finalScore ?? vault?.final_score);
+    const translatedDirect = Number.isFinite(direct) ? (direct < 0 ? 100 + direct : direct) : NaN;
+    const final = Number.isFinite(translatedDirect) ? Math.round(translatedDirect) : computed;
     return { score: Math.max(0, Math.min(100, final)) };
   }
 
@@ -182,8 +183,10 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.rawPayload = '';
     state.currentRawPayload = '';
     state.connectorState = {};
+    try { delete state.rawPayloadOutput; } catch (_) {}
     try { window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ = ''; } catch (_) {}
     try { window.__ALPHADOG_LAST_API_RESPONSE__ = null; } catch (_) {}
+    try { window.__ALPHADOG_MINING_VAULT__ = {}; } catch (_) {}
     ['analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput','audit-results','miningGrid','poolMount'].forEach((id) => {
       const node = UI.el(id);
       if (!node) return;
@@ -223,6 +226,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.cleanPool = [];
     state.auditRows = [];
     state.miningVault = {};
+    try { window.__ALPHADOG_MINING_VAULT__ = {}; } catch (_) {}
     state.selectedLeagues = ['MLB'];
     state.lastResult = null;
     state.lastIngestMeta = null;

@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.14 "Oxygen Cobalt"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15 "Quantum Vortex"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -38,16 +38,29 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return { name, value: normalized, status: normalized === null ? 'PENDING' : 'SUCCESS' };
   }
 
+  function normalizeName(value = '') {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function createZeroFilledVault(row = {}) {
     return {
       LEG_ID: row?.LEG_ID || '',
       idx: row?.idx || 0,
+      player: row?.parsedPlayer || row?.player || '',
+      sourcePlayer: row?.parsedPlayer || row?.player || '',
+      rowKey: row?.LEG_ID || row?.row_key || '',
       isReal: false,
       reliable: false,
       terminalState: 'Waiting',
       source: 'empty',
+      scores: { identity: null, trend: null, stress: null, risk: null },
       categoryScores: { identity: null, trend: null, stress: null, risk: null },
       finalScore: null,
+      final_score: null,
       summary: '',
       auditMeta: {},
       categories: {
@@ -83,33 +96,33 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (v0.0.14 - OXYGEN COBALT).',
+      'Role: Iron Bite Auditor (QUANTUM VORTEX v0.0.15).',
       'Context: April 21, 2026.',
-      'Mandate: Process up to 3 batches (8 legs each). Use XML tags <Batch_1>, <Batch_2>, <Batch_3>.',
-      'Followed by <Corrected_Final_Run> for the Auditor pass.',
+      'Constraint: All feed players are 100% active 2026 MLB starters.',
       '',
-      '[DETERMINISTIC SCORING]',
-      '- Start every category at 100.',
-      '- Subtract points for flaws.',
-      '- Output MUST be positive integers (e.g., 85, NOT -15).',
-      '- Output Keys: "identity", "trend", "stress", "risk".',
+      'SCORING RULES:',
+      '1. ROSTER SHIELD: Identity MUST be 100 for all provided names.',
+      '2. DETERMINISM: Calculate % Hit Prob first. Final Score = (Prob * 1.25).',
+      '3. DATA BINDING: You MUST include the exact "player" name in the JSON for mapping.',
+      '4. Include "row_key" whenever a ROW_KEY is supplied in the subject block.',
+      '5. Output integer scores only. If you derive a penalty, convert it to a positive final score before returning JSON.',
       '',
-      '[REPETITION LOCK]',
-      'Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]"',
-      'No adjectives. No "Probes." No "Snapshots."',
+      'RECURSIVE AUDIT:',
+      'If Auditor Logic Consistency or Roster Accuracy < 95, you must discard and emit a corrected final run.',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.14",',
-      '  "codename": "Oxygen Cobalt",',
+      '  "version": "v0.0.15",',
+      '  "codename": "Quantum Vortex",',
       '  "legs": [{',
-      '    "player": "Full Name",',
+      '    "player": "Full Name (EXACT MATCH)",',
+      '    "row_key": "LEG-1",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "String"',
+      '    "summary": "Brutal 1-sentence 2026 critique."',
       '  }],',
-      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
+      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0 }',
       '}',
       '</JSON_Schema>',
       '',
@@ -117,7 +130,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'Subjects:',
       subjects
-    ].join('\n');
+    ].join('\\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -149,7 +162,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (v0.0.14 - OXYGEN COBALT). Context: April 21, 2026. Mandate: Process up to 3 batches (8 legs each). Use XML tags <Batch_1>, <Batch_2>, <Batch_3>, followed by <Corrected_Final_Run> for the Auditor pass. Start every category at 100. Subtract points for flaws. Output MUST be positive integers. Output Keys: "identity", "trend", "stress", "risk". Summary format: "ID: 100 | T: -[X] | S: -[Y] | R: -[Z]". No adjectives. No "Probes." No "Snapshots." Output JSON only.'
+          text: 'Role: Iron Bite Auditor (QUANTUM VORTEX v0.0.15). Context: April 21, 2026. All feed players are treated as active 2026 MLB starters. Identity must be 100. Return JSON only. Include the exact player name and supplied row_key for each leg. Use scores.identity, scores.trend, scores.stress, scores.risk, plus final_score and summary. Final score must be a positive integer. If your internal logic creates a penalty, convert it before returning JSON.'
         }]
       },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -240,7 +253,8 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     if (!grounded) return leg;
     return Object.assign({}, leg, {
       team: leg?.team || grounded.teamFullName || row?.team || grounded.teamAbbr,
-      identity: 100
+      identity: 100,
+      scores: Object.assign({}, leg?.scores || {}, { identity: 100 })
     });
   }
 
@@ -302,32 +316,51 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
   function hydrateVaultFromLeg(row = {}, leg = {}) {
     const correctedLeg = applyGroundedIdentity(row, leg);
     const vault = createZeroFilledVault(row);
+    const rawScores = correctedLeg?.scores || {};
     const vaultEntry = {
-      finalScore: Number(correctedLeg.final_score),
-      categoryScores: {
-        identity: Number(correctedLeg.scores.identity || 0),
-        trend: Number(correctedLeg.scores.trend || 0),
-        stress: Number(correctedLeg.scores.stress || 0),
-        risk: Number(correctedLeg.scores.risk || 0)
+      player: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
+      sourcePlayer: String(correctedLeg.player || row?.parsedPlayer || row?.player || ''),
+      rowKey: String(correctedLeg.row_key || row?.LEG_ID || row?.row_key || ''),
+      scores: {
+        identity: Number(rawScores.identity ?? 0),
+        trend: Number(rawScores.trend ?? 0),
+        stress: Number(rawScores.stress ?? 0),
+        risk: Number(rawScores.risk ?? 0)
       },
+      categoryScores: {
+        identity: Number(rawScores.identity ?? 0),
+        trend: Number(rawScores.trend ?? 0),
+        stress: Number(rawScores.stress ?? 0),
+        risk: Number(rawScores.risk ?? 0)
+      },
+      finalScore: Number(correctedLeg.final_score),
+      final_score: Number(correctedLeg.final_score),
       summary: String(correctedLeg.summary || ''),
       reliable: true
     };
-    const normalizedScores = normalizeLegScores({ scores: vaultEntry.categoryScores });
+    const normalizedScores = normalizeLegScores({ scores: vaultEntry.scores });
     const identity = normalizedScores.identity;
     const trend = normalizedScores.trend;
     const stress = normalizedScores.stress;
     const risk = normalizedScores.risk;
-    const finalScore = Number.isFinite(vaultEntry.finalScore)
-      ? vaultEntry.finalScore
+    const translatedFinalScore = Number.isFinite(vaultEntry.finalScore)
+      ? clampScore(vaultEntry.finalScore < 0 ? 100 + vaultEntry.finalScore : vaultEntry.finalScore)
+      : null;
+    const finalScore = Number.isFinite(translatedFinalScore)
+      ? translatedFinalScore
       : stabilizeFinalScore(makeReasonablenessKey(row, correctedLeg), computeDeterministicFinalScore(row, normalizedScores));
 
     vault.isReal = true;
     vault.reliable = vaultEntry.reliable;
     vault.terminalState = 'Verified';
     vault.source = 'gemini';
-    vault.categoryScores = vaultEntry.categoryScores;
+    vault.player = vaultEntry.player;
+    vault.sourcePlayer = vaultEntry.sourcePlayer;
+    vault.rowKey = vaultEntry.rowKey;
+    vault.scores = Object.assign({}, normalizedScores);
+    vault.categoryScores = Object.assign({}, normalizedScores);
     vault.finalScore = finalScore;
+    vault.final_score = finalScore;
     vault.summary = vaultEntry.summary.trim();
     vault.auditMeta = {
       sport: String(correctedLeg?.sport || '').trim(),
@@ -395,6 +428,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     }
 
     const byKey = new Map((result.payload.legs || []).map((leg) => [String(leg?.row_key || ''), leg]));
+    const byPlayer = new Map((result.payload.legs || []).map((leg) => [normalizeName(leg?.player || ''), leg]));
     const vaultCollection = {};
     let completedProbes = 0;
     let lastRowResult = null;
@@ -403,10 +437,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
     for (const row of rows) {
       hooks.onRowStart?.({ row });
-      const leg = byKey.get(String(row.LEG_ID || '')) || byKey.get(String(row.row_key || '')) || {};
+      const leg = byKey.get(String(row.LEG_ID || '')) || byKey.get(String(row.row_key || '')) || byPlayer.get(normalizeName(row.parsedPlayer || row.player || '')) || {};
       const vault = hydrateVaultFromLeg(row, leg);
       vaultCollection[row.LEG_ID] = vault;
       if (stateRef) stateRef.miningVault = Object.assign({}, stateRef.miningVault || {}, { [row.LEG_ID]: vault });
+      try { window.__ALPHADOG_MINING_VAULT__ = Object.assign({}, stateRef?.miningVault || vaultCollection); } catch (_) {}
 
       for (const categoryKey of ['identity', 'trend', 'stress', 'risk']) {
         completedProbes += 1;
