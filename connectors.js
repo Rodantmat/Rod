@@ -1,11 +1,11 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.22 "Cobalt Hound"';
   const CURRENT_SEASON = 2026;
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
-  const GEMINI_MODEL = 'gemini-flash-latest';
+  const GEMINI_MODEL = 'gemini-2.5-pro';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
 
   const FACTOR_NAMES = {
@@ -382,7 +382,7 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         role: "user", 
         parts: [{ text: finalPromptText }] 
       }],
-      generationConfig: { responseMimeType: "application/json" }
+      generationConfig: { temperature: 0, topK: 1, topP: 1, seed: 42, candidateCount: 1, maxOutputTokens: 4096, responseMimeType: "application/json" }
     });
     console.log('[OXYGEN] FETCH_URL:', url);
     console.log('HANDSHAKE_URL:', url);
@@ -556,37 +556,25 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
       idx: Number(rawRow?.idx || rowIndex + 1)
     }));
 
-    const payload = await fetchGeminiBatch(batch);
-    const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
-    const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
-    const cleanJson = sanitizeJsonText(rawResponse);
-
-    let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
-    if ((!responseData.data.length) && cleanJson) {
-      const repaired = safeJsonParse(cleanJson);
-      if (repaired.parsed) {
-        responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
-      } else {
-        console.warn('[OXYGEN] JSON_SANITIZE_FAIL:', repaired.error);
-      }
-    }
-
-    const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
-
     for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
       const row = batch[batchIndex];
+      hooks.onRowStart?.({ row, rowIndex: batchIndex, totalRows, completedProbes: batchIndex * 5, totalProbes });
+      const payload = await fetchGeminiBatch([row]);
+      const logger = (window.PickCalcUI && window.PickCalcUI.appendConsole) ? window.PickCalcUI.appendConsole : console.log;
+      const rawResponse = String(payload?.rawResponse || payload?.responseText || '');
+      const cleanJson = sanitizeJsonText(rawResponse);
+      let responseData = { data: Array.isArray(payload?.data) ? payload.data : [] };
+      if ((!responseData.data.length) && cleanJson) {
+        const repaired = safeJsonParse(cleanJson);
+        if (repaired.parsed) responseData = { data: Array.isArray(repaired.parsed?.data) ? repaired.parsed.data : [] };
+      }
+      const payloadResponseText = payload?.responseText || payload?.errorText || rawResponse || '';
       const vault = createZeroVault(row);
       vault.LEG_ID = row.LEG_ID;
       vault.idx = row.idx;
-
-      const entry = responseData.data.find((d) => Number(d?.i) === batchIndex);
-      const matchedRow = entry ? batch[Number(entry.i)] : null;
-      const targetLegId = matchedRow?.LEG_ID || row.LEG_ID;
-      const isExactLegMatch = Boolean(matchedRow && targetLegId === row.LEG_ID);
-      const vals = (isExactLegMatch && Array.isArray(entry?.v)) ? entry.v : Array.from({ length: 72 }, () => 0.5);
-      const isFallback = !isExactLegMatch || !Array.isArray(entry?.v) || entry?.fallback === true;
-
-      console.log('[OXYGEN] Hydrating ' + (row.parsedPlayer || row.LEG_ID) + ' [Index: ' + batchIndex + '] with ' + vals.length + ' units.');
+      const entry = responseData.data.find((d) => Number(d?.i) === 0) || responseData.data[0];
+      const vals = (Array.isArray(entry?.v) && entry.v.length >= 72) ? entry.v : Array.from({ length: 72 }, () => 0.5);
+      const isFallback = !Array.isArray(entry?.v) || entry?.fallback === true;
 
       const hydrateBranch = (branchKey, startIndex, count, status) => {
         const branch = vault.branches[branchKey] || seedBranch(branchKey);
@@ -600,36 +588,19 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
         updateBranchMeta(branch);
       };
 
-      vault.isReal = true;
-      vault.source = 'real';
-
       const branchStatus = 'REAL';
       hydrateBranch('A', 0, 20, branchStatus);
       hydrateBranch('B', 20, 18, branchStatus);
       hydrateBranch('C', 38, 12, branchStatus);
       hydrateBranch('D', 50, 10, branchStatus);
       hydrateBranch('E', 60, 12, branchStatus);
-
-      BRANCH_KEYS.forEach((key) => {
-        if (vault.branches[key]) {
-          vault.branches[key].status = 'REAL';
-          vault.branches[key].confidence = 1.0;
-          updateBranchMeta(vault.branches[key]);
-        }
-      });
-
-      PROVIDERS.forEach((provider, idx) => {
-        vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5);
-      });
-
+      BRANCH_KEYS.forEach((key) => { if (vault.branches[key]) { vault.branches[key].status = 'REAL'; vault.branches[key].confidence = 1.0; updateBranchMeta(vault.branches[key]); }});
+      PROVIDERS.forEach((provider, idx) => { vault.branches.E.providerMap[provider] = safeNumber(vals[60 + idx], 0.5); });
+      vault.isReal = true;
+      vault.source = 'real';
       const found = vals.filter((n) => Number(n) !== 0).length;
       vault.terminalState = isFallback ? 'PROFILE_EXTRACTED' : 'Atomic Matrix Saturated';
-
       commitVault(stateRef, row, vault);
-      console.log(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
-      if (logger === console.log) logger(`[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}`);
-      else logger({ level: 'info', text: `[OXYGEN] VAULT_STAMPED_FOR_ID: ${row.LEG_ID}` });
-
       const shield = computeShieldFromVault(vault);
       const currentVaults = stateRef?.miningVault || Object.fromEntries(results.map((r) => [r.row.LEG_ID, r.vault]));
       const result = {
@@ -642,34 +613,27 @@ Return only valid JSON with shape {"data":[{"i":0,"v":[72 floats]}]}.`;
           version: SYSTEM_VERSION,
           completedRows: batchIndex + 1,
           completedProbes: batchIndex + 1,
-          totalProbes: batch.length,
+          totalProbes: totalRows,
           liveBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           derivedBranches: ['A', 'B', 'C', 'D', 'E'].filter((key) => ['DERIVED', 'REAL', 'SUCCESS'].includes(vault.branches[key]?.status)).length,
           branchStatus: Object.fromEntries(['A', 'B', 'C', 'D', 'E'].map((key) => [key, vault.branches[key]?.status || 'WARNING']))
         },
         responseText: payloadResponseText,
-        logs: [{
-          level: isFallback ? 'warning' : 'success',
-          text: `[OXYGEN] ${isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH'}: ${row.parsedPlayer} (${found} units)`
-        }]
+        logs: [{ level: isFallback ? 'warning' : 'success', text: `[OXYGEN] ${isFallback ? 'PROFILE_EXTRACTED' : 'SCHEMA_MATCH'}: ${row.parsedPlayer} (72 units)` }]
       };
-
       results.push(result);
-      logger(result.logs[0]);
+      if (logger === console.log) logger(result.logs[0].text); else logger(result.logs[0]);
       if (window.PickCalcUI?.renderMiningGrid) {
-        try {
-          window.PickCalcUI.renderMiningGrid(batch, stateRef?.miningVault || currentVaults);
-        } catch (uiErr) {
-          console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr);
-        }
+        try { window.PickCalcUI.renderMiningGrid(batch, stateRef?.miningVault || currentVaults); } catch (uiErr) { console.warn('[OXYGEN] UI_REFRESH_FAIL:', uiErr); }
       }
-      hooks.onRowComplete?.({ row, rowIndex: batchIndex, result, completedRows: batchIndex + 1, totalRows, completedProbes: batchIndex + 1, totalProbes: batch.length });
+      hooks.onRowComplete?.({ row, rowIndex: batchIndex, result, completedRows: batchIndex + 1, totalRows, completedProbes: batchIndex + 1, totalProbes });
     }
 
     const lastResult = results[results.length - 1] || null;
     hooks.onComplete?.({ results, totalRows, lastResult });
     return { results, lastResult };
   }
+
 
 
   async function analyzeRow(row, stateRef = null) {

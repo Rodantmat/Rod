@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.22 "Cobalt Hound"';
 
   const LAB_BOOT_ROWS = [
     { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
@@ -136,7 +136,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
       state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
       state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). AlphaDog ingest active.`;
       refreshIntake();
       return;
     }
@@ -172,7 +172,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     state.auditRows = parsed.audit || [];
     state.ingestLogs = buildIngestLogs(state.auditRows);
     state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). AlphaDog ingest active.`;
     refreshIntake();
   }
 
@@ -297,7 +297,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const analysisTitle = document.getElementById('analysisTitle');
     const analysisVersion = document.getElementById('analysisVersion');
     const shieldTitle = document.getElementById('shieldTitle');
-    if (title) title.innerHTML = `PickCalc Multi-Sport Engine <span class="version-pill">${SYSTEM_VERSION}</span>`;
+    if (title) title.textContent = SYSTEM_VERSION;
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
     if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;

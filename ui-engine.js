@@ -1,11 +1,11 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.22 "Cobalt Hound"';
   const BRANCH_TOTAL = 72;
   const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
   const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
   const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
-  const MODEL_ID = 'gemini-flash-latest';
+  const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
   const PROFILE_FACTOR_NAMES = {
@@ -175,41 +175,61 @@ window.PickCalcUI = window.PickCalcUI || {};
     mount.innerHTML = (leagues || []).map((item) => `<label><input type="checkbox" data-league-id="${escapeHtml(item.id)}" value="${escapeHtml(item.id)}" ${item.checked ? 'checked' : ''}/> ${escapeHtml(item.label)}</label>`).join('');
   }
 
-  function renderRunSummary(rows, auditRows = []) {
+  function renderRunSummary(rows = []) {
     const mount = el('runSummary');
     if (!mount) return;
-    const vaultCollection = window.PickCalcCore?.state?.miningVault || {};
-    let realUnits = 0;
-    let derivedUnits = 0;
-    Object.values(vaultCollection).forEach((vault) => {
-      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
-      Object.values(vault?.branches || {}).forEach((branch) => {
-        const branchTotal = Number(branch?.factorsTarget || Object.keys(branch?.factorMeta || {}).length || 0);
-        if (vaultIsReal) realUnits += branchTotal;
-        else derivedUnits += Number(branch?.derivedCount || 0);
-      });
-    });
-    mount.innerHTML = [
-      `<div class="pill">Accepted: ${rows.length}</div>`,
-      `<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,
-      `<div class="pill">REAL Units: ${realUnits}</div>`,
-      `<div class="pill">DERIVED Units: ${derivedUnits}</div>`,
-      `<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`
-    ].join('');
+    mount.innerHTML = '';
   }
 
-  function renderFeedStatus(rows, auditRows = []) {
-    const active = new Set((rows || []).filter((r) => r.sport === 'MLB').map((r) => String(r.prop || '').trim()));
+  function renderPoolCounts(accepted = 0, rejected = 0) {
+    const mount = el('poolCounts');
+    if (!mount) return;
+    mount.innerHTML = `<span class="count-accepted">Accepted: ${escapeHtml(String(accepted))}</span><span class="count-rejected">Rejected: ${escapeHtml(String(rejected))}</span>`;
+  }
+
+  function renderFeedStatus(rows = []) {
     const mount = el('feedStatus');
     if (!mount) return;
-    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${(auditRows || []).some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
+    const mlbRows = asArray(rows).filter((row) => String(row?.sport || '').toUpperCase() === 'MLB');
+    if (!mlbRows.length) {
+      mount.innerHTML = '';
+      return;
+    }
+
+    const counts = new Map();
+    mlbRows.forEach((row) => {
+      const prop = purgeUiNoise(row?.prop || 'Unknown Prop');
+      counts.set(prop, (counts.get(prop) || 0) + 1);
+    });
+
+    const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop))
+      .concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
+
+    mount.innerHTML = `
+      <div class="status-panel iron-summary-stack">
+        <div class="metric-stack-shell">
+          <div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div>
+          <div class="feed-summary-list vertical-metric-stack centered-metric-stack">${ordered.map((prop) => `<div class="feed-line prop-metric">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
+        </div>
+      </div>`;
   }
 
-  function renderPoolTable(rows) {
+  function renderPoolTable(rows = []) {
     const mount = el('poolMount');
     if (!mount) return;
-    if (!rows.length) { mount.innerHTML = ''; return; }
-    mount.innerHTML = `<div class="status-panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Sport</th><th>League</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th><th>Type</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.idx)}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.league)}</td><td>${escapeHtml(row.parsedPlayer)}</td><td>${escapeHtml(row.team || '')}</td><td>${escapeHtml(row.opponent || '')}</td><td>${escapeHtml(row.prop || '')}</td><td>${escapeHtml(row.line || '')}</td><td>${escapeHtml(row.gameTimeText || '')}</td><td>${escapeHtml(row.type || '')}</td></tr>`).join('')}</tbody></table></div></div>`;
+    if (!rows.length) {
+      mount.innerHTML = '';
+      return;
+    }
+    mount.innerHTML = `
+      <div class="status-panel">
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Sport</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th></tr></thead>
+            <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.idx)}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.parsedPlayer)}</td><td>${escapeHtml(row.team || '')}</td><td>${escapeHtml(row.opponent || '')}</td><td>${escapeHtml(row.prop || '')}</td><td>${escapeHtml(row.line || '')}</td><td>${escapeHtml(row.gameTimeText || '')}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   function branchTone(branch) {
