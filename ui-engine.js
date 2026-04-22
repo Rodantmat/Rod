@@ -1,568 +1,503 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.21 "Chaos Ferret"';
-  const MODEL_ID = 'gemini-2.5-pro';
-  const MLB_FEED_MATRIX = [
-    'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
-    'Hits', 'Total Bases', 'Runs', 'RBIs', 'Hits+Runs+RBIs', 'Singles', 'Doubles', 'Home Runs', 'Stolen Bases'
-  ];
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
+  const BRANCH_TOTAL = 72;
+  const BRANCH_KEYS = ['A', 'B', 'C', 'D', 'E'];
+  const BRANCH_TARGETS = { A: 20, B: 18, C: 12, D: 10, E: 12 };
+  const PROVIDERS = ['DraftKings', 'FanDuel', 'BetMGM', 'Bet365', 'Pinnacle'];
+  const MODEL_ID = 'gemini-flash-latest';
+  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
-  const ENUMS = {
-    roster_status: ['ACTIVE', 'UNKNOWN', 'OUT'],
-    matchup_tier: ['LOW', 'MEDIUM', 'HIGH'],
-    stress_level: ['LOW', 'MEDIUM', 'HIGH'],
-    risk_level: ['LOW', 'MEDIUM', 'HIGH']
+  const PROFILE_FACTOR_NAMES = {
+    Pitcher: {
+      A: ["Velocity Stability", "Spin Rate Delta", "Extension", "Vertical Break", "Horizontal Movement", "Command Grade", "Location Heat", "Tunneling Quality", "Release Consistency", "Zone Rate", "K-BB% Trend", "Whiff Rate (Fastball)", "Whiff Rate (Offspeed)", "First Pitch Strike%", "Put-away % Efficiency", "Hard Hit Avoidance", "Barrel Rate Allowed", "GB/FB Ratio", "Average Exit Velocity", "Soft Contact%"],
+      B: ["Stamina Decay", "Late Movement", "Release Extension", "Strike-One Rate", "Pressure Tolerance", "High-Leverage Efficiency", "Primary Pitch Reliability", "Secondary Pitch Bite", "Sequencing Logic", "Pitch Mix Stability", "Velocity Preservation", "Third-Time-Through Penalty", "Contact Suppression", "CSW Rate", "Called Strike Edge", "Chase Induction", "Backdoor Command", "Finisher Quality"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Defense Support", "Bullpen Buffer", "Game Script Fit", "Weather Volatility"],
+      D: ["Platoon Delta", "Manager Threshold", "Lineup Depth", "Run Support Expectation", "Inning Efficiency", "Pitch Count Elasticity", "Strike Zone Fit", "Batted-Ball Luck", "Recovery Window", "Clutch Stability"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+    },
+    Hitter: {
+      A: ["Bat Speed", "Squared Up", "Blasts", "Sweet Spot", "LA Consistency", "Max Exit Velocity", "Pull/Opposite Mix", "Two-Strike Approach", "Chase Rate", "In-Zone Contact", "Pitch Recognition", "Barrel Accuracy", "Pull Power", "Oppo Gap Efficiency", "High-Fastball Combat", "Offspeed Timing", "Clout Grade", "Sprint Speed Impact", "ISO Trend", "Plate Coverage"],
+      B: ["Contact Authority", "Damage on Mistakes", "Breaking Ball Handling", "Fastball Lift", "Spray Discipline", "RISP Approach", "Walk Pressure", "Strikeout Resistance", "First-Pitch Attack", "Pull Airball Rate", "Center-Field Carry", "Opposite-Field Carry", "Lefty Split Stability", "Righty Split Stability", "Batted-Ball Efficiency", "Basepath Leverage", "Lineup Spot Edge", "Clutch Contact"],
+      C: ["Park Factor", "Umpire Bias", "Wind Impact", "Historical Matchup", "L/R Splits", "Recent 5-Game Trend", "Air Density", "Umpire Zone", "Bullpen Exposure", "Weather Volatility", "Lineup Protection", "Game Script Fit"],
+      D: ["Platoon Delta", "Manager Threshold", "Hit Probability Drift", "Extra-Base Upside", "Contact Floor", "Power Spike Chance", "Pitcher Vulnerability", "Defensive Shift Cost", "Batted-Ball Luck", "Late-Game Leverage"],
+      E: ["DK Projection", "FD Projection", "MGM Projection", "365 Projection", "PIN Projection", "Consensus Mean", "Consensus Median", "Consensus High", "Consensus Low", "Spread", "Line Delta", "Market Confidence"]
+    }
   };
 
-  const PENALTIES = {
-    matchup_tier: { LOW: 0, MEDIUM: 20, HIGH: 34 },
-    stress_level: { LOW: 0, MEDIUM: 12, HIGH: 22 },
-    risk_level: { LOW: 0, MEDIUM: 14, HIGH: 24 }
+  const FACTOR_GLOSSARY = {
+    "Bat Speed": "Raw barrel speed at contact",
+    "Squared Up": "Quality of centered contact",
+    "Blasts": "High-speed flush contact rate",
+    "Sweet Spot": "Ideal launch band frequency",
+    "LA Consistency": "Stable launch-angle repeatability",
+    "Velocity Stability": "Consistency of pitch speed",
+    "Spin Rate Delta": "Movement shift from spin variance",
+    "Extension": "Release-point distance toward plate",
+    "Vertical Break": "Ride or drop movement",
+    "Horizontal Movement": "Arm-side or glove-side run",
+    "Air Density": "Atmospheric resistance on ball travel",
+    "Umpire Zone": "Strike-call frequency and width",
+    "Platoon Delta": "Handedness matchup edge magnitude",
+    "Manager Threshold": "Pitch-count or pull tendency",
+    "DK Projection": "DraftKings market projection value",
+    "FD Projection": "FanDuel market projection value",
+    "MGM Projection": "BetMGM market projection value",
+    "365 Projection": "Bet365 market projection value",
+    "PIN Projection": "Pinnacle market projection value",
+    "Consensus Mean": "Average across market sources",
+    "Consensus Median": "Middle market source number",
+    "Consensus High": "Highest listed market number",
+    "Consensus Low": "Lowest listed market number",
+    "Spread": "High-minus-low market gap",
+    "Line Delta": "Market average versus line",
+    "Market Confidence": "Coverage rate across books",
+    "Command Grade": "Overall command and intent",
+    "Location Heat": "Command quality by location",
+    "Tunneling Quality": "Pitch disguise from same lane",
+    "Release Consistency": "Repeatable arm slot release",
+    "Zone Rate": "Frequency of zone attacks",
+    "K-BB% Trend": "Strikeout minus walk trend",
+    "Whiff Rate (Fastball)": "Fastball swing-and-miss rate",
+    "Whiff Rate (Offspeed)": "Offspeed swing-and-miss rate",
+    "First Pitch Strike%": "Opening strike frequency rate",
+    "Put-away % Efficiency": "Finishing hitters with two strikes",
+    "Hard Hit Avoidance": "Limit on dangerous contact",
+    "Barrel Rate Allowed": "Barrels allowed per contact",
+    "GB/FB Ratio": "Groundball versus flyball mix",
+    "Average Exit Velocity": "Average exit speed allowed",
+    "Soft Contact%": "Frequency of weak contact",
+    "Stamina Decay": "Late-game fatigue dropoff rate",
+    "Late Movement": "Action retained deep outing",
+    "Release Extension": "Forward release distance consistency",
+    "Strike-One Rate": "Rate of first-strike counts",
+    "Pressure Tolerance": "Performance under leverage spots",
+    "High-Leverage Efficiency": "Execution in key moments",
+    "Primary Pitch Reliability": "Dependability of main pitch",
+    "Secondary Pitch Bite": "Sharpness of secondary movement",
+    "Sequencing Logic": "Pitch order effectiveness pattern",
+    "Pitch Mix Stability": "Consistency of pitch selection",
+    "Velocity Preservation": "Holding velocity over innings",
+    "Third-Time-Through Penalty": "Dropoff facing lineup again",
+    "Contact Suppression": "Ability to mute contact",
+    "CSW Rate": "Called plus swinging strikes",
+    "Called Strike Edge": "Extra called strikes generated",
+    "Chase Induction": "Ability to draw chases",
+    "Backdoor Command": "Steal edges with location",
+    "Finisher Quality": "Ability to close at-bats",
+    "Max Exit Velocity": "Peak batted-ball speed ceiling",
+    "Pull/Opposite Mix": "Direction balance on contact",
+    "Two-Strike Approach": "Survival quality with two strikes",
+    "Chase Rate": "Out-of-zone swing tendency",
+    "In-Zone Contact": "Contact rate on strikes",
+    "Pitch Recognition": "Reading shape and speed",
+    "Barrel Accuracy": "Precision of hard launch",
+    "Pull Power": "Damage when pulling airballs",
+    "Oppo Gap Efficiency": "Drive quality to opposite field",
+    "High-Fastball Combat": "Handling elevated velocity well",
+    "Offspeed Timing": "Timing against soft stuff",
+    "Clout Grade": "Overall power impact level",
+    "Sprint Speed Impact": "Run-speed effect on outcomes",
+    "ISO Trend": "Isolated power recent trend",
+    "Plate Coverage": "Reach across strike zone",
+    "Contact Authority": "Strength behind fair contact",
+    "Damage on Mistakes": "Punishing mistakes in zone",
+    "Breaking Ball Handling": "Ability versus spin pitches",
+    "Fastball Lift": "Air damage on heaters",
+    "Spray Discipline": "Intentional contact direction control",
+    "RISP Approach": "Approach with runners aboard",
+    "Walk Pressure": "Plate patience forcing mistakes",
+    "Strikeout Resistance": "Ability to avoid strikeouts",
+    "First-Pitch Attack": "Aggression on opener pitches",
+    "Pull Airball Rate": "Pulled flyball frequency",
+    "Center-Field Carry": "Carry through middle lanes",
+    "Opposite-Field Carry": "Carry to opposite field",
+    "Lefty Split Stability": "Consistency versus left-handed pitching",
+    "Righty Split Stability": "Consistency versus right-handed pitching",
+    "Batted-Ball Efficiency": "Quality per ball in play",
+    "Basepath Leverage": "Extra value from speed",
+    "Lineup Spot Edge": "Order position run upside",
+    "Clutch Contact": "Contact quality in key spots",
+    "Park Factor": "Venue effect on production",
+    "Umpire Bias": "General strike-zone lean",
+    "Wind Impact": "Wind effect on outcome",
+    "Historical Matchup": "Prior matchup performance signal",
+    "L/R Splits": "Left-right split performance",
+    "Recent 5-Game Trend": "Recent form over five games",
+    "Defense Support": "Defense behind pitcher quality",
+    "Bullpen Buffer": "Relief protection after exit",
+    "Game Script Fit": "Expected flow of game",
+    "Weather Volatility": "Weather instability risk factor",
+    "Bullpen Exposure": "Relief matchup exposure later",
+    "Lineup Protection": "Support around lineup slot",
+    "Run Support Expectation": "Expected offense behind pitcher",
+    "Inning Efficiency": "Pitches used per inning",
+    "Pitch Count Elasticity": "Likely leash length tonight",
+    "Strike Zone Fit": "Profile fit to umpire zone",
+    "Batted-Ball Luck": "Results driven by variance",
+    "Recovery Window": "Rest freshness before game",
+    "Clutch Stability": "Execution consistency under pressure",
+    "Lineup Depth": "Strength throughout batting order",
+    "Hit Probability Drift": "Moving baseline for hits",
+    "Extra-Base Upside": "Chance for extra-base damage",
+    "Contact Floor": "Minimum contact expectation level",
+    "Power Spike Chance": "Upside for power surge",
+    "Pitcher Vulnerability": "Pitcher weakness exposure level",
+    "Defensive Shift Cost": "Defensive alignment suppression cost",
+    "Late-Game Leverage": "High-leverage late opportunity rate"
   };
 
-  const ENUM_ORDER = { LOW: 0, MEDIUM: 1, HIGH: 2 };
+  function el(id) { return document.getElementById(id); }
+  function escapeHtml(value) { return String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function asArray(value) { return Array.isArray(value) ? value : (value ? [value] : []); }
 
-  const el = (id) => document.getElementById(id);
-  const asArray = (value) => Array.isArray(value) ? value : [];
-  const escapeHtml = (value = '') => String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-  function purgeUiNoise(value = '') {
-    return String(value || '').replace(/\s+/g, ' ').trim();
+  function resolveProfileType(row = {}) {
+    const raw = String(row?.type || '').toLowerCase();
+    if (raw.includes('pitch')) return 'Pitcher';
+    if (raw.includes('hit')) return 'Hitter';
+    return 'Hitter';
   }
 
-  function scoreClass(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return 'score-pending';
-    if (num < 70) return 'score-low';
-    if (num < 85) return 'score-mid';
-    return 'score-high';
+  function factorKey(branchKey, index) { return `${branchKey.toLowerCase()}${String(index).padStart(2, '0')}`; }
+
+  function resolveFactorName(row = {}, branchKey, index, meta = {}) {
+    const profile = resolveProfileType(row);
+    return PROFILE_FACTOR_NAMES[profile]?.[branchKey]?.[index - 1] || meta.name || `${branchKey}${String(index).padStart(2, '0')}`;
   }
 
-  function formatScore(value) {
-    const num = Number(value);
-    return Number.isFinite(num) ? String(Math.round(num)) : '—';
+  function resolveFactorGlossary(name = '') {
+    return FACTOR_GLOSSARY[name] || 'Short factor definition pending';
   }
 
-  function titleCaseDay(value = '') {
-    const text = purgeUiNoise(value);
-    if (!text) return '';
-    return text.replace(/\b([a-z])/g, (m) => m.toUpperCase());
+  function renderLeagueChecklist(leagues) {
+    const mount = el('leagueChecklist');
+    if (!mount) return;
+    mount.innerHTML = (leagues || []).map((item) => `<label><input type="checkbox" data-league-id="${escapeHtml(item.id)}" value="${escapeHtml(item.id)}" ${item.checked ? 'checked' : ''}/> ${escapeHtml(item.label)}</label>`).join('');
   }
 
-  function renderLeagueChecklist() {}
-
-  function renderRunSummary(rows = []) {
+  function renderRunSummary(rows, auditRows = []) {
     const mount = el('runSummary');
     if (!mount) return;
-    mount.innerHTML = '';
+    const vaultCollection = window.PickCalcCore?.state?.miningVault || {};
+    let realUnits = 0;
+    let derivedUnits = 0;
+    Object.values(vaultCollection).forEach((vault) => {
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        const branchTotal = Number(branch?.factorsTarget || Object.keys(branch?.factorMeta || {}).length || 0);
+        if (vaultIsReal) realUnits += branchTotal;
+        else derivedUnits += Number(branch?.derivedCount || 0);
+      });
+    });
+    mount.innerHTML = [
+      `<div class="pill">Accepted: ${rows.length}</div>`,
+      `<div class="pill">Rejected: ${(auditRows || []).filter((r) => !r.accepted).length}</div>`,
+      `<div class="pill">REAL Units: ${realUnits}</div>`,
+      `<div class="pill">DERIVED Units: ${derivedUnits}</div>`,
+      `<div class="pill">Version: ${escapeHtml(SYSTEM_VERSION)}</div>`
+    ].join('');
   }
 
-  function renderPoolCounts(accepted = 0, rejected = 0) {
-    const mount = el('poolCounts');
-    if (!mount) return;
-    mount.innerHTML = `<span class="count-accepted">Accepted: ${escapeHtml(String(accepted))}</span><span class="count-rejected">Rejected: ${escapeHtml(String(rejected))}</span>`;
-  }
-
-  function renderFeedStatus(rows = []) {
+  function renderFeedStatus(rows, auditRows = []) {
+    const active = new Set((rows || []).filter((r) => r.sport === 'MLB').map((r) => String(r.prop || '').trim()));
     const mount = el('feedStatus');
     if (!mount) return;
-    const mlbRows = asArray(rows).filter((row) => String(row?.sport || '').toUpperCase() === 'MLB');
-    if (!mlbRows.length) {
-      mount.innerHTML = '';
-      return;
-    }
-
-    const counts = new Map();
-    mlbRows.forEach((row) => {
-      const prop = purgeUiNoise(row?.prop || 'Unknown Prop');
-      counts.set(prop, (counts.get(prop) || 0) + 1);
-    });
-
-    const ordered = MLB_FEED_MATRIX.filter((prop) => counts.has(prop))
-      .concat(Array.from(counts.keys()).filter((prop) => !MLB_FEED_MATRIX.includes(prop)).sort());
-
-    mount.innerHTML = `
-      <div class="status-panel iron-summary-stack">
-        <div class="metric-stack-shell">
-          <div class="feed-sport-badge">MLB [${escapeHtml(String(mlbRows.length))}]</div>
-          <div class="feed-summary-list vertical-metric-stack centered-metric-stack">${ordered.map((prop) => `<div class="feed-line prop-metric">${escapeHtml(prop)}: ${escapeHtml(String(counts.get(prop)))}</div>`).join('')}</div>
-        </div>
-      </div>`;
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>MLB Master Feed Checklist</strong><div class="mini-muted">Flip to ✅ only when a valid row enters the pool.</div></div><span class="status-badge ${(auditRows || []).some((r) => !r.accepted) ? 'status-no' : 'status-ok'}">${(auditRows || []).length} CLUSTERS</span></div><div class="prop-grid">${MLB_FEED_MATRIX.map((prop) => `<div class="prop-chip ${active.has(prop) ? 'prop-fed' : 'prop-missing'}"><span>${active.has(prop) ? '✅' : '❌'}</span><span>${escapeHtml(prop)}</span></div>`).join('')}</div></div>`;
   }
 
-  function renderPoolTable(rows = []) {
+  function renderPoolTable(rows) {
     const mount = el('poolMount');
     if (!mount) return;
-    if (!rows.length) {
-      mount.innerHTML = '';
-      return;
-    }
-    mount.innerHTML = `
-      <div class="status-panel">
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>#</th><th>Sport</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th></tr></thead>
-            <tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.idx)}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.parsedPlayer)}</td><td>${escapeHtml(row.team || '')}</td><td>${escapeHtml(row.opponent || '')}</td><td>${escapeHtml(row.prop || '')}</td><td>${escapeHtml(row.line || '')}</td><td>${escapeHtml(row.gameTimeText || '')}</td></tr>`).join('')}</tbody>
-          </table>
-        </div>
-      </div>`;
+    if (!rows.length) { mount.innerHTML = ''; return; }
+    mount.innerHTML = `<div class="status-panel"><div class="table-wrap"><table><thead><tr><th>#</th><th>Sport</th><th>League</th><th>Player / Entity</th><th>Team</th><th>Opponent</th><th>Prop</th><th>Line</th><th>Time</th><th>Type</th></tr></thead><tbody>${rows.map((row) => `<tr><td>${escapeHtml(row.idx)}</td><td>${escapeHtml(row.sport)}</td><td>${escapeHtml(row.league)}</td><td>${escapeHtml(row.parsedPlayer)}</td><td>${escapeHtml(row.team || '')}</td><td>${escapeHtml(row.opponent || '')}</td><td>${escapeHtml(row.prop || '')}</td><td>${escapeHtml(row.line || '')}</td><td>${escapeHtml(row.gameTimeText || '')}</td><td>${escapeHtml(row.type || '')}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
 
-  function findVaultForRow(row = {}, vaultCollection = {}) {
-    const directKey = String(row?.LEG_ID || row?.row_key || '').trim();
-    return directKey ? (vaultCollection?.[directKey] || {}) : {};
+  function branchTone(branch) {
+    if (branch?.status === 'SUCCESS') return { card: 'support live-data', badge: 'live', label: 'REAL' };
+    if (branch?.status === 'DERIVED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'DERIVED' };
+    if (branch?.status === 'SIMULATED') return { card: 'warning heuristic-data', badge: 'heuristic', label: 'SIMULATED' };
+    if (branch?.status === 'WARNING') return { card: 'status-pending', badge: 'heuristic', label: 'WARNING' };
+    return { card: 'status-pending', badge: 'heuristic', label: 'PENDING' };
   }
 
-  function validateEnum(value, key) {
-    return ENUMS[key].includes(String(value || '').trim());
+  function formatValue(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(3) : '0.000';
   }
 
 
-  function enumAtLeast(value, minimum) {
-    const current = ENUM_ORDER[String(value || '').trim()] ?? -1;
-    const target = ENUM_ORDER[String(minimum || '').trim()] ?? -1;
-    return current >= target;
+  function splitTeamRoleFromName(row = {}) {
+    const raw = String(row?.parsedPlayer || row?.player || '').trim();
+    let parsed = raw.replace(/([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)/gi, ' ').trim();
+    parsed = parsed.replace(/(Goblin|Demon|Taco|Free Pick)/gi, ' ').replace(/\s+/g, ' ').trim();
+    if (/^[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i.test(raw)) parsed = '';
+    const match = raw.match(/([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)/i);
+    return { playerName: parsed || String(row?.player || '').trim(), team: String(row?.team || match?.[1] || '').toUpperCase() };
   }
 
-  function bumpEnum(value, minimum) {
-    const clean = String(value || '').trim();
-    if (!['LOW', 'MEDIUM', 'HIGH'].includes(clean)) return String(minimum || '').trim();
-    return enumAtLeast(clean, minimum) ? clean : String(minimum || '').trim();
+  function renderPickTypeBadge(pickType = '') {
+    const normalized = String(pickType || '').trim();
+    if (!normalized || normalized === 'Regular Line') return '';
+    const className = normalized.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-+|-+$/g, '');
+    return ` <span class="pick-badge ${escapeHtml(className)}">${escapeHtml(normalized)}</span>`;
   }
 
-  function normalizedLineNumber(lineValue) {
-    const num = Number(String(lineValue ?? '').trim());
-    return Number.isFinite(num) ? num : null;
+  function resolveCobaltScore(vault = {}, row = {}) {
+    return window.PickCalcCore?.calcCobaltEdge?.(vault, row) || { score: 0 };
   }
 
-  function applyPropGuards(vault = {}) {
-    const codes = Object.assign({}, vault?.deductionCodes || {});
-    const meta = vault?.auditMeta || {};
-    const metric = purgeUiNoise(meta.metric || '').toLowerCase();
-    const player = purgeUiNoise(meta.player || '').toLowerCase();
-    const opponent = String(meta.opponent || '').toUpperCase();
-    const line = normalizedLineNumber(meta.line);
-
-    if (metric === 'home runs') {
-      codes.matchup_tier = bumpEnum(codes.matchup_tier, 'MEDIUM');
-      codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
-      codes.risk_level = bumpEnum(codes.risk_level, 'HIGH');
-      if (opponent === 'SF') codes.matchup_tier = bumpEnum(codes.matchup_tier, 'HIGH');
-    }
-
-    if (metric === 'pitcher strikeouts') {
-      codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
-      if (line !== null && line >= 5.5) codes.risk_level = bumpEnum(codes.risk_level, 'MEDIUM');
-      if (opponent === 'LAD' || opponent === 'PHI' || opponent === 'BAL') codes.matchup_tier = bumpEnum(codes.matchup_tier, 'HIGH');
-    }
-
-    if (metric === 'hits+runs+rbis') {
-      if (line !== null && line >= 1.5) codes.risk_level = bumpEnum(codes.risk_level, 'MEDIUM');
-      const elite = new Set(['aaron judge','shohei ohtani','mike trout','yordan alvarez','jose ramirez','vladimir guerrero jr.','pete alonso']);
-      if (line !== null && line >= 1.5 && !elite.has(player)) codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
-      if (['HOU','TB','LAD','PHI','BAL'].includes(opponent)) codes.matchup_tier = bumpEnum(codes.matchup_tier, 'MEDIUM');
-    }
-
-    return Object.assign({}, vault, { deductionCodes: codes });
+  function resolveScoreEmoji(score = 0) {
+    const n = Number(score) || 0;
+    if (n >= 95) return '💎';
+    if (n >= 90) return '🔥';
+    if (n >= 80) return '⚡';
+    if (n >= 70) return '📈';
+    return '🧊';
   }
 
-  function buildDeterministicSummary(vault = {}) {
-    const meta = vault?.auditMeta || {};
-    const guardedVault = applyPropGuards(vault);
-    const codes = guardedVault?.deductionCodes || {};
-    const player = purgeUiNoise(meta.player || 'This leg');
-    const opponent = purgeUiNoise(meta.opponent || 'the opponent');
-    const metric = purgeUiNoise(meta.metric || 'the metric');
-    const reasons = [];
-    if ((meta.metric || '').toLowerCase() === 'home runs') reasons.push('home run volatility');
-    if ((meta.metric || '').toLowerCase() === 'pitcher strikeouts') reasons.push('strikeout volatility');
-    if ((meta.metric || '').toLowerCase() === 'hits+runs+rbis') reasons.push('combo-stat volatility');
-    if (codes.matchup_tier === 'HIGH') reasons.push(`hard matchup vs ${opponent}`);
-    else if (codes.matchup_tier === 'MEDIUM') reasons.push(`mixed matchup vs ${opponent}`);
-    else reasons.push(`favorable matchup vs ${opponent}`);
-    if (codes.stress_level === 'HIGH') reasons.push('high line stress');
-    else if (codes.stress_level === 'MEDIUM') reasons.push('moderate line stress');
-    if (codes.risk_level === 'HIGH') reasons.push('high risk profile');
-    else if (codes.risk_level === 'MEDIUM') reasons.push('moderate risk profile');
-    const uniq=[];
-    for (const r of reasons) if (r && !uniq.includes(r)) uniq.push(r);
-    return `${player}: ${metric} | ${uniq.slice(0,3).join('; ')}.`;
+  function renderFactorLine(meta = {}) {
+    const numericValue = Number(meta.value);
+    const zeroClass = numericValue === 0 ? ' metric-zero' : '';
+    const label = numericValue === 0 ? 'WARNING' : ((meta.status === 'SUCCESS' || meta.status === 'REAL') ? 'REAL' : 'DERIVED');
+    const statusClass = label === 'WARNING' ? ' factor-status' : ' factor-status visually-hidden';
+    const glossary = resolveFactorGlossary(meta.name || '');
+    return `<div class="factor-line"><span class="factor-name">${escapeHtml(meta.name || '')}:</span> <span class="factor-value${zeroClass}">${escapeHtml(formatValue(meta.value))}</span> <span class="mini-muted">(${escapeHtml(glossary)})</span><span class="${statusClass.trim()}">${escapeHtml(label === 'WARNING' ? ' WARNING' : '')}</span></div>`;
   }
 
-  function calculateScoresFromCodes(vault = {}) {
-    if (vault?.schemaState === 'SCHEMA_ERROR') {
-      throw new Error(vault?.schemaErrors?.[0] || 'Schema Violation');
-    }
-
-    const guardedVault = applyPropGuards(vault);
-    const codes = guardedVault?.deductionCodes || {};
-    if (!vault?.rowKey) throw new Error('Schema Violation: Missing row_key');
-    if (!codes || typeof codes !== 'object') throw new Error('Schema Violation: Missing deduction codes');
-
-    ['roster_status', 'matchup_tier', 'stress_level', 'risk_level'].forEach((key) => {
-      if (!validateEnum(codes[key], key)) {
-        throw new Error(`Enum Violation: ${key}`);
-      }
-    });
-
-    const identity = codes.roster_status === 'ACTIVE' ? 100 : 0;
-    const trend = PENALTIES.matchup_tier[codes.matchup_tier];
-    const stress = PENALTIES.stress_level[codes.stress_level];
-    const risk = PENALTIES.risk_level[codes.risk_level];
-    const finalScore = Math.max(0, 100 - trend - stress - risk);
-
-    return {
-      deductionCodes: codes,
-      scores: { identity, trend, stress, risk },
-      finalScore,
-      final_score: finalScore,
-      schemaState: 'OK',
-      schemaErrors: [],
-      summary: buildDeterministicSummary(Object.assign({}, guardedVault, { deductionCodes: codes }))
-    };
+  function renderMarketProviders(providerMap = {}) {
+    const providerLine = [
+      ['DK', providerMap.DraftKings || 0],
+      ['FD', providerMap.FanDuel || 0],
+      ['MGM', providerMap.BetMGM || 0],
+      ['365', providerMap.Bet365 || 0],
+      ['PIN', providerMap.Pinnacle || 0]
+    ].map(([label, value]) => {
+      const numericValue = Number(value);
+      const zeroClass = numericValue === 0 ? ' class="metric-zero"' : '';
+      return `${label}: <span${zeroClass}>${escapeHtml(formatValue(value))}</span>`;
+    }).join(' | ');
+    return `<div class="market-providers"><div><strong>Market Projections/Odds:</strong> ${providerLine}</div></div>`;
   }
 
-  function computeRenderableVault(vault = {}) {
-    try {
-      const computed = calculateScoresFromCodes(vault);
-      return Object.assign({}, vault, computed, {
-        categoryScores: Object.assign({}, computed.scores),
-        reliable: true,
-        terminalState: 'Verified'
-      });
-    } catch (error) {
-      return Object.assign({}, vault, {
-        reliable: false,
-        schemaState: 'SCHEMA_ERROR',
-        schemaErrors: [String(error.message || 'Schema Violation')],
-        terminalState: 'Schema Error',
-        scores: { identity: null, trend: null, stress: null, risk: null },
-        categoryScores: { identity: null, trend: null, stress: null, risk: null },
-        finalScore: null,
-        final_score: null,
-        summary: String(vault?.summary || error.message || 'Schema Violation')
-      });
-    }
-  }
-
-  function categoryValue(vault, key) {
-    const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? null;
-    return Number.isFinite(Number(value)) ? Number(value) : null;
-  }
-
-  function finalValue(vault) {
-    const num = Number(vault?.final_score ?? vault?.finalScore);
-    return Number.isFinite(num) ? Math.max(0, Math.min(100, Math.round(num))) : null;
-  }
-
-  function renderAlphaDogScoreGrid(vault = {}) {
-    const cells = [
-      ['Identity', categoryValue(vault, 'identity')],
-      ['Trend', categoryValue(vault, 'trend')],
-      ['Stress', categoryValue(vault, 'stress')],
-      ['Risk', categoryValue(vault, 'risk')],
-      ['Final Score', finalValue(vault), true]
-    ];
-    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
-      <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
-        <div class="alphadog-score-label">${escapeHtml(label)}</div>
-        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-      </div>`).join('')}</div>`;
-  }
-
-  function getAuditDisplay(row = {}, vault = {}) {
-    const meta = vault?.auditMeta || {};
-    return {
-      sport: purgeUiNoise(meta.sport || row?.sport || 'MLB'),
-      player: purgeUiNoise(meta.player || row?.parsedPlayer || row?.player || 'Unknown Player'),
-      team: purgeUiNoise(meta.team || row?.teamFullName || row?.team || ''),
-      opponent: purgeUiNoise(meta.opponent || row?.opponentFullName || row?.opponent || ''),
-      dateTime: titleCaseDay(meta.dateTime || row?.gameDayTime || row?.gameTimeText || row?.gameTime || ''),
-      metric: purgeUiNoise(meta.metric || row?.prop || ''),
-      line: purgeUiNoise(meta.line || row?.line || ''),
-      direction: purgeUiNoise(meta.direction || row?.direction || ''),
-      type: purgeUiNoise(meta.type || row?.type || 'Regular')
-    };
-  }
-
-  function renderPlayerMiningCard(row = {}, sourceVault = {}) {
-    const vault = computeRenderableVault(sourceVault || {});
-    const display = getAuditDisplay(row, vault);
-    const summary = purgeUiNoise(vault?.summary || '');
-    const schemaError = vault?.schemaState === 'SCHEMA_ERROR';
-
-    return `
-      <article class="alphadog-player-card ${schemaError ? 'alphadog-player-card-error' : ''}">
-        <div class="alphadog-card-header">
-          <div class="alphadog-card-headline">${escapeHtml(display.player)}</div>
-          <div class="alphadog-card-subline">${escapeHtml(display.team || 'Unknown Team')} • ${escapeHtml(display.sport || 'MLB')}</div>
-        </div>
-        <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} • ${escapeHtml(display.line || '—')} • ${escapeHtml(display.direction || '—')}</div>
-        <div class="alphadog-card-meta">${escapeHtml(display.opponent || 'Unknown Opponent')} • ${escapeHtml(display.dateTime || 'Time Pending')} • ${escapeHtml(display.type || 'Regular')}</div>
-        ${schemaError ? `<div class="alphadog-schema-error">SCHEMA ERROR • ${escapeHtml(vault?.schemaErrors?.[0] || 'Rejected by gatekeeper')}</div>` : renderAlphaDogScoreGrid(vault)}
-        ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
-      </article>`;
-  }
-
-  function uniqueRows(rows = []) {
-    const seen = new Set();
-    const out = [];
-    for (const row of asArray(rows)) {
-      const key = String(row?.LEG_ID || row?.row_key || '').trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(row);
-    }
-    return out;
-  }
-
-  function renderAuditResults(rows = [], vaultCollection = {}) {
-    const auditResults = el('audit-results');
-    if (!auditResults) {
-      renderMiningGrid(rows, vaultCollection);
-      return;
-    }
-    auditResults.innerHTML = '';
-    const grid = document.createElement('div');
-    grid.id = 'miningGrid';
-    grid.className = 'mining-grid';
-    auditResults.appendChild(grid);
-    const cards = uniqueRows(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
-    grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
+  function renderPlayerMiningCard(row = {}, vault = {}) {
+    const branches = vault?.branches || {};
+    const normalized = splitTeamRoleFromName(row);
+    const matchupLine = `${row.opponent || ''}${row.gameTimeText ? ` - ${row.gameTimeText}` : ''}`.trim();
+    const propLine = `${row.prop || ''} ${row.line || ''} ${row.direction || ''}`.trim();
+    const pickTypeMarkup = renderPickTypeBadge(row.pickType || '');
+    const scoreMeta = resolveCobaltScore(vault, row);
+    const score = Number(scoreMeta?.score || 0);
+    const side = scoreMeta?.displaySide ? ` [${scoreMeta.displaySide}]` : '';
+    const scoreEmoji = resolveScoreEmoji(score);
+    const matrixMarkup = BRANCH_KEYS.map((branchKey) => {
+      const branch = branches[branchKey] || { factorMeta: {}, providerMap: {}, status: 'PENDING' };
+      const tone = branchTone(branch);
+      const warningClass = branch?.status === 'WARNING' ? ' warning' : '';
+      const factorMeta = Object.entries(branch.factorMeta || {}).map(([key, meta], idx) => Object.assign({}, meta, { name: resolveFactorName(row, branchKey, idx + 1, meta), key: key || factorKey(branchKey, idx + 1) }));
+      const branchHeader = branchKey === 'E'
+        ? '<div class="branch-title"><strong>Branch E</strong> <span class="card-type-tag market">MARKET</span></div>'
+        : `<div class="branch-title"><strong>Branch ${escapeHtml(branchKey)}</strong> <span class="card-type-tag ${tone.badge}">${escapeHtml(tone.label)}</span></div>`;
+      return `<details class="branch-block ${tone.card}${warningClass}"><summary class="branch-summary">${branchHeader}</summary><div class="branch-body">${factorMeta.map(renderFactorLine).join('')}${branchKey === 'E' ? renderMarketProviders(branch.providerMap || {}) : ''}</div></details>`;
+    }).join('');
+    return `<article class="player-mining-card"><div class="player-header-line"><strong>${escapeHtml(normalized.playerName || '')} - ${escapeHtml(normalized.team || row.team || '')}</strong></div><div class="player-header-line"><strong>Score: ${escapeHtml(String(score))}/100</strong>${pickTypeMarkup}<strong>${escapeHtml(side)} ${escapeHtml(scoreEmoji)}</strong></div><div class="player-header-line"><strong>${escapeHtml(matchupLine)}</strong></div><div class="player-header-line"><strong>${escapeHtml(propLine)}</strong></div><details class="matrix-collapsible"><summary class="collapsible-trigger"><span class="collapsible-arrow">▶</span><span class="collapsible-label">Mining Matrix</span></summary><div class="collapsible-content">${matrixMarkup}</div></details></article>`;
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
-    const cards = uniqueRows(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
-    mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
+    const safeRows = asArray(rows);
+    const safeVaults = vaultCollection && typeof vaultCollection === 'object' ? vaultCollection : {};
+    const hasVaultData = Object.keys(safeVaults).length > 0;
+    const cards = safeRows.map((row) => renderPlayerMiningCard(row, safeVaults?.[row.LEG_ID] || {})).join('');
+    const emptyState = hasVaultData ? '<div class="mini-muted">Awaiting rows.</div>' : '<div class="mini-muted">WAITING_FOR_BRIDGE</div>';
+    mount.innerHTML = `<div class="status-panel"><div class="status-panel-head"><div><strong>Ingested Leg Pool</strong></div><div class="pill">Rows Loaded: ${safeRows.length}</div></div><div class="dense-player-grid">${cards || emptyState}</div></div>`;
   }
 
-  function renderBatchAuditor(result = {}) {
-    const mount = el('batchAuditorOutput');
-    const section = el('auditorSection');
-    if (!mount || !section) return;
-    const batch = result?.batchAudit || {};
-    const scoreItems = [
-      ['Logic Consistency', batch.logicConsistency],
-      ['Roster Accuracy', batch.rosterAccuracy]
-    ].filter(([, value]) => Number.isFinite(Number(value)));
-
-    if (!scoreItems.length) {
-      mount.innerHTML = '<div class="mini-muted">Batch auditor data will appear here after Gemini responds.</div>';
-      section.classList.remove('hidden');
-      return;
-    }
-
-    mount.innerHTML = `
-      <article class="alphadog-player-card alphadog-batch-card">
-        <div class="alphadog-card-headline">AUDITOR</div>
-        <div class="alphadog-card-subline">Logic Cage Batch Audit</div>
-        <div class="alphadog-card-grid alphadog-batch-grid">${scoreItems.map(([label, value]) => `
-          <div class="alphadog-score-tile">
-            <div class="alphadog-score-label">${escapeHtml(label)}</div>
-            <div class="alphadog-score-value ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-          </div>`).join('')}</div>
-      </article>`;
-    section.classList.remove('hidden');
-  }
-
-  function renderConsole(logs = []) {
+  function renderConsole(logs) {
     const mount = el('systemConsole');
     if (!mount) return;
-    mount.innerHTML = asArray(logs).map((entry) => `<div class="console-line">${escapeHtml(`[${entry?.timestamp || new Date().toLocaleTimeString()}] ${entry?.text || entry?.message || String(entry)}`)}</div>`).join('');
+    const items = asArray(logs);
+    if (!items.length) return;
+    mount.innerHTML = items.map((entry) => {
+      const stamp = entry?.timestamp || new Date().toLocaleTimeString();
+      const modelId = entry?.modelId || MODEL_ID;
+      const message = entry?.text || entry?.message || String(entry);
+      return `<div class="console-line">${escapeHtml(`[${stamp}] [${modelId}] ${message}`)}</div>`;
+    }).join('');
   }
+
+  let heartbeatTimer = null;
 
   function appendConsole(log) {
     const mount = el('systemConsole');
     if (!mount) return;
-    const line = document.createElement('div');
-    line.className = 'console-line';
-    line.textContent = `[${new Date().toLocaleTimeString()}] ${String(log?.text || log?.message || log || '')}`;
-    mount.appendChild(line);
+    const timestamp = new Date().toLocaleTimeString();
+    const modelId = log?.modelId || MODEL_ID;
+    const message = String(log?.text || log?.message || log || '').replace(/\n/g, '<br>');
+    mount.innerHTML += `<div class="console-line">${escapeHtml(`[${timestamp}] [${modelId}] `)}${message}</div>`;
     mount.scrollTop = mount.scrollHeight;
   }
 
-  let heartbeatTimer = null;
   function startHeartbeat() {
     if (heartbeatTimer) return;
-    heartbeatTimer = window.setInterval(() => appendConsole({ text: '[SYSTEM] HEARTBEAT' }), 5000);
-  }
-  function stopHeartbeat() {
-    if (!heartbeatTimer) return;
-    window.clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
+    appendConsole({ level: 'info', text: '[SYSTEM] HEARTBEAT armed.' });
+    heartbeatTimer = window.setInterval(() => {
+      appendConsole({ level: 'info', text: '[SYSTEM] HEARTBEAT' });
+    }, 5000);
   }
 
-  function summarizeStatus(result = {}) {
-    if (result?.runStatus === 'FAILED') return { label: 'FAILED', text: result?.analysisHint || 'Analysis failed.' };
-    if (result?.runStatus === 'VERIFIED') return { label: 'VERIFIED', text: result?.analysisHint || 'Analysis complete.' };
-    return { label: 'LOADING', text: result?.analysisHint || 'Running analysis...' };
+  function stopHeartbeat() {
+    if (heartbeatTimer) {
+      window.clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      appendConsole({ level: 'info', text: '[SYSTEM] HEARTBEAT stopped.' });
+    }
+  }
+
+  function summarizeShield(vaultCollection = {}) {
+    let real = 0, derived = 0, simulated = 0, warnings = 0, total = 0, nonZero = 0;
+    Object.values(vaultCollection || {}).forEach((vault) => {
+      const vaultIsReal = vault?.isReal === true || String(vault?.source || '').toLowerCase() === 'real';
+      Object.values(vault?.branches || {}).forEach((branch) => {
+        const factorEntries = Object.values(branch?.factorMeta || {});
+        const branchTotal = Number(branch.factorsTarget || factorEntries.length || 0);
+        total += branchTotal;
+        const branchNonZero = Object.values(branch.parsed || {}).filter((value) => Number(value) !== 0).length;
+        nonZero += branchNonZero;
+        warnings += Math.max(0, branchTotal - branchNonZero);
+        if (vaultIsReal) {
+          real += branchTotal;
+        } else {
+          real += Number(branch.realCount || 0);
+          derived += Number(branch.derivedCount || 0);
+          simulated += Number(branch.simulatedCount || 0);
+        }
+      });
+    });
+    const integrityScore = total ? ((nonZero / total) * 100).toFixed(2) : '0.00';
+    const purityUnits = Object.values(vaultCollection || {}).reduce((sum, vault) => sum + Object.values(vault?.branches || {}).filter((b) => b.status !== 'WARNING').length, 0);
+    const purityScore = Object.keys(vaultCollection || {}).length ? ((purityUnits / (Object.keys(vaultCollection || {}).length * BRANCH_KEYS.length)) * 100).toFixed(2) : '0.00';
+    const confidenceAvg = total ? (((real + derived + (simulated * 0.2)) / total) * 100).toFixed(2) : '0.00';
+    return { integrityScore, purityScore, confidenceAvg, real, derived, simulated, warnings, total };
   }
 
   function renderAnalysisShell(result = {}, rows = [], version = SYSTEM_VERSION) {
-    if (el('analysisTitle')) el('analysisTitle').textContent = version;
+    if (el('analysisTitle')) el('analysisTitle').textContent = `Run Analysis ${version}`;
+    if (el('analysisVersion')) el('analysisVersion').textContent = `Version: ${version}`;
+    if (el('shieldTitle')) el('shieldTitle').textContent = `Alpha Shield ${version}`;
+
+    const row = result?.row || rows[0] || {};
+    const vaultCollection = result?.vaultCollection || (row?.LEG_ID && result?.vault ? { [row.LEG_ID]: result.vault } : {});
+    const shield = summarizeShield(vaultCollection);
     const summary = el('analysisSummary');
-    if (summary) summary.innerHTML = '';
+    if (summary) summary.innerHTML = [`<div class="pill">Rows: ${rows.length}</div>`,`<div class="pill">Integrity: ${escapeHtml(shield.integrityScore)}</div>`,`<div class="pill">Purity: ${escapeHtml(shield.purityScore)}</div>`,`<div class="pill">Confidence: ${escapeHtml(shield.confidenceAvg)}</div>`,`<div class="pill">REAL: ${escapeHtml(shield.real)}</div>`,`<div class="pill">SIMULATED: ${escapeHtml(shield.simulated)}</div>`].join('');
     const hint = el('analysisHint');
-    if (hint) {
-      const status = summarizeStatus(result);
-      hint.innerHTML = `<span class="${status.label === 'FAILED' ? 'warning-banner analysis-error-banner' : 'status-ok-banner'}"><strong>${escapeHtml(status.label)}:</strong> ${escapeHtml(status.text)}</span>`;
+    if (hint) hint.textContent = result?.analysisHint || 'OXYGEN-COBALT recovery active.';
+    const rowCard = el('analysisRowCard');
+    if (rowCard) {
+      const rowScoreMeta = resolveCobaltScore(vaultCollection?.[row.LEG_ID] || {}, row);
+      const rowSide = rowScoreMeta?.displaySide ? ` [${rowScoreMeta.displaySide}]` : '';
+      rowCard.innerHTML = `<div class="status-panel"><div><strong>${escapeHtml(splitTeamRoleFromName(row).playerName || '')} - ${escapeHtml(splitTeamRoleFromName(row).team || row.team || '')}</strong></div><div><strong>Score: ${escapeHtml(String(rowScoreMeta?.score || 0))}/100</strong>${renderPickTypeBadge(row.pickType || '')}<strong>${escapeHtml(rowSide)} ${escapeHtml(resolveScoreEmoji(rowScoreMeta?.score || 0))}</strong></div><div class="mini-muted">${escapeHtml(row.opponent || '')} - ${escapeHtml(row.gameTimeText || '')}</div><div class="mini-muted">${escapeHtml(row.prop || '')} ${escapeHtml(row.line || '')} ${escapeHtml(row.direction || '')}</div></div>`;
     }
-    const vaultCollection = result?.vaultCollection || {};
-    renderAuditResults(rows, vaultCollection);
-    renderBatchAuditor(result);
-    renderConsole(result?.logs || []);
+    const kpis = el('analysisKpis');
+    if (kpis) kpis.innerHTML = [`<div class="pill">A: 20</div>`,`<div class="pill">B: 18</div>`,`<div class="pill">C: 12</div>`,`<div class="pill">D: 10</div>`,`<div class="pill">E: 12</div>`,`<div class="pill">Target: ${BRANCH_TOTAL}</div>`].join('');
+    renderMiningGrid(rows, vaultCollection);
+    const shieldPanel = el('shieldPanel');
+    if (shieldPanel) shieldPanel.innerHTML = [`<div class="status-panel"><strong>Integrity Score</strong><div>${escapeHtml(shield.integrityScore)}</div></div>`,`<div class="status-panel"><strong>Purity Score</strong><div>${escapeHtml(shield.purityScore)}</div></div>`,`<div class="status-panel"><strong>Confidence Avg</strong><div>${escapeHtml(shield.confidenceAvg)}</div></div>`,`<div class="status-panel"><strong>REAL / DERIVED / SIMULATED / WARNING</strong><div>${escapeHtml(shield.real)} / ${escapeHtml(shield.derived)} / ${escapeHtml(shield.simulated)} / ${escapeHtml(shield.warnings)}</div></div>`].join('');
+    const body = el('analysisResultsBody');
+    if (body) body.innerHTML = rows.map((item) => `<tr><td>${escapeHtml(item.idx)}</td><td>${escapeHtml(item.sport)}</td><td>${escapeHtml(item.league)}</td><td>${escapeHtml(item.parsedPlayer)}</td><td>${escapeHtml(item.team || '')}</td><td>${escapeHtml(item.opponent || '')}</td><td>${escapeHtml(item.prop || '')}</td><td>${escapeHtml(item.line || '')}</td><td>${escapeHtml(item.type || '')}</td></tr>`).join('');
+    renderConsole(result.logs || []);
   }
 
-  function setProgressState(percent = 0, message = '', mode = 'normal') {
+  function updateProgressBar(index = 0, total = 1, message = '') {
     const mount = el('progressBar');
     if (!mount) return;
-    const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g, ' ').trim();
-    const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
-    mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
-  }
-
-  function updateProgressBar(percent = 0, _unused = 0, message = '') {
-    setProgressState(percent, message, percent >= 100 ? 'complete' : 'normal');
-  }
-
-  function initProgressBar(_completedRows = 0, _totalRows = 1, label = 'Initializing audit...') {
-    setProgressState(0, label, 'normal');
+    const safeTotal = Math.max(1, Number(total) || 1);
+    const safeIndex = Math.max(0, Math.min(safeTotal, Number(index) || 0));
+    const pct = Math.floor((safeIndex / safeTotal) * 100);
+    if (!mount.querySelector('.progress-bar-shell')) {
+      mount.innerHTML = `<div class="progress-bar-shell"><div class="progress-bar-fill"></div></div><div class="progress-bar-meta"><strong>0%</strong><span>Preparing oxygen stream...</span><span>0/0 probes</span></div>`;
+    }
+    const fill = mount.querySelector('.progress-bar-fill');
+    const strong = mount.querySelector('.progress-bar-meta strong');
+    const spans = mount.querySelectorAll('.progress-bar-meta span');
     window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => setProgressState(90, label, 'creep'));
+      if (fill) {
+        fill.style.width = `${pct}%`;
+        fill.innerHTML = `<div class="progress-inner"><span>📡 ${pct}% | ${escapeHtml(message || 'OXYGEN-COBALT recovery active.')}</span></div>`;
+      }
+      if (strong) strong.textContent = `${pct}%`;
+      if (spans[0]) spans[0].textContent = `📡 ${message || 'OXYGEN-COBALT recovery active.'}`;
+      if (spans[1]) spans[1].textContent = `${safeIndex}/${safeTotal} probes`;
     });
   }
 
-  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) {
-    renderAnalysisShell(result, rows, version);
-    renderAuditResults(rows, result?.vaultCollection || {});
-  }
-
+  function initProgressBar(completedRows = 0, totalRows = 1, label = 'Initializing stream...') { updateProgressBar(completedRows, totalRows, label); }
+  function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) { renderAnalysisShell(result, rows, version); }
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
-    const message = result?.analysisHint || 'Running audit...';
-    const completed = Number(meta.completedProbes || meta.completedAudits || 0);
-    const total = Math.max(1, Number(meta.totalProbes || meta.totalAudits || 1));
-    const pct = result?.runStatus === 'VERIFIED' ? 100 : Math.min(90, Math.max(10, Math.round((completed / total) * 80) + 10));
-    updateProgressBar(pct, total, message);
+    updateProgressBar(meta.completedProbes || 0, meta.totalProbes || 1, result?.analysisHint || 'Streaming analysis active.');
+    const responseText = result?.responseText || result?.errorText || '';
+    console.log("RAW_MODEL_DATA:", responseText);
+    if (result?.errorText) {
+      appendConsole({ level: 'warning', text: `[SYSTEM] GOOGLE_REJECTION: ${result.errorText}`, pre: result.errorJson ? JSON.stringify(result.errorJson, null, 2) : (result.errorText || '') });
+    }
+    if (Number(result?.errorStatus) === 400 && result?.errorText) {
+      appendConsole({ level: 'warning', text: `[SYSTEM] 400 GOOGLE_ERROR: ${result.errorText}`, pre: result.errorJson ? JSON.stringify(result.errorJson, null, 2) : (result.errorText || '') });
+    }
   }
 
-  function renderRawPayload(payloadText = '') {
-    const mount = el('rawPayloadOutput');
-    if (!mount) return;
-    mount.textContent = String(payloadText || '').trim();
-  }
-
-  function showAnalysisScreen() {
-    const intake = el('intakeScreen');
-    const analysis = el('analysisScreen');
-    if (intake) intake.classList.add('hidden');
-    if (analysis) analysis.classList.remove('hidden');
-  }
-
-  function backToIntake() {
-    const intake = el('intakeScreen');
-    const analysis = el('analysisScreen');
-    ['analysisSummary','analysisHint','batchAuditorOutput','rawPayloadOutput','progressBar','systemConsole'].forEach((id) => {
-      const node = el(id);
-      if (!node) return;
-      if ('textContent' in node) node.textContent = '';
-      if ('innerHTML' in node) node.innerHTML = '';
-    });
-    renderAuditResults([], {});
-    if (analysis) analysis.classList.add('hidden');
-    if (intake) intake.classList.remove('hidden');
-  }
-
-  function showOverlay() {}
-  function hideOverlay() {}
-  function bindResizeRedraw() {}
-
+  function showAnalysisScreen() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (intake) { intake.classList.add('hidden'); intake.style.display = 'none'; } if (analysis) { analysis.classList.remove('hidden'); analysis.style.display = 'block'; } }
+  function backToIntake() { const intake = el('intakeScreen'); const analysis = el('analysisScreen'); if (analysis) analysis.classList.add('hidden'); if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; } }
+  function showOverlay(title, body) { if (el('runOverlay')) el('runOverlay').classList.remove('hidden'); if (el('overlaySub')) el('overlaySub').textContent = title; if (el('overlayBody')) el('overlayBody').textContent = body; }
+  function hideOverlay() { if (el('runOverlay')) el('runOverlay').classList.add('hidden'); }
+  function bindResizeRedraw() { window.addEventListener('resize', () => {}); }
   function buildAnalysisCopyText(context = {}) {
-    const orderedRows = uniqueRows(context.rows || []);
-    const vaults = Object.assign({}, context.result?.vaultCollection || {}, context.vault || {});
-    const used = new Set();
-    const blocks = [];
+    const rows = asArray(context.rows);
+    const vaultCollection = (context.vault && typeof context.vault === 'object') ? context.vault : {};
+    const rowIndex = Object.fromEntries(rows.map((row, idx) => [row.LEG_ID, { row, idx }]));
+    const legIds = rows.length ? rows.map((row) => row.LEG_ID) : Object.keys(vaultCollection);
 
-    const serializeRow = (row, index) => {
-      const rowKey = String(row?.LEG_ID || row?.row_key || '').trim();
-      if (rowKey) used.add(rowKey);
-      const vault = computeRenderableVault(findVaultForRow(row, vaults));
-      const display = getAuditDisplay(row, vault);
+    const sections = legIds.map((legId, index) => {
+      const row = rowIndex[legId]?.row || {};
+      const vault = vaultCollection[legId] || {};
+      const branchKeys = ['A', 'B', 'C', 'D', 'E'];
+      const summary = branchKeys.map((k) => {
+        const active = Object.values(vault.branches?.[k]?.parsed || {}).filter((val) => Number(val) !== 0).length;
+        return `${k}:${active}`;
+      }).join('|');
+      const matrixLines = branchKeys.map((k) => {
+        const parsed = vault.branches?.[k]?.parsed || {};
+        const parsedLine = Object.entries(parsed).map(([key, value], idx) => {
+          const factorName = resolveFactorName(row, k, idx + 1, { name: key });
+          return `${factorName}=${formatValue(value)} (${resolveFactorGlossary(factorName)})`;
+        }).join(', ');
+        if (k !== 'E') return `BRANCH ${k}: ${parsedLine}`;
+        const providerSummary = [
+          `DK=${formatValue(vault.branches?.E?.providerMap?.DraftKings || 0)}`,
+          `FD=${formatValue(vault.branches?.E?.providerMap?.FanDuel || 0)}`,
+          `MGM=${formatValue(vault.branches?.E?.providerMap?.BetMGM || 0)}`,
+          `365=${formatValue(vault.branches?.E?.providerMap?.Bet365 || 0)}`,
+          `PIN=${formatValue(vault.branches?.E?.providerMap?.Pinnacle || 0)}`
+        ].join(', ');
+        return `BRANCH E: ${providerSummary} || ${parsedLine}`;
+      });
+
       return [
-        `${index + 1}. ${display.sport} - ${display.player} - ${display.team}`,
-        `@ ${display.opponent} - ${display.dateTime}`,
-        `${display.metric} - ${display.line} - ${display.direction} - ${display.type}`,
-        vault.schemaState === 'SCHEMA_ERROR'
-          ? `SCHEMA ERROR - ${vault.schemaErrors?.[0] || 'Rejected by gatekeeper'}`
-          : `Identity ${categoryValue(vault, 'identity') ?? '-'} | Trend ${categoryValue(vault, 'trend') ?? '-'} | Stress ${categoryValue(vault, 'stress') ?? '-'} | Risk ${categoryValue(vault, 'risk') ?? '-'} | Final ${finalValue(vault) ?? '-'}`,
-        vault?.summary || ''
-      ].filter(Boolean).join('\n');
-    };
-
-    orderedRows.forEach((row, index) => blocks.push(serializeRow(row, index)));
-
-    const extras = Object.keys(vaults).filter((key) => key && !used.has(key)).sort();
-    extras.forEach((key, offset) => {
-      const meta = (vaults[key] || {}).auditMeta || {};
-      const pseudoRow = {
-        LEG_ID: key,
-        parsedPlayer: meta.player,
-        sport: meta.sport,
-        team: meta.team,
-        opponent: meta.opponent,
-        prop: meta.metric,
-        line: meta.line,
-        direction: meta.direction,
-        type: meta.type,
-        gameTimeText: meta.dateTime
-      };
-      blocks.push(serializeRow(pseudoRow, orderedRows.length + offset));
+        `[PLAYER ${index + 1}] ${row.parsedPlayer || legId || 'UNKNOWN_PLAYER'}`,
+        `LEG_ID: ${legId}`,
+        `TEAM: ${row.team || ''} | OPP: ${row.opponent || ''} | PROP: ${row.prop || ''} | LINE: ${row.line || row.lineValue || ''} | PICK: ${row.pickType || 'Regular Line'} | SCORE: ${(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}/100 ${resolveScoreEmoji(window.PickCalcCore?.calcCobaltEdge?.(vaultCollection[legId] || {}, row)?.score ?? 0)}`,
+        `SATURATION: ${summary}`,
+        ...matrixLines,
+        `PROJECTIONS: ${JSON.stringify(vault.branches?.E?.providerMap || {})}`
+      ].join('\n');
     });
 
-    return blocks.join('\n\n');
+    return sections.join('\n\n');
   }
 
-  function showToast(message) { appendConsole({ text: String(message || '') }); }
-  function isReliableVault(vault = {}) { return Boolean(computeRenderableVault(vault).reliable === true); }
-  function isPartialVault() { return false; }
 
-  Object.assign(window.PickCalcUI, {
-    MODEL_ID,
-    MLB_FEED_MATRIX,
-    el,
-    renderLeagueChecklist,
-    renderRunSummary,
-    renderPoolCounts,
-    renderFeedStatus,
-    renderPoolTable,
-    renderAnalysisShell,
-    renderAnalysisResults,
-    renderStreamUpdate,
-    renderConsole,
-    appendConsole,
-    startHeartbeat,
-    stopHeartbeat,
-    showOverlay,
-    hideOverlay,
-    backToIntake,
-    showAnalysisScreen,
-    bindResizeRedraw,
-    buildAnalysisCopyText,
-    initProgressBar,
-    updateProgressBar,
-    renderMiningGrid,
-    renderRawPayload,
-    renderBatchAuditor,
-    showToast,
-    isReliableVault,
-    isPartialVault
-  });
+
+  Object.assign(window.PickCalcUI, { MLB_FEED_MATRIX, FACTOR_GLOSSARY, el, renderLeagueChecklist, renderRunSummary, renderFeedStatus, renderPoolTable, renderAnalysisShell, renderAnalysisResults, renderStreamUpdate, renderConsole, appendConsole, startHeartbeat, stopHeartbeat, showOverlay, hideOverlay, backToIntake, showAnalysisScreen, bindResizeRedraw, buildAnalysisCopyText, initProgressBar, updateProgressBar, renderMiningGrid, resolveFactorGlossary });
+  window.onerror = function(message, source, lineno, colno) { try { appendConsole({ level: 'warning', text: `[OXYGEN-COBALT] ${message} @ ${source || 'unknown'}:${lineno || 0}:${colno || 0}` }); } catch (_) {} return false; };
 })();

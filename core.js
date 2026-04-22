@@ -3,15 +3,23 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.21 "Chaos Ferret"';
+  const SYSTEM_VERSION = 'v13.77.28 (OXYGEN-COBALT)';
 
+  const LAB_BOOT_ROWS = [
+    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
+    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
+    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', gameTimeText: 'Fri 7:05 PM', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
+    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', gameTimeText: 'Fri 7:05 PM', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', gameTimeText: 'Fri 7:15 PM', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', gameTimeText: 'Fri 7:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
+  ];
 
   const state = {
     version: SYSTEM_VERSION,
     rows: [],
-    cleanPool: [],
     auditRows: [],
-    selectedLeagues: ['MLB'],
+    selectedLeagues: new Set((window.PickCalcParser?.LEAGUES || []).filter((x) => x.checked).map((x) => x.id)),
     lastIngestMeta: null,
     lastResult: null,
     ingestLogs: [],
@@ -20,80 +28,152 @@ window.PickCalcCore = window.PickCalcCore || {};
   };
 
   function calcCobaltEdge(vault = {}, row = {}) {
-    const scores = [
-      vault?.categoryScores?.identity,
-      vault?.categoryScores?.trend,
-      vault?.categoryScores?.stress,
-      vault?.categoryScores?.risk
-    ].map(v => {
-      let n = Number(v);
-      // Translation Logic: If AI sends a penalty (e.g. -15), subtract from 100 base.
-      if (n < 0) return 100 + n; 
-      return n;
-    }).filter(v => v !== null && !isNaN(v));
+    const branches = vault?.branches || {};
+    const clamp01 = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return 0;
+      if (n <= 1) return Math.max(0, Math.min(1, n));
+      if (n <= 100) return Math.max(0, Math.min(1, n / 100));
+      return 1;
+    };
+    const averageBranch = (branchKey, keys = null) => {
+      const parsed = branches?.[branchKey]?.parsed || {};
+      const values = Array.isArray(keys) && keys.length ? keys.map((key) => parsed[key]).filter((value) => value !== undefined) : Object.values(parsed);
+      if (!values.length) return 0;
+      return values.reduce((sum, value) => sum + clamp01(value), 0) / values.length;
+    };
+    const prop = String(row?.prop || '').toLowerCase();
+    const pickType = String(row?.pickType || '').toLowerCase();
+    const isFantasy = /fantasy score|\bpfs\b|\bhfs\b/.test(prop);
+    const isPitcherFantasy = /pitcher fantasy score|\bpfs\b/.test(prop);
+    const isHitterFantasy = /hitter fantasy score|\bhfs\b/.test(prop) || (isFantasy && String(row?.type || '').toLowerCase().includes('hit'));
 
-    const computed = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
-    const direct = Number(vault?.finalScore ?? vault?.final_score);
-    const translatedDirect = Number.isFinite(direct) ? (direct < 0 ? 100 + direct : direct) : NaN;
-    const final = Number.isFinite(translatedDirect) ? Math.round(translatedDirect) : computed;
-    return { score: Math.max(0, Math.min(100, final)) };
+    let overScore = 0;
+    let underScore = 0;
+
+    if (isPitcherFantasy) {
+      const kPulse = averageBranch('A', ['a10', 'a11', 'a12', 'a13', 'a14', 'a15']);
+      const environment = averageBranch('C', ['c04', 'c05', 'c09', 'c10', 'c11']);
+      const leash = averageBranch('D', ['d02', 'd05', 'd06', 'd10']);
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (kPulse * 0.30) + (environment * 0.20) + (leash * 0.40) + (market * 0.10);
+      underScore = ((1 - kPulse) * 0.30) + ((1 - environment) * 0.20) + ((1 - leash) * 0.40) + ((1 - market) * 0.10);
+    } else if (isHitterFantasy || isFantasy || /hits\+runs\+rbis|hrr/.test(prop)) {
+      const clout = averageBranch('A', ['a01', 'a02', 'a03', 'a04', 'a06', 'a12', 'a13', 'a17', 'a19']);
+      const setup = averageBranch('C', ['c01', 'c03', 'c05', 'c09', 'c11', 'c12']);
+      const upside = averageBranch('D', ['d03', 'd04', 'd05', 'd06', 'd10']);
+      const market = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (clout * 0.30) + (setup * 0.20) + (upside * 0.40) + (market * 0.10);
+      underScore = ((1 - clout) * 0.30) + ((1 - setup) * 0.20) + ((1 - upside) * 0.40) + ((1 - market) * 0.10);
+    } else if (/home runs|triples|stolen bases/.test(prop)) {
+      const branchA = averageBranch('A');
+      const branchC = averageBranch('C');
+      const branchD = averageBranch('D');
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (branchA * 0.60) + (branchC * 0.20) + (branchD * 0.15) + (branchE * 0.05);
+      underScore = ((1 - branchA) * 0.60) + ((1 - branchC) * 0.20) + ((1 - branchD) * 0.15) + ((1 - branchE) * 0.05);
+    } else {
+      const branchA = averageBranch('A');
+      const branchC = averageBranch('C');
+      const branchD = averageBranch('D');
+      const branchE = averageBranch('E', ['e01', 'e02', 'e03', 'e04', 'e05', 'e11', 'e12']);
+      overScore = (branchA * 0.45) + (branchC * 0.30) + (branchD * 0.20) + (branchE * 0.05);
+      underScore = ((1 - branchA) * 0.45) + ((1 - branchC) * 0.30) + ((1 - branchD) * 0.20) + ((1 - branchE) * 0.05);
+    }
+
+    let chosenProbability = overScore;
+    let chosenSide = 'More';
+    if (pickType === 'goblin' || pickType === 'demon') {
+      const requested = String(row?.direction || '').toLowerCase();
+      if (requested === 'less' || requested === 'under') {
+        chosenProbability = underScore;
+        chosenSide = 'Less';
+      } else {
+        chosenProbability = overScore;
+        chosenSide = 'More';
+      }
+    } else if (underScore > overScore) {
+      chosenProbability = underScore;
+      chosenSide = 'Less';
+    }
+
+    const final = Math.max(0, Math.min(100, Math.round(chosenProbability * 100)));
+    return {
+      score: final,
+      side: chosenSide,
+      displaySide: chosenSide,
+      overScore: Math.round(overScore * 1000) / 1000,
+      underScore: Math.round(underScore * 1000) / 1000,
+      player: row?.parsedPlayer || '',
+      legId: row?.LEG_ID || ''
+    };
   }
 
   function buildAnalysisCopyText(context = {}) {
     return UI.buildAnalysisCopyText(context);
   }
 
-  function getDayScopeValue() { return 'Today'; }
+  function getDayScopeValue() { return document.querySelector('input[name="dayScope"]:checked')?.value || 'Today'; }
   function getNow() { return new Date(); }
-  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.includes(row.sport)); }
-  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.includes(row.sport)); }
+  function filteredRows(rows) { return (rows || []).filter((row) => state.selectedLeagues.has(row.sport)); }
+  function filteredAuditRows(rows) { return (rows || []).filter((row) => !row.sport || state.selectedLeagues.has(row.sport)); }
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
-    state.cleanPool = state.rows.slice();
-    const rows = filteredRows(state.cleanPool);
+    const rows = filteredRows(state.rows);
     const auditRows = filteredAuditRows(state.auditRows);
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : 0;
-    UI.renderPoolCounts?.(rows.length, rejectedCount);
-    UI.renderRunSummary(state.cleanPool, auditRows);
-    UI.renderFeedStatus(state.cleanPool, auditRows);
+    UI.renderRunSummary(rows, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
+    UI.renderFeedStatus(rows, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
-    UI.renderRawPayload?.('');
   }
 
   function ingestBoard() {
-    const input = UI.el('boardInput');
-    if (!input || !input.value.trim()) return;
-    const parsed = Parser.parseBoard(input.value, { dayScope: 'both' });
-    const incoming = Array.isArray(parsed.rows) ? parsed.rows : [];
-    const rejectedCount = Array.isArray(parsed.audit?.rejectedLines) ? parsed.audit.rejectedLines.length : 0;
-    if (incoming.length > 0) {
-      const combined = [...state.cleanPool, ...incoming];
-      const overflow = Math.max(0, combined.length - 24);
-      state.cleanPool = combined.slice(0, 24).map((row, index) => Object.assign({}, row, {
-        idx: index + 1,
-        LEG_ID: row.LEG_ID || `LEG-${index + 1}`
-      }));
-      state.rows = state.cleanPool.slice();
-      state.auditRows = parsed.audit || [];
-      state.lastResult = null;
-      state.miningVault = {};
-      state.ingestLogs = buildIngestLogs(state.auditRows);
-      input.value = '';
-      UI.renderPoolCounts?.(incoming.length, rejectedCount + overflow);
-      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (24 Max)` });
-    } else {
-      state.auditRows = parsed.audit || [];
-      state.ingestLogs = buildIngestLogs(state.auditRows);
-      UI.renderPoolCounts?.(0, rejectedCount);
+    const text = UI.el('boardInput')?.value || '';
+    const dayScope = getDayScopeValue();
+    if (!text.trim()) {
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
+      state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
+      refreshIntake();
+      return;
     }
-    UI.renderRunSummary(state.cleanPool, parsed.audit);
-    UI.renderFeedStatus(state.cleanPool, parsed.audit);
-    UI.renderPoolTable(state.cleanPool);
-    UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
-    if (!incoming.length && UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'No valid legs found. Check board format.';
-    else if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '';
+    const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
+    state.lastResult = null;
+    const rowMap = new Map();
+    (parsed.rows || []).forEach((row) => {
+      const key = [String(row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
+      const completeness = [
+        row.pickType && row.pickType !== 'Regular Line',
+        row.team,
+        row.opponent,
+        row.gameTimeText,
+        row.direction,
+        row.type,
+        row.rawText,
+        row.line,
+        row.lineValue
+      ].filter(Boolean).length;
+      const existing = rowMap.get(key);
+      if (!existing || completeness > existing.__completeness || ((row.rawText || '').length > (existing.rawText || '').length)) {
+        rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
+      }
+    });
+    state.rows = Array.from(rowMap.values()).map((row, index) => {
+      const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
+      delete nextRow.__completeness;
+      return nextRow;
+    });
+    state.auditRows = parsed.audit || [];
+    state.ingestLogs = buildIngestLogs(state.auditRows);
+    state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
+    refreshIntake();
   }
 
   async function handleMiningClick(isVerbose = false) {
@@ -106,7 +186,7 @@ window.PickCalcCore = window.PickCalcCore || {};
 
     state.miningVault = {};
     UI.showAnalysisScreen();
-    UI.initProgressBar(0, 1, 'Audit live. Awaiting response...');
+    UI.initProgressBar(0, Math.max(1, rows.length * 5), 'Firing Atomic Ingress...');
     UI.renderConsole([{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }]);
     UI.startHeartbeat?.();
 
@@ -114,56 +194,43 @@ window.PickCalcCore = window.PickCalcCore || {};
     const starter = {
       row: rows[0],
       shield: { integrityScore: 0, purityScore: 0, confidenceAvg: 0, label: 'ATOMIC INITIALIZING' },
-      connectorState: { completedRows: 0, completedAudits: 0, totalAudits: rows.length * 4 },
+      connectorState: { liveBranches: 0, derivedBranches: 0, completedRows: 0, completedProbes: 0, totalProbes: rows.length * 5 },
       vault: starterVault,
       vaultCollection: {},
       logs: [{ level: 'info', text: '[SYSTEM] Firing Atomic Ingress...' }],
-      analysisHint: 'Audit live. Awaiting response...',
-      runStatus: 'LOADING',
-      analysisPhase: 'loading',
-      finalized: false
+      analysisHint: 'Firing Atomic Ingress...'
     };
     state.lastResult = starter;
     UI.renderAnalysisResults(rows, state.auditRows, starter, state.version);
-    UI.renderRawPayload?.('');
 
     try {
       const response = await Connectors.streamingIngress(rows, state, {
         verbose: isVerbose,
         onRowStart: ({ row }) => { UI.renderConsole([{ level: 'info', text: `[SYSTEM] Streaming ${row?.parsedPlayer || row?.LEG_ID}...` }]); },
-        onBranch: ({ row, vault, completedProbes, totalProbes, categoryKey, logs }) => {
+        onBranch: ({ row, vault, shield, completedProbes, totalProbes, branchKey, logs }) => {
           const payload = {
             row,
             vault,
             vaultCollection: JSON.parse(JSON.stringify(state.miningVault || {})),
-            
-            analysisHint: 'Audit live. Awaiting response...',
-            runStatus: 'LOADING',
-            analysisPhase: 'loading',
-            finalized: false,
+            shield,
+            analysisHint: branchKey === 'INIT' ? 'Zero-fill vault primed.' : `Streaming Branch ${branchKey} for ${row?.parsedPlayer || row?.LEG_ID}.`,
             connectorState: { completedRows: 0, completedProbes, totalProbes },
-            logs: logs || [{ level: 'info', text: `[SYSTEM] ${categoryKey} hydrated.` }]
+            logs: logs || [{ level: 'info', text: `[SYSTEM] Branch ${branchKey} hydrated.` }]
           };
           state.lastResult = payload;
-          UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, categoryKey });
-          UI.renderRawPayload?.(payload.rawPayload || payload.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
+          UI.renderStreamUpdate(rows, state.auditRows, payload, state.version, { completedProbes, totalProbes, branchKey });
         },
         onRowComplete: ({ result, completedRows, completedProbes, totalProbes }) => {
           result.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
-          result.analysisPhase = 'final';
-          result.finalized = true;
           state.lastResult = result;
-          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, categoryKey: 'DONE' });
-          UI.renderRawPayload?.(result.rawPayload || result.responseText || window.__ALPHADOG_RAW_GEMINI_PAYLOAD__ || '');
+          UI.renderStreamUpdate(rows, state.auditRows, result, state.version, { completedRows, completedProbes, totalProbes, branchKey: 'DONE' });
         },
         onComplete: ({ lastResult }) => {
           if (lastResult) {
             lastResult.vaultCollection = JSON.parse(JSON.stringify(state.miningVault || {}));
-            lastResult.analysisPhase = 'final';
-            lastResult.finalized = true;
             state.lastResult = lastResult;
             UI.renderAnalysisResults(rows, state.auditRows, lastResult, state.version);
-            UI.updateProgressBar(100, 100, lastResult?.analysisHint || 'Audit complete.');
+            UI.updateProgressBar(rows.length * 5, rows.length * 5, lastResult?.analysisHint || 'Atomic Matrix Saturated');
           }
           setTimeout(() => { UI.stopHeartbeat?.(); }, 500);
         }
@@ -173,67 +240,6 @@ window.PickCalcCore = window.PickCalcCore || {};
       UI.renderConsole([{ level: 'warning', text: `[SYSTEM] ${error.message}` }]);
       setTimeout(() => { UI.stopHeartbeat?.(); }, 500);
     }
-  }
-
-
-  function handleBack() {
-    state.miningVault = {};
-    state.lastResult = null;
-    const payload = document.getElementById('rawPayloadOutput');
-    if (payload) payload.textContent = '';
-    UI.backToIntake();
-  }
-
-  function handleResetAll() {
-    let preservedKey = '';
-    try { preservedKey = String(window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY') || document.getElementById('apiKeyInput')?.value || '').trim(); } catch (_) {}
-    const preserveStorageKey = (storage) => {
-      if (!storage) return;
-      try {
-        const preserve = new Set(['OXYGEN_GEMINI_KEY']);
-        const doomed = [];
-        for (let i = 0; i < storage.length; i += 1) {
-          const key = storage.key(i);
-          if (!preserve.has(key)) doomed.push(key);
-        }
-        doomed.forEach((key) => { try { storage.removeItem(key); } catch (_) {} });
-      } catch (_) {}
-    };
-    try { preserveStorageKey(localStorage); } catch (_) {}
-    try { preserveStorageKey(sessionStorage); } catch (_) {}
-    if (preservedKey) {
-      try { window.__OXYGEN_GEMINI_KEY__ = preservedKey; } catch (_) {}
-      try { localStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
-      try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', preservedKey); } catch (_) {}
-      try { const keyInput = document.getElementById('apiKeyInput'); if (keyInput) keyInput.value = preservedKey; } catch (_) {}
-    }
-    state.rows = [];
-    state.cleanPool = [];
-    state.auditRows = [];
-    state.miningVault = {};
-    try { window.__ALPHADOG_MINING_VAULT__ = {}; } catch (_) {}
-    state.selectedLeagues = ['MLB'];
-    state.lastResult = null;
-    state.lastIngestMeta = null;
-    state.ingestLogs = [];
-    state.verboseMode = false;
-    state.version = SYSTEM_VERSION;
-
-    ['boardInput','ingestMessage','feedStatus','runSummary','poolMount','analysisSummary','analysisHint','systemConsole','progressBar','batchAuditorOutput','rawPayloadOutput'].forEach((id) => {
-      const node = UI.el(id);
-      if (!node) return;
-      if (id === 'boardInput' && 'value' in node) {
-        node.value = '';
-        return;
-      }
-      node.innerHTML = '';
-      if ('textContent' in node) node.textContent = '';
-    });
-
-    if (UI.stopHeartbeat) UI.stopHeartbeat();
-    UI.backToIntake?.();
-    refreshIntake();
-    UI.showToast?.('System reset complete.');
   }
 
   function bindEvents() {
@@ -248,28 +254,41 @@ window.PickCalcCore = window.PickCalcCore || {};
         logger({ level: 'warning', text: `[OXYGEN] DEBUG_CONNECTION_FAIL: ${error.message}` });
       }
     });
-    document.getElementById('saveKeyBtn')?.addEventListener('click', () => {
+    document.getElementById('saveKeyBtn').addEventListener('click', () => {
       const key = document.getElementById('apiKeyInput').value.trim();
       if (key) {
         localStorage.setItem('OXYGEN_GEMINI_KEY', key);
-        try { sessionStorage.setItem('OXYGEN_GEMINI_KEY', key); } catch (_) {}
-        try { window.__OXYGEN_GEMINI_KEY__ = key; } catch (_) {}
-        alert('Key Saved!');
+        alert('Key Saved! Refreshing...');
+        window.location.reload();
       }
     });
     // Initialize input value if key exists
-    const savedKey = window.__OXYGEN_GEMINI_KEY__ || localStorage.getItem('OXYGEN_GEMINI_KEY') || sessionStorage.getItem('OXYGEN_GEMINI_KEY');
-    if (savedKey) { document.getElementById('apiKeyInput').value = savedKey; window.__OXYGEN_GEMINI_KEY__ = savedKey; }
+    const savedKey = localStorage.getItem('OXYGEN_GEMINI_KEY');
+    if (savedKey) document.getElementById('apiKeyInput').value = savedKey;
     UI.el('ingestBtn')?.addEventListener('click', ingestBoard);
     UI.el('runBtn')?.addEventListener('click', () => handleMiningClick(false));
-    UI.el('backBtn')?.addEventListener('click', handleBack);
+    UI.el('runKeyLabBtn')?.addEventListener('click', () => handleMiningClick(true));
+    UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
-      handleResetAll();
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = [];
+      state.miningVault = {};
+      state.lastResult = null;
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
+      if (UI.el('boardInput')) UI.el('boardInput').value = '';
+      refreshIntake();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
-      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.cleanPool.length ? state.cleanPool : state.rows, version: state.version, vault: state.miningVault, cobaltEdge: calcCobaltEdge() });
+      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, BRANCH_TARGETS: Connectors.BRANCH_TARGETS, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
+    });
+    document.querySelectorAll('#leagueChecklist input[type="checkbox"]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const checked = new Set(Array.from(document.querySelectorAll('#leagueChecklist input[type="checkbox"]:checked')).map((node) => node.value));
+        state.selectedLeagues = checked;
+        refreshIntake();
+      });
     });
   }
 
@@ -278,16 +297,17 @@ window.PickCalcCore = window.PickCalcCore || {};
     const analysisTitle = document.getElementById('analysisTitle');
     const analysisVersion = document.getElementById('analysisVersion');
     const shieldTitle = document.getElementById('shieldTitle');
-    if (title) title.textContent = SYSTEM_VERSION;
-    if (analysisTitle) analysisTitle.textContent = SYSTEM_VERSION;
-    if (analysisVersion) analysisVersion.textContent = '';
-    if (shieldTitle) shieldTitle.textContent = '';
+    if (title) title.innerHTML = `PickCalc Multi-Sport Engine <span class="version-pill">${SYSTEM_VERSION}</span>`;
+    if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
+    if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
+    if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
+    UI.renderLeagueChecklist(Parser.LEAGUES || []);
     refreshIntake();
     bindEvents();
     const intake = UI.el('intakeScreen');
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, handleBack, handleResetAll, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, LAB_BOOT_ROWS, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();
