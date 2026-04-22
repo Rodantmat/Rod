@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.16 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15-R "Quantum Vortex"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'gemini-3.1-flash-lite-preview';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -96,39 +96,31 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     return [
       'Return JSON only. No markdown. No prose outside the JSON.',
       '<System_Instruction>',
-      'Role: Iron Bite Auditor (TITAN REAPER v0.0.16).',
-      'Context: April 21, 2026.',
-      'Mode: Deterministic Math Engine.',
+      'Role: Iron Bite Auditor (v0.0.15-R).',
+      'Condition: DETERMINISTIC CALCULATION ONLY.',
       '',
-      'MANDATORY DEDUCTION TABLE (Start at 100):',
-      '- Identity Lock: 100 (If player is in feed, skip deduction).',
-      '- Elite Offense Penalty (LAD, ATL, PHI): -35.',
-      '- Mid-Tier Offense Penalty (MIN, SF, TEX): -15.',
-      '- Line Stress (1.5+ for H+R+RBI): -20.',
-      '- High Volatility (0.5 HR): Cap Final Score at 55.',
+      'DEDUCTION TABLE (Start at 100):',
+      '1. ROSTER SHIELD: If player in feed, Identity = 100 (No deduction).',
+      '2. ELITE OFFENSE (LAD, ATL, PHI): Subtract 35.',
+      '3. MID-TIER OFFENSE (SF, TOR, CLE, MIN): Subtract 15.',
+      '4. VOLATILE LINE (0.5 Home Runs): Force Final Score Cap at 55.',
+      '5. LINE STRESS (>= 5.5 Ks or 1.5 HRR): Subtract 20.',
       '',
       'FORMULA: Final Score = 100 - (Stress + Risk + Trend).',
-      'MAPPING: You MUST return the exact "player" name in the JSON keys.',
-      'Include "row_key" whenever a ROW_KEY is supplied in the subject block.',
-      'Output integer scores only.',
-      '',
-      'ENFORCEMENT:',
-      'If identical players are submitted, the returned scores must be identical.',
-      'If Auditor Logic Consistency or Roster Accuracy < 95, you must discard and emit a corrected final run.',
+      'MAPPING: Return JSON where "player" name matches the input exactly.',
       '</System_Instruction>',
       '',
       '<JSON_Schema>',
       '{',
-      '  "version": "v0.0.16",',
-      '  "codename": "Titan Reaper",',
+      '  "version": "v0.0.15-R",',
+      '  "codename": "Quantum Vortex",',
       '  "legs": [{',
-      '    "player": "Full Name (EXACT MATCH)",',
-      '    "row_key": "LEG-1",',
+      '    "player": "Name",',
       '    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},',
       '    "final_score": 0,',
-      '    "summary": "Brutal formulaic 2026 analysis."',
+      '    "summary": "1-sentence 2026 formulaic audit."',
       '  }],',
-      '  "batch_audit": { "logic_consistency": 0, "roster_accuracy": 0 }',
+      '  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }',
       '}',
       '</JSON_Schema>',
       '',
@@ -136,7 +128,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       '',
       'Subjects:',
       subjects
-    ].join('\\n');
+    ].join('\n');
   }
 
   function parseGeminiText(json = {}) {
@@ -165,20 +157,49 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   async function callModel(modelId, prompt, apiKey) {
     const url = `${GEMINI_BASE_URL.replace(/\/$/, '')}/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+    const generationConfig = {
+      temperature: 0,
+      topP: 0.1,
+      topK: 1,
+      maxOutputTokens: 2048,
+      responseMimeType: 'application/json'
+    };
+
     const body = JSON.stringify({
       systemInstruction: {
         parts: [{
-          text: 'Role: Iron Bite Auditor (TITAN REAPER v0.0.16). Context: April 21, 2026. Mode: Deterministic Math Engine. MANDATORY DEDUCTION TABLE (Start at 100): Identity Lock: 100. Elite Offense Penalty (LAD, ATL, PHI): -35. Mid-Tier Offense Penalty (MIN, SF, TEX): -15. Line Stress (1.5+ for H+R+RBI): -20. High Volatility (0.5 HR): Cap Final Score at 55. FORMULA: Final Score = 100 - (Stress + Risk + Trend). MAPPING: Return the exact player name in the JSON keys. Include row_key when supplied. Return JSON only with scores.identity, scores.trend, scores.stress, scores.risk, final_score, summary, and batch_audit.'
+          text: `<System_Instruction>
+Role: Iron Bite Auditor (v0.0.15-R).
+Condition: DETERMINISTIC CALCULATION ONLY.
+
+DEDUCTION TABLE (Start at 100):
+1. ROSTER SHIELD: If player in feed, Identity = 100 (No deduction).
+2. ELITE OFFENSE (LAD, ATL, PHI): Subtract 35.
+3. MID-TIER OFFENSE (SF, TOR, CLE, MIN): Subtract 15.
+4. VOLATILE LINE (0.5 Home Runs): Force Final Score Cap at 55.
+5. LINE STRESS (>= 5.5 Ks or 1.5 HRR): Subtract 20.
+
+FORMULA: Final Score = 100 - (Stress + Risk + Trend).
+MAPPING: Return JSON where "player" name matches the input exactly.
+</System_Instruction>
+
+<JSON_Schema>
+{
+  "version": "v0.0.15-R",
+  "codename": "Quantum Vortex",
+  "legs": [{
+    "player": "Name",
+    "scores": {"identity": 100, "trend": 0, "stress": 0, "risk": 0},
+    "final_score": 0,
+    "summary": "1-sentence 2026 formulaic audit."
+  }],
+  "batch_audit": { "logic_consistency": 100, "roster_accuracy": 100 }
+}
+</JSON_Schema>`
         }]
       },
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0,
-        topP: 0,
-        topK: 1,
-        maxOutputTokens: 2048,
-        responseMimeType: 'application/json'
-      }
+      generationConfig: generationConfig
     });
 
     const response = await fetch(url, {
@@ -291,24 +312,23 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     const trend = clampScore(scorePack?.trend) ?? 0;
     const stress = clampScore(scorePack?.stress) ?? 0;
     const risk = clampScore(scorePack?.risk) ?? 0;
+    let finalScore = clampScore(100 - (stress + risk + trend));
     const metric = String(row?.prop || row?.metric || '').toLowerCase();
-    const lineNumber = Number(row?.line);
-    const opponentTeam = String(row?.opponent || row?.opponentAbbr || '').trim().toUpperCase();
-
-    let stressTotal = stress;
-    let riskTotal = risk;
-    let trendTotal = trend;
-
-    if (['LAD', 'ATL', 'PHI'].includes(opponentTeam)) trendTotal += 35;
-    else if (['MIN', 'SF', 'TEX'].includes(opponentTeam)) trendTotal += 15;
-
-    if ((metric.includes('hits+runs+rbis') || metric.includes('hits+runs+rbi')) && Number.isFinite(lineNumber) && lineNumber >= 1.5) {
-      stressTotal += 20;
+    const team = String(row?.team || row?.teamAbbr || '').toUpperCase();
+    const numericLine = Number(row?.line);
+    if (['LAD', 'ATL', 'PHI'].includes(team)) {
+      finalScore = clampScore((finalScore ?? 100) - 35);
+    } else if (['SF', 'TOR', 'CLE', 'MIN'].includes(team)) {
+      finalScore = clampScore((finalScore ?? 100) - 15);
     }
-
-    let finalScore = clampScore(Math.round(100 - (stressTotal + riskTotal + trendTotal)));
-    if (metric.includes('home run') && Number.isFinite(lineNumber) && lineNumber === 0.5) {
+    if (metric.includes('home run') && String(row?.line || '').includes('0.5')) {
       finalScore = Math.min(finalScore ?? 0, 55);
+    }
+    if (/(strikeouts|ks)/i.test(metric) && numericLine >= 5.5) {
+      finalScore = clampScore((finalScore ?? 100) - 20);
+    }
+    if (/hrr/i.test(metric) && numericLine >= 1.5) {
+      finalScore = clampScore((finalScore ?? 100) - 20);
     }
     return finalScore;
   }

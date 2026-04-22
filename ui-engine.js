@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.16 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.15-R "Quantum Vortex"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -106,7 +106,7 @@ window.PickCalcUI = window.PickCalcUI || {};
       .trim();
   }
 
-  function getV(vault, key) {
+  function getVal(vault, key) {
     if (!vault) return 0;
     const value = vault?.scores?.[key] ?? vault?.categoryScores?.[key] ?? 0;
     return Number.isFinite(Number(value)) ? Number(value) : 0;
@@ -119,11 +119,11 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function categoryValue(vault, key) {
-    return normalizeFinalValue(getV(vault, key));
+    return normalizeFinalValue(getVal(vault, key));
   }
 
-  function finalValue(vault, leg = {}) {
-    return normalizeFinalValue(leg?.final_score ?? vault?.final_score ?? vault?.finalScore ?? vault?.score);
+  function finalValue(vault) {
+    return normalizeFinalValue(vault?.final_score ?? vault?.finalScore ?? vault?.score);
   }
 
   function findVaultForRow(row = {}, vaultCollection = {}) {
@@ -154,30 +154,19 @@ window.PickCalcUI = window.PickCalcUI || {};
     return {};
   }
 
-  function renderAlphaDogScoreGrid(vault = {}, leg = {}) {
-    const idVal = categoryValue(vault, 'identity') ?? 100;
-    const trendVal = categoryValue(vault, 'trend');
-    const stressVal = categoryValue(vault, 'stress');
-    const riskVal = categoryValue(vault, 'risk');
-    const finalVal = finalValue(vault, leg);
+  function renderAlphaDogScoreGrid(vault = {}) {
     const cells = [
-      ['Identity', idVal],
-      ['Trend', trendVal],
-      ['Stress', stressVal],
-      ['Risk', riskVal]
+      ['Identity', categoryValue(vault, 'identity')],
+      ['Trend', categoryValue(vault, 'trend')],
+      ['Stress', categoryValue(vault, 'stress')],
+      ['Risk', categoryValue(vault, 'risk')],
+      ['Final Score', finalValue(vault), true]
     ];
-    return `
-      <div class="alphadog-card-grid">${cells.map(([label, value]) => `
-        <div class="alphadog-score-tile">
-          <div class="alphadog-score-label">${escapeHtml(label)}</div>
-          <div class="alphadog-score-value ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
-        </div>`).join('')}</div>
-      <div class="alphadog-final-row">
-        <div class="alphadog-score-tile final final-wide">
-          <div class="alphadog-score-label">Final Score</div>
-          <div class="alphadog-score-value final ${scoreClass(finalVal)}">${escapeHtml(formatScore(finalVal))}</div>
-        </div>
-      </div>`;
+    return `<div class="alphadog-card-grid">${cells.map(([label, value, isFinal]) => `
+      <div class="alphadog-score-tile ${isFinal ? 'final' : ''}">
+        <div class="alphadog-score-label">${escapeHtml(label)}</div>
+        <div class="alphadog-score-value ${isFinal ? 'final' : ''} ${scoreClass(value)}">${escapeHtml(formatScore(value))}</div>
+      </div>`).join('')}</div>`;
   }
 
   function getAuditDisplay(row = {}, vault = {}) {
@@ -206,7 +195,7 @@ window.PickCalcUI = window.PickCalcUI || {};
         </div>
         <div class="alphadog-card-prop">${escapeHtml(display.metric || 'Unknown Metric')} • ${escapeHtml(display.line || '—')} • ${escapeHtml(display.direction || '—')}</div>
         <div class="alphadog-card-meta">${escapeHtml(display.opponent || 'Unknown Opponent')} • ${escapeHtml(display.dateTime || 'Time Pending')} • ${escapeHtml(display.type || 'Regular')}</div>
-        ${renderAlphaDogScoreGrid(vault, row)}
+        ${renderAlphaDogScoreGrid(vault)}
         ${summary ? `<div class="alphadog-card-summary">${escapeHtml(summary)}</div>` : ''}
       </article>`;
   }
@@ -317,7 +306,7 @@ window.PickCalcUI = window.PickCalcUI || {};
     const mount = el('progressBar');
     if (!mount) return;
     const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-    const cleanMessage = String(message || 'Running audit...').replace(/(?:\d+\s*\/\s*\d+\s*)?probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
+    const cleanMessage = String(message || 'Running audit...').replace(/probes?/gi, '').replace(/Gemini/gi, 'model').replace(/\s+/g,' ').trim();
     const fillClass = mode === 'complete' ? 'progress-bar-fill progress-complete' : mode === 'creep' ? 'progress-bar-fill progress-creep' : 'progress-bar-fill';
     mount.innerHTML = `<div class="progress-bar-shell"><div class="${fillClass}" style="width:${pct}%"><div class="progress-inner">${escapeHtml(cleanMessage)}</div></div></div><div class="progress-bar-meta"><strong>${pct}%</strong><span>${escapeHtml(cleanMessage)}</span></div>`;
   }
@@ -334,8 +323,42 @@ window.PickCalcUI = window.PickCalcUI || {};
   }
 
   function renderAnalysisResults(rows, auditRows, result, version = SYSTEM_VERSION) {
-    renderAnalysisShell(result, rows, version);
-    renderAuditResults(rows, result?.vaultCollection || {});
+    const getV = (vault, key) => {
+      if (!vault) return 0;
+      return vault.scores?.[key] || vault.categoryScores?.[key] || 0;
+    };
+
+    const sourceVaults = result?.vaultCollection || {};
+    const normalizedVaultCollection = {};
+
+    Object.keys(sourceVaults).forEach((key) => {
+      const vault = sourceVaults[key] || {};
+      const idVal = getV(vault, 'identity') || 100;
+      const trendVal = getV(vault, 'trend');
+      const stressVal = getV(vault, 'stress');
+      const riskVal = getV(vault, 'risk');
+      const finalVal = vault.final_score || vault.finalScore || 0;
+      normalizedVaultCollection[key] = Object.assign({}, vault, {
+        scores: Object.assign({}, vault.scores || {}, {
+          identity: idVal,
+          trend: trendVal,
+          stress: stressVal,
+          risk: riskVal
+        }),
+        categoryScores: Object.assign({}, vault.categoryScores || {}, {
+          identity: idVal,
+          trend: trendVal,
+          stress: stressVal,
+          risk: riskVal
+        }),
+        finalScore: finalVal,
+        final_score: finalVal
+      });
+    });
+
+    const normalizedResult = Object.assign({}, result, { vaultCollection: normalizedVaultCollection });
+    renderAnalysisShell(normalizedResult, rows, version);
+    renderAuditResults(rows, normalizedVaultCollection);
   }
   function renderStreamUpdate(rows, auditRows, result, version = SYSTEM_VERSION, meta = {}) {
     renderAnalysisShell(result, rows, version);
