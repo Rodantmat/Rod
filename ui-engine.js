@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.20 "Token Goblin"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.21 "Chaos Ferret"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -15,10 +15,12 @@ window.PickCalcUI = window.PickCalcUI || {};
   };
 
   const PENALTIES = {
-    matchup_tier: { LOW: 0, MEDIUM: 18, HIGH: 30 },
-    stress_level: { LOW: 0, MEDIUM: 10, HIGH: 18 },
-    risk_level: { LOW: 0, MEDIUM: 12, HIGH: 20 }
+    matchup_tier: { LOW: 0, MEDIUM: 20, HIGH: 34 },
+    stress_level: { LOW: 0, MEDIUM: 12, HIGH: 22 },
+    risk_level: { LOW: 0, MEDIUM: 14, HIGH: 24 }
   };
+
+  const ENUM_ORDER = { LOW: 0, MEDIUM: 1, HIGH: 2 };
 
   const el = (id) => document.getElementById(id);
   const asArray = (value) => Array.isArray(value) ? value : [];
@@ -120,12 +122,85 @@ window.PickCalcUI = window.PickCalcUI || {};
     return ENUMS[key].includes(String(value || '').trim());
   }
 
+
+  function enumAtLeast(value, minimum) {
+    const current = ENUM_ORDER[String(value || '').trim()] ?? -1;
+    const target = ENUM_ORDER[String(minimum || '').trim()] ?? -1;
+    return current >= target;
+  }
+
+  function bumpEnum(value, minimum) {
+    const clean = String(value || '').trim();
+    if (!['LOW', 'MEDIUM', 'HIGH'].includes(clean)) return String(minimum || '').trim();
+    return enumAtLeast(clean, minimum) ? clean : String(minimum || '').trim();
+  }
+
+  function normalizedLineNumber(lineValue) {
+    const num = Number(String(lineValue ?? '').trim());
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function applyPropGuards(vault = {}) {
+    const codes = Object.assign({}, vault?.deductionCodes || {});
+    const meta = vault?.auditMeta || {};
+    const metric = purgeUiNoise(meta.metric || '').toLowerCase();
+    const player = purgeUiNoise(meta.player || '').toLowerCase();
+    const opponent = String(meta.opponent || '').toUpperCase();
+    const line = normalizedLineNumber(meta.line);
+
+    if (metric === 'home runs') {
+      codes.matchup_tier = bumpEnum(codes.matchup_tier, 'MEDIUM');
+      codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
+      codes.risk_level = bumpEnum(codes.risk_level, 'HIGH');
+      if (opponent === 'SF') codes.matchup_tier = bumpEnum(codes.matchup_tier, 'HIGH');
+    }
+
+    if (metric === 'pitcher strikeouts') {
+      codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
+      if (line !== null && line >= 5.5) codes.risk_level = bumpEnum(codes.risk_level, 'MEDIUM');
+      if (opponent === 'LAD' || opponent === 'PHI' || opponent === 'BAL') codes.matchup_tier = bumpEnum(codes.matchup_tier, 'HIGH');
+    }
+
+    if (metric === 'hits+runs+rbis') {
+      if (line !== null && line >= 1.5) codes.risk_level = bumpEnum(codes.risk_level, 'MEDIUM');
+      const elite = new Set(['aaron judge','shohei ohtani','mike trout','yordan alvarez','jose ramirez','vladimir guerrero jr.','pete alonso']);
+      if (line !== null && line >= 1.5 && !elite.has(player)) codes.stress_level = bumpEnum(codes.stress_level, 'MEDIUM');
+      if (['HOU','TB','LAD','PHI','BAL'].includes(opponent)) codes.matchup_tier = bumpEnum(codes.matchup_tier, 'MEDIUM');
+    }
+
+    return Object.assign({}, vault, { deductionCodes: codes });
+  }
+
+  function buildDeterministicSummary(vault = {}) {
+    const meta = vault?.auditMeta || {};
+    const guardedVault = applyPropGuards(vault);
+    const codes = guardedVault?.deductionCodes || {};
+    const player = purgeUiNoise(meta.player || 'This leg');
+    const opponent = purgeUiNoise(meta.opponent || 'the opponent');
+    const metric = purgeUiNoise(meta.metric || 'the metric');
+    const reasons = [];
+    if ((meta.metric || '').toLowerCase() === 'home runs') reasons.push('home run volatility');
+    if ((meta.metric || '').toLowerCase() === 'pitcher strikeouts') reasons.push('strikeout volatility');
+    if ((meta.metric || '').toLowerCase() === 'hits+runs+rbis') reasons.push('combo-stat volatility');
+    if (codes.matchup_tier === 'HIGH') reasons.push(`hard matchup vs ${opponent}`);
+    else if (codes.matchup_tier === 'MEDIUM') reasons.push(`mixed matchup vs ${opponent}`);
+    else reasons.push(`favorable matchup vs ${opponent}`);
+    if (codes.stress_level === 'HIGH') reasons.push('high line stress');
+    else if (codes.stress_level === 'MEDIUM') reasons.push('moderate line stress');
+    if (codes.risk_level === 'HIGH') reasons.push('high risk profile');
+    else if (codes.risk_level === 'MEDIUM') reasons.push('moderate risk profile');
+    const uniq=[];
+    for (const r of reasons) if (r && !uniq.includes(r)) uniq.push(r);
+    return `${player}: ${metric} | ${uniq.slice(0,3).join('; ')}.`;
+  }
+
   function calculateScoresFromCodes(vault = {}) {
     if (vault?.schemaState === 'SCHEMA_ERROR') {
       throw new Error(vault?.schemaErrors?.[0] || 'Schema Violation');
     }
 
-    const codes = vault?.deductionCodes || {};
+    const guardedVault = applyPropGuards(vault);
+    const codes = guardedVault?.deductionCodes || {};
     if (!vault?.rowKey) throw new Error('Schema Violation: Missing row_key');
     if (!codes || typeof codes !== 'object') throw new Error('Schema Violation: Missing deduction codes');
 
@@ -142,11 +217,13 @@ window.PickCalcUI = window.PickCalcUI || {};
     const finalScore = Math.max(0, 100 - trend - stress - risk);
 
     return {
+      deductionCodes: codes,
       scores: { identity, trend, stress, risk },
       finalScore,
       final_score: finalScore,
       schemaState: 'OK',
-      schemaErrors: []
+      schemaErrors: [],
+      summary: buildDeterministicSummary(Object.assign({}, guardedVault, { deductionCodes: codes }))
     };
   }
 
@@ -409,10 +486,15 @@ window.PickCalcUI = window.PickCalcUI || {};
   function bindResizeRedraw() {}
 
   function buildAnalysisCopyText(context = {}) {
-    const rows = uniqueRows(context.rows);
-    const vaults = context.vault || {};
-    return rows.map((row, index) => {
-      const vault = computeRenderableVault(findVaultForRow(row, vaults || {}));
+    const orderedRows = uniqueRows(context.rows || []);
+    const vaults = Object.assign({}, context.result?.vaultCollection || {}, context.vault || {});
+    const used = new Set();
+    const blocks = [];
+
+    const serializeRow = (row, index) => {
+      const rowKey = String(row?.LEG_ID || row?.row_key || '').trim();
+      if (rowKey) used.add(rowKey);
+      const vault = computeRenderableVault(findVaultForRow(row, vaults));
       const display = getAuditDisplay(row, vault);
       return [
         `${index + 1}. ${display.sport} - ${display.player} - ${display.team}`,
@@ -423,7 +505,29 @@ window.PickCalcUI = window.PickCalcUI || {};
           : `Identity ${categoryValue(vault, 'identity') ?? '-'} | Trend ${categoryValue(vault, 'trend') ?? '-'} | Stress ${categoryValue(vault, 'stress') ?? '-'} | Risk ${categoryValue(vault, 'risk') ?? '-'} | Final ${finalValue(vault) ?? '-'}`,
         vault?.summary || ''
       ].filter(Boolean).join('\n');
-    }).join('\n\n');
+    };
+
+    orderedRows.forEach((row, index) => blocks.push(serializeRow(row, index)));
+
+    const extras = Object.keys(vaults).filter((key) => key && !used.has(key)).sort();
+    extras.forEach((key, offset) => {
+      const meta = (vaults[key] || {}).auditMeta || {};
+      const pseudoRow = {
+        LEG_ID: key,
+        parsedPlayer: meta.player,
+        sport: meta.sport,
+        team: meta.team,
+        opponent: meta.opponent,
+        prop: meta.metric,
+        line: meta.line,
+        direction: meta.direction,
+        type: meta.type,
+        gameTimeText: meta.dateTime
+      };
+      blocks.push(serializeRow(pseudoRow, orderedRows.length + offset));
+    });
+
+    return blocks.join('\n\n');
   }
 
   function showToast(message) { appendConsole({ text: String(message || '') }); }

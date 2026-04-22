@@ -3,7 +3,7 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.20 "Token Goblin"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.21 "Chaos Ferret"';
 
 
   const state = {
@@ -268,7 +268,7 @@ window.PickCalcCore = window.PickCalcCore || {};
       handleResetAll();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
-      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.rows, version: state.version, vault: state.miningVault, cobaltEdge: calcCobaltEdge() });
+      const payload = buildAnalysisCopyText({ result: state.lastResult, rows: state.cleanPool.length ? state.cleanPool : state.rows, version: state.version, vault: state.miningVault, cobaltEdge: calcCobaltEdge() });
       try { await navigator.clipboard.writeText(payload); } catch (_) {}
     });
   }

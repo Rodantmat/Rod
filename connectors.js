@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.20 "Token Goblin"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.21 "Chaos Ferret"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'DISABLED_IN_LOGIC_CAGE';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -8,16 +8,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   const LOGIC_CAGE_SYSTEM_INSTRUCTION = [
     '<System_Instruction>',
-    'Role: Iron Bite Auditor (AlphaDog v0.0.20 "Token Goblin").',
+    'Role: Iron Bite Auditor (AlphaDog v0.0.21 "Chaos Ferret").',
     'Context: April 21, 2026.',
     'Mode: Structural Sensor.',
-    'Mission: Return enum-only structural signals for each leg. Do not calculate arithmetic. Do not output bonuses. Do not output prose outside the schema. Echo every supplied row_key exactly.',
+    'Mission: Return enum-only structural signals for each leg. Do not calculate arithmetic. Do not output bonuses. Echo every supplied row_key exactly. Do not output summary text.',
     '',
     'Bucket Separation Mandate:',
-    'LOW = clearly favorable setup, or no specific named difficulty is present.',
+    'LOW = explicitly favorable setup only.',
     'MEDIUM = mixed or genuinely unclear setup only.',
     'HIGH = use only when a specific named difficulty factor is present.',
-    'Do not use MEDIUM as a safe default.',
+    'Do not use LOW or MEDIUM as safe defaults.',
     '',
     'Zero-Tolerance Rules:',
     '1. row_key is mandatory and must be echoed exactly for every leg.',
@@ -26,7 +26,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     '4. Do not calculate final_score. Do not infer hidden penalties. Do not add bonuses.',
     '5. Return enum values only for matchup_tier, stress_level, and risk_level using LOW, MEDIUM, or HIGH.',
     '6. Return roster_status using ACTIVE, UNKNOWN, or OUT.',
-    '7. summary must be one short factual sentence only. Include one named reason when using HIGH.',
+    '7. Do not output summary text. Return only enum fields and row_key.',
     '</System_Instruction>'
   ].join('\n');
 
@@ -44,8 +44,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
             roster_status: { type: 'string', enum: ['ACTIVE', 'UNKNOWN', 'OUT'] },
             matchup_tier: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
             stress_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
-            risk_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] },
-            summary: { type: 'string' }
+            risk_level: { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] }
           }
         }
       }
@@ -156,11 +155,11 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       'Return one object with a legs array.',
       'Echo every row_key exactly once.',
       'Do not calculate scores.',
-      'Do not return batch_audit, codename, version, player, or extra keys.',
-      'LOW = favorable or no named difficulty.',
+      'Do not return summary text, batch_audit, codename, version, player, or extra keys.',
+      'LOW = explicitly favorable only.',
       'MEDIUM = mixed or unclear only.',
-      'HIGH = only when a specific named difficulty factor is present.',
-      'Do not use MEDIUM as a safe default.',
+      'HIGH = named difficulty only.',
+      'Do not use LOW or MEDIUM as safe defaults.',
       '',
       JSON.stringify({ legs: legsJson }, null, 2)
     ].join('\n');
@@ -319,7 +318,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       matchup_tier: String(leg?.matchup_tier || '').trim(),
       stress_level: String(leg?.stress_level || '').trim(),
       risk_level: String(leg?.risk_level || '').trim(),
-      summary: String(leg?.summary || '').trim(),
       sport: String(row?.sport || 'MLB').trim(),
       team: String(row?.team || '').trim(),
       opponent: String(row?.opponent || '').trim(),
@@ -342,7 +340,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     vault.player = normalizedLeg.player || vault.player;
     vault.sourcePlayer = vault.player;
     vault.rowKey = normalizedLeg.row_key || vault.rowKey;
-    vault.summary = normalizedLeg.summary;
+    vault.summary = '';
     vault.deductionCodes = {
       roster_status: normalizedLeg.roster_status,
       matchup_tier: normalizedLeg.matchup_tier,
