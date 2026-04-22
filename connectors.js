@@ -1,6 +1,6 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.18 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.19 "Titan Reaper - Calibrated"';
   const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'DISABLED_IN_LOGIC_CAGE';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
@@ -8,10 +8,16 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
 
   const LOGIC_CAGE_SYSTEM_INSTRUCTION = [
     '<System_Instruction>',
-    'Role: Iron Bite Auditor (AlphaDog v0.0.18 "Titan Reaper").',
+    'Role: Iron Bite Auditor (AlphaDog v0.0.19 "Titan Reaper - Calibrated").',
     'Context: April 21, 2026.',
     'Mode: Structural Sensor.',
     'Mission: Return enum-only structural signals for each leg. Do not calculate arithmetic. Do not output bonuses. Do not output prose outside the schema. Echo every supplied row_key exactly.',
+    '',
+    'Bucket Separation Mandate:',
+    'LOW = clearly favorable setup, or no specific named difficulty is present.',
+    'MEDIUM = mixed or genuinely unclear setup only.',
+    'HIGH = use only when a specific named difficulty factor is present.',
+    'Do not use MEDIUM as a safe default.',
     '',
     'Zero-Tolerance Rules:',
     '1. row_key is mandatory and must be echoed exactly for every leg.',
@@ -20,7 +26,7 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     '4. Do not calculate final_score. Do not infer hidden penalties. Do not add bonuses.',
     '5. Return enum values only for matchup_tier, stress_level, and risk_level using LOW, MEDIUM, or HIGH.',
     '6. Return roster_status using ACTIVE, UNKNOWN, or OUT.',
-    '7. summary must be one short factual sentence only. No extra commentary.',
+    '7. summary must be one short factual sentence only. Include one named reason when using HIGH.',
     '</System_Instruction>'
   ].join('\n');
 
@@ -180,6 +186,9 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       'Do not calculate final_score.',
       'Do not output bonuses.',
       'Do not output any prose outside the schema.',
+      'Use LOW when no specific difficulty is present.',
+      'Use HIGH only when a specific named difficulty factor is present.',
+      'Do not use MEDIUM as a safe default.',
       '',
       '<Batch>',
       legsXml,
@@ -404,7 +413,14 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       return { lastResult };
     }
 
-    const byKey = new Map((result.payload.legs || []).map((leg) => [String(leg?.row_key || '').trim(), leg]));
+        const byKey = new Map();
+    const seenResponseKeys = new Set();
+    for (const leg of (result.payload.legs || [])) {
+      const key = String(leg?.row_key || '').trim();
+      if (!key || seenResponseKeys.has(key)) continue;
+      seenResponseKeys.add(key);
+      byKey.set(key, leg);
+    }
     const vaultCollection = {};
     let completedProbes = 0;
     let completedRows = 0;

@@ -1,6 +1,6 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.18 "Titan Reaper"';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.19 "Titan Reaper - Calibrated"';
   const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
@@ -15,9 +15,9 @@ window.PickCalcUI = window.PickCalcUI || {};
   };
 
   const PENALTIES = {
-    matchup_tier: { LOW: 0, MEDIUM: 35, HIGH: 35 },
-    stress_level: { LOW: 0, MEDIUM: 20, HIGH: 20 },
-    risk_level: { LOW: 0, MEDIUM: 25, HIGH: 25 }
+    matchup_tier: { LOW: 0, MEDIUM: 18, HIGH: 30 },
+    stress_level: { LOW: 0, MEDIUM: 10, HIGH: 18 },
+    risk_level: { LOW: 0, MEDIUM: 12, HIGH: 20 }
   };
 
   const el = (id) => document.getElementById(id);
@@ -232,6 +232,18 @@ window.PickCalcUI = window.PickCalcUI || {};
       </article>`;
   }
 
+  function uniqueRows(rows = []) {
+    const seen = new Set();
+    const out = [];
+    for (const row of asArray(rows)) {
+      const key = String(row?.LEG_ID || row?.row_key || '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+    }
+    return out;
+  }
+
   function renderAuditResults(rows = [], vaultCollection = {}) {
     const auditResults = el('audit-results');
     if (!auditResults) {
@@ -243,14 +255,14 @@ window.PickCalcUI = window.PickCalcUI || {};
     grid.id = 'miningGrid';
     grid.className = 'mining-grid';
     auditResults.appendChild(grid);
-    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
+    const cards = uniqueRows(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
     grid.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
   }
 
   function renderMiningGrid(rows = [], vaultCollection = {}) {
     const mount = el('miningGrid');
     if (!mount) return;
-    const cards = asArray(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
+    const cards = uniqueRows(rows).map((row) => renderPlayerMiningCard(row, findVaultForRow(row, vaultCollection))).join('');
     mount.innerHTML = cards || '<div class="mini-muted">Waiting for analysis.</div>';
   }
 
@@ -397,7 +409,7 @@ window.PickCalcUI = window.PickCalcUI || {};
   function bindResizeRedraw() {}
 
   function buildAnalysisCopyText(context = {}) {
-    const rows = asArray(context.rows);
+    const rows = uniqueRows(context.rows);
     const vaults = context.vault || {};
     return rows.map((row, index) => {
       const vault = computeRenderableVault(findVaultForRow(row, vaults || {}));
