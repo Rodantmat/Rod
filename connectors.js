@@ -1,14 +1,14 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.17 "Logic Cage"';
-  const PRIMARY_MODEL = 'gemini-2.5-pro';
+  const SYSTEM_VERSION = 'AlphaDog v0.0.18 "Titan Reaper"';
+  const PRIMARY_MODEL = 'gemini-1.5-pro-002';
   const FALLBACK_MODEL = 'DISABLED_IN_LOGIC_CAGE';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
   const DEBUG_SEED = 42;
 
   const LOGIC_CAGE_SYSTEM_INSTRUCTION = [
     '<System_Instruction>',
-    'Role: Iron Bite Auditor (AlphaDog v0.0.17 "Logic Cage").',
+    'Role: Iron Bite Auditor (AlphaDog v0.0.18 "Titan Reaper").',
     'Context: April 21, 2026.',
     'Mode: Structural Sensor.',
     'Mission: Return enum-only structural signals for each leg. Do not calculate arithmetic. Do not output bonuses. Do not output prose outside the schema. Echo every supplied row_key exactly.',
@@ -20,13 +20,12 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
     '4. Do not calculate final_score. Do not infer hidden penalties. Do not add bonuses.',
     '5. Return enum values only for matchup_tier, stress_level, and risk_level using LOW, MEDIUM, or HIGH.',
     '6. Return roster_status using ACTIVE, UNKNOWN, or OUT.',
-    '7. summary must be one short factual sentence only.',
+    '7. summary must be one short factual sentence only. No extra commentary.',
     '</System_Instruction>'
   ].join('\n');
 
   const RESPONSE_SCHEMA = {
     type: 'object',
-    additionalProperties: false,
     required: ['version', 'codename', 'legs', 'batch_audit'],
     properties: {
       version: { type: 'string' },
@@ -35,7 +34,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
         type: 'array',
         items: {
           type: 'object',
-          additionalProperties: false,
           required: ['row_key', 'player', 'roster_status', 'matchup_tier', 'stress_level', 'risk_level', 'summary'],
           properties: {
             row_key: { type: 'string' },
@@ -50,7 +48,6 @@ window.PickCalcConnectors = window.PickCalcConnectors || {};
       },
       batch_audit: {
         type: 'object',
-        additionalProperties: false,
         required: ['logic_consistency', 'roster_accuracy'],
         properties: {
           logic_consistency: { type: 'integer' },
