@@ -1,7 +1,7 @@
 window.PickCalcUI = window.PickCalcUI || {};
 (() => {
   const SYSTEM_VERSION = 'AlphaDog v0.0.18 "Titan Reaper"';
-  const MODEL_ID = 'gemini-1.5-pro-002';
+  const MODEL_ID = 'gemini-2.5-pro';
   const MLB_FEED_MATRIX = [
     'Pitcher Strikeouts', 'Hits Allowed', 'Walks Allowed', 'Pitching Outs', 'Fantasy Score',
     'Hits', 'Total Bases', 'Runs', 'RBIs', 'Hits+Runs+RBIs', 'Singles', 'Doubles', 'Home Runs', 'Stolen Bases'

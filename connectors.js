@@ -1,7 +1,7 @@
 window.PickCalcConnectors = window.PickCalcConnectors || {};
 (() => {
   const SYSTEM_VERSION = 'AlphaDog v0.0.18 "Titan Reaper"';
-  const PRIMARY_MODEL = 'gemini-1.5-pro-002';
+  const PRIMARY_MODEL = 'gemini-2.5-pro';
   const FALLBACK_MODEL = 'DISABLED_IN_LOGIC_CAGE';
   const GEMINI_BASE_URL = 'https://geminiconnector.rodolfoaamattos.workers.dev';
   const DEBUG_SEED = 42;
