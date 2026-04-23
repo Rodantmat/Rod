@@ -47,20 +47,3 @@ input[type="checkbox"],input[type="radio"]{accent-color:#5da8ff}
 .collapsible-content{padding:15px;border-left:2px solid var(--border);margin-left:10px}
 .collapsible-arrow{display:inline-block;transition:transform .15s ease}
 .matrix-collapsible[open] .collapsible-arrow{transform:rotate(90deg)}
-
-
-/* AlphaDog hybrid branding */
-.hero-brand .brand-line{display:flex;align-items:center;gap:0;min-height:64px}
-.hero-brand .brand-block p{margin:.2rem 0 0;color:var(--muted)}
-.app-logo{height:70px;width:auto;filter:brightness(0) invert(1);vertical-align:middle;margin-right:16px;display:block;transform-origin:left center}
-.logo{height:70px !important;width:auto}
-.header-icon{display:flex;align-items:center}
-.pool-counts{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
-.count-accepted,.count-rejected{font-weight:800}
-.count-accepted{color:#9af2c7}.count-rejected{color:#ff9c9c}
-.hero-inline.hero-brand{align-items:flex-start}
-#analysisScreen .hero h1,#intakeScreen .hero h1{color:#fff}
-#analysisScreen .mini-muted{color:#9fb1d1}
-.feed-status-inline{margin-top:12px}
-#intakeScreen .table-wrap table td,#intakeScreen .table-wrap table th{font-size:13px}
-#analysisScreen .app-logo{height:76px}

@@ -3,57 +3,64 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AlphaDog v0.0.24 "Intake Retriever"</title>
-  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <title>PickCalc Multi-Sport Engine • v13.77.29 (OXYGEN-PROTON-BADGER)</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <div class="app-shell">
-    <section id="intakeScreen" class="hidden">
-      <header class="hero hero-brand">
-        <div class="brand-line">
-          <span class="brand-icon header-icon"><img src="logo.png" class="app-logo logo" alt="AlphaDog"></span>
-          <h1 id="intakeTitle">AlphaDog v0.0.24 "Intake Retriever"</h1>
-        </div>
-        <p>Paste board chunks, ingest MLB props, then run the matrix.</p>
+    <section id="intakeScreen" style="display: none !important;">
+      <header class="hero">
+        <h1 id="intakeTitle">PickCalc Multi-Sport Engine <span class="version-pill">v13.77.29 (OXYGEN-PROTON-BADGER)</span></h1>
+        <p>Paste board chunks, ingest MLB/NHL props, track feed status, then run the clean pool.</p>
       </header>
 
+
       <section class="card">
-        <h2>Paste Board Text</h2>
-        <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
-        <div id="runSummary" class="feed-status-inline"></div>
-        <div id="feedStatus" class="feed-status-inline"></div>
+        <h2>1. Day Scope</h2>
+        <div id="dayScope" class="radio-row">
+          <label><input type="radio" name="dayScope" value="Today" checked> Today</label>
+          <label><input type="radio" name="dayScope" value="Tomorrow"> Tomorrow</label>
+          <label><input type="radio" name="dayScope" value="Both"> Both</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>2. Sports / Leagues</h2>
+        <div id="leagueChecklist" class="league-grid"></div>
+      </section>
+
+      <section class="card">
+        <h2>3. Paste Board Text</h2>
         <div class="btn-row top-gap">
           <button id="clearBoxBtn" class="secondary">Clear box</button>
         </div>
+        <textarea id="boardInput" rows="7" placeholder="Paste PrizePicks-style board text here..."></textarea>
         <div class="btn-row">
-          <button id="ingestBtn">Ingest &amp; Validate Board</button>
+          <button id="ingestBtn">Ingest</button>
         </div>
         <div id="ingestMessage" class="message ingest-status"></div>
       </section>
 
       <section class="card">
-        <h2>Leg Pool</h2>
-        <div class="btn-row top-gap pool-toolbar">
-          <div id="poolCounts" class="pool-counts">Accepted: 0&nbsp;&nbsp;&nbsp;Rejected: 0</div>
+        <h2>4. Feed Status</h2>
+        <div class="btn-row top-gap">
           <button id="resetAllBtn" class="danger">Reset all</button>
         </div>
+        <div id="runSummary" class="summary-pills"></div>
+        <div id="feedStatus"></div>
         <div id="poolMount"></div>
         <div class="btn-row run-row">
           <button id="runBtn" class="run-btn">Run Analysis</button>
+          <button id="runKeyLabBtn" class="secondary">🔬 RUN KEY-LAB</button>
         </div>
       </section>
-      <div id="leagueChecklist" style="display:none"></div>
     </section>
 
     <section id="analysisScreen" class="hidden">
-      <header class="hero hero-inline hero-brand">
-        <div class="brand-block">
-          <div class="brand-line">
-            <span class="brand-icon header-icon"><img src="logo.png" class="app-logo logo" alt="AlphaDog"></span>
-            <h1 id="analysisTitle">Run Analysis AlphaDog v0.0.24 "Intake Retriever"</h1>
-          </div>
-          <p id="analysisVersion">Version: AlphaDog v0.0.24 "Intake Retriever"</p>
+      <header class="hero hero-inline">
+        <div>
+          <h1 id="analysisTitle">Run Analysis v13.77.29 (OXYGEN-PROTON-BADGER)</h1>
+          <p id="analysisVersion">Version: v13.77.29 (OXYGEN-PROTON-BADGER)</p>
         </div>
         <div class="btn-row no-top-gap">
           <button id="backBtn" class="secondary">Back</button>
@@ -82,8 +89,8 @@
       </section>
 
       <section class="card">
-        <h2>AlphaDog Mining Matrix</h2>
-        <p class="mini-muted">OXYGEN-COBALT matrix engine with AlphaDog skin and single-leg Gemini 2.5 Pro routing.</p>
+        <h2>OXYGEN-COBALT Mining Matrix</h2>
+        <p class="mini-muted">High-density 7-row grounded mining layout with real extraction, numeric-only saturation, and Branch E market providers rendered inline.</p>
         <div id="analysisKpis" class="analysis-kpis"></div>
         <div class="analysis-connector-wrap">
           <svg id="connectorSvg" class="connector-lines" aria-hidden="true"></svg>
@@ -92,7 +99,7 @@
       </section>
 
       <section class="card">
-        <h2 id="shieldTitle">Alpha Shield AlphaDog v0.0.24 "Intake Retriever"</h2>
+        <h2 id="shieldTitle">Alpha Shield v13.77.29 (OXYGEN-PROTON-BADGER)</h2>
         <div id="shieldPanel" class="shield-grid"></div>
       </section>
 

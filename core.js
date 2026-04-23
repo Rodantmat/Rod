@@ -3,8 +3,17 @@ window.PickCalcCore = window.PickCalcCore || {};
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'AlphaDog v0.0.24 "Intake Retriever"';
+  const SYSTEM_VERSION = 'v13.77.29 (OXYGEN-PROTON-BADGER)';
 
+  const LAB_BOOT_ROWS = [
+    { idx: 1, LEG_ID: 'LEG-1', sport: 'MLB', league: 'MLB', parsedPlayer: 'Shohei Ohtani', team: 'LAD', opponent: 'SD', gameTimeText: 'Fri 6:40 PM', prop: 'Hits', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 2, LEG_ID: 'LEG-2', sport: 'MLB', league: 'MLB', parsedPlayer: 'Chase Burns Lowder', team: 'CIN', opponent: 'MIL', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '5.5', lineValue: 5.5, type: 'Pitcher', direction: 'More' },
+    { idx: 3, LEG_ID: 'LEG-3', sport: 'MLB', league: 'MLB', parsedPlayer: 'Seth Lugo', team: 'KC', opponent: 'DET', gameTimeText: 'Fri 6:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' },
+    { idx: 4, LEG_ID: 'LEG-4', sport: 'MLB', league: 'MLB', parsedPlayer: 'Max Fried', team: 'NYY', opponent: 'BOS', gameTimeText: 'Fri 7:05 PM', prop: 'Pitching Outs', line: '17.5', lineValue: 17.5, type: 'Pitcher', direction: 'More' },
+    { idx: 5, LEG_ID: 'LEG-5', sport: 'MLB', league: 'MLB', parsedPlayer: 'Samuel Basallo', team: 'BAL', opponent: 'TOR', gameTimeText: 'Fri 7:05 PM', prop: 'Hits+Runs+RBIs', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 6, LEG_ID: 'LEG-6', sport: 'MLB', league: 'MLB', parsedPlayer: 'JJ Wetherholt', team: 'STL', opponent: 'CHC', gameTimeText: 'Fri 7:15 PM', prop: 'Total Bases', line: '1.5', lineValue: 1.5, type: 'Hitter', direction: 'More' },
+    { idx: 7, LEG_ID: 'LEG-7', sport: 'MLB', league: 'MLB', parsedPlayer: 'Noah Schultz', team: 'CWS', opponent: 'MIN', gameTimeText: 'Fri 7:40 PM', prop: 'Strikeouts', line: '4.5', lineValue: 4.5, type: 'Pitcher', direction: 'More' }
+  ];
 
   const state = {
     version: SYSTEM_VERSION,
@@ -111,57 +120,60 @@ window.PickCalcCore = window.PickCalcCore || {};
   function buildIngestLogs(auditRows) { return (auditRows || []).flatMap((item) => { if (item?.accepted) { return [{ level: 'info', text: `[PARSER] Found ${item.parsedPlayer || 'Unknown'} | Prop: ${item.prop || 'Unknown'} | Line: ${item.line || '?'} | Pick: ${item.pickType || 'Regular Line'}` }]; } return [{ level: 'warning', text: `INGEST REJECTED #${item.idx}: ${item.parsedPlayer || item.rawText || 'Unknown'} • ${item.timeFilter?.detail || item.rejectionReason || 'Rejected'}` }]; }); }
 
   function refreshIntake() {
-    state.cleanPool = state.rows.slice();
-    const rows = filteredRows(state.cleanPool);
+    const rows = filteredRows(state.rows);
     const auditRows = filteredAuditRows(state.auditRows);
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : (Array.isArray(auditRows) ? auditRows.filter((item) => !item?.accepted).length : 0);
-    UI.renderPoolCounts?.(rows.length, rejectedCount);
-    UI.renderRunSummary(state.cleanPool, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
-    UI.renderFeedStatus(state.cleanPool, auditRows);
+    UI.renderRunSummary(rows, auditRows, state.lastIngestMeta || { dayScope: getDayScopeValue() });
+    UI.renderFeedStatus(rows, auditRows);
     UI.renderPoolTable(rows);
     UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
-    UI.renderRawPayload?.('');
   }
 
   function ingestBoard() {
-    const input = UI.el('boardInput');
-    const text = input?.value || '';
+    const text = UI.el('boardInput')?.value || '';
     const dayScope = getDayScopeValue();
-    if (!text.trim()) return;
-    const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
-    const incoming = Array.isArray(parsed.rows) ? parsed.rows : [];
-    const auditRows = parsed.audit || [];
-    const rejectedCount = Array.isArray(auditRows?.rejectedLines) ? auditRows.rejectedLines.length : (Array.isArray(auditRows) ? auditRows.filter((item) => !item?.accepted).length : 0);
-
-    if (incoming.length > 0) {
-      const combined = [...(state.cleanPool || []), ...incoming];
-      const overflow = Math.max(0, combined.length - 24);
-      state.cleanPool = combined.slice(0, 24).map((row, index) => Object.assign({}, row, {
-        idx: index + 1,
-        LEG_ID: row.LEG_ID || `LEG-${index + 1}`,
-        pickType: row.pickType || 'Regular Line'
-      }));
-      state.rows = state.cleanPool.slice();
-      state.auditRows = auditRows;
-      state.lastResult = null;
-      state.miningVault = {};
-      state.ingestLogs = buildIngestLogs(state.auditRows);
-      state.lastIngestMeta = { acceptedCount: incoming.length, totalAnchors: Math.max(incoming.length, Array.isArray(auditRows) ? auditRows.length : incoming.length), rejectedCount: rejectedCount + overflow, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-      if (input) input.value = '';
-      UI.renderPoolCounts?.(incoming.length, rejectedCount + overflow);
-      if (overflow > 0) UI.appendConsole?.({ level: 'warning', text: `[SYSTEM] Remaining ${overflow} legs ignored (24 Max)` });
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${incoming.length} of ${Math.max(incoming.length, Array.isArray(auditRows) ? auditRows.length : incoming.length)} cluster(s). AlphaDog ingest active.`;
-    } else {
-      state.auditRows = auditRows;
-      state.ingestLogs = buildIngestLogs(state.auditRows);
-      state.lastIngestMeta = { acceptedCount: 0, totalAnchors: Array.isArray(auditRows) ? auditRows.length : 0, rejectedCount, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
-      UI.renderPoolCounts?.(0, rejectedCount);
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = 'No valid legs found. Check board format.';
+    if (!text.trim()) {
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
+      state.auditRows = state.rows.map((row) => Object.assign({ accepted: true }, row));
+      state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Boot rows loaded.' }];
+      state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.rows.length, rejectedCount: 0, dayScope, timestamp: new Date().toISOString() };
+      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${state.rows.length} cluster(s). HARD-LOCK ingest active.`;
+      refreshIntake();
+      return;
     }
-    UI.renderRunSummary(state.cleanPool || state.rows, auditRows, state.lastIngestMeta);
-    UI.renderFeedStatus(state.cleanPool || state.rows, auditRows);
-    UI.renderPoolTable(state.cleanPool || state.rows);
-    UI.renderConsole(state.ingestLogs || [{ level: 'info', text: '[SYSTEM] Intake ready.' }]);
+    const parsed = Parser.parseBoard(text, { dayScope, now: getNow() });
+    state.rows = [];
+    state.auditRows = [];
+    state.miningVault = {};
+    state.lastResult = null;
+    const rowMap = new Map();
+    (parsed.rows || []).forEach((row) => {
+      const key = [String(row.sourceIndex || row.idx || 0), String(row.parsedPlayer || '').toLowerCase(), String(row.prop || '').toLowerCase(), String(row.line || '')].join('|');
+      const completeness = [
+        row.pickType && row.pickType !== 'Regular Line',
+        row.team,
+        row.opponent,
+        row.gameTimeText,
+        row.direction,
+        row.type,
+        row.rawText,
+        row.line,
+        row.lineValue
+      ].filter(Boolean).length;
+      const existing = rowMap.get(key);
+      if (!existing || completeness > existing.__completeness || ((row.rawText || '').length > (existing.rawText || '').length)) {
+        rowMap.set(key, Object.assign({}, row, { __completeness: completeness }));
+      }
+    });
+    state.rows = Array.from(rowMap.values()).map((row, index) => {
+      const nextRow = Object.assign({}, row, { idx: Number(index + 1), LEG_ID: row.LEG_ID || `LEG-${Number(index + 1)}`, pickType: row.pickType || 'Regular Line' });
+      delete nextRow.__completeness;
+      return nextRow;
+    });
+    state.auditRows = parsed.audit || [];
+    state.ingestLogs = buildIngestLogs(state.auditRows);
+    state.lastIngestMeta = { acceptedCount: state.rows.length, totalAnchors: state.auditRows.length, rejectedCount: state.auditRows.filter((item) => !item.accepted).length, dayScope, timestamp: new Date().toISOString(), parseYear: Parser.PARSE_YEAR };
+    if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = `Accepted ${state.rows.length} of ${Math.max(state.rows.length, state.auditRows.length)} cluster(s). HARD-LOCK ingest active.`;
+    refreshIntake();
   }
 
   async function handleMiningClick(isVerbose = false) {
@@ -259,14 +271,12 @@ window.PickCalcCore = window.PickCalcCore || {};
     UI.el('backBtn')?.addEventListener('click', () => UI.backToIntake());
     UI.el('clearBoxBtn')?.addEventListener('click', () => { if (UI.el('boardInput')) UI.el('boardInput').value = ''; });
     UI.el('resetAllBtn')?.addEventListener('click', () => {
-      state.rows = [];
-      state.cleanPool = [];
+      state.rows = LAB_BOOT_ROWS.map((row) => Object.assign({}, row, { pickType: row.pickType || 'Regular Line' }));
       state.auditRows = [];
       state.miningVault = {};
       state.lastResult = null;
       state.ingestLogs = [{ level: 'info', text: '[SYSTEM] Reset complete.' }];
       if (UI.el('boardInput')) UI.el('boardInput').value = '';
-      if (UI.el('ingestMessage')) UI.el('ingestMessage').textContent = '';
       refreshIntake();
     });
     UI.el('copyBtn')?.addEventListener('click', async () => {
@@ -287,7 +297,7 @@ window.PickCalcCore = window.PickCalcCore || {};
     const analysisTitle = document.getElementById('analysisTitle');
     const analysisVersion = document.getElementById('analysisVersion');
     const shieldTitle = document.getElementById('shieldTitle');
-    if (title) title.textContent = SYSTEM_VERSION;
+    if (title) title.innerHTML = `PickCalc Multi-Sport Engine <span class="version-pill">${SYSTEM_VERSION}</span>`;
     if (analysisTitle) analysisTitle.textContent = `Run Analysis ${SYSTEM_VERSION}`;
     if (analysisVersion) analysisVersion.textContent = `Version: ${SYSTEM_VERSION}`;
     if (shieldTitle) shieldTitle.textContent = `Alpha Shield ${SYSTEM_VERSION}`;
@@ -298,6 +308,6 @@ window.PickCalcCore = window.PickCalcCore || {};
     if (intake) { intake.classList.remove('hidden'); intake.style.display = 'block'; }
   }
 
-  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, SYSTEM_VERSION });
+  Object.assign(window.PickCalcCore, { state, boot, ingestBoard, handleMiningClick, buildAnalysisCopyText, calcCobaltEdge, LAB_BOOT_ROWS, SYSTEM_VERSION });
   window.addEventListener('DOMContentLoaded', boot);
 })();

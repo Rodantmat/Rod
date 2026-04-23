@@ -1,31 +1,29 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'AlphaDog v0.0.24 "Intake Retriever"';
+  const SYSTEM_VERSION = 'v13.77.29 (OXYGEN-PROTON-BADGER)';
   const PARSE_YEAR = 2026;
   const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const LEAGUES = [
-    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true }
+    { id: 'MLB', label: 'MLB', sport: 'MLB', league: 'MLB', checked: true },
+    { id: 'NHL', label: 'NHL', sport: 'NHL', league: 'NHL', checked: true }
   ];
 
   const PICK_TYPE_RX = /\b(Goblin|Demon|Taco|Free Pick)\b/i;
-  const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b/i;
+  const TEAM_ROLE_RX = /\b([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b/i;
   const DIRECTION_RX = /\b(more|less|higher|lower)\b/i;
   const MATCHUP_RX = /\b(vs\.?|@)\s*([A-Z]{2,3})\b/i;
   const NAME_CANDIDATE_RX = /\b([A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})\b/g;
-  const STANDALONE_NUMBER_RX = /^\d+(?:\.\d+)?$/;
-  const BADGE_RX = /\b\d+(?:\.\d+)?K\b/gi;
+  const STANDALONE_ANCHOR_RX = /^\d+(?:\.\d+)?$/;
   const POPULARITY_BADGE_RX = /^\d+(?:\.\d+)?K$/i;
   const COUNTDOWN_RX = /^\d{2}:\d{2}:\d{2}$/;
   const LIVE_STATUS_RX = /^(?:LIVE|1st|2nd|3rd|Inning|Period)$/i;
-  const TIME_RX = /(?:\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,3}m\s+\d{1,2}s\b|\b\d{1,3}m\b|\b\d{1,2}:\d{2}:\d{2}\b)/i;
-  const INLINE_TIME_RX = TIME_RX;
-  const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Popularity|Hot|Boost|Promo|Specials?|Insurance)\b/gi;
+  const INLINE_TIME_RX = /\b(?:sun|mon|tue|wed|thu|fri|sat|today|tomorrow)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i;
   const NOISE_WORD_RX = /\b(trending|popular|popularity|hot|boost|promo|specials?|insurance)\b/gi;
   const ROLE_ONLY_RX = /^(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)$/i;
   const TEAM_ABBR_LIST = ['ARI','ATL','BAL','BOS','CHC','CIN','CLE','COL','CWS','DET','HOU','KC','LAA','LAD','MIA','MIL','MIN','NYM','NYY','OAK','PHI','PIT','SD','SEA','SF','STL','TB','TEX','TOR','WSH','BUF','CAR','CBJ','CGY','CHI','COL','DAL','EDM','FLA','LAK','MIN','MTL','NJD','NSH','NYI','NYR','OTT','PHI','PIT','SEA','SJS','STL','TBL','TOR','UTA','VAN','VGK','WPG'];
   const TEAM_ABBR_RX = new RegExp(`\\b(?:${TEAM_ABBR_LIST.join('|')})\\b`, 'gi');
   const RESERVED_NAME_WORDS = new Set(['MORE','LESS','HIGHER','LOWER','HITS','RUNS','RBIS','RBI','TOTAL','BASES','TB','STRIKEOUTS','KS','PFS','HFS','PITCHER','HITTER','FANTASY','SCORE','WALKS','ALLOWED','EARNED','HOME','OUTS','PO','VS','AT']);
 
-  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|Pitcher FS|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|Hitter FS|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|SB|Hitter Strikeouts|Hitter Ks|Ks|K's|PO|Outs|BB|HA|Pitches Thrown|Pitch Count)\b/i;
+  const STAT_BOUND_ALIAS_RX = /\b(?:Pitcher Strikeouts|Strikeouts|Pitching Outs|Pitcher Fantasy Score|PFS|Walks Allowed|Hits Allowed|Earned Runs Allowed|Earned Runs|ER|Hitter Fantasy Score|HFS|Hits\+Runs\+RBIs|Hits\+Runs\+RBI|H\+R\+R\+?BI?S?|HRR|Total Bases|TB|Hits|Runs|RBIs|RBI|Home Runs?|HR|Singles|Doubles|Triples|Walks|Stolen Bases|Hitter Strikeouts|Ks|K's|PO|Outs|BB|HA)\b/i;
 
   const MLB_PROP_ALIASES = {
     'PITCHER STRIKEOUTS': { label: 'Pitcher Strikeouts', key: 'strikeOuts', role: 'Pitcher' },
@@ -38,7 +36,6 @@ window.PickCalcParser = (() => {
     'OUTS': { label: 'Pitching Outs', key: 'inningsPitched', role: 'Pitcher' },
     'PITCHER FANTASY SCORE': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'PFS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
-    'PITCHER FS': { label: 'Pitcher Fantasy Score', key: 'pitcherFantasyScore', role: 'Pitcher' },
     'WALKS ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB ALLOWED': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
     'BB': { label: 'Walks Allowed', key: 'walksAllowed', role: 'Pitcher' },
@@ -49,7 +46,6 @@ window.PickCalcParser = (() => {
     'ER': { label: 'Earned Runs Allowed', key: 'earnedRuns', role: 'Pitcher' },
     'HITTER FANTASY SCORE': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HFS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
-    'HITTER FS': { label: 'Hitter Fantasy Score', key: 'hitterFantasyScore', role: 'Batter' },
     'HITS+RUNS+RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS+RUNS+RBI': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
     'HITS + RUNS + RBIS': { label: 'Hits+Runs+RBIs', key: 'hitsRunsRbis', role: 'Batter' },
@@ -73,63 +69,35 @@ window.PickCalcParser = (() => {
     'TRIPLES': { label: 'Triples', key: 'triples', role: 'Batter' },
     'WALKS': { label: 'Walks', key: 'walks', role: 'Batter' },
     'STOLEN BASES': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
-    'SB': { label: 'Stolen Bases', key: 'stolenBases', role: 'Batter' },
-    'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
-    'HITTER KS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
-    "HITTER K'S": { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' },
-    'PITCHES THROWN': { label: 'Pitches Thrown', key: 'pitchesThrown', role: 'Pitcher' },
-    'PITCH COUNT': { label: 'Pitches Thrown', key: 'pitchesThrown', role: 'Pitcher' }
+    'HITTER STRIKEOUTS': { label: 'Hitter Strikeouts', key: 'hitterStrikeouts', role: 'Batter' }
   };
 
-  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitches Thrown','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
+  const MLB_FEED_MATRIX = ['Pitcher Strikeouts','Pitching Outs','Pitcher Fantasy Score','Walks Allowed','Hits Allowed','Earned Runs Allowed','Hitter Fantasy Score','Hits+Runs+RBIs','Total Bases','Hits','Runs','RBIs','Home Runs','Singles','Doubles','Triples','Walks','Stolen Bases','Hitter Strikeouts'];
 
+  const NHL_PROP_ALIASES = {
+    'SOG': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
+    'SHOTS ON GOAL': { label: 'Shots on Goal', key: 'shotsOnGoal', role: 'Skater' },
+    'BLK': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
+    'BLOCKED SHOTS': { label: 'Blocked Shots', key: 'blockedShots', role: 'Skater' },
+    'PTS': { label: 'Points', key: 'points', role: 'Skater' },
+    'POINTS': { label: 'Points', key: 'points', role: 'Skater' },
+    'AST': { label: 'Assists', key: 'assists', role: 'Skater' },
+    'ASSISTS': { label: 'Assists', key: 'assists', role: 'Skater' },
+    'GOALS': { label: 'Goals', key: 'goals', role: 'Skater' },
+    'SAVES': { label: 'Saves', key: 'saves', role: 'Goalie' },
+    'GA': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' },
+    'GOALS ALLOWED': { label: 'Goals Allowed', key: 'goalsAllowed', role: 'Goalie' }
+  };
 
   function pad2(value) { return String(value).padStart(2, '0'); }
   function cleanWhitespace(value) { return String(value || '').replace(/\u00a0/g, ' ').replace(/[|•]+/g, ' ').replace(/\s+/g, ' ').trim(); }
   function stripAccents(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
-  function normalizeName(value) {
-    const normalized = stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, '');
-    const known2026Stars = {
-      ellycruz: 'ellydelacruz',
-      delacruz: 'ellydelacruz',
-      ellydelacruz: 'ellydelacruz',
-      shohei: 'shoheiohtani',
-      ohtani: 'shoheiohtani',
-      shoheiohtani: 'shoheiohtani',
-      shota: 'shotaimanaga',
-      imanaga: 'shotaimanaga',
-      shotaimanaga: 'shotaimanaga'
-    };
-    return known2026Stars[normalized] || normalized;
-  }
+  function normalizeName(value) { return stripAccents(String(value || '')).toLowerCase().replace(/[^a-z0-9]/g, ''); }
   function splitGluedTokens(value) {
     return String(value || '')
       .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
-      .replace(GLUED_NOISE_RX, ' ')
-      .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
-      .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
-  }
-
-  function stripUnsupportedComboBlocks(text) {
-    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-    const out = [];
-    let i = 0;
-    while (i < lines.length) {
-      const clean = cleanWhitespace(stripAccents(lines[i] || ''));
-      if (/\+/.test(clean) && !resolvePropAlias(clean, 'MLB') && !/hits\s*\+\s*runs\s*\+\s*rbis?|h\+r\+rbi?s?|hrr/i.test(clean)) {
-        i += 1;
-        while (i < lines.length) {
-          const probe = cleanWhitespace(stripAccents(lines[i] || ''));
-          const next = cleanWhitespace(stripAccents(lines[i + 1] || ''));
-          if (probe && isLikelyPlayerName(probe) && TEAM_ROLE_RX.test(next || '')) break;
-          i += 1;
-        }
-        continue;
-      }
-      out.push(lines[i]);
-      i += 1;
-    }
-    return out.join('\n');
+      .replace(/([a-z'.-])(?=([A-Z]{2,3})\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b)/g, '$1 ')
+      .replace(/([a-z])(?=([A-Z][a-z]+\s+[A-Z]{2,3}\s*-\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL|LW|RW|D|G)\b))/g, '$1 ');
   }
 
   function preprocessBoardText(text) {
@@ -137,49 +105,21 @@ window.PickCalcParser = (() => {
       .replace(/\r\n?/g, '\n')
       .replace(/\u00a0/g, ' ')
       .replace(/\|/g, '\n')
-      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2')
-      .replace(/\b(?:Goblin|Demon|Taco|Promo|Less|More|Trending|Popular|Hot|Boost|Insurance)\b/gi, ' ');
+      .replace(/([a-z])(Goblin|Demon|Taco|Free Pick)/gi, '$1 $2');
 
     return normalized
       .split('\n')
-      .map((line) => splitGluedTokens(stripAccents(line)).replace(BADGE_RX, ' ').replace(GLUED_NOISE_RX, ' '))
-      .map((line) => line.replace(/\b(?:pitch count:?\s*\d+|pitches:?\s*\d+)\b/gi, ' '))
-      .map((line) => /^\d{3,4}$/.test(String(line || '').trim()) ? ' ' : line)
-      .map((line) => line.replace(/\b(?:Projected|Confirmed|In\s+Lineup|Probable)\b/gi, ' '))
-      .map((line) => line.replace(/\b(?:Trending|Popular)\b/gi, ' '))
-      .map((line) => line.replace(BADGE_RX, ' '))
+      .map((line) => splitGluedTokens(stripAccents(line)))
+      .map((line) => line.replace(/\b\d{2}:\d{2}:\d{2}\b/gi, ' '))
+      .map((line) => line.replace(/\b(?:LIVE|1st|2nd|3rd|Inning|Period)\b/gi, ' '))
+      .map((line) => line.replace(/\bTrending\b/gi, ' '))
+      .map((line) => line.replace(/\b\d+(?:\.\d+)?K\b/gi, ' '))
       .map((line) => line.replace(NOISE_WORD_RX, ' '))
       .map((line) => line.replace(/[\t ]+/g, ' ').trim())
       .join('\n')
       .replace(/\n{4,}/g, '\n\n\n')
       .split('\n');
   }
-
-  function isRegisteredMlbProp(propLabel = '') {
-    return MLB_FEED_MATRIX.includes(String(propLabel || '').trim());
-  }
-
-  function pushRejectedLine(bucket, value) {
-    const line = cleanWhitespace(value);
-    if (!line) return;
-    if (!bucket.includes(line)) bucket.push(line);
-  }
-
-
-  function isLiveGameText(text = '') {
-    const source = String(text || '').trim();
-    if (!source) return false;
-    const compact = source.replace(/\s+/g, ' ');
-    if (/\b(?:Starting|Started|Live|Final|PPD|Postponed|Delayed|Susp\.?|Warmup)\b/i.test(compact)) return true;
-    if (/\bCur\.\s*\d+/i.test(compact)) return true;
-    if (/\b(?:Top|Bot|Mid)\s*\d+(?:st|nd|rd|th)?\b/i.test(compact)) return true;
-    if (/\b(?:Quarter|Period|Round|Inning|OT)\b/i.test(compact)) return true;
-    if (/\b[A-Z]{2,3}\s*\d+\s*(?:@|vs\.?|v)\s*[A-Z]{2,3}\s*\d+\b/i.test(compact)) return true;
-    return false;
-  }
-
-
-
   function normalizeDayScope(value) {
     const text = String(value || '').toLowerCase();
     if (text.includes('both') || (text.includes('today') && text.includes('tomorrow'))) return 'both';
@@ -205,29 +145,6 @@ window.PickCalcParser = (() => {
     const delta = (targetDayIndex - candidate.getDay() + 7) % 7;
     candidate.setDate(candidate.getDate() + delta);
     return candidate;
-  }
-
-  function formatDisplayTime(date) {
-    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-    const day = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][date.getDay()];
-    let hour = date.getHours();
-    const minute = pad2(date.getMinutes());
-    const suffix = hour >= 12 ? 'pm' : 'am';
-    hour = hour % 12 || 12;
-    return `${day} ${hour}:${minute}${suffix}`;
-  }
-
-  function countdownToDate(match, now = new Date()) {
-    const source = String(match || '').trim();
-    const h = source.match(/(\d+)h/i);
-    const m = source.match(/(\d+)m/i);
-    const s = source.match(/(\d+)s/i);
-    const total = (h ? Number(h[1]) * 3600 : 0) + (m ? Number(m[1]) * 60 : 0) + (s ? Number(s[1]) : 0);
-    if (!total) return null;
-    const date = new Date(now.getTime() + (total * 1000));
-    date.setFullYear(PARSE_YEAR);
-    date.setSeconds(0, 0);
-    return date;
   }
 
   function extractTimeContext(text, now = new Date()) {
@@ -271,14 +188,6 @@ window.PickCalcParser = (() => {
       }
     }
 
-    match = source.match(/\b((?:\d+h\s*\d{1,2}m(?:\s*\d{1,2}s)?)|(?:\d{1,3}m(?:\s+\d{1,2}s)?))\b/i);
-    if (match) {
-      const date = countdownToDate(match[1], now);
-      if (date) {
-        return { found: true, token: formatDisplayTime(date), eventDate: date, isoLocal: `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:00`, parseYear: PARSE_YEAR, sourceToken: cleanWhitespace(match[1]), transformed: true };
-      }
-    }
-
     match = source.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i);
     if (match) {
       const date = new Date(now);
@@ -308,24 +217,21 @@ window.PickCalcParser = (() => {
 
   function inferSportHint(lines = []) {
     const joined = lines.map((line) => typeof line === 'string' ? line : line.raw).join(' ').toUpperCase();
-    if (/\b(NBA|NHL|NFL|WNBA|SOCCER|TENNIS|GOLF|SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NON_MLB';
+    if (/\b(SOG|SHOTS ON GOAL|BLOCKED SHOTS|GOALS ALLOWED|SAVES|PTS|POINTS|ASSISTS|GOALS)\b/.test(joined)) return 'NHL';
     return 'MLB';
   }
 
   function resolvePropAlias(text, sportHint = 'MLB') {
-    if (sportHint !== 'MLB') return null;
     const raw = cleanWhitespace(text).toUpperCase();
-    const normalized = raw
-      .replace(/\b[A-Z]{2,3}\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/g, ' ')
-      .replace(/\s*\+\s*/g, '+')
-      .replace(/\s+/g, ' ')
-      .trim();
-    const aliases = Object.entries(MLB_PROP_ALIASES).sort((a, b) => b[0].length - a[0].length);
-    for (const [alias, meta] of aliases) {
-      const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
-      const escaped = aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const rx = new RegExp(`(^|[^A-Z])${escaped}(?=$|[^A-Z])`, 'i');
-      if (rx.test(normalized)) return { ...meta, source: text };
+    const normalized = raw.replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
+    const maps = sportHint === 'NHL' ? [NHL_PROP_ALIASES] : [MLB_PROP_ALIASES, NHL_PROP_ALIASES];
+    for (const dictionary of maps) {
+      const aliases = Object.entries(dictionary).sort((a, b) => b[0].length - a[0].length);
+      for (const [alias, meta] of aliases) {
+        const aliasNorm = alias.toUpperCase().replace(/\s*\+\s*/g, '+').replace(/\s+/g, ' ').trim();
+        const rx = new RegExp(`(^|[^A-Z])${aliasNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[^A-Z])`, 'i');
+        if (rx.test(normalized)) return { ...meta, source: text };
+      }
     }
     return null;
   }
@@ -362,7 +268,6 @@ window.PickCalcParser = (() => {
     return cleanWhitespace(
       splitGluedTokens(String(value || ''))
         .replace(PICK_TYPE_RX, ' ')
-      .replace(GLUED_NOISE_RX, ' ')
         .replace(TEAM_ROLE_RX, ' ')
         .replace(MATCHUP_RX, ' ')
         .replace(INLINE_TIME_RX, ' ')
@@ -411,7 +316,7 @@ window.PickCalcParser = (() => {
     const joined = cleanWhitespace((context || []).map((item) => item?.raw || item || '').join(' '));
     if (!joined) return { opponent: '', indicator: '', token: '', team: teamHint || '' };
 
-    const direct = joined.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+    const direct = joined.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
     if (direct && direct[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
       return { opponent: direct[1].toUpperCase(), indicator: /@/.test(direct[0]) ? '@' : 'vs', token: cleanWhitespace(direct[0]), team: teamHint || '' };
     }
@@ -431,7 +336,7 @@ window.PickCalcParser = (() => {
     const lines = Array.isArray(context) ? context : [];
     for (let i = 0; i < lines.length; i += 1) {
       const raw = cleanWhitespace(lines[i]?.raw || lines[i] || '');
-      const match = raw.match(/(?:\bvs\.?|@)\s*([A-Z]{2,3})\b/i);
+      const match = raw.match(/(?:vs\.?|@)\s*([A-Z]{2,3})/i);
       if (match && match[1].toUpperCase() !== (teamHint || '').toUpperCase()) {
         return { opponent: match[1].toUpperCase(), indicator: /@/.test(match[0]) ? '@' : 'vs', token: cleanWhitespace(match[0]), team: teamHint || '' };
       }
@@ -454,168 +359,27 @@ window.PickCalcParser = (() => {
     return Boolean(extractInlineAnchor(clean));
   }
 
-  function cleanClusterLine(value) {
-    return cleanWhitespace(
-      splitGluedTokens(String(value || ''))
-        .replace(BADGE_RX, ' ')
-        .replace(GLUED_NOISE_RX, ' ')
-        .replace(NOISE_WORD_RX, ' ')
-    );
-  }
-
-  function buildIdentityCleanLines(cluster = []) {
-    return (cluster || [])
-      .map((item) => {
-        const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-        return String(raw || '').replace(/(Demon|Goblin|Trending|Popular|Hot|Boost|Promo|Insurance|\b\d+K\b)/gi, '').trim();
-      })
-      .filter(Boolean);
-  }
-
-  function resolvePlayerFromTeamRoleContext(cluster = [], anchorLineIndex = Infinity) {
-    const normalized = buildIdentityCleanLines(cluster).map((raw, idx) => ({
-      idx,
-      absIndex: Number.isFinite(cluster?.[idx]?.absIndex) ? cluster[idx].absIndex : idx,
-      raw,
-      clean: cleanWhitespace(raw)
-    })).filter((item) => item.clean);
-
-    const teamRoleEntries = normalized
-      .filter((item) => TEAM_ROLE_RX.test(item.clean))
-      .sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex) || a.absIndex - b.absIndex);
-
-    for (const entry of teamRoleEntries) {
-      const entryIdx = normalized.findIndex((item) => item.absIndex === entry.absIndex && item.clean === entry.clean);
-      for (let i = entryIdx - 1; i >= 0; i -= 1) {
-        const candidate = sanitizePlayerName(normalized[i].clean);
-        if (!candidate) continue;
-        if (isLikelyPlayerName(candidate)) return candidate;
-        break;
-      }
-    }
-    return '';
-  }
-
-  function makeCluster(lines, anchorIndex, aboveRadius = 12, belowRadius = 5) {
-    const cluster = [];
-    const start = Math.max(0, anchorIndex - aboveRadius);
-    const end = Math.min(lines.length - 1, anchorIndex + belowRadius);
-    for (let i = start; i <= end; i += 1) {
-      const clean = cleanClusterLine(lines[i]);
-      if (!clean) continue;
-      cluster.push({ raw: clean, clean, absIndex: i });
-    }
-    return cluster;
-  }
-
-
-  function parseCluster(cluster) {
-    const DECON = /(Demon|Goblin|Taco|Free Pick|Promo|Trending|Hot|Boost|Popular|Insurance|Less|More)/gi;
-    const rawLines = (cluster || []).map((item) => {
-      const raw = typeof item === 'string' ? item : (item?.raw || item?.clean || '');
-      return String(raw || '').replace(DECON, '').trim();
-    });
-
-    let player = '', team = '', prop = '', line = 0;
-    const TEAM_RX = /\b([A-Z]{2,3})\s*[-—–]\s*(P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL)\b/i;
-    const JUNK = /(?:\bvs\.?\b|@|\b(?:Sat|Sun|Mon|Tue|Wed|Thu|Fri|Today|Tomorrow|LIVE|Final|Postponed|Delayed|Warmup|Starting|Started|Projected|Confirmed|Probable)\b|\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,3}m(?:\s+\d{1,2}s)?|\d+h\s*\d{1,2}m|countdown|locks?\s*in:?)/i;
-    const NAME_SCORE_RX = /^[A-Za-z'.\-\s]{3,25}$/;
-
-    rawLines.forEach((value) => {
-      const clean = cleanWhitespace(value);
-      if (STANDALONE_NUMBER_RX.test(clean)) line = parseFloat(clean);
-    });
-
-    const teamEntries = [];
-    rawLines.forEach((value, index) => {
-      const clean = cleanWhitespace(value);
-      const match = clean.match(TEAM_RX);
-      if (match) teamEntries.push({ index, team: String(match[1] || '').toUpperCase() });
-    });
-
-    const scoreNameCandidate = (value, pivotIndex, idx) => {
-      const clean = sanitizePlayerName(value);
-      if (!clean || clean.includes('+')) return { clean: '', score: -1 };
-      if (!NAME_SCORE_RX.test(clean)) return { clean: '', score: -1 };
-      if (TEAM_RX.test(clean) || JUNK.test(clean) || /^\d/.test(clean)) return { clean: '', score: -1 };
-      if (!isLikelyPlayerName(clean)) return { clean: '', score: -1 };
-      let score = 100 - Math.abs(idx - pivotIndex) * 12;
-      if (idx === pivotIndex - 1 || idx === pivotIndex + 1) score += 35;
-      else if (idx === pivotIndex - 2 || idx === pivotIndex + 2) score += 22;
-      else if (idx === pivotIndex - 3 || idx === pivotIndex + 3) score += 12;
-      return { clean, score };
-    };
-
-    let best = { clean: '', score: -1, team: '' };
-    teamEntries.forEach((entry) => {
-      const hunt = [entry.index - 1, entry.index + 1, entry.index - 2, entry.index + 2, entry.index - 3, entry.index + 3];
-      hunt.forEach((idx) => {
-        if (idx < 0 || idx >= rawLines.length) return;
-        const candidate = scoreNameCandidate(rawLines[idx], entry.index, idx);
-        if (candidate.score > best.score) best = { ...candidate, team: entry.team };
-      });
-    });
-
-    if (best.clean) {
-      player = best.clean;
-      team = best.team;
-    } else if (teamEntries[0]) {
-      team = teamEntries[0].team;
-    }
-
-    const blob = rawLines.join(' ');
-    if (/\b(?:Pitches Thrown|Pitch Count)\b/i.test(blob)) prop = 'Pitches Thrown';
-    else if (/\b(?:Walks Allowed|BB Allowed)\b/i.test(blob)) prop = 'Walks Allowed';
-    else if (/\b(?:Hits Allowed|HA)\b/i.test(blob)) prop = 'Hits Allowed';
-    else if (/\b(?:Earned Runs Allowed|Earned Runs|ER)\b/i.test(blob)) prop = 'Earned Runs Allowed';
-    else if (/\b(?:Hitter Fantasy Score|Hitter FS|HFS)\b/i.test(blob)) prop = 'Hitter Fantasy Score';
-    else if (/\b(?:Pitcher Fantasy Score|Pitcher FS|PFS)\b/i.test(blob)) prop = 'Pitcher Fantasy Score';
-    else if (/\b(?:Hitter Strikeouts|Hitter Ks|Hitter K's)\b/i.test(blob)) prop = 'Hitter Strikeouts';
-    else if (/\b(?:Hits\+Runs\+RBIs|H\+R\+RBI|HRR)\b/i.test(blob)) prop = 'Hits+Runs+RBIs';
-    else if (/\b(?:Home Runs|Home Run|HR)\b/i.test(blob)) prop = 'Home Runs';
-    else if (/\b(?:Pitching Outs|PO|Outs)\b/i.test(blob)) prop = 'Pitching Outs';
-    else if (/\bTotal Bases\b/i.test(blob) || /\bTB\b(?!\s*[-—–]\s*(?:P|SP|RP|C|1B|2B|3B|SS|LF|CF|RF|OF|IF|DH|UTIL))/i.test(blob)) prop = 'Total Bases';
-    else if (/\b(?:Stolen Bases|SB)\b/i.test(blob)) prop = 'Stolen Bases';
-    else if (/\b(?:Ks|K's|Strikeouts)\b/i.test(blob)) prop = 'Pitcher Strikeouts';
-    else if (/\bHits\b/i.test(blob)) prop = 'Hits';
-    else if (/\bRuns\b/i.test(blob)) prop = 'Runs';
-    else if (/\b(?:RBIs|RBI)\b/i.test(blob)) prop = 'RBIs';
-    else if (/\bSingles\b/i.test(blob)) prop = 'Singles';
-    else if (/\bDoubles\b/i.test(blob)) prop = 'Doubles';
-    else if (/\bTriples\b/i.test(blob)) prop = 'Triples';
-    else if (/\bWalks\b/i.test(blob)) prop = 'Walks';
-
-
-    return {
-      parsedPlayer: player,
-      team,
-      prop: prop || 'MLB Prop',
-      line,
-      accepted: (player.length > 2 && line > 0 && !!team)
-    };
-  }
-
-  function collectBackwardCluster(lines, anchorIndex, maxLines = 7) {
+  function collectBackwardCluster(lines, anchorIndex, maxLines = 14) {
     const cluster = [];
     let i = anchorIndex - 1;
     while (i >= 0 && cluster.length < maxLines) {
-      const clean = cleanClusterLine(lines[i]);
+      const clean = cleanWhitespace(lines[i]);
       if (!clean) { i -= 1; continue; }
       if (isAnchorBoundary(lines, i, anchorIndex)) break;
-      cluster.unshift(clean);
+      cluster.unshift(lines[i]);
       i -= 1;
     }
     return cluster;
   }
 
-  function collectForwardCluster(lines, anchorIndex, maxLines = 5) {
+  function collectForwardCluster(lines, anchorIndex, maxLines = 6) {
     const cluster = [];
     let i = anchorIndex + 1;
     while (i < lines.length && cluster.length < maxLines) {
-      const clean = cleanClusterLine(lines[i]);
+      const clean = cleanWhitespace(lines[i]);
       if (!clean) { i += 1; continue; }
       if (isAnchorBoundary(lines, i, anchorIndex)) break;
-      cluster.push(clean);
+      cluster.push(lines[i]);
       if (/^(more|less|higher|lower)$/i.test(clean) && cluster.length >= 2) break;
       i += 1;
     }
@@ -623,13 +387,16 @@ window.PickCalcParser = (() => {
   }
 
   function gatherCandidateContext(lines, anchorIndex) {
-    const context = makeCluster(lines, anchorIndex, 12, 5);
-    return context.length ? context : [{ raw: cleanClusterLine(lines[anchorIndex]), clean: cleanClusterLine(lines[anchorIndex]), absIndex: anchorIndex }];
+    const backward = collectBackwardCluster(lines, anchorIndex, 14);
+    const forward = collectForwardCluster(lines, anchorIndex, 6);
+    const start = anchorIndex - backward.length;
+    const context = backward.concat([lines[anchorIndex]], forward);
+    return context.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: start + idx }));
   }
 
   function isStandaloneAnchorLine(line) {
     const clean = cleanWhitespace(line);
-    if (!STANDALONE_NUMBER_RX.test(clean)) return false;
+    if (!STANDALONE_ANCHOR_RX.test(clean)) return false;
     const n = Number(clean);
     return Number.isFinite(n) && (clean.includes('.') || n <= 40);
   }
@@ -646,7 +413,7 @@ window.PickCalcParser = (() => {
     const start = Math.max(0, index - 2);
     const end = Math.min(lines.length - 1, index + 2);
     for (let i = start; i <= end; i += 1) {
-      const clean = cleanClusterLine(lines[i]);
+      const clean = cleanWhitespace(lines[i]);
       if (!clean || isNoiseLine(clean)) continue;
       if (STAT_BOUND_ALIAS_RX.test(clean)) return true;
     }
@@ -657,15 +424,22 @@ window.PickCalcParser = (() => {
     const candidates = [];
     const seen = new Set();
     lines.forEach((line, index) => {
-      const clean = cleanClusterLine(line);
+      const clean = cleanWhitespace(line);
       if (!clean || isNoiseLine(clean)) return;
-      if (!(STANDALONE_NUMBER_RX.test(clean) && hasNearbyStatAlias(lines, index))) return;
-      const anchor = clean;
+      let anchor = '';
+      let inline = false;
+      if (isStandaloneAnchorLine(clean) && hasNearbyStatAlias(lines, index)) {
+        anchor = clean;
+      } else {
+        anchor = extractInlineAnchor(clean);
+        inline = Boolean(anchor);
+      }
+      if (!anchor) return;
       const context = gatherCandidateContext(lines, index);
-      const key = `${normalizeName(context.map((item) => item.raw).join(' '))}|${anchor}|${index}`;
+      const key = `${normalizeName(context.map((item) => item.raw).join(' '))}|${anchor}`;
       if (seen.has(key)) return;
       seen.add(key);
-      candidates.push({ anchorLineIndex: index, anchorValue: anchor, inline: false, context });
+      candidates.push({ anchorLineIndex: index, anchorValue: anchor, inline, context });
     });
     return candidates;
   }
@@ -686,7 +460,7 @@ window.PickCalcParser = (() => {
       let score = 100 + Math.max(0, (anchorLineIndex - item.absIndex)) * 2;
       if (item.absIndex === anchorLineIndex - 1) score += 12;
       if (item.absIndex === anchorLineIndex - 2) score += 8;
-      if (!/\b(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)\b/i.test(item.clean)) score += 15;
+      if (!/(vs\.?|@|sat|sun|mon|tue|wed|thu|fri|am|pm|more|less|higher|lower)/i.test(item.clean)) score += 15;
       return score;
     };
 
@@ -749,47 +523,30 @@ window.PickCalcParser = (() => {
     return resolvePropAlias(forwardJoin, sportHint);
   }
 
-  function chooseDirection(context, anchorLineIndex, pickType = 'Regular Line') {
-    if (/^(goblin|demon|free pick|taco)$/i.test(String(pickType || ''))) return 'More';
+  function chooseDirection(context, anchorLineIndex) {
     const ordered = context.slice().sort((a, b) => Math.abs(a.absIndex - anchorLineIndex) - Math.abs(b.absIndex - anchorLineIndex));
     for (const item of ordered) {
       const match = item.clean.match(DIRECTION_RX);
       if (match) return /less|lower/i.test(match[1]) ? 'Less' : 'More';
     }
-    return '';
-  }
-
-  function isComboEntity(value = '') {
-    const raw = cleanWhitespace(String(value || ''));
-    if (!raw) return false;
-    if (/\b[A-Z]{2,3}\/[A-Z]{2,3}\b/.test(raw)) return true;
-    if (/\b(?:and|\&)\b/i.test(raw) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(raw)) return true;
-    const strippedPropText = raw
-      .replace(/\b(?:Hits\s*\+\s*Runs\s*\+\s*RBIs|Hits\+Runs\+RBIs|H\+R\+RBI|HRR|Total Bases|Pitcher Strikeouts|Pitching Outs|Pitcher Fantasy Score|Hitter Fantasy Score|Walks Allowed|Hits Allowed|Earned Runs Allowed|Walks|Hits|Runs|RBIs?|Home Runs?|Singles|Doubles|Triples|Stolen Bases|Hitter Strikeouts|Ks|K's|Outs|Fantasy)\b/gi, ' ')
-      .replace(/\+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (/\b(?:and|\&)\b/i.test(strippedPropText) && /[A-Z][a-z'.-]+\s+[A-Z][a-z'.-]+/.test(strippedPropText)) return true;
-    return false;
+    return 'More';
   }
 
   function parseCandidate(candidate, dayScope, now) {
     const context = candidate.context;
     const sportHint = inferSportHint(context);
     const joined = context.map((item) => item.raw).join('\n');
-    const pickType = extractPickType(joined);
-    const clusterIdentity = parseCluster(context);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(context, teamRole.team);
-    const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint) || resolvePropAlias(clusterIdentity.prop || '', sportHint);
-    const identityPlayer = clusterIdentity.parsedPlayer || resolvePlayerFromTeamRoleContext(context, candidate.anchorLineIndex);
-    const parsedPlayer = identityPlayer || choosePlayer(context, candidate.anchorLineIndex);
-    const direction = chooseDirection(context, candidate.anchorLineIndex, pickType);
+    const propMeta = chooseProp(context, candidate.anchorLineIndex, sportHint);
+    const parsedPlayer = choosePlayer(context, candidate.anchorLineIndex);
+    const direction = chooseDirection(context, candidate.anchorLineIndex);
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
-    const team = clusterIdentity.team || teamRole.team || matchup.team || '';
+    const team = teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
       idx: candidate.anchorLineIndex + 1,
@@ -814,32 +571,16 @@ window.PickCalcParser = (() => {
       parseYear: PARSE_YEAR
     };
 
-    if (isLiveGameText(joined)) {
-      audit.rejectionReason = 'Rejected: live or in-progress leg detected.';
-      return { audit, row: null };
-    }
-    if (sportHint !== 'MLB') {
-      audit.rejectionReason = 'Rejected: non-MLB content.';
-      return { audit, row: null };
-    }
     if (!candidate.anchorValue) {
       audit.rejectionReason = 'No numeric anchor found.';
       return { audit, row: null };
     }
-    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) {
-      audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.';
-      return { audit, row: null };
-    }
-    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) {
-      audit.rejectionReason = 'Rejected: combo or paired legs are not supported.';
+    if (!propMeta?.label) {
+      audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.';
       return { audit, row: null };
     }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) {
       audit.rejectionReason = 'Player name could not be resolved from block cluster.';
-      return { audit, row: null };
-    }
-    if (!timeContext.found) {
-      audit.rejectionReason = 'Rejected: no future game time or countdown found.';
       return { audit, row: null };
     }
     if (timeContext.found && !timeFilter.accepted) {
@@ -873,122 +614,24 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
-      sourceIndex: audit.idx,
-      row_key: [normalizeName(parsedPlayer), String(propMeta.label || '').toLowerCase(), String(candidate.anchorValue), String(timeContext.isoLocal || timeContext.token || ''), String(candidate.anchorLineIndex)].join('|')
+      sourceIndex: audit.idx
     };
     return { audit, row };
   }
 
 
-  function buildFenceBlocks(lines = []) {
-    const fences = [];
-    const teamRoleIndexes = [];
-    for (let i = 0; i < lines.length; i += 1) {
-      const clean = cleanClusterLine(lines[i]);
-      if (!clean) continue;
-      if (TEAM_ROLE_RX.test(clean)) teamRoleIndexes.push(i);
-    }
-    if (!teamRoleIndexes.length) return fences;
-
-    const blockStartForTeamRole = (teamRoleIndex) => {
-      for (let i = Math.max(0, teamRoleIndex - 4); i < teamRoleIndex; i += 1) {
-        const clean = cleanClusterLine(lines[i]);
-        if (!clean || isNoiseLine(clean)) continue;
-        if (isLikelyPlayerName(clean)) return i;
-      }
-      return teamRoleIndex;
-    };
-
-    for (let idx = 0; idx < teamRoleIndexes.length; idx += 1) {
-      const teamRoleIndex = teamRoleIndexes[idx];
-      const start = blockStartForTeamRole(teamRoleIndex);
-      const nextTeamRole = idx < teamRoleIndexes.length - 1 ? teamRoleIndexes[idx + 1] : lines.length;
-      const nextStart = idx < teamRoleIndexes.length - 1 ? blockStartForTeamRole(nextTeamRole) : lines.length;
-      let end = Math.max(start, nextStart - 1);
-      while (end > start) {
-        const clean = cleanClusterLine(lines[end]);
-        if (clean) break;
-        end -= 1;
-      }
-      const block = [];
-      for (let i = start; i <= end; i += 1) {
-        const clean = cleanClusterLine(lines[i]);
-        if (!clean) continue;
-        block.push(clean);
-      }
-      if (!block.length) continue;
-      const anchorCount = countBlockAnchors(block);
-      const playerCount = block.filter((line) => isLikelyPlayerName(line)).length;
-      if (anchorCount !== 1) continue;
-      if (playerCount < 1) continue;
-      fences.push({ start, end, block });
-    }
-    return fences;
-  }
-
-  function buildFenceSignature(row = {}) {
-    return [
-      normalizeName(row.parsedPlayer || ''),
-      normalizeName(row.team || ''),
-      normalizeName(row.opponent || ''),
-      normalizeName(row.prop || row.propFamily || ''),
-      String(row.line || ''),
-      String(row.gameTimeText || '')
-    ].join('|');
-  }
-
-
-  function resolveRowConflicts(rows = [], audit = {}) {
-    const accepted = [];
-    const fingerprintMap = new Map();
-    const alerts = Array.isArray(audit?.alerts) ? audit.alerts.slice() : [];
-    rows.forEach((row) => {
-      const fingerprint = [
-        normalizeName(row.parsedPlayer || ''),
-        normalizeName(row.prop || row.propFamily || ''),
-        String(row.line || ''),
-        String(row.gameTimeISO || row.gameTimeText || '')
-      ].join('|');
-      const existing = fingerprintMap.get(fingerprint);
-      if (!existing) {
-        fingerprintMap.set(fingerprint, row);
-        accepted.push(row);
-        return;
-      }
-      const sameOpponent = normalizeName(existing.opponent || '') === normalizeName(row.opponent || '');
-      const sameTeam = normalizeName(existing.team || '') === normalizeName(row.team || '');
-      if (!sameOpponent || !sameTeam) {
-        pushRejectedLine(audit.rejectedLines || (audit.rejectedLines = []), `${row.parsedPlayer || 'Unknown'} conflict ${existing.opponent || '?'} -> ${row.opponent || '?'}`);
-        alerts.push({ code: 'CONFLICT_IDENTITY_OPP_DRIFT', severity: 'warning', message: `Rejected conflicting duplicate for ${row.parsedPlayer || 'Unknown'} (${row.prop || row.propFamily || 'Unknown'} ${row.line || '?'}) due to opponent drift.` });
-        return;
-      }
-      const scoreRow = [Boolean(row.team), Boolean(row.opponent), Boolean(row.gameTimeText || row.gameTimeISO), Boolean(row.direction), String(row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
-      const scoreExisting = [Boolean(existing.team), Boolean(existing.opponent), Boolean(existing.gameTimeText || existing.gameTimeISO), Boolean(existing.direction), String(existing.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
-      if (scoreRow > scoreExisting) {
-        const idx = accepted.indexOf(existing);
-        if (idx >= 0) accepted.splice(idx, 1, row);
-        fingerprintMap.set(fingerprint, row);
-      }
-    });
-    audit.alerts = alerts;
-    return accepted;
-  }
-
   function splitStructuredBlocks(lines = []) {
     const blocks = [];
     let current = [];
-    let blanks = 0;
     lines.forEach((line) => {
       const clean = cleanWhitespace(line);
       if (!clean) {
-        blanks += 1;
-        if (current.length && blanks >= 2) {
+        if (current.length) {
           blocks.push(current.slice());
           current = [];
         }
         return;
       }
-      blanks = 0;
       current.push(clean);
     });
     if (current.length) blocks.push(current.slice());
@@ -1002,16 +645,18 @@ window.PickCalcParser = (() => {
       const line = cleanWhitespace(block[i]);
       if (!line || isNoiseLine(line)) continue;
       if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) count += 1;
-
+      else if (extractInlineAnchor(line)) count += 1;
     }
     return count;
   }
 
   function findPrimaryAnchor(block = []) {
     for (let i = 0; i < block.length; i += 1) {
-      const line = cleanClusterLine(block[i]);
+      const line = cleanWhitespace(block[i]);
       if (!line) continue;
       if (isStandaloneAnchorLine(line) && hasNearbyStatAlias(block, i)) return line;
+      const inlineAnchor = extractInlineAnchor(line);
+      if (inlineAnchor) return inlineAnchor;
     }
     return '';
   }
@@ -1019,29 +664,28 @@ window.PickCalcParser = (() => {
   function parseStructuredBlock(block = [], dayScope = 'today', now = new Date(), blockIndex = 0) {
     const joined = block.join('\n');
     const sportHint = inferSportHint(block);
-    const pickType = extractPickType(joined);
-    const parsedCluster = parseCluster(block);
+    const pickType = extractLocalPickType(context, candidate.anchorLineIndex);
     const teamRole = extractTeamRole(joined);
     let matchup = extractMatchup(joined, teamRole.team);
     if (!matchup.opponent) matchup = extractMatchupFallback(block, teamRole.team);
     const contextItems = block.map((raw, idx) => ({ raw, clean: cleanWhitespace(raw), absIndex: idx }));
     const anchorValue = findPrimaryAnchor(block);
     const anchorIndex = Math.max(0, block.findIndex((line) => cleanWhitespace(line) === String(anchorValue)));
-    const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(parsedCluster.prop || '', sportHint) || resolvePropAlias(joined, sportHint);
-    const direction = chooseDirection(contextItems, anchorIndex, pickType);
+    const propMeta = chooseProp(contextItems, anchorIndex, sportHint) || resolvePropAlias(joined, sportHint);
+    const directionTokens = block.filter((line) => /^(more|less|higher|lower)$/i.test(line));
+    const direction = directionTokens.find((line) => /less|lower/i.test(line)) ? 'Less' : (directionTokens[0] ? (/less|lower/i.test(directionTokens[0]) ? 'Less' : 'More') : 'More');
     const timeContext = extractTimeContext(joined, now);
     const timeFilter = timeContext.found ? evaluateTimeFilter(timeContext, dayScope, now) : { accepted: true, code: 'NO_TIME', detail: 'No game time found.', scope: normalizeDayScope(dayScope), parseYear: PARSE_YEAR };
-    const identityPlayer = parsedCluster.parsedPlayer || resolvePlayerFromTeamRoleContext(contextItems, anchorIndex);
     const playerCandidates = [];
-    buildIdentityCleanLines(block).forEach((line) => {
+    block.forEach((line) => {
       if (isLikelyPlayerName(line)) playerCandidates.push(line);
       extractNameCandidates(line).forEach((candidate) => playerCandidates.push(candidate));
     });
     const counts = {};
     playerCandidates.forEach((name) => { const clean = sanitizePlayerName(name); if (isLikelyPlayerName(clean)) counts[clean] = (counts[clean] || 0) + 1; });
-    const parsedPlayer = identityPlayer || Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
+    const parsedPlayer = Object.entries(counts).sort((a,b) => (b[1]-a[1]) || (b[0].length-a[0].length))[0]?.[0] || choosePlayer(contextItems, Math.max(anchorIndex, block.length - 1));
     const type = propMeta?.role === 'Pitcher' ? 'Pitcher' : 'Hitter';
-    const team = parsedCluster.team || teamRole.team || matchup.team || '';
+    const team = teamRole.team || matchup.team || '';
     const opponent = matchup.opponent || '';
     const audit = {
       idx: blockIndex + 1,
@@ -1065,13 +709,9 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR
     };
-    if (isLiveGameText(joined)) { audit.rejectionReason = 'Rejected: live or in-progress leg detected.'; return { audit, row: null }; }
-    if (sportHint !== 'MLB') { audit.rejectionReason = 'Rejected: non-MLB content.'; return { audit, row: null }; }
     if (!anchorValue) { audit.rejectionReason = 'No numeric anchor found.'; return { audit, row: null }; }
-    if (!propMeta?.label || !isRegisteredMlbProp(propMeta.label)) { audit.rejectionReason = 'Rejected: prop is outside the 19 registered MLB props.'; return { audit, row: null }; }
-    if (isComboEntity(parsedPlayer) || isComboEntity(joined)) { audit.rejectionReason = 'Rejected: combo or paired legs are not supported.'; return { audit, row: null }; }
+    if (!propMeta?.label) { audit.rejectionReason = 'Numeric anchor found but prop alias was not resolved.'; return { audit, row: null }; }
     if (!parsedPlayer || !isLikelyPlayerName(parsedPlayer)) { audit.rejectionReason = 'Player name could not be resolved from block cluster.'; return { audit, row: null }; }
-    if (!timeContext.found) { audit.rejectionReason = 'Rejected: no future game time or countdown found.'; return { audit, row: null }; }
     if (timeContext.found && !timeFilter.accepted) { audit.rejectionReason = timeFilter.detail; return { audit, row: null }; }
     audit.accepted = true;
     return { audit, row: {
@@ -1099,136 +739,38 @@ window.PickCalcParser = (() => {
       timeFilter,
       parseYear: PARSE_YEAR,
       selectedDate: timeContext.isoLocal ? timeContext.isoLocal.slice(0, 10) : '',
-      sourceIndex: audit.idx,
-      blockIndex: audit.idx,
-      row_key: [normalizeName(parsedPlayer), String(propMeta.label || '').toLowerCase(), String(anchorValue), String(timeContext.isoLocal || timeContext.token || ''), String(blockIndex)].join('|'),
-      geminiSubject: {
-        name: parsedPlayer,
-        team,
-        opponent,
-        prop: propMeta.label,
-        line: String(anchorValue),
-        gameTime: timeContext.token || '',
-        pickType,
-        direction,
-        type
-      }
+      sourceIndex: audit.idx
     }};
   }
 
-  function splitPipeBlocks(text = '') {
-    return String(text || '')
-      .replace(/\r\n?/g, '\n')
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((line) => line.includes('|'))
-      .map((line) => preprocessBoardText(line).filter(Boolean));
-  }
-
-
   function parseBoard(text, options = {}) {
     const now = options.now instanceof Date ? options.now : new Date();
-    const dayScope = options.dayScope || 'both';
-    const pipeBlocks = splitPipeBlocks(text);
-    const rawLines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-    const nonPipeText = rawLines.filter((line) => !String(line || '').includes('|')).join('\n');
-    const lines = preprocessBoardText(stripUnsupportedComboBlocks(nonPipeText));
-    const fenceBlocks = buildFenceBlocks(lines);
+    const dayScope = options.dayScope || 'today';
+    const lines = preprocessBoardText(text);
     const blocks = splitStructuredBlocks(lines);
     const audit = [];
-    audit.rejectedLines = [];
     const rowMap = new Map();
-    const consumedLineIndexes = new Set();
-    const rowSignatures = new Set();
-
 
     const acceptParsed = (parsed) => {
       audit.push(parsed.audit);
-      if (!parsed.row) {
-        if (parsed?.audit?.rejectionReason && /non-MLB|outside the 19 registered MLB props/i.test(parsed.audit.rejectionReason)) {
-          pushRejectedLine(audit.rejectedLines, parsed.audit.rawText || parsed.audit.cleanedRawText || parsed.audit.prop || parsed.audit.parsedPlayer || '');
-        }
-        return;
-      }
-      const legId = String(parsed.row.legId || parsed.row.LEG_ID || parsed.row.blockIndex || parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0);
-      const key = [normalizeName(parsed.row.parsedPlayer), normalizeName(parsed.row.team || ''), normalizeName(parsed.row.opponent || ''), String(parsed.row.prop || '').toLowerCase(), legId].join('|');
-      const signature = buildFenceSignature(parsed.row);
+      if (!parsed.row) return;
+      const key = [String(parsed.audit?.idx || parsed.row.sourceIndex || parsed.row.idx || 0), normalizeName(parsed.row.parsedPlayer), String(parsed.row.prop || '').toLowerCase(), String(parsed.row.line || ''), parsed.row.team || '', parsed.row.opponent || ''].join('|');
       const completeness = [parsed.row.pickType !== 'Regular Line', Boolean(parsed.row.team), Boolean(parsed.row.opponent), Boolean(parsed.row.gameTimeText), Boolean(parsed.row.direction), (parsed.row.rawText || '').length].reduce((sum, value) => sum + (value ? 1 : 0), 0);
       const existing = rowMap.get(key);
-      if (rowSignatures.has(signature) && !existing) return;
       if (!existing || completeness > existing.__completeness || ((parsed.row.rawText || '').length > (existing.rawText || '').length)) {
         rowMap.set(key, Object.assign({}, parsed.row, { __completeness: completeness }));
-        rowSignatures.add(signature);
       }
     };
 
-    const consumedAnchors = new Set();
-    pipeBlocks.forEach((block, blockIndex) => {
-      if (!block.length) return;
-      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        acceptParsed(parsed);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
-    });
-
-    fenceBlocks.forEach((entry, blockIndex) => {
-      if (!entry?.block?.length) return;
-      const parsed = parseStructuredBlock(entry.block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        parsed.row.sourceStart = entry.start;
-        parsed.row.sourceEnd = entry.end;
-        acceptParsed(parsed);
-        for (let i = entry.start; i <= entry.end; i += 1) consumedLineIndexes.add(i);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
-    });
-
-    blocks.forEach((block, blockIndex) => {
-      if (!block.length) return;
-      const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-      if (parsed?.row) {
-        acceptParsed(parsed);
-        consumedAnchors.add(String(parsed.row.line) + '|' + normalizeName(parsed.row.parsedPlayer || '') + '|' + normalizeName(parsed.row.prop || ''));
-      } else if (parsed?.audit) {
-        acceptParsed(parsed);
-      }
-    });
-
     const candidates = buildAnchorCandidates(lines);
-    candidates.forEach((candidate) => {
-      if (consumedLineIndexes.has(candidate.anchorLineIndex)) return;
-      const parsed = parseCandidate(candidate, dayScope, now);
-      const signature = String(parsed?.row?.line || parsed?.audit?.line || '') + '|' + normalizeName(parsed?.row?.parsedPlayer || parsed?.audit?.parsedPlayer || '') + '|' + normalizeName(parsed?.row?.prop || parsed?.audit?.prop || '');
-      if (consumedAnchors.has(signature)) return;
-      acceptParsed(parsed);
-    });
+    candidates.forEach((candidate) => acceptParsed(parseCandidate(candidate, dayScope, now)));
 
-    let rows = Array.from(rowMap.values()).map((row, index) => {
+    const rows = Array.from(rowMap.values()).map((row, index) => {
       const cleanRow = Object.assign({}, row);
       delete cleanRow.__completeness;
       cleanRow.idx = index + 1;
       return cleanRow;
     });
-
-    rows = resolveRowConflicts(rows, audit).map((row, index) => Object.assign({}, row, { idx: index + 1 }));
-
-    if (!rows.length && blocks.length) {
-      blocks.forEach((block, blockIndex) => {
-        if (!block.length) return;
-        const parsed = parseStructuredBlock(block, dayScope, now, blockIndex);
-        if (parsed?.row) {
-          const cleanRow = Object.assign({}, parsed.row, { idx: rows.length + 1 });
-          rows.push(cleanRow);
-          if (parsed.audit) audit.push(parsed.audit);
-        }
-      });
-    }
 
     return { version: SYSTEM_VERSION, parseYear: PARSE_YEAR, rows, audit };
   }
@@ -1239,6 +781,7 @@ window.PickCalcParser = (() => {
     LEAGUES,
     MLB_PROP_ALIASES,
     MLB_FEED_MATRIX,
+    NHL_PROP_ALIASES,
     cleanWhitespace,
     extractTimeContext,
     evaluateTimeFilter,
