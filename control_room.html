@@ -32,7 +32,7 @@
 <button class="debug" onclick="debugConfig()">Config</button>
 <button class="debug" onclick="health()">Health</button>
 <button class="debug" onclick="testSQL()">SQL Test</button>
-<button class="debug" onclick="clearOutput()">Clear</button>
+<button class="debug" onclick="loadConfig()">Reload</button>
 </div></div>
 
 <div class="section"><h3>SCRAPE</h3><div class="grid">
@@ -88,23 +88,39 @@ const TARGET_DATE = "2026-04-24";
 
 document.getElementById("targetDateLabel").textContent = TARGET_DATE;
 
+function tokenFingerprint(){
+  if(!TOKEN) return {loaded:false, length:0};
+  return {
+    loaded:true,
+    length:TOKEN.length,
+    starts_with:TOKEN.slice(0,2),
+    ends_with:TOKEN.slice(-2)
+  };
+}
+
 async function loadConfig(){
   try{
     setStatus("LOADING CONFIG...");
-    const res = await fetch(CONFIG_URL + "?t=" + Date.now());
+    setOutput("Reload Config","Loading config.txt from GitHub...");
+    const res = await fetch(CONFIG_URL + "?t=" + Date.now(), {cache:"no-store"});
     const text = await res.text();
-    const match = text.match(/TOKEN\s*=\s*(.+)/);
+    const match = text.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);
     if(match && match[1].trim()){
-      TOKEN = match[1].trim();
+      TOKEN = match[1].trim().replace(/^["']|["']$/g, "");
       CONFIG_LOADED = true;
       setStatus("CONFIG LOADED");
+      setOutput("Reload Config",{config_loaded:true, token_fingerprint:tokenFingerprint()});
     } else {
+      TOKEN = "";
       CONFIG_LOADED = false;
       setStatus("CONFIG FOUND, TOKEN MISSING");
+      setOutput("Reload Config",{config_loaded:false, error:"TOKEN line not found"});
     }
   } catch(err){
+    TOKEN = "";
     CONFIG_LOADED = false;
     setStatus("CONFIG LOAD FAILED");
+    setOutput("Reload Config",{config_loaded:false,error:String(err)});
   }
 }
 
@@ -123,17 +139,20 @@ function clearOutput(){ setStatus("READY"); setOutput("Clear","Output cleared.")
 function debugConfig(){
   setOutput("Config",{
     base: BASE,
-    config_url: CONFIG_URL,
     job_url: JOB_URL,
     sql_url: SQL_URL,
     target_date: TARGET_DATE,
     token_set: Boolean(TOKEN),
     config_loaded: CONFIG_LOADED,
-    version: "control_room_config_txt_2026_04_24"
+    token_fingerprint: tokenFingerprint(),
+    version: "control_room_config_debug_2026_04_24"
   });
 }
 
 async function rawRequest(label, url, payload){
+  if(!CONFIG_LOADED || !TOKEN){
+    await loadConfig();
+  }
   const headers = {"Content-Type":"application/json","x-ingest-token":TOKEN};
   const options = payload === null ? {method:"GET",headers} : {method:"POST",headers,body:JSON.stringify(payload)};
   try{
@@ -241,7 +260,6 @@ WHERE g.game_date = '${TARGET_DATE}'
 ORDER BY s.game_id, s.team_id;
 `;
 }
-loadConfig();
 </script>
 </body>
 </html>
