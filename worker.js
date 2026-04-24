@@ -67,33 +67,33 @@ const TABLES = {
     conflict: ["game_id"]
   },
   teams_current: {
-    allowed: ["team_id", "avg", "obp", "slg", "ops", "k_rate", "bb_rate", "runs_per_game", "hr", "rbi", "total_bases", "run_diff", "games_played", "errors", "dp", "fielding_pct"],
+    allowed: ["team_id", "avg", "obp", "slg", "ops", "k_rate", "bb_rate", "runs_per_game", "hr", "rbi", "total_bases", "run_diff", "games_played", "errors", "dp", "fielding_pct", "source", "confidence"],
     required: ["team_id"],
     conflict: ["team_id"]
   },
   starters_current: {
-    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest"],
+    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"],
     required: ["game_id", "team_id", "starter_name"],
-    conflict: ["game_id"]
+    conflict: ["game_id", "team_id"]
   },
   bullpens_current: {
-    allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue"],
+    allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"],
     required: ["game_id", "team_id"],
-    conflict: ["game_id"]
+    conflict: ["game_id", "team_id"]
   },
   lineups_current: {
-    allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed"],
+    allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed", "source", "confidence"],
     required: ["game_id", "team_id", "slot", "player_name"],
     conflict: ["game_id", "team_id", "slot"],
     deleteInsert: true
   },
   players_current: {
-    allowed: ["player_name", "team_id", "role", "games", "innings_pitched", "strikeouts", "walks", "hits_allowed", "era", "k_per_9", "whip", "ab", "hits", "avg", "obp", "slg"],
+    allowed: ["player_name", "team_id", "role", "games", "innings_pitched", "strikeouts", "walks", "hits_allowed", "era", "k_per_9", "whip", "ab", "hits", "avg", "obp", "slg", "age", "position", "bats", "throws", "source", "confidence"],
     required: ["player_name"],
     conflict: ["player_name"]
   },
   player_recent_usage: {
-    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot"],
+    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot", "source", "confidence"],
     required: ["player_name"],
     conflict: ["player_name"]
   }

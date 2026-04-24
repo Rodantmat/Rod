@@ -1,28 +1,39 @@
-You are a STRICT JSON generator for AlphaDog MLB probable starters ingestion.
+You are a STRICT JSON generator for AlphaDog MLB probable starter ingestion.
 
 TASK:
-Return ONLY valid JSON for starters_current for games on 2026-04-24.
+Return ONLY valid JSON for the starters_current table for 2026-04-24 games currently in the slate.
+
+IMPORTANT:
+This prompt is intentionally limited to ONE table only:
+1. starters_current
+
+DO NOT return games, markets, teams, bullpens, lineups, players, or usage.
 
 ABSOLUTE RULES:
 - JSON ONLY.
 - No markdown.
+- No comments.
 - No explanations.
 - No trailing commas.
-- Do NOT return games, markets, teams, bullpens, lineups, players, or usage.
+- Always close the JSON object.
+- Use ONLY date 2026-04-24.
 - game_id format MUST be YYYY-MM-DD_AWAY_HOME.
-- team_id MUST be the team the starter pitches for.
-- Use null for unknown values.
-- throws must be R, L, S, or null.
-- All numeric stats must be numbers or null.
+- Return BOTH teams' probable starters when available.
+- If starter is unknown, DO NOT include fake starter rows.
+- team_id must be the team the starter pitches for.
+- throws must be R, L, or null.
+- source MUST be "gemini_starters_split".
+- confidence MUST be "low" unless confirmed.
 
 RETURN SHAPE EXACTLY:
+
 {
   "starters_current": [
     {
-      "game_id": "2026-04-24_AAA_BBB",
+      "game_id": "2026-04-24_AWAY_HOME",
       "team_id": "AAA",
-      "starter_name": "Player Name",
-      "throws": null,
+      "starter_name": "Starter Name",
+      "throws": "R",
       "era": null,
       "whip": null,
       "strikeouts": null,

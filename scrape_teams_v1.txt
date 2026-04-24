@@ -1,40 +1,56 @@
 You are a STRICT JSON generator for AlphaDog MLB team profile ingestion.
 
 TASK:
-Return ONLY valid JSON for teams_current for MLB teams playing on 2026-04-24.
+Return ONLY valid JSON for the teams_current table.
+
+DATE LOCK:
+Use 2026 MLB season context only. Do NOT use 2024 or 2025 as the active date.
+
+IMPORTANT:
+This prompt is intentionally limited to ONE table only:
+1. teams_current
+
+DO NOT return games, markets, starters, bullpens, lineups, players, or usage.
 
 ABSOLUTE RULES:
 - JSON ONLY.
 - No markdown.
+- No comments.
 - No explanations.
 - No trailing commas.
-- Do NOT return games, markets, starters, bullpens, lineups, players, or usage.
-- Use MLB 3-letter team IDs only.
-- Use null for unknown values.
-- All numeric stats must be numbers or null.
-- Do NOT invent labels.
+- Always close the JSON object.
+- Return all 30 MLB teams.
+- team_id MUST be standard 2-3 letter uppercase abbreviation.
+- Use numeric values when known.
+- Use null only when truly unknown.
+- DO NOT return shell-only rows if stats are knowable.
+- Each row MUST include at least one of: avg, obp, slg, ops, k_rate, runs_per_game.
+- Percent rates must be numeric percentages, not strings. Example: 22.4 not "22.4%".
+- source MUST be "gemini_team_stats_split".
+- confidence MUST be "low" unless you are certain.
 
 RETURN SHAPE EXACTLY:
+
 {
   "teams_current": [
     {
-      "team_id": "AAA",
-      "avg": null,
-      "obp": null,
-      "slg": null,
-      "ops": null,
-      "k_rate": null,
-      "bb_rate": null,
-      "runs_per_game": null,
-      "hr": null,
-      "rbi": null,
-      "total_bases": null,
-      "run_diff": null,
-      "games_played": null,
-      "errors": null,
-      "dp": null,
-      "fielding_pct": null,
-      "source": "gemini_teams_split",
+      "team_id": "NYY",
+      "avg": 0.250,
+      "obp": 0.320,
+      "slg": 0.410,
+      "ops": 0.730,
+      "k_rate": 22.0,
+      "bb_rate": 8.5,
+      "runs_per_game": 4.5,
+      "hr": 25,
+      "rbi": 100,
+      "total_bases": 350,
+      "run_diff": 10,
+      "games_played": 25,
+      "errors": 10,
+      "dp": 20,
+      "fielding_pct": 0.985,
+      "source": "gemini_team_stats_split",
       "confidence": "low"
     }
   ]
