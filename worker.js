@@ -151,6 +151,7 @@ function withCors(response) {
   });
 }
 
+
 export default {
   async fetch(request, env) {
     try {
@@ -382,6 +383,21 @@ function validateRows(table, rows) {
       continue;
     }
 
+    if (table === "starters_current" && (
+      !validPositiveNumber(row.era) ||
+      !validPositiveNumber(row.whip) ||
+      !validPositiveNumber(row.strikeouts) ||
+      !validPositiveNumber(row.innings_pitched)
+    )) {
+      skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
+      continue;
+    }
+
+    if (table === "starters_current" && looksLikePlaceholderStarter(row.starter_name)) {
+      skipped.push({ row: i, reason: `placeholder starter rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
+      continue;
+    }
+
     const out = {};
     for (const col of config.allowed) if (row[col] !== undefined) out[col] = row[col];
     if (config.allowed.includes("source") && out.source === undefined) out.source = "gemini_split_job";
@@ -393,6 +409,34 @@ function validateRows(table, rows) {
     return { ok: false, error: `all ${table} rows rejected: ${JSON.stringify(skipped).slice(0, 900)}` };
   }
   return { ok: true, rows: cleaned, skipped };
+}
+
+
+function looksLikePlaceholderStarter(name) {
+  const n = String(name || "").trim().toUpperCase();
+  if (!n) return true;
+  const badExact = new Set([
+    "ACE",
+    "STARTER",
+    "PROBABLE STARTER",
+    "TBD",
+    "TBA",
+    "UNKNOWN",
+    "TEAM ACE",
+    "HOME ACE",
+    "AWAY ACE"
+  ]);
+  if (badExact.has(n)) return true;
+  if (n.endsWith(" ACE")) return true;
+  if (n.includes(" UNKNOWN")) return true;
+  if (n.includes(" TBD")) return true;
+  if (n.includes(" TBA")) return true;
+  return false;
+}
+
+function validPositiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
 }
 
 function normalizeRow(table, input) {
