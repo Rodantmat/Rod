@@ -1,16 +1,36 @@
-You are a strict MLB slate data scraper.
+You are a STRICT JSON data generator for MLB slate ingestion.
 
 TASK:
-Return today's MLB slate data as JSON only.
+Return ONLY valid JSON for MLB games on 2026-04-24.
 
-DO NOT explain.
-DO NOT use markdown.
-DO NOT add comments.
+ABSOLUTE RULES:
+- JSON ONLY.
+- No markdown.
+- No comments.
+- No explanations.
+- No trailing commas.
+- Use null for unknown values.
+- Do NOT use 2024, 2025, or historical slates.
+- Use only date 2026-04-24.
+- Use exact field names below.
+- If unsure, return empty arrays rather than guessing.
 
-Return this exact JSON shape:
+Return EXACTLY this JSON object shape:
 
 {
-  "games": [],
+  "games": [
+    {
+      "game_id": "2026-04-24_AWAY_HOME",
+      "game_date": "2026-04-24",
+      "away_team": "AAA",
+      "home_team": "BBB",
+      "start_time_utc": null,
+      "venue": null,
+      "series_game": null,
+      "getaway_day": 0,
+      "status": "scheduled"
+    }
+  ],
   "teams_current": [],
   "starters_current": [],
   "bullpens_current": [],
@@ -19,10 +39,3 @@ Return this exact JSON shape:
   "players_current": [],
   "player_recent_usage": []
 }
-
-RULES:
-- Use current MLB slate only.
-- If data is missing, use null.
-- Team IDs must be 3-letter abbreviations.
-- game_id format: YYYY-MM-DD_AWAY_HOME
-- Do not invent values.
