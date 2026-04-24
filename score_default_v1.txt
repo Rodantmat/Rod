@@ -27,5 +27,3 @@ Definitions:
 
 PACKET:
 {{PACKET_JSON}}
-
-

@@ -5,30 +5,24 @@ Score this Pitcher Strikeouts prop using ONLY the packet below.
 
 DO NOT invent missing data.
 DO NOT use outside knowledge.
-DO NOT ignore missing-data warnings.
-DO NOT give a confident verdict if the packet is incomplete.
 
 PITCHER KS PRIMARY FACTORS:
-1. Pitcher strikeout volume
-2. K_PER_9
-3. Recent workload: last innings + pitch count
-4. Days rest
-5. Opponent team K rate
-6. Opponent lineup K rates
-7. Opponent implied runs
-8. Bullpen fatigue / starter leash
-9. Market game total
+- strikeouts
+- K_PER_9
+- workload
+- rest
+- opponent K rate
+- opponent lineup K rates
+- implied runs
+- game total
 
 DATA QUALITY RULES:
-- If opponent lineup has fewer than 6 hitters, add a major warning.
-- If usage is missing, add a major warning.
-- If pitcher K_PER_9, strikeouts, or innings are missing, add a major warning.
-- If market is missing, add a medium warning.
-- If opponent team profile is missing, add a major warning.
-- If 2+ major warnings exist, cap confidence at LOW.
-- If 1 major warning exists, cap confidence at MEDIUM.
+- lineup <6 hitters = major warning
+- missing usage = major warning
+- missing pitcher core stats = major warning
+- 2+ major warnings = LOW confidence
 
-OUTPUT FORMAT EXACTLY:
+OUTPUT:
 VERDICT:
 SIDE:
 CONFIDENCE:
@@ -38,13 +32,6 @@ MAJOR_WARNINGS:
 PRIMARY_SUPPORT:
 PRIMARY_RISKS:
 FINAL_REASON:
-
-Definitions:
-- VERDICT = PASS / LEAN / NO PLAY
-- SIDE = MORE / LESS / NONE
-- CONFIDENCE = LOW / MEDIUM / HIGH
-- EDGE_SCORE = -100 to +100
-- DATA_QUALITY = POOR / ACCEPTABLE / GOOD / STRONG
 
 PACKET:
 {{PACKET_JSON}}

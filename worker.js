@@ -1,5 +1,6 @@
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
+const SCRAPE_MODEL = "gemini-2.5-flash";
 
 const PROMPT_FILES = {
   ks: "score_ks_v1.txt",
@@ -10,87 +11,133 @@ const PROMPT_FILES = {
   default: "score_default_v1.txt"
 };
 
+const JOBS = {
+  daily_mlb_slate: {
+    prompt: "scrape_daily_mlb_slate_v1.txt",
+    tables: ["games", "markets_current"],
+    note: "legacy alias locked to games+markets only"
+  },
+  scrape_games_markets: {
+    prompt: "scrape_daily_mlb_slate_v1.txt",
+    tables: ["games", "markets_current"],
+    note: "games+markets only"
+  },
+  scrape_teams: {
+    prompt: "scrape_teams_v1.txt",
+    tables: ["teams_current"],
+    note: "team profile only"
+  },
+  scrape_starters: {
+    prompt: "scrape_starters_v1.txt",
+    tables: ["starters_current"],
+    note: "starter profile only"
+  },
+  scrape_lineups: {
+    prompt: "scrape_lineups_v1.txt",
+    tables: ["lineups_current"],
+    note: "lineups only"
+  },
+  scrape_bullpens: {
+    prompt: "scrape_bullpens_v1.txt",
+    tables: ["bullpens_current"],
+    note: "bullpens only"
+  },
+  scrape_players: {
+    prompt: "scrape_players_v1.txt",
+    tables: ["players_current"],
+    note: "player current stats only"
+  },
+  scrape_recent_usage: {
+    prompt: "scrape_recent_usage_v1.txt",
+    tables: ["player_recent_usage"],
+    note: "recent usage only"
+  }
+};
+
+const TABLES = {
+  games: {
+    allowed: ["game_id", "game_date", "away_team", "home_team", "start_time_utc", "venue", "series_game", "getaway_day", "status", "source", "confidence"],
+    required: ["game_id", "game_date", "away_team", "home_team"],
+    conflict: ["game_id"]
+  },
+  markets_current: {
+    allowed: ["game_id", "game_total", "open_total", "current_total", "away_moneyline", "home_moneyline", "away_implied_runs", "home_implied_runs", "runline", "source", "confidence"],
+    required: ["game_id"],
+    conflict: ["game_id"]
+  },
+  teams_current: {
+    allowed: ["team_id", "avg", "obp", "slg", "ops", "k_rate", "bb_rate", "runs_per_game", "hr", "rbi", "total_bases", "run_diff", "games_played", "errors", "dp", "fielding_pct", "source", "confidence"],
+    required: ["team_id"],
+    conflict: ["team_id"]
+  },
+  starters_current: {
+    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"],
+    required: ["game_id", "team_id", "starter_name"],
+    conflict: ["game_id"]
+  },
+  bullpens_current: {
+    allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"],
+    required: ["game_id", "team_id"],
+    conflict: ["game_id"]
+  },
+  lineups_current: {
+    allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed", "source", "confidence"],
+    required: ["game_id", "team_id", "slot", "player_name"],
+    conflict: ["game_id", "team_id", "slot"]
+  },
+  players_current: {
+    allowed: ["player_name", "team_id", "role", "games", "innings_pitched", "strikeouts", "walks", "hits_allowed", "era", "k_per_9", "whip", "ab", "hits", "avg", "obp", "slg", "age", "position", "bats", "throws", "source", "confidence"],
+    required: ["player_name"],
+    conflict: ["player_name"]
+  },
+  player_recent_usage: {
+    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot", "source", "confidence"],
+    required: ["player_name"],
+    conflict: ["player_name"]
+  }
+};
+
 export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
-
-      if (url.pathname === "/health") {
-        return Response.json({
-          ok: true,
-          worker: "prop-ingestion-v2",
-          db_bound: !!env.DB,
-          ingest_token_bound: !!env.INGEST_TOKEN,
-          gemini_key_bound: !!env.GEMINI_API_KEY,
-          prompt_base_url_bound: !!env.PROMPT_BASE_URL,
-          time: new Date().toISOString()
-        });
-      }
-
-      if (url.pathname === "/ingest/run-slate" && request.method === "POST") {
-        return await handleRunSlate(request, env);
-      }
-
-      if ((url.pathname === "/ingest/games" || url.pathname === "/ingest/slate") && request.method === "POST") {
-        return await handleGames(request, env);
-      }
-
-      if (url.pathname === "/ingest/players" && request.method === "POST") {
-        return await handlePlayers(request, env);
-      }
-
-      if (url.pathname === "/ingest/markets" && request.method === "POST") {
-        return await handleMarkets(request, env);
-      }
-
-      if (url.pathname === "/ingest/upsert" && request.method === "POST") {
-        return await handleUpsert(request, env);
-      }
-
-      if (url.pathname === "/packet/leg" && request.method === "POST") {
-        return await handleLegPacket(request, env);
-      }
-
-      if (url.pathname === "/score/leg" && request.method === "POST") {
-        return await handleScoreLeg(request, env);
-      }
-
-      if (url.pathname === "/tasks/run" && request.method === "POST") {
-      return await handleTaskRun(request, env);
-      }
-
+      if (url.pathname === "/health") return Response.json(health(env));
+      if (url.pathname === "/tasks/run" && request.method === "POST") return await handleTaskRun(request, env);
+      if (url.pathname === "/packet/leg" && request.method === "POST") return await handleLegPacket(request, env);
+      if (url.pathname === "/score/leg" && request.method === "POST") return await handleScoreLeg(request, env);
+      if (url.pathname === "/ingest/upsert" && request.method === "POST") return await handleUpsert(request, env);
       return Response.json({ ok: false, error: "Not found", path: url.pathname }, { status: 404 });
     } catch (err) {
-      return Response.json({
-        ok: false,
-        error: String(err?.message || err),
-        stack: String(err?.stack || "")
-      }, { status: 500 });
+      return Response.json({ ok: false, error: String(err?.message || err), stack: String(err?.stack || "") }, { status: 500 });
     }
   },
-
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(handleScheduled(event, env));
+    ctx.waitUntil(runScheduled(event, env));
   }
 };
 
-async function handleScheduled(event, env) {
-  const runId = crypto.randomUUID();
+function health(env) {
+  return {
+    ok: true,
+    worker: "alphadog-phase3-split",
+    db_bound: !!env.DB,
+    ingest_token_bound: !!env.INGEST_TOKEN,
+    gemini_key_bound: !!env.GEMINI_API_KEY,
+    prompt_base_url_bound: !!env.PROMPT_BASE_URL,
+    jobs: Object.keys(JOBS),
+    time: new Date().toISOString()
+  };
+}
 
-  await env.DB.prepare(`
-    INSERT INTO ingestion_runs (run_id, job_name, started_at, status, notes)
-    VALUES (?, ?, datetime('now'), ?, ?)
-  `).bind(runId, "scheduled_slate_run", "running", `cron=${event.cron}`).run();
-
-  await env.DB.prepare(`
-    UPDATE ingestion_runs
-    SET finished_at=datetime('now'), status=?, notes=?
-    WHERE run_id=?
-  `).bind("success", "scheduled hook fired; automated Gemini ingestion will be attached later", runId).run();
+async function runScheduled(event, env) {
+  const job = event?.cron === "0 12 * * *" ? "scrape_games_markets" : "scrape_games_markets";
+  await runJob({ job, cron: event?.cron || null }, env);
 }
 
 function isAuthorized(request, env) {
-  return request.headers.get("x-ingest-token") === env.INGEST_TOKEN;
+  const expected = env.INGEST_TOKEN;
+  if (!expected) return true;
+  return request.headers.get("x-ingest-token") === expected;
 }
 
 function unauthorized() {
@@ -101,246 +148,125 @@ function val(obj, key) {
   return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null;
 }
 
-async function handleRunSlate(request, env) {
+async function handleTaskRun(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
-
-  const runId = crypto.randomUUID();
-
-  await env.DB.prepare(`
-    INSERT INTO ingestion_runs (run_id, job_name, started_at, status, notes)
-    VALUES (?, ?, datetime('now'), ?, ?)
-  `).bind(runId, "manual_slate_run", "running", "manual trigger").run();
-
-  return Response.json({
-    ok: true,
-    run_id: runId,
-    message: "Slate run initialized"
-  });
+  const body = await safeJson(request);
+  const result = await runJob(body || {}, env);
+  return Response.json(result, { status: result.ok ? 200 : 500 });
 }
 
-async function handleGames(request, env) {
-  if (!isAuthorized(request, env)) return unauthorized();
+async function runJob(input, env) {
+  const jobName = input.job || "scrape_games_markets";
+  const job = JOBS[jobName];
+  if (!job) return { ok: false, error: `Unknown job: ${jobName}`, valid_jobs: Object.keys(JOBS) };
 
-  const body = await request.json();
-  const games = Array.isArray(body.games) ? body.games : [];
-  let inserted = 0;
+  const taskId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO task_runs (task_id, job_name, status, started_at, input_json) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)`)
+    .bind(taskId, jobName, "running", JSON.stringify(input)).run();
 
-  for (const g of games) {
-    await env.DB.prepare(`
-      INSERT INTO games (
-        game_id, game_date, away_team, home_team,
-        start_time_utc, venue, series_game, getaway_day, status, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(game_id) DO UPDATE SET
-        game_date=excluded.game_date,
-        away_team=excluded.away_team,
-        home_team=excluded.home_team,
-        start_time_utc=excluded.start_time_utc,
-        venue=excluded.venue,
-        series_game=excluded.series_game,
-        getaway_day=excluded.getaway_day,
-        status=excluded.status,
-        updated_at=CURRENT_TIMESTAMP
-    `).bind(
-      val(g, "game_id"),
-      val(g, "game_date"),
-      val(g, "away_team"),
-      val(g, "home_team"),
-      val(g, "start_time_utc"),
-      val(g, "venue"),
-      val(g, "series_game"),
-      g.getaway_day ? 1 : 0,
-      val(g, "status") || "scheduled"
-    ).run();
+  try {
+    const prompt = await fetchPrompt(env, job.prompt);
+    const raw = await callGemini(env, SCRAPE_MODEL, prompt, { scrape: true });
+    const clean = cleanJsonText(raw);
+    const data = parseStrictJson(clean);
+    const results = {};
 
-    inserted++;
-  }
-
-  return Response.json({ ok: true, inserted });
-}
-
-async function handlePlayers(request, env) {
-  if (!isAuthorized(request, env)) return unauthorized();
-
-  const body = await request.json();
-  const players = Array.isArray(body.players) ? body.players : [];
-  let inserted = 0;
-
-  for (const p of players) {
-    if (!p.player_name) {
-      return Response.json({ ok: false, error: "Missing player_name" }, { status: 400 });
+    for (const table of job.tables) {
+      const rows = Array.isArray(data[table]) ? data[table] : [];
+      const validated = validateRows(table, rows);
+      if (!validated.ok) throw new Error(`${table} validation failed: ${validated.error}`);
+      results[table] = await upsertRows(env, table, validated.rows);
     }
 
-    await env.DB.prepare(`
-      INSERT INTO players_current (
-        player_name, team_id, role,
-        games, innings_pitched, strikeouts,
-        walks, hits_allowed, era,
-        k_per_9, whip,
-        ab, hits, avg, obp, slg,
-        age, position, bats, throws,
-        source, confidence, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(player_name) DO UPDATE SET
-        team_id=excluded.team_id,
-        role=excluded.role,
-        games=excluded.games,
-        innings_pitched=excluded.innings_pitched,
-        strikeouts=excluded.strikeouts,
-        walks=excluded.walks,
-        hits_allowed=excluded.hits_allowed,
-        era=excluded.era,
-        k_per_9=excluded.k_per_9,
-        whip=excluded.whip,
-        ab=excluded.ab,
-        hits=excluded.hits,
-        avg=excluded.avg,
-        obp=excluded.obp,
-        slg=excluded.slg,
-        age=excluded.age,
-        position=excluded.position,
-        bats=excluded.bats,
-        throws=excluded.throws,
-        source=excluded.source,
-        confidence=excluded.confidence,
-        updated_at=CURRENT_TIMESTAMP
-    `).bind(
-      val(p, "player_name"),
-      val(p, "team_id"),
-      val(p, "role"),
-      val(p, "games"),
-      val(p, "innings_pitched"),
-      val(p, "strikeouts"),
-      val(p, "walks"),
-      val(p, "hits_allowed"),
-      val(p, "era"),
-      val(p, "k_per_9"),
-      val(p, "whip"),
-      val(p, "ab"),
-      val(p, "hits"),
-      val(p, "avg"),
-      val(p, "obp"),
-      val(p, "slg"),
-      val(p, "age"),
-      val(p, "position"),
-      val(p, "bats"),
-      val(p, "throws"),
-      val(p, "source") || "manual",
-      val(p, "confidence") || "manual"
-    ).run();
-
-    inserted++;
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`)
+      .bind("success", JSON.stringify(results), taskId).run();
+    return { ok: true, task_id: taskId, job: jobName, prompt: job.prompt, inserted: results };
+  } catch (err) {
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE task_id=?`)
+      .bind("failed", String(err?.message || err), taskId).run();
+    return { ok: false, task_id: taskId, job: jobName, error: String(err?.message || err) };
   }
-
-  return Response.json({ ok: true, inserted });
-}
-
-async function handleMarkets(request, env) {
-  if (!isAuthorized(request, env)) return unauthorized();
-
-  const body = await request.json();
-  const markets = Array.isArray(body.markets) ? body.markets : [];
-  let inserted = 0;
-
-  for (const m of markets) {
-    await env.DB.prepare(`
-      INSERT INTO markets_current (
-        game_id, game_total, open_total, current_total,
-        away_moneyline, home_moneyline,
-        away_implied_runs, home_implied_runs,
-        runline, source, confidence, updated_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(game_id) DO UPDATE SET
-        game_total=excluded.game_total,
-        open_total=excluded.open_total,
-        current_total=excluded.current_total,
-        away_moneyline=excluded.away_moneyline,
-        home_moneyline=excluded.home_moneyline,
-        away_implied_runs=excluded.away_implied_runs,
-        home_implied_runs=excluded.home_implied_runs,
-        runline=excluded.runline,
-        source=excluded.source,
-        confidence=excluded.confidence,
-        updated_at=CURRENT_TIMESTAMP
-    `).bind(
-      val(m, "game_id"),
-      val(m, "game_total"),
-      val(m, "open_total"),
-      val(m, "current_total"),
-      val(m, "away_moneyline"),
-      val(m, "home_moneyline"),
-      val(m, "away_implied_runs"),
-      val(m, "home_implied_runs"),
-      val(m, "runline"),
-      val(m, "source") || "manual",
-      val(m, "confidence") || "manual"
-    ).run();
-
-    inserted++;
-  }
-
-  return Response.json({ ok: true, inserted });
 }
 
 async function handleUpsert(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
+  const body = await safeJson(request);
+  const table = body?.table;
+  const rows = Array.isArray(body?.rows) ? body.rows : [];
+  if (!TABLES[table]) return Response.json({ ok: false, error: "Table not allowed" }, { status: 400 });
+  const validated = validateRows(table, rows);
+  if (!validated.ok) return Response.json({ ok: false, error: validated.error }, { status: 400 });
+  const inserted = await upsertRows(env, table, validated.rows);
+  return Response.json({ ok: true, table, inserted });
+}
 
-  const body = await request.json();
-  const table = body.table;
-  const rows = Array.isArray(body.rows) ? body.rows : [];
+function validateRows(table, rows) {
+  const config = TABLES[table];
+  if (!config) return { ok: false, error: `Unknown table ${table}` };
+  if (!Array.isArray(rows)) return { ok: false, error: "rows must be array" };
+  const cleaned = [];
 
-  const allowed = {
-    teams_current: ["team_id","avg","obp","slg","ops","k_rate","bb_rate","runs_per_game","hr","rbi","total_bases","run_diff","games_played","errors","dp","fielding_pct","source","confidence"],
-    starters_current: ["game_id","team_id","starter_name","throws","era","whip","strikeouts","innings_pitched","walks","hits_allowed","hr_allowed","days_rest","source","confidence"],
-    bullpens_current: ["game_id","team_id","bullpen_era","bullpen_whip","last_game_ip","last3_ip","fatigue","source","confidence"],
-    lineups_current: ["game_id","team_id","slot","player_name","bats","k_rate","is_confirmed","source","confidence"],
-    markets_current: ["game_id","game_total","open_total","current_total","away_moneyline","home_moneyline","away_implied_runs","home_implied_runs","runline","source","confidence"],
-    players_current: ["player_name","team_id","role","games","innings_pitched","strikeouts","walks","hits_allowed","era","k_per_9","whip","ab","hits","avg","obp","slg","age","position","bats","throws","source","confidence"],
-    player_recent_usage: ["player_name","team_id","last_pitch_count","last_innings","days_rest","last_game_ab","last_game_hits","lineup_slot"],
-    games: ["game_id","game_date","away_team","home_team","start_time_utc","venue","series_game","getaway_day","status"]
-  };
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    if (row.away_team_id !== undefined || row.home_team_id !== undefined) {
+      return { ok: false, error: `row ${i} uses forbidden away_team_id/home_team_id` };
+    }
+    for (const required of config.required) {
+      if (row[required] === undefined || row[required] === null || row[required] === "") {
+        return { ok: false, error: `row ${i} missing required ${required}` };
+      }
+    }
+    if (row.game_id !== undefined && !validGameId(row.game_id)) return { ok: false, error: `row ${i} malformed game_id ${row.game_id}` };
+    if (row.game_date !== undefined && !String(row.game_date).startsWith("2026-")) return { ok: false, error: `row ${i} invalid game_date ${row.game_date}` };
+    if (row.team_id !== undefined && !validTeamId(row.team_id)) return { ok: false, error: `row ${i} invalid team_id ${row.team_id}` };
+    if (row.away_team !== undefined && !validTeamId(row.away_team)) return { ok: false, error: `row ${i} invalid away_team ${row.away_team}` };
+    if (row.home_team !== undefined && !validTeamId(row.home_team)) return { ok: false, error: `row ${i} invalid home_team ${row.home_team}` };
+    if (row.slot !== undefined) {
+      const n = Number(row.slot);
+      if (!Number.isInteger(n) || n < 1 || n > 9) return { ok: false, error: `row ${i} invalid slot ${row.slot}` };
+    }
 
-  if (!allowed[table]) {
-    return Response.json({ ok: false, error: "Table not allowed" }, { status: 400 });
+    const out = {};
+    for (const col of config.allowed) if (row[col] !== undefined) out[col] = row[col];
+    if (config.allowed.includes("source") && out.source === undefined) out.source = "gemini_split_job";
+    if (config.allowed.includes("confidence") && out.confidence === undefined) out.confidence = "low";
+    cleaned.push(out);
   }
+  return { ok: true, rows: cleaned };
+}
 
+function validGameId(gameId) {
+  return /^2026-\d{2}-\d{2}_[A-Z]{2,3}_[A-Z]{2,3}$/.test(String(gameId));
+}
+
+function validTeamId(teamId) {
+  return /^[A-Z]{2,3}$/.test(String(teamId));
+}
+
+async function upsertRows(env, table, rows) {
+  if (!rows.length) return 0;
+  const config = TABLES[table];
   let inserted = 0;
-  const cols = allowed[table];
 
   for (const row of rows) {
-    const usedCols = cols.filter(c => row[c] !== undefined);
-    if (usedCols.length === 0) continue;
-
-    const placeholders = usedCols.map(() => "?").join(",");
-    const updates = usedCols.map(c => `${c}=excluded.${c}`).join(",");
-
-    const sql = `
-      INSERT INTO ${table} (${usedCols.join(",")}, updated_at)
-      VALUES (${placeholders}, CURRENT_TIMESTAMP)
-      ON CONFLICT DO UPDATE SET ${updates}, updated_at=CURRENT_TIMESTAMP
-    `;
-
-    await env.DB.prepare(sql).bind(...usedCols.map(c => row[c])).run();
+    const cols = config.allowed.filter(c => row[c] !== undefined);
+    if (!cols.length) continue;
+    const placeholders = cols.map(() => "?").join(",");
+    const conflict = config.conflict.join(",");
+    const updates = cols.filter(c => !config.conflict.includes(c)).map(c => `${c}=excluded.${c}`);
+    const updateClause = updates.length ? `DO UPDATE SET ${updates.join(",")}` : "DO NOTHING";
+    const sql = `INSERT INTO ${table} (${cols.join(",")}) VALUES (${placeholders}) ON CONFLICT(${conflict}) ${updateClause}`;
+    await env.DB.prepare(sql).bind(...cols.map(c => row[c])).run();
     inserted++;
   }
-
-  return Response.json({ ok: true, table, inserted });
+  return inserted;
 }
 
 async function handleLegPacket(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
-
-  const body = await request.json();
+  const body = await safeJson(request);
   const result = await buildLegPacket(body, env);
-
-  if (!result.ok) {
-    return Response.json(result, { status: result.status || 400 });
-  }
-
-  return Response.json(result);
+  return Response.json(result, { status: result.ok ? 200 : (result.status || 400) });
 }
 
 async function buildLegPacket(body, env) {
@@ -350,65 +276,26 @@ async function buildLegPacket(body, env) {
   const propType = body.prop_type;
   const line = body.line;
   const side = body.side;
-
-  if (!playerName || !teamId || !gameId || !propType) {
-    return {
-      ok: false,
-      status: 400,
-      error: "Missing required fields: player_name, team_id, game_id, prop_type"
-    };
-  }
+  if (!playerName || !teamId || !gameId || !propType) return { ok: false, status: 400, error: "Missing required fields: player_name, team_id, game_id, prop_type" };
 
   const game = await env.DB.prepare(`SELECT * FROM games WHERE game_id = ?`).bind(gameId).first();
+  if (!game) return { ok: false, status: 404, error: "Game not found" };
 
-  if (!game) {
-    return { ok: false, status: 404, error: "Game not found" };
-  }
-
-  const opponentTeam =
-    teamId === game.away_team ? game.home_team :
-    teamId === game.home_team ? game.away_team :
-    null;
-
-  if (!opponentTeam) {
-    return {
-      ok: false,
-      status: 400,
-      error: "team_id does not match game away_team or home_team"
-    };
-  }
+  const opponentTeam = teamId === game.away_team ? game.home_team : teamId === game.home_team ? game.away_team : null;
+  if (!opponentTeam) return { ok: false, status: 400, error: "team_id does not match game away_team or home_team" };
 
   const player = await env.DB.prepare(`SELECT * FROM players_current WHERE player_name = ?`).bind(playerName).first();
   const usage = await env.DB.prepare(`SELECT * FROM player_recent_usage WHERE player_name = ?`).bind(playerName).first();
   const market = await env.DB.prepare(`SELECT * FROM markets_current WHERE game_id = ?`).bind(gameId).first();
   const playerTeamProfile = await env.DB.prepare(`SELECT * FROM teams_current WHERE team_id = ?`).bind(teamId).first();
   const opponentTeamProfile = await env.DB.prepare(`SELECT * FROM teams_current WHERE team_id = ?`).bind(opponentTeam).first();
-
-  const opponentStarter = await env.DB.prepare(`
-    SELECT * FROM starters_current WHERE game_id = ? AND team_id = ?
-  `).bind(gameId, opponentTeam).first();
-
-  const opponentBullpen = await env.DB.prepare(`
-    SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ?
-  `).bind(gameId, opponentTeam).first();
-
-  const opponentLineup = await env.DB.prepare(`
-    SELECT * FROM lineups_current
-    WHERE game_id = ? AND team_id = ?
-    ORDER BY slot ASC
-  `).bind(gameId, opponentTeam).all();
+  const opponentStarter = await env.DB.prepare(`SELECT * FROM starters_current WHERE game_id = ? AND team_id = ?`).bind(gameId, opponentTeam).first();
+  const opponentBullpen = await env.DB.prepare(`SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ?`).bind(gameId, opponentTeam).first();
+  const lineup = await env.DB.prepare(`SELECT * FROM lineups_current WHERE game_id = ? AND team_id = ? ORDER BY slot ASC`).bind(gameId, opponentTeam).all();
 
   return {
     ok: true,
-    leg: {
-      player_name: playerName,
-      team_id: teamId,
-      opponent_team: opponentTeam,
-      game_id: gameId,
-      prop_type: propType,
-      line,
-      side
-    },
+    leg: { player_name: playerName, team_id: teamId, opponent_team: opponentTeam, game_id: gameId, prop_type: propType, line, side },
     packet: {
       player,
       usage,
@@ -418,75 +305,32 @@ async function buildLegPacket(body, env) {
       opponent_team_profile: opponentTeamProfile,
       opponent_starter: opponentStarter,
       opponent_bullpen: opponentBullpen,
-      opponent_lineup: opponentLineup.results || []
+      opponent_lineup: lineup.results || []
     }
   };
 }
 
 async function handleScoreLeg(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
-
-  const body = await request.json();
+  const body = await safeJson(request);
   const packetResult = await buildLegPacket(body, env);
-
-  if (!packetResult.ok) {
-    return Response.json(packetResult, { status: packetResult.status || 400 });
-  }
-
-  if (!env.GEMINI_API_KEY) {
-    return Response.json({
-      ok: false,
-      error: "Missing GEMINI_API_KEY secret",
-      packet: packetResult
-    }, { status: 500 });
-  }
-
+  if (!packetResult.ok) return Response.json(packetResult, { status: packetResult.status || 400 });
   const prompt = await buildScoringPromptFromRemote(packetResult, env);
-
   let modelUsed = PRIMARY_MODEL;
   let modelResult;
-
   try {
-    modelResult = await callGemini(env, PRIMARY_MODEL, prompt);
+    modelResult = await callGemini(env, PRIMARY_MODEL, prompt, { scrape: false });
   } catch (err) {
     modelUsed = FALLBACK_MODEL;
-    modelResult = await callGemini(env, FALLBACK_MODEL, prompt);
+    modelResult = await callGemini(env, FALLBACK_MODEL, prompt, { scrape: false });
   }
-
-  return Response.json({
-    ok: true,
-    model_used: modelUsed,
-    leg: packetResult.leg,
-    packet: packetResult.packet,
-    score_output: modelResult
-  });
+  return Response.json({ ok: true, model_used: modelUsed, leg: packetResult.leg, packet: packetResult.packet, score_output: modelResult });
 }
 
 async function buildScoringPromptFromRemote(packetResult, env) {
   const fileName = promptFileForProp(packetResult.leg.prop_type);
-  const base = String(env.PROMPT_BASE_URL || "").replace(/\/+$/, "");
-
-  if (!base) {
-    throw new Error("Missing PROMPT_BASE_URL variable");
-  }
-
-  const url = `${base}/${fileName}`;
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": "prop-engine-worker"
-    }
-  });
-
-  if (!res.ok) {
-    throw new Error(`Prompt fetch failed: ${res.status} ${url}`);
-  }
-
-  const template = await res.text();
-
-  if (!template.includes("{{PACKET_JSON}}")) {
-    throw new Error(`Prompt file missing {{PACKET_JSON}} placeholder: ${fileName}`);
-  }
-
+  const template = await fetchPrompt(env, fileName);
+  if (!template.includes("{{PACKET_JSON}}")) throw new Error(`Prompt file missing {{PACKET_JSON}} placeholder: ${fileName}`);
   return template.replace("{{PACKET_JSON}}", JSON.stringify(packetResult, null, 2));
 }
 
@@ -495,118 +339,44 @@ function promptFileForProp(propType) {
   return PROMPT_FILES[normalized] || PROMPT_FILES.default;
 }
 
-async function callGemini(env, model, prompt) {
+async function fetchPrompt(env, fileName) {
+  const base = String(env.PROMPT_BASE_URL || "").replace(/\/+$/, "");
+  if (!base) throw new Error("Missing PROMPT_BASE_URL variable");
+  const url = `${base}/${fileName}`;
+  const res = await fetch(url, { headers: { "user-agent": "alphadog-worker" } });
+  if (!res.ok) throw new Error(`Prompt fetch failed: ${res.status} ${url}`);
+  return await res.text();
+}
+
+async function callGemini(env, model, prompt, options = {}) {
+  if (!env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY secret");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const generationConfig = options.scrape
+    ? { temperature: 0, topP: 0, maxOutputTokens: 8192, responseMimeType: "application/json" }
+    : { temperature: 0, topP: 0, maxOutputTokens: 8192 };
 
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }]
-        }
-      ],
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.8,
-        maxOutputTokens: 8192
-      }
-    })
+    body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig })
   });
-
   const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(JSON.stringify(data));
-  }
-
+  if (!res.ok) throw new Error(JSON.stringify(data));
   return data?.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(data);
 }
 
-async function handleTaskRun(request, env) {
-  if (!isAuthorized(request, env)) return unauthorized();
+function cleanJsonText(raw) {
+  return String(raw || "").replace(/```json/gi, "").replace(/```/g, "").trim();
+}
 
-  const body = await request.json();
-  const job = body.job || "daily_mlb_slate";
-  const taskId = crypto.randomUUID();
-
-  await env.DB.prepare(`
-    INSERT INTO task_runs (task_id, job_name, status, input_json)
-    VALUES (?, ?, ?, ?)
-  `).bind(taskId, job, "running", JSON.stringify(body)).run();
-
+function parseStrictJson(text) {
   try {
-    const promptUrl = `${String(env.PROMPT_BASE_URL).replace(/\/+$/, "")}/scrape_daily_mlb_slate_v1.txt`;
-    const prompt = await fetch(promptUrl).then(r => r.text());
-
-    const raw = await callGemini(env, "gemini-2.5-flash", prompt);
-    const clean = raw.replace(/```json|```/g, "").trim();
-    let data;
-    try {
-      data = JSON.parse(clean);
-    } catch (parseErr) {
-      throw new Error("Gemini returned invalid JSON: " + clean.slice(0, 1000));
-    }
-    const tables = [
-      "games",
-      "teams_current",
-      "starters_current",
-      "bullpens_current",
-      "markets_current",
-      "lineups_current",
-      "players_current",
-      "player_recent_usage"
-    ];
-
-    const results = {};
-
-    for (const table of tables) {
-      const rows = Array.isArray(data[table]) ? data[table] : [];
-      if (!rows.length) {
-        results[table] = 0;
-        continue;
-      }
-
-      const fakeRequest = new Request("https://internal/ingest/upsert", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-ingest-token": env.INGEST_TOKEN
-        },
-        body: JSON.stringify({ table, rows })
-      });
-
-      const res = await handleUpsert(fakeRequest, env);
-      const json = await res.json();
-      results[table] = json.inserted || 0;
-    }
-
-    await env.DB.prepare(`
-      UPDATE task_runs
-      SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?
-      WHERE task_id=?
-    `).bind("success", JSON.stringify(results), taskId).run();
-
-    return Response.json({
-      ok: true,
-      task_id: taskId,
-      job,
-      inserted: results
-    });
-
+    return JSON.parse(text);
   } catch (err) {
-    await env.DB.prepare(`
-      UPDATE task_runs
-      SET status=?, finished_at=CURRENT_TIMESTAMP, error=?
-      WHERE task_id=?
-    `).bind("failed", String(err.message || err), taskId).run();
-
-    return Response.json({
-      ok: false,
-      task_id: taskId,
-      error: String(err.message || err)
-    }, { status: 500 });
+    throw new Error("Gemini returned invalid JSON: " + String(text).slice(0, 1200));
   }
+}
+
+async function safeJson(request) {
+  try { return await request.json(); } catch { return {}; }
 }

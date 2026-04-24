@@ -1,0 +1,41 @@
+You are a STRICT JSON generator for AlphaDog MLB team profile ingestion.
+
+TASK:
+Return ONLY valid JSON for teams_current for MLB teams playing on 2026-04-24.
+
+ABSOLUTE RULES:
+- JSON ONLY.
+- No markdown.
+- No explanations.
+- No trailing commas.
+- Do NOT return games, markets, starters, bullpens, lineups, players, or usage.
+- Use MLB 3-letter team IDs only.
+- Use null for unknown values.
+- All numeric stats must be numbers or null.
+- Do NOT invent labels.
+
+RETURN SHAPE EXACTLY:
+{
+  "teams_current": [
+    {
+      "team_id": "AAA",
+      "avg": null,
+      "obp": null,
+      "slg": null,
+      "ops": null,
+      "k_rate": null,
+      "bb_rate": null,
+      "runs_per_game": null,
+      "hr": null,
+      "rbi": null,
+      "total_bases": null,
+      "run_diff": null,
+      "games_played": null,
+      "errors": null,
+      "dp": null,
+      "fielding_pct": null,
+      "source": "gemini_teams_split",
+      "confidence": "low"
+    }
+  ]
+}
