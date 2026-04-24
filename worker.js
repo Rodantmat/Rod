@@ -541,7 +541,7 @@ async function handleTaskRun(request, env) {
     const promptUrl = `${String(env.PROMPT_BASE_URL).replace(/\/+$/, "")}/scrape_daily_mlb_slate_v1.txt`;
     const prompt = await fetch(promptUrl).then(r => r.text());
 
-    const raw = await callGemini(env, "gemini-3.1-flash-lite", prompt);
+    const raw = await callGemini(env, "gemini-2.5-flash", prompt);
     const clean = raw.replace(/```json|```/g, "").trim();
     const data = JSON.parse(clean);
 
