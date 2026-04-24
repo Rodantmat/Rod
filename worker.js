@@ -55,6 +55,10 @@ export default {
         return await handleScoreLeg(request, env);
       }
 
+      if (url.pathname === "/tasks/run" && request.method === "POST") {
+      return await handleTaskRun(request, env);
+      }
+
       return Response.json({ ok: false, error: "Not found", path: url.pathname }, { status: 404 });
     } catch (err) {
       return Response.json({
@@ -519,4 +523,86 @@ async function callGemini(env, model, prompt) {
   }
 
   return data?.candidates?.[0]?.content?.parts?.[0]?.text || JSON.stringify(data);
+}
+
+async function handleTaskRun(request, env) {
+  if (!isAuthorized(request, env)) return unauthorized();
+
+  const body = await request.json();
+  const job = body.job || "daily_mlb_slate";
+  const taskId = crypto.randomUUID();
+
+  await env.DB.prepare(`
+    INSERT INTO task_runs (task_id, job_name, status, input_json)
+    VALUES (?, ?, ?, ?)
+  `).bind(taskId, job, "running", JSON.stringify(body)).run();
+
+  try {
+    const promptUrl = `${String(env.PROMPT_BASE_URL).replace(/\/+$/, "")}/scrape_daily_mlb_slate_v1.txt`;
+    const prompt = await fetch(promptUrl).then(r => r.text());
+
+    const raw = await callGemini(env, "gemini-3.1-flash-lite", prompt);
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const data = JSON.parse(clean);
+
+    const tables = [
+      "games",
+      "teams_current",
+      "starters_current",
+      "bullpens_current",
+      "markets_current",
+      "lineups_current",
+      "players_current",
+      "player_recent_usage"
+    ];
+
+    const results = {};
+
+    for (const table of tables) {
+      const rows = Array.isArray(data[table]) ? data[table] : [];
+      if (!rows.length) {
+        results[table] = 0;
+        continue;
+      }
+
+      const fakeRequest = new Request("https://internal/ingest/upsert", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-ingest-token": env.INGEST_TOKEN
+        },
+        body: JSON.stringify({ table, rows })
+      });
+
+      const res = await handleUpsert(fakeRequest, env);
+      const json = await res.json();
+      results[table] = json.inserted || 0;
+    }
+
+    await env.DB.prepare(`
+      UPDATE task_runs
+      SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?
+      WHERE task_id=?
+    `).bind("success", JSON.stringify(results), taskId).run();
+
+    return Response.json({
+      ok: true,
+      task_id: taskId,
+      job,
+      inserted: results
+    });
+
+  } catch (err) {
+    await env.DB.prepare(`
+      UPDATE task_runs
+      SET status=?, finished_at=CURRENT_TIMESTAMP, error=?
+      WHERE task_id=?
+    `).bind("failed", String(err.message || err), taskId).run();
+
+    return Response.json({
+      ok: false,
+      task_id: taskId,
+      error: String(err.message || err)
+    }, { status: 500 });
+  }
 }
