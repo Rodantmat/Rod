@@ -20,7 +20,7 @@ ABSOLUTE RULES:
 - No trailing commas.
 - Always close the JSON object.
 - Return all 30 MLB teams.
-- team_id MUST be standard 2-3 letter uppercase abbreviation.
+- team_id MUST be canonical standard uppercase abbreviation. Use CWS not CHW, KC not KCR, SD not SDP, SFG not SF, TB not TBR, WSN not WSH.
 - Use numeric values when known.
 - Use null only when truly unknown.
 - DO NOT return shell-only rows if stats are knowable.

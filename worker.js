@@ -207,25 +207,60 @@ function validateRows(table, rows) {
   if (!config) return { ok: false, error: `Unknown table ${table}` };
   if (!Array.isArray(rows)) return { ok: false, error: "rows must be array" };
   const cleaned = [];
+  const skipped = [];
 
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i] || {};
+    const row = normalizeRow(table, rows[i] || {});
+
     if (row.away_team_id !== undefined || row.home_team_id !== undefined) {
       return { ok: false, error: `row ${i} uses forbidden away_team_id/home_team_id` };
     }
+
+    let missingRequired = false;
     for (const required of config.required) {
       if (row[required] === undefined || row[required] === null || row[required] === "") {
-        return { ok: false, error: `row ${i} missing required ${required}` };
+        skipped.push({ row: i, reason: `missing required ${required}` });
+        missingRequired = true;
       }
     }
-    if (row.game_id !== undefined && !validGameId(row.game_id)) return { ok: false, error: `row ${i} malformed game_id ${row.game_id}` };
-    if (row.game_date !== undefined && !String(row.game_date).startsWith("2026-")) return { ok: false, error: `row ${i} invalid game_date ${row.game_date}` };
-    if (row.team_id !== undefined && !validTeamId(row.team_id)) return { ok: false, error: `row ${i} invalid team_id ${row.team_id}` };
-    if (row.away_team !== undefined && !validTeamId(row.away_team)) return { ok: false, error: `row ${i} invalid away_team ${row.away_team}` };
-    if (row.home_team !== undefined && !validTeamId(row.home_team)) return { ok: false, error: `row ${i} invalid home_team ${row.home_team}` };
+    if (missingRequired) continue;
+
+    if (row.game_id !== undefined && !validGameId(row.game_id)) {
+      skipped.push({ row: i, reason: `malformed game_id ${row.game_id}` });
+      continue;
+    }
+    if (row.game_date !== undefined && !String(row.game_date).startsWith("2026-")) {
+      skipped.push({ row: i, reason: `invalid game_date ${row.game_date}` });
+      continue;
+    }
+    if (row.team_id !== undefined && !validTeamId(row.team_id)) {
+      skipped.push({ row: i, reason: `invalid team_id ${row.team_id}` });
+      continue;
+    }
+    if (row.away_team !== undefined && !validTeamId(row.away_team)) {
+      skipped.push({ row: i, reason: `invalid away_team ${row.away_team}` });
+      continue;
+    }
+    if (row.home_team !== undefined && !validTeamId(row.home_team)) {
+      skipped.push({ row: i, reason: `invalid home_team ${row.home_team}` });
+      continue;
+    }
     if (row.slot !== undefined) {
       const n = Number(row.slot);
-      if (!Number.isInteger(n) || n < 1 || n > 9) return { ok: false, error: `row ${i} invalid slot ${row.slot}` };
+      if (!Number.isInteger(n) || n < 1 || n > 9) {
+        skipped.push({ row: i, reason: `invalid slot ${row.slot}` });
+        continue;
+      }
+    }
+
+    if (table === "teams_current" && !hasAnyValue(row, ["avg", "obp", "slg", "ops", "k_rate", "runs_per_game"])) {
+      skipped.push({ row: i, reason: `team shell row rejected ${row.team_id}` });
+      continue;
+    }
+
+    if (table === "starters_current" && !hasAllValues(row, ["era", "whip", "strikeouts", "innings_pitched"])) {
+      skipped.push({ row: i, reason: `starter missing core stats rejected ${row.game_id}/${row.team_id}` });
+      continue;
     }
 
     const out = {};
@@ -234,7 +269,49 @@ function validateRows(table, rows) {
     if (config.allowed.includes("confidence") && out.confidence === undefined) out.confidence = "low";
     cleaned.push(out);
   }
-  return { ok: true, rows: cleaned };
+
+  if (!cleaned.length && rows.length) {
+    return { ok: false, error: `all ${table} rows rejected: ${JSON.stringify(skipped).slice(0, 900)}` };
+  }
+  return { ok: true, rows: cleaned, skipped };
+}
+
+function normalizeRow(table, input) {
+  const row = { ...input };
+  for (const key of ["team_id", "away_team", "home_team"]) {
+    if (row[key] !== undefined && row[key] !== null) row[key] = canonicalTeamId(row[key]);
+  }
+  if (row.game_id !== undefined && row.game_id !== null) row.game_id = canonicalGameId(row.game_id);
+  if (row.throws !== undefined && row.throws !== null) row.throws = normalizeHand(row.throws);
+  return row;
+}
+
+function canonicalTeamId(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  const aliases = { CHW: "CWS", KCR: "KC", SDP: "SD", SF: "SFG", TBR: "TB", WSH: "WSN" };
+  return aliases[raw] || raw;
+}
+
+function canonicalGameId(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  const parts = raw.split("_");
+  if (parts.length !== 3) return raw;
+  return `${parts[0]}_${canonicalTeamId(parts[1])}_${canonicalTeamId(parts[2])}`;
+}
+
+function normalizeHand(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === "RIGHT" || raw === "RHP") return "R";
+  if (raw === "LEFT" || raw === "LHP") return "L";
+  return raw === "R" || raw === "L" ? raw : null;
+}
+
+function hasAnyValue(row, keys) {
+  return keys.some(k => row[k] !== undefined && row[k] !== null && row[k] !== "");
+}
+
+function hasAllValues(row, keys) {
+  return keys.every(k => row[k] !== undefined && row[k] !== null && row[k] !== "");
 }
 
 function validGameId(gameId) {
