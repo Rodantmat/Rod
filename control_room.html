@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control Room</title>
+<style>
+body{background:#111;color:#0f0;font-family:monospace;padding:20px}
+button{width:100%;padding:15px;margin:5px 0;font-size:16px}
+textarea{width:100%;height:120px;margin-top:10px}
+pre{background:#000;padding:10px;overflow:auto}
+</style>
+</head>
+<body>
+
+<h2>CONTROL ROOM</h2>
+
+<button onclick="runSQL()">Run SQL</button>
+
+<textarea id="sql">SELECT COUNT(*) FROM games;</textarea>
+
+<pre id="output"></pre>
+
+<script>
+const URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/debug/sql";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
+
+async function runSQL(){
+  const sql = document.getElementById('sql').value;
+  const res = await fetch(URL,{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "x-ingest-token":TOKEN
+    },
+    body:JSON.stringify({sql})
+  });
+  const data = await res.json();
+  document.getElementById('output').textContent = JSON.stringify(data,null,2);
+}
+</script>
+
+</body>
+</html>
