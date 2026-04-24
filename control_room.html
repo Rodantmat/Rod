@@ -15,9 +15,10 @@
   .check{background:#238636}
   .sql{background:#d29922}
   .debug{background:#8957e5}
+  .audit{background:#0f766e}
   .copy{background:#8957e5;width:100%;margin-top:6px}
   textarea{width:100%;height:90px;margin-top:8px;background:#111;color:#00ff88;padding:8px;border:1px solid #30363d;border-radius:6px;box-sizing:border-box}
-  pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:380px;min-height:130px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+  pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:420px;min-height:150px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
   .status{background:#111;color:#fff;padding:8px;border-radius:6px;border:1px solid #30363d;margin:8px 0;white-space:pre-wrap}
   .small{font-size:11px;color:#aaa;margin-bottom:6px}
 </style>
@@ -60,6 +61,7 @@
 <button class="check" onclick="runSQLButton('Game List', listGames())">Game List</button>
 <button class="check" onclick="runSQLButton('Starter List', listStarters())">Starter List</button>
 <button class="check" onclick="runSQLButton('Bad Starters', badStarters())">Bad Start</button>
+<button class="audit" onclick="runSQLButton('Truth Audit', truthAudit())">Truth Audit</button>
 <button class="check" onclick="runSQLButton('Tasks', latestTasks())">Tasks</button>
 </div></div>
 
@@ -76,7 +78,7 @@ const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
 const JOB_URL = BASE + "/tasks/run";
 const SQL_URL = BASE + "/debug/sql";
 const HEALTH_URL = BASE + "/health";
-const TOKEN = "LindaMaria123@";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
 
 // SINGLE DATE VARIABLE. Change only this line for controlled testing.
 const TARGET_DATE = "2026-04-24";
@@ -101,8 +103,8 @@ function debugConfig(){
     job_url: JOB_URL,
     sql_url: SQL_URL,
     target_date: TARGET_DATE,
-    token_set: TOKEN !== "LindaMaria123@",
-    version: "control_room_retry_badstart_2026_04_24"
+    token_set: TOKEN !== "PUT_YOUR_TOKEN_HERE",
+    version: "control_room_truth_audit_2026_04_24"
   });
 }
 
@@ -184,6 +186,36 @@ function listGames(){ return `SELECT game_id FROM games WHERE game_date = '${TAR
 function listStarters(){ return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%' ORDER BY game_id, team_id;`; }
 function badStarters(){ return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%' AND (starter_name LIKE '%Ace%' OR starter_name IN ('TBD','TBA','Unknown','Starter') OR era IS NULL OR era <= 0 OR whip IS NULL OR whip <= 0 OR strikeouts IS NULL OR strikeouts <= 0 OR innings_pitched IS NULL OR innings_pitched <= 0) ORDER BY game_id, team_id;`; }
 function latestTasks(){ return `SELECT task_id, job_name, status, started_at, finished_at, output_json, error FROM task_runs ORDER BY started_at DESC LIMIT 8;`; }
+
+function truthAudit(){
+  return `
+SELECT 'MISSING_STARTER' AS audit_type, g.game_id AS game_id, COUNT(s.team_id) AS starters_found, GROUP_CONCAT(s.team_id) AS teams_found
+FROM games g
+LEFT JOIN starters_current s ON g.game_id = s.game_id
+WHERE g.game_date = '${TARGET_DATE}'
+GROUP BY g.game_id
+HAVING starters_found < 2;
+
+SELECT 'STAT_OUTLIER' AS audit_type, game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched
+FROM starters_current
+WHERE game_id LIKE '${TARGET_DATE}_%'
+  AND (strikeouts > 300 OR innings_pitched > 220 OR era > 10 OR whip > 2)
+ORDER BY game_id;
+
+SELECT 'DUPLICATE_STARTER_NAME' AS audit_type, starter_name, COUNT(*) AS occurrences
+FROM starters_current
+WHERE game_id LIKE '${TARGET_DATE}_%'
+GROUP BY starter_name
+HAVING occurrences > 1;
+
+SELECT 'TEAM_NOT_IN_GAME' AS audit_type, s.game_id, s.team_id, s.starter_name
+FROM starters_current s
+JOIN games g ON s.game_id = g.game_id
+WHERE g.game_date = '${TARGET_DATE}'
+  AND s.team_id NOT IN (g.away_team, g.home_team)
+ORDER BY s.game_id, s.team_id;
+`;
+}
 </script>
 </body>
 </html>
