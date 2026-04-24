@@ -13,7 +13,9 @@ ABSOLUTE RULES:
 - Do NOT use 2024, 2025, or historical slates.
 - Use only date 2026-04-24.
 - Use exact field names below.
-- If unsure, return empty arrays rather than guessing.
+- If unsure about a value, use null.
+- Do NOT invent teams or games.
+- Return only games that are actually on the 2026-04-24 MLB slate.
 
 Return EXACTLY this JSON object shape:
 
@@ -31,10 +33,24 @@ Return EXACTLY this JSON object shape:
       "status": "scheduled"
     }
   ],
+  "markets_current": [
+    {
+      "game_id": "2026-04-24_AWAY_HOME",
+      "game_total": null,
+      "open_total": null,
+      "current_total": null,
+      "away_moneyline": null,
+      "home_moneyline": null,
+      "away_implied_runs": null,
+      "home_implied_runs": null,
+      "runline": null,
+      "source": "gemini_slate_scrape",
+      "confidence": "low"
+    }
+  ],
   "teams_current": [],
   "starters_current": [],
   "bullpens_current": [],
-  "markets_current": [],
   "lineups_current": [],
   "players_current": [],
   "player_recent_usage": []
