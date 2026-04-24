@@ -18,28 +18,20 @@
   textarea{width:100%;height:90px;margin-top:8px;background:#111;color:#00ff88;padding:8px;border:1px solid #30363d;border-radius:6px;box-sizing:border-box}
   pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:260px;min-height:80px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
   .status{background:#111;color:#fff;padding:8px;border-radius:6px;border:1px solid #30363d;margin:8px 0}
-  .warn{color:#ffcc00}
 </style>
 </head>
 <body>
-
 <h2>ALPHADOG CONTROL ROOM</h2>
-
 <div class="status" id="status">READY</div>
 
-<div class="section">
-<h3>DEBUG</h3>
-<div class="grid">
+<div class="section"><h3>DEBUG</h3><div class="grid">
 <button class="debug" onclick="debugConfig()">Config</button>
 <button class="debug" onclick="health()">Health</button>
 <button class="debug" onclick="testSQL()">SQL Test</button>
 <button class="debug" onclick="clearOutput()">Clear</button>
-</div>
-</div>
+</div></div>
 
-<div class="section">
-<h3>SCRAPE</h3>
-<div class="grid">
+<div class="section"><h3>SCRAPE</h3><div class="grid">
 <button onclick="runJob('scrape_games_markets')">Markets</button>
 <button onclick="runJob('scrape_starters_group_1')">G1</button>
 <button onclick="runJob('scrape_starters_group_2')">G2</button>
@@ -48,22 +40,16 @@
 <button onclick="runJob('scrape_bullpens')">Bullpen</button>
 <button onclick="runJob('scrape_lineups')">Lineups</button>
 <button onclick="runJob('scrape_players')">Players</button>
-</div>
-</div>
+</div></div>
 
-<div class="section">
-<h3>CLEAN</h3>
-<div class="grid">
+<div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQL(cleanAll)">Full</button>
 <button class="clean" onclick="runSQL(cleanStarters)">Starters</button>
 <button class="clean" onclick="runSQL(cleanMarkets)">Markets</button>
 <button class="clean" onclick="runSQL(cleanGames)">Games</button>
-</div>
-</div>
+</div></div>
 
-<div class="section">
-<h3>CHECK</h3>
-<div class="grid">
+<div class="section"><h3>CHECK</h3><div class="grid">
 <button class="check" onclick="runSQL(checkGames)">Games</button>
 <button class="check" onclick="runSQL(checkMarkets)">Markets</button>
 <button class="check" onclick="runSQL(checkStarters)">Starters</button>
@@ -72,11 +58,9 @@
 <button class="check" onclick="runSQL(listStarters)">Starter List</button>
 <button class="check" onclick="runSQL(latestTasks)">Tasks</button>
 <button class="check" onclick="runSQL(runningTasks)">Running</button>
-</div>
-</div>
+</div></div>
 
-<div class="section">
-<h3>MANUAL SQL</h3>
+<div class="section"><h3>MANUAL SQL</h3>
 <textarea id="sql">SELECT COUNT(*) AS games FROM games;</textarea>
 <button class="sql" onclick="runSQL()">Run SQL</button>
 </div>
@@ -89,7 +73,7 @@ const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
 const JOB_URL = BASE + "/tasks/run";
 const SQL_URL = BASE + "/debug/sql";
 const HEALTH_URL = BASE + "/health";
-const TOKEN = "LindaMaria123@";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
 
 function setStatus(msg){ document.getElementById("status").textContent = msg; }
 function setOutput(obj){
@@ -99,13 +83,7 @@ function setOutput(obj){
 }
 function clearOutput(){ setStatus("READY"); setOutput("Output cleared."); }
 function debugConfig(){
-  setOutput({
-    base: BASE,
-    job_url: JOB_URL,
-    sql_url: SQL_URL,
-    token_set: TOKEN !== "PUT_YOUR_TOKEN_HERE",
-    note: "If token_set is false, edit TOKEN first. If requests fail with Failed to fetch, Worker needs CORS headers."
-  });
+  setOutput({base: BASE, job_url: JOB_URL, sql_url: SQL_URL, token_set: TOKEN !== "PUT_YOUR_TOKEN_HERE"});
 }
 async function requestJSON(url, payload){
   const headers = {"Content-Type":"application/json","x-ingest-token":TOKEN};
@@ -119,12 +97,7 @@ async function requestJSON(url, payload){
     catch(e){ return {http_status:res.status, raw:text}; }
   } catch(err){
     setStatus("ERROR");
-    return {
-      ok:false,
-      error:String(err),
-      likely_cause:"Browser fetch failed. Most likely CORS is missing on the Worker OR the URL/token is wrong.",
-      next:"Send this output to ChatGPT."
-    };
+    return {ok:false,error:String(err),likely_cause:"CORS/URL/token/network issue"};
   }
 }
 async function health(){ setOutput(await requestJSON(HEALTH_URL, null)); }
@@ -158,6 +131,5 @@ const listStarters = `SELECT game_id, team_id, starter_name, era, whip, strikeou
 const latestTasks = `SELECT task_id, job_name, status, started_at, finished_at, output_json, error FROM task_runs ORDER BY started_at DESC LIMIT 8;`;
 const runningTasks = `SELECT COUNT(*) AS running FROM task_runs WHERE status='running';`;
 </script>
-
 </body>
 </html>
