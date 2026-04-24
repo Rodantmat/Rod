@@ -17,9 +17,9 @@
   .debug{background:#8957e5}
   .copy{background:#8957e5;width:100%;margin-top:6px}
   textarea{width:100%;height:90px;margin-top:8px;background:#111;color:#00ff88;padding:8px;border:1px solid #30363d;border-radius:6px;box-sizing:border-box}
-  pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:320px;min-height:110px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+  pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:380px;min-height:130px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
   .status{background:#111;color:#fff;padding:8px;border-radius:6px;border:1px solid #30363d;margin:8px 0;white-space:pre-wrap}
-  .small{font-size:11px;color:#aaa}
+  .small{font-size:11px;color:#aaa;margin-bottom:6px}
 </style>
 </head>
 <body>
@@ -59,8 +59,8 @@
 <button class="check" onclick="runSQLButton('Check Teams', checkTeams())">Teams</button>
 <button class="check" onclick="runSQLButton('Game List', listGames())">Game List</button>
 <button class="check" onclick="runSQLButton('Starter List', listStarters())">Starter List</button>
+<button class="check" onclick="runSQLButton('Bad Starters', badStarters())">Bad Start</button>
 <button class="check" onclick="runSQLButton('Tasks', latestTasks())">Tasks</button>
-<button class="check" onclick="runSQLButton('Running', runningTasks())">Running</button>
 </div></div>
 
 <div class="section"><h3>MANUAL SQL</h3>
@@ -76,7 +76,9 @@ const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
 const JOB_URL = BASE + "/tasks/run";
 const SQL_URL = BASE + "/debug/sql";
 const HEALTH_URL = BASE + "/health";
-const TOKEN = "LindaMaria123@";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
+
+// SINGLE DATE VARIABLE. Change only this line for controlled testing.
 const TARGET_DATE = "2026-04-24";
 
 document.getElementById("targetDateLabel").textContent = TARGET_DATE;
@@ -88,55 +90,87 @@ function setOutput(label, obj){
   document.getElementById("output").textContent = "ACTION: " + label + "\nTIME: " + new Date().toISOString() + "\n\n" + payload;
   window.scrollTo(0, document.body.scrollHeight);
 }
+function loading(label, extra){
+  setStatus("RUNNING: " + label);
+  setOutput(label, "Loading..." + (extra ? "\n" + extra : ""));
+}
 function clearOutput(){ setStatus("READY"); setOutput("Clear","Output cleared."); }
-
 function debugConfig(){
   setOutput("Config",{
     base: BASE,
     job_url: JOB_URL,
     sql_url: SQL_URL,
     target_date: TARGET_DATE,
-    token_set: TOKEN !== "LindaMaria123@"
+    token_set: TOKEN !== "PUT_YOUR_TOKEN_HERE",
+    version: "control_room_retry_badstart_2026_04_24"
   });
 }
 
-async function requestJSON(label, url, payload){
+async function rawRequest(label, url, payload){
   const headers = {"Content-Type":"application/json","x-ingest-token":TOKEN};
   const options = payload === null ? {method:"GET",headers} : {method:"POST",headers,body:JSON.stringify(payload)};
   try{
-    setStatus("RUNNING: " + label);
-    setOutput(label, "Request sent...");
     const res = await fetch(url, options);
     const text = await res.text();
     let body;
     try { body = JSON.parse(text); } catch(e){ body = text; }
-    setStatus("DONE: " + label + " / HTTP " + res.status);
-    setOutput(label, {http_status:res.status, body});
+    return {http_status:res.status, body};
   } catch(err){
-    setStatus("ERROR: " + label);
-    setOutput(label, {
-      ok:false,
-      error:String(err),
-      likely_cause:"CORS/URL/token/network issue",
-      action:label
-    });
+    return {ok:false, error:String(err), action:label};
   }
+}
+
+async function requestJSON(label, url, payload){
+  loading(label);
+  const result = await rawRequest(label, url, payload);
+  setStatus("DONE: " + label + " / HTTP " + (result.http_status || "ERR"));
+  setOutput(label, result);
+  return result;
+}
+
+function shouldRetry(result){
+  const raw = JSON.stringify(result || {});
+  if (raw.includes("503") || raw.includes("UNAVAILABLE") || raw.includes("high demand") || raw.includes("Load failed") || raw.includes("cancelled")) return true;
+
+  const inserted = result && result.body && result.body.inserted;
+  if (inserted) {
+    const vals = Object.values(inserted).map(Number);
+    if (vals.length && vals.every(v => v === 0)) return true;
+  }
+  return false;
+}
+
+async function requestJobWithRetry(label, job){
+  const attempts = [];
+  for (let i=1; i<=3; i++){
+    loading(label, "Try " + i + " of 3 started.");
+    const result = await rawRequest(label + " try " + i, JOB_URL, {job});
+    attempts.push({try:i,result});
+
+    if (!shouldRetry(result)) {
+      setStatus("DONE: " + label + " / success");
+      setOutput(label, {final:"success", attempts});
+      return;
+    }
+
+    if (i < 3) {
+      setStatus("RETRYING: " + label + " / try " + i + " failed");
+      setOutput(label, {status:"retrying", reason:"503/cancelled/zero inserted", next_try:i+1, attempts});
+      await new Promise(r => setTimeout(r, 10000));
+    }
+  }
+  setStatus("FAILED: " + label + " after 3 tries");
+  setOutput(label, {final:"failed_after_3_attempts", attempts});
 }
 
 function health(){ requestJSON("Health", HEALTH_URL, null); }
 function testSQL(){ requestJSON("SQL Test", SQL_URL, {sql:"SELECT COUNT(*) AS total_games FROM games;"}); }
-function runJobButton(label, job){ requestJSON(label, JOB_URL, {job}); }
+function runJobButton(label, job){ requestJobWithRetry(label, job); }
 function runSQLButton(label, sql){ requestJSON(label, SQL_URL, {sql}); }
 function runManualSQL(){ runSQLButton("Manual SQL", document.getElementById("sql").value); }
 function copyOutput(){ navigator.clipboard.writeText(document.getElementById("output").textContent); setStatus("COPIED OUTPUT"); }
 
-function cleanAll(){ return `
-DELETE FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%';
-DELETE FROM bullpens_current WHERE game_id LIKE '${TARGET_DATE}_%';
-DELETE FROM lineups_current WHERE game_id LIKE '${TARGET_DATE}_%';
-DELETE FROM markets_current WHERE game_id LIKE '${TARGET_DATE}_%';
-DELETE FROM games WHERE game_date = '${TARGET_DATE}';
-`; }
+function cleanAll(){ return `DELETE FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%'; DELETE FROM bullpens_current WHERE game_id LIKE '${TARGET_DATE}_%'; DELETE FROM lineups_current WHERE game_id LIKE '${TARGET_DATE}_%'; DELETE FROM markets_current WHERE game_id LIKE '${TARGET_DATE}_%'; DELETE FROM games WHERE game_date = '${TARGET_DATE}';`; }
 function cleanStarters(){ return `DELETE FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%';`; }
 function cleanMarkets(){ return `DELETE FROM markets_current WHERE game_id LIKE '${TARGET_DATE}_%';`; }
 function cleanGames(){ return `DELETE FROM games WHERE game_date = '${TARGET_DATE}';`; }
@@ -148,8 +182,8 @@ function checkTeams(){ return `SELECT COUNT(*) AS teams FROM teams_current;`; }
 
 function listGames(){ return `SELECT game_id FROM games WHERE game_date = '${TARGET_DATE}' ORDER BY game_id;`; }
 function listStarters(){ return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%' ORDER BY game_id, team_id;`; }
+function badStarters(){ return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${TARGET_DATE}_%' AND (starter_name LIKE '%Ace%' OR starter_name IN ('TBD','TBA','Unknown','Starter') OR era IS NULL OR era <= 0 OR whip IS NULL OR whip <= 0 OR strikeouts IS NULL OR strikeouts <= 0 OR innings_pitched IS NULL OR innings_pitched <= 0) ORDER BY game_id, team_id;`; }
 function latestTasks(){ return `SELECT task_id, job_name, status, started_at, finished_at, output_json, error FROM task_runs ORDER BY started_at DESC LIMIT 8;`; }
-function runningTasks(){ return `SELECT COUNT(*) AS running FROM task_runs WHERE status='running';`; }
 </script>
 </body>
 </html>
