@@ -543,8 +543,12 @@ async function handleTaskRun(request, env) {
 
     const raw = await callGemini(env, "gemini-2.5-flash", prompt);
     const clean = raw.replace(/```json|```/g, "").trim();
-    const data = JSON.parse(clean);
-
+    let data;
+    try {
+      data = JSON.parse(clean);
+    } catch (parseErr) {
+      throw new Error("Gemini returned invalid JSON: " + clean.slice(0, 1000));
+    }
     const tables = [
       "games",
       "teams_current",
