@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "prop-ingestion-v2",
+  "name": "prop-ingestion-git",
   "main": "worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {
