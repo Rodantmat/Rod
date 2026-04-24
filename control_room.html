@@ -79,12 +79,34 @@ const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
 const JOB_URL = BASE + "/tasks/run";
 const SQL_URL = BASE + "/debug/sql";
 const HEALTH_URL = BASE + "/health";
-const TOKEN = "";
+const CONFIG_URL = "https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt";
+let TOKEN = "";
+let CONFIG_LOADED = false;
 
 // SINGLE DATE VARIABLE. Change only this line for controlled testing.
 const TARGET_DATE = "2026-04-24";
 
 document.getElementById("targetDateLabel").textContent = TARGET_DATE;
+
+async function loadConfig(){
+  try{
+    setStatus("LOADING CONFIG...");
+    const res = await fetch(CONFIG_URL + "?t=" + Date.now());
+    const text = await res.text();
+    const match = text.match(/TOKEN\s*=\s*(.+)/);
+    if(match && match[1].trim()){
+      TOKEN = match[1].trim();
+      CONFIG_LOADED = true;
+      setStatus("CONFIG LOADED");
+    } else {
+      CONFIG_LOADED = false;
+      setStatus("CONFIG FOUND, TOKEN MISSING");
+    }
+  } catch(err){
+    CONFIG_LOADED = false;
+    setStatus("CONFIG LOAD FAILED");
+  }
+}
 
 function nowStamp(){ return new Date().toLocaleTimeString(); }
 function setStatus(msg){ document.getElementById("status").textContent = "[" + nowStamp() + "] " + msg; }
@@ -101,11 +123,13 @@ function clearOutput(){ setStatus("READY"); setOutput("Clear","Output cleared.")
 function debugConfig(){
   setOutput("Config",{
     base: BASE,
+    config_url: CONFIG_URL,
     job_url: JOB_URL,
     sql_url: SQL_URL,
     target_date: TARGET_DATE,
     token_set: Boolean(TOKEN),
-    version: "control_room_missing_repair_2026_04_24"
+    config_loaded: CONFIG_LOADED,
+    version: "control_room_config_txt_2026_04_24"
   });
 }
 
@@ -217,6 +241,7 @@ WHERE g.game_date = '${TARGET_DATE}'
 ORDER BY s.game_id, s.team_id;
 `;
 }
+loadConfig();
 </script>
 </body>
 </html>
