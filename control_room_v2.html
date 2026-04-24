@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaDog Control Room v2</title>
+<style>
+body{background:#0b0f14;color:#0f0;font-family:monospace;padding:15px}
+h2{color:#00ff88}
+.section{margin-top:20px;border-top:1px solid #333;padding-top:10px}
+button{width:100%;padding:14px;margin:6px 0;font-size:15px;border:none;border-radius:8px;background:#1f6feb;color:#fff}
+.sql{background:#d29922}
+.clean{background:#da3633}
+.check{background:#238636}
+textarea{width:100%;height:120px;margin-top:10px;background:#111;color:#0f0;padding:10px}
+pre{background:#000;padding:10px;margin-top:10px;overflow:auto}
+.copy{background:#8957e5}
+</style>
+</head>
+<body>
+
+<h2>ALPHADOG CONTROL ROOM</h2>
+
+<div class="section">
+<h3>SCRAPERS</h3>
+<button onclick="runJob('scrape_games_markets')">Run Markets</button>
+<button onclick="runJob('scrape_starters_group_1')">Starters G1</button>
+<button onclick="runJob('scrape_starters_group_2')">Starters G2</button>
+<button onclick="runJob('scrape_starters_group_3')">Starters G3</button>
+<button onclick="runJob('scrape_teams')">Teams</button>
+<button onclick="runJob('scrape_bullpens')">Bullpens</button>
+<button onclick="runJob('scrape_lineups')">Lineups</button>
+</div>
+
+<div class="section">
+<h3>CLEANUP</h3>
+<button class="clean" onclick="runSQL(cleanAll)">Clean FULL Slate</button>
+<button class="clean" onclick="runSQL(cleanStarters)">Clean Starters</button>
+<button class="clean" onclick="runSQL(cleanMarkets)">Clean Markets</button>
+<button class="clean" onclick="runSQL(cleanGames)">Clean Games</button>
+</div>
+
+<div class="section">
+<h3>CHECKS</h3>
+<button class="check" onclick="runSQL(checkGames)">Check Games Count</button>
+<button class="check" onclick="runSQL(checkStarters)">Check Starters</button>
+<button class="check" onclick="runSQL(checkTeams)">Check Teams</button>
+<button class="check" onclick="runSQL(checkMarkets)">Check Markets</button>
+</div>
+
+<div class="section">
+<h3>MANUAL SQL</h3>
+<textarea id="sql">SELECT COUNT(*) FROM games;</textarea>
+<button class="sql" onclick="runSQL()">Run Custom SQL</button>
+</div>
+
+<pre id="output"></pre>
+<button class="copy" onclick="copyOutput()">COPY OUTPUT</button>
+
+<script>
+const JOB_URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/tasks/run";
+const SQL_URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/debug/sql";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
+
+async function runJob(job){
+ const res = await fetch(JOB_URL,{
+  method:"POST",
+  headers:{
+   "Content-Type":"application/json",
+   "x-ingest-token":TOKEN
+  },
+  body:JSON.stringify({job})
+ });
+ const data = await res.text();
+ setOutput(data);
+}
+
+async function runSQL(sqlOverride){
+ const sql = sqlOverride || document.getElementById('sql').value;
+ const res = await fetch(SQL_URL,{
+  method:"POST",
+  headers:{
+   "Content-Type":"application/json",
+   "x-ingest-token":TOKEN
+  },
+  body:JSON.stringify({sql})
+ });
+ const data = await res.text();
+ setOutput(data);
+}
+
+function setOutput(t){
+ document.getElementById('output').textContent = t;
+}
+
+function copyOutput(){
+ navigator.clipboard.writeText(document.getElementById('output').textContent);
+}
+
+// ===== PRESET SQL =====
+const cleanAll = `
+DELETE FROM starters_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM bullpens_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM lineups_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM markets_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM games WHERE game_date = '2026-04-24';
+`;
+
+const cleanStarters = `
+DELETE FROM starters_current WHERE game_id LIKE '2026-04-24_%';
+`;
+
+const cleanMarkets = `
+DELETE FROM markets_current WHERE game_id LIKE '2026-04-24_%';
+`;
+
+const cleanGames = `
+DELETE FROM games WHERE game_date = '2026-04-24';
+`;
+
+const checkGames = `
+SELECT COUNT(*) FROM games WHERE game_date = '2026-04-24';
+`;
+
+const checkStarters = `
+SELECT COUNT(*) FROM starters_current WHERE game_id LIKE '2026-04-24_%';
+`;
+
+const checkTeams = `
+SELECT COUNT(*) FROM teams_current;
+`;
+
+const checkMarkets = `
+SELECT COUNT(*) FROM markets_current WHERE game_id LIKE '2026-04-24_%';
+`;
+
+</script>
+
+</body>
+</html>
