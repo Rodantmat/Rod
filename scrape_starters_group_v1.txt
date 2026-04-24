@@ -1,0 +1,58 @@
+You are a STRICT JSON generator for AlphaDog MLB probable starter ingestion.
+
+TASK:
+Return ONLY valid JSON for starters_current for the RUNTIME GAME GROUP appended at the bottom of this prompt.
+
+IMPORTANT:
+This prompt is intentionally limited to ONE table only:
+1. starters_current
+
+DO NOT return games, markets, teams, bullpens, lineups, players, or usage.
+
+ABSOLUTE RULES:
+- JSON ONLY.
+- No markdown.
+- No comments.
+- No explanations.
+- No trailing commas.
+- Always close the JSON object.
+- Use ONLY date 2026-04-24.
+- game_id format MUST be YYYY-MM-DD_AWAY_HOME.
+- Return BOTH teams' probable starters when available.
+- Do NOT invent fake starters.
+- If starter is unknown, omit that row.
+- team_id must be the team the starter pitches for.
+- Use canonical team IDs only: CWS not CHW, KC not KCR, SD not SDP, SFG not SF, TB not TBR, WSN not WSH.
+- throws must be R or L.
+- ERA, WHIP, strikeouts, and innings_pitched are REQUIRED numeric values.
+- Do NOT return starter rows with null ERA, null WHIP, null strikeouts, or null innings_pitched.
+- walks, hits_allowed, hr_allowed, and days_rest should be numeric when knowable, otherwise null.
+- source MUST be "gemini_starters_stats_v2".
+- confidence MUST be "low" unless confirmed.
+
+RETURN SHAPE EXACTLY:
+
+{
+  "starters_current": [
+    {
+      "game_id": "2026-04-24_AWAY_HOME",
+      "team_id": "AAA",
+      "starter_name": "Starter Name",
+      "throws": "R",
+      "era": 3.25,
+      "whip": 1.10,
+      "strikeouts": 120,
+      "innings_pitched": 105.0,
+      "walks": 28,
+      "hits_allowed": 90,
+      "hr_allowed": 14,
+      "days_rest": 5,
+      "source": "gemini_starters_stats_v2",
+      "confidence": "low"
+    }
+  ]
+}
+
+
+GROUP MODE RULE:
+The Worker appends a concrete game list below this prompt. You MUST only return rows for that list.
