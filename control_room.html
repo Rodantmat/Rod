@@ -2,41 +2,126 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Control Room</title>
+<title>AlphaDog Control Room</title>
 <style>
-body{background:#111;color:#0f0;font-family:monospace;padding:20px}
-button{width:100%;padding:15px;margin:5px 0;font-size:16px}
-textarea{width:100%;height:120px;margin-top:10px}
-pre{background:#000;padding:10px;overflow:auto}
+body{background:#0b0f14;color:#0f0;font-family:monospace;padding:10px}
+h2{color:#00ff88}
+.section{margin-top:15px;border-top:1px solid #333;padding-top:10px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+button{padding:10px;font-size:13px;border:none;border-radius:6px;background:#1f6feb;color:#fff}
+.clean{background:#da3633}
+.check{background:#238636}
+.sql{background:#d29922}
+textarea{width:100%;height:100px;margin-top:10px;background:#111;color:#0f0;padding:8px}
+pre{background:#000;padding:8px;margin-top:10px;overflow:auto;max-height:200px}
+.copy{background:#8957e5;width:100%;margin-top:6px}
 </style>
 </head>
 <body>
 
 <h2>CONTROL ROOM</h2>
 
-<button onclick="runSQL()">Run SQL</button>
+<div class="section">
+<h3>SCRAPE</h3>
+<div class="grid">
+<button onclick="runJob('scrape_games_markets')">Markets</button>
+<button onclick="runJob('scrape_starters_group_1')">G1</button>
+<button onclick="runJob('scrape_starters_group_2')">G2</button>
+<button onclick="runJob('scrape_starters_group_3')">G3</button>
+<button onclick="runJob('scrape_teams')">Teams</button>
+<button onclick="runJob('scrape_bullpens')">Bullpen</button>
+<button onclick="runJob('scrape_lineups')">Lineups</button>
+</div>
+</div>
 
+<div class="section">
+<h3>CLEAN</h3>
+<div class="grid">
+<button class="clean" onclick="runSQL(cleanAll)">Full</button>
+<button class="clean" onclick="runSQL(cleanStarters)">Starters</button>
+<button class="clean" onclick="runSQL(cleanMarkets)">Markets</button>
+<button class="clean" onclick="runSQL(cleanGames)">Games</button>
+</div>
+</div>
+
+<div class="section">
+<h3>CHECK</h3>
+<div class="grid">
+<button class="check" onclick="runSQL(checkGames)">Games</button>
+<button class="check" onclick="runSQL(checkStarters)">Starters</button>
+<button class="check" onclick="runSQL(checkTeams)">Teams</button>
+<button class="check" onclick="runSQL(checkMarkets)">Markets</button>
+</div>
+</div>
+
+<div class="section">
+<h3>SQL</h3>
 <textarea id="sql">SELECT COUNT(*) FROM games;</textarea>
+<button class="sql" onclick="runSQL()">Run</button>
+</div>
 
 <pre id="output"></pre>
+<button class="copy" onclick="copyOutput()">COPY</button>
 
 <script>
-const URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/debug/sql";
-const TOKEN = "LindaMaria123@";
+const JOB_URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/tasks/run";
+const SQL_URL = "https://prop-ingestion-git.rodolfoaamattos.workers.dev/debug/sql";
+const TOKEN = "PUT_YOUR_TOKEN_HERE";
 
-async function runSQL(){
-  const sql = document.getElementById('sql').value;
-  const res = await fetch(URL,{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      "x-ingest-token":TOKEN
-    },
-    body:JSON.stringify({sql})
-  });
-  const data = await res.json();
-  document.getElementById('output').textContent = JSON.stringify(data,null,2);
+async function runJob(job){
+ const res = await fetch(JOB_URL,{
+  method:"POST",
+  headers:{
+   "Content-Type":"application/json",
+   "x-ingest-token":TOKEN
+  },
+  body:JSON.stringify({job})
+ });
+ const text = await res.text();
+ setOutput(text);
 }
+
+async function runSQL(sqlOverride){
+ const sql = sqlOverride || document.getElementById('sql').value;
+ const res = await fetch(SQL_URL,{
+  method:"POST",
+  headers:{
+   "Content-Type":"application/json",
+   "x-ingest-token":TOKEN
+  },
+  body:JSON.stringify({sql})
+ });
+ const text = await res.text();
+ setOutput(text);
+}
+
+function setOutput(t){
+ document.getElementById('output').textContent = t;
+ window.scrollTo(0, document.body.scrollHeight);
+}
+
+function copyOutput(){
+ navigator.clipboard.writeText(document.getElementById('output').textContent);
+}
+
+// SQL PRESETS
+const cleanAll = `
+DELETE FROM starters_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM bullpens_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM lineups_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM markets_current WHERE game_id LIKE '2026-04-24_%';
+DELETE FROM games WHERE game_date = '2026-04-24';
+`;
+
+const cleanStarters = `DELETE FROM starters_current WHERE game_id LIKE '2026-04-24_%';`;
+const cleanMarkets = `DELETE FROM markets_current WHERE game_id LIKE '2026-04-24_%';`;
+const cleanGames = `DELETE FROM games WHERE game_date = '2026-04-24';`;
+
+const checkGames = `SELECT COUNT(*) FROM games WHERE game_date = '2026-04-24';`;
+const checkStarters = `SELECT COUNT(*) FROM starters_current WHERE game_id LIKE '2026-04-24_%';`;
+const checkTeams = `SELECT COUNT(*) FROM teams_current;`;
+const checkMarkets = `SELECT COUNT(*) FROM markets_current WHERE game_id LIKE '2026-04-24_%';`;
+
 </script>
 
 </body>
