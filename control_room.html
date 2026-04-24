@@ -40,6 +40,7 @@
 <button onclick="runJobButton('G1','scrape_starters_group_1')">G1</button>
 <button onclick="runJobButton('G2','scrape_starters_group_2')">G2</button>
 <button onclick="runJobButton('G3','scrape_starters_group_3')">G3</button>
+<button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button>
 <button onclick="runJobButton('Teams','scrape_teams')">Teams</button>
 <button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button>
 <button onclick="runJobButton('Lineups','scrape_lineups')">Lineups</button>
@@ -78,7 +79,7 @@ const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
 const JOB_URL = BASE + "/tasks/run";
 const SQL_URL = BASE + "/debug/sql";
 const HEALTH_URL = BASE + "/health";
-const TOKEN = "LindaMaria123@";
+const TOKEN = "";
 
 // SINGLE DATE VARIABLE. Change only this line for controlled testing.
 const TARGET_DATE = "2026-04-24";
@@ -103,8 +104,8 @@ function debugConfig(){
     job_url: JOB_URL,
     sql_url: SQL_URL,
     target_date: TARGET_DATE,
-    token_set: TOKEN !== "LindaMaria123@",
-    version: "control_room_truth_audit_2026_04_24"
+    token_set: Boolean(TOKEN),
+    version: "control_room_missing_repair_2026_04_24"
   });
 }
 

@@ -57,6 +57,12 @@ const JOBS = {
     gameGroupIndex: 2,
     gameGroupSize: 5
   },
+  scrape_starters_missing: {
+    prompt: "scrape_starters_missing_v1.txt",
+    tables: ["starters_current"],
+    note: "targeted missing starter repair",
+    gameDate: "2026-04-24"
+  },
   scrape_lineups: {
     prompt: "scrape_lineups_v1.txt",
     tables: ["lineups_current"],
@@ -292,9 +298,40 @@ async function runJob(input, env) {
 }
 
 async function augmentPromptForJob(env, jobName, job, basePrompt) {
+  const date = job.gameDate || "2026-04-24";
+
+  if (jobName === "scrape_starters_missing") {
+    const result = await env.DB.prepare(`
+      SELECT
+        g.game_id,
+        g.away_team,
+        g.home_team,
+        CASE WHEN SUM(CASE WHEN s.team_id = g.away_team THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_away,
+        CASE WHEN SUM(CASE WHEN s.team_id = g.home_team THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END AS has_home
+      FROM games g
+      LEFT JOIN starters_current s ON g.game_id = s.game_id
+      WHERE g.game_date = ?
+      GROUP BY g.game_id, g.away_team, g.home_team
+      HAVING (has_away + has_home) < 2
+      ORDER BY g.game_id ASC
+    `).bind(date).all();
+
+    const missing = [];
+    for (const g of (result.results || [])) {
+      if (!g.has_away) missing.push({ game_id: g.game_id, team_id: g.away_team, matchup: `${g.away_team} at ${g.home_team}` });
+      if (!g.has_home) missing.push({ game_id: g.game_id, team_id: g.home_team, matchup: `${g.away_team} at ${g.home_team}` });
+    }
+
+    if (!missing.length) {
+      return `${basePrompt}\n\nRUNTIME MISSING STARTER REPAIR:\nNo missing starters were found in D1 for ${date}. Return exactly {"starters_current":[]}.`;
+    }
+
+    const lines = missing.map(m => `- ${m.game_id}: missing ${m.team_id} starter only (${m.matchup})`).join("\n");
+    return `${basePrompt}\n\nRUNTIME MISSING STARTER REPAIR:\nReturn starters ONLY for these missing team/game pairs. Do not return already-filled teams.\n${lines}\n\nIf the missing starter is not knowable with real nonzero stats, omit that row. Always return valid JSON.`;
+  }
+
   if (job.gameGroupIndex === undefined || job.gameGroupIndex === null) return basePrompt;
 
-  const date = job.gameDate || "2026-04-24";
   const size = Number(job.gameGroupSize || 5);
   const offset = Number(job.gameGroupIndex || 0) * size;
   const result = await env.DB.prepare(
