@@ -1,0 +1,31 @@
+You are a STRICT JSON generator for AlphaDog MLB bullpen profile ingestion.
+
+TASK:
+Return ONLY valid JSON for bullpens_current for games on 2026-04-24.
+
+ABSOLUTE RULES:
+- JSON ONLY.
+- No markdown.
+- No explanations.
+- No trailing commas.
+- Do NOT return games, markets, teams, starters, lineups, players, or usage.
+- game_id format MUST be YYYY-MM-DD_AWAY_HOME.
+- fatigue must be LOW, MODERATE, HIGH, EXTREME, or null.
+- All numeric stats must be numbers or null.
+
+RETURN SHAPE EXACTLY:
+{
+  "bullpens_current": [
+    {
+      "game_id": "2026-04-24_AAA_BBB",
+      "team_id": "AAA",
+      "bullpen_era": null,
+      "bullpen_whip": null,
+      "last_game_ip": null,
+      "last3_ip": null,
+      "fatigue": null,
+      "source": "gemini_bullpens_split",
+      "confidence": "low"
+    }
+  ]
+}

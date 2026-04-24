@@ -1,6 +1,7 @@
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
+const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
 
 const PROMPT_FILES = {
   ks: "score_ks_v1.txt",
@@ -56,7 +57,7 @@ const JOBS = {
 
 const TABLES = {
   games: {
-    allowed: ["game_id", "game_date", "away_team", "home_team", "start_time_utc", "venue", "series_game", "getaway_day", "status", "source", "confidence"],
+    allowed: ["game_id", "game_date", "away_team", "home_team", "start_time_utc", "venue", "series_game", "getaway_day", "status"],
     required: ["game_id", "game_date", "away_team", "home_team"],
     conflict: ["game_id"]
   },
@@ -66,32 +67,33 @@ const TABLES = {
     conflict: ["game_id"]
   },
   teams_current: {
-    allowed: ["team_id", "avg", "obp", "slg", "ops", "k_rate", "bb_rate", "runs_per_game", "hr", "rbi", "total_bases", "run_diff", "games_played", "errors", "dp", "fielding_pct", "source", "confidence"],
+    allowed: ["team_id", "avg", "obp", "slg", "ops", "k_rate", "bb_rate", "runs_per_game", "hr", "rbi", "total_bases", "run_diff", "games_played", "errors", "dp", "fielding_pct"],
     required: ["team_id"],
     conflict: ["team_id"]
   },
   starters_current: {
-    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"],
+    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest"],
     required: ["game_id", "team_id", "starter_name"],
     conflict: ["game_id"]
   },
   bullpens_current: {
-    allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"],
+    allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue"],
     required: ["game_id", "team_id"],
     conflict: ["game_id"]
   },
   lineups_current: {
-    allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed", "source", "confidence"],
+    allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed"],
     required: ["game_id", "team_id", "slot", "player_name"],
-    conflict: ["game_id", "team_id", "slot"]
+    conflict: ["game_id", "team_id", "slot"],
+    deleteInsert: true
   },
   players_current: {
-    allowed: ["player_name", "team_id", "role", "games", "innings_pitched", "strikeouts", "walks", "hits_allowed", "era", "k_per_9", "whip", "ab", "hits", "avg", "obp", "slg", "age", "position", "bats", "throws", "source", "confidence"],
+    allowed: ["player_name", "team_id", "role", "games", "innings_pitched", "strikeouts", "walks", "hits_allowed", "era", "k_per_9", "whip", "ab", "hits", "avg", "obp", "slg"],
     required: ["player_name"],
     conflict: ["player_name"]
   },
   player_recent_usage: {
-    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot", "source", "confidence"],
+    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot"],
     required: ["player_name"],
     conflict: ["player_name"]
   }
@@ -166,7 +168,7 @@ async function runJob(input, env) {
 
   try {
     const prompt = await fetchPrompt(env, job.prompt);
-    const raw = await callGemini(env, SCRAPE_MODEL, prompt, { scrape: true });
+    const raw = await callGeminiWithFallback(env, prompt);
     const clean = cleanJsonText(raw);
     const data = parseStrictJson(clean);
     const results = {};
@@ -251,6 +253,17 @@ async function upsertRows(env, table, rows) {
   for (const row of rows) {
     const cols = config.allowed.filter(c => row[c] !== undefined);
     if (!cols.length) continue;
+
+    if (config.deleteInsert) {
+      const where = config.conflict.map(c => `${c}=?`).join(" AND ");
+      await env.DB.prepare(`DELETE FROM ${table} WHERE ${where}`).bind(...config.conflict.map(c => row[c])).run();
+      const placeholders = cols.map(() => "?").join(",");
+      const sql = `INSERT INTO ${table} (${cols.join(",")}) VALUES (${placeholders})`;
+      await env.DB.prepare(sql).bind(...cols.map(c => row[c])).run();
+      inserted++;
+      continue;
+    }
+
     const placeholders = cols.map(() => "?").join(",");
     const conflict = config.conflict.join(",");
     const updates = cols.filter(c => !config.conflict.includes(c)).map(c => `${c}=excluded.${c}`);
@@ -346,6 +359,18 @@ async function fetchPrompt(env, fileName) {
   const res = await fetch(url, { headers: { "user-agent": "alphadog-worker" } });
   if (!res.ok) throw new Error(`Prompt fetch failed: ${res.status} ${url}`);
   return await res.text();
+}
+
+async function callGeminiWithFallback(env, prompt) {
+  try {
+    return await callGemini(env, SCRAPE_MODEL, prompt, { scrape: true });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (msg.includes("UNAVAILABLE") || msg.includes("503") || msg.includes("high demand")) {
+      return await callGemini(env, SCRAPE_FALLBACK_MODEL, prompt, { scrape: true });
+    }
+    throw err;
+  }
 }
 
 async function callGemini(env, model, prompt, options = {}) {
