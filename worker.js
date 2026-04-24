@@ -31,7 +31,31 @@ const JOBS = {
   scrape_starters: {
     prompt: "scrape_starters_v1.txt",
     tables: ["starters_current"],
-    note: "starter profile only"
+    note: "starter profile only - broad fallback"
+  },
+  scrape_starters_group_1: {
+    prompt: "scrape_starters_group_v1.txt",
+    tables: ["starters_current"],
+    note: "starter profile group 1",
+    gameDate: "2026-04-24",
+    gameGroupIndex: 0,
+    gameGroupSize: 5
+  },
+  scrape_starters_group_2: {
+    prompt: "scrape_starters_group_v1.txt",
+    tables: ["starters_current"],
+    note: "starter profile group 2",
+    gameDate: "2026-04-24",
+    gameGroupIndex: 1,
+    gameGroupSize: 5
+  },
+  scrape_starters_group_3: {
+    prompt: "scrape_starters_group_v1.txt",
+    tables: ["starters_current"],
+    note: "starter profile group 3",
+    gameDate: "2026-04-24",
+    gameGroupIndex: 2,
+    gameGroupSize: 5
   },
   scrape_lineups: {
     prompt: "scrape_lineups_v1.txt",
@@ -121,7 +145,7 @@ export default {
 function health(env) {
   return {
     ok: true,
-    worker: "alphadog-phase3-split",
+    worker: "alphadog-phase3-starter-groups",
     db_bound: !!env.DB,
     ingest_token_bound: !!env.INGEST_TOKEN,
     gemini_key_bound: !!env.GEMINI_API_KEY,
@@ -167,7 +191,8 @@ async function runJob(input, env) {
     .bind(taskId, jobName, "running", JSON.stringify(input)).run();
 
   try {
-    const prompt = await fetchPrompt(env, job.prompt);
+    const basePrompt = await fetchPrompt(env, job.prompt);
+    const prompt = await augmentPromptForJob(env, jobName, job, basePrompt);
     const raw = await callGeminiWithFallback(env, prompt);
     const clean = cleanJsonText(raw);
     const data = parseStrictJson(clean);
@@ -188,6 +213,25 @@ async function runJob(input, env) {
       .bind("failed", String(err?.message || err), taskId).run();
     return { ok: false, task_id: taskId, job: jobName, error: String(err?.message || err) };
   }
+}
+
+async function augmentPromptForJob(env, jobName, job, basePrompt) {
+  if (job.gameGroupIndex === undefined || job.gameGroupIndex === null) return basePrompt;
+
+  const date = job.gameDate || "2026-04-24";
+  const size = Number(job.gameGroupSize || 5);
+  const offset = Number(job.gameGroupIndex || 0) * size;
+  const result = await env.DB.prepare(
+    `SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id ASC LIMIT ? OFFSET ?`
+  ).bind(date, size, offset).all();
+  const games = result.results || [];
+
+  if (!games.length) {
+    return `${basePrompt}\n\nRUNTIME GAME GROUP FOR ${jobName}:\nNo games were found in D1 for ${date} at this group offset. Return exactly {"starters_current":[]}.`;
+  }
+
+  const gameLines = games.map(g => `- ${g.game_id}: ${g.away_team} at ${g.home_team}`).join("\n");
+  return `${basePrompt}\n\nRUNTIME GAME GROUP FOR ${jobName}:\nReturn starters ONLY for these games. Do not return any other games.\n${gameLines}\n\nIf a starter is not knowable, omit that starter row. Still return valid JSON.`;
 }
 
 async function handleUpsert(request, env) {
