@@ -1,23 +1,13 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "prop-ingestion-v2",
   "main": "worker.js",
-  "compatibility_date": "2026-04-23",
-  "vars": {
-    "PROMPT_BASE_URL": "https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/YOUR_REPO_NAME/main"
-  },
+  "compatibility_date": "2026-04-24",
+
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "prop-engine-db",
-      "database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE"
+      "database_name": "ec21a626-1b31-45fd-816c-5baf5609a6c3",
+      "database_id": ""
     }
-  ],
-  "triggers": {
-    "crons": [
-      "0 12 * * *",
-      "0 15 * * *",
-      "30 18 * * *"
-    ]
-  }
+  ]
 }
