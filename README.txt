@@ -42,3 +42,10 @@ HOTFIX D:
 - Fixed zero-candidate issue caused by strict season AVG/OBP filters when players_current has identity/handedness but not batting baseline for every player.
 - Candidate pool now uses lineup slot + recent AB/hit usage + park/bullpen context as the aggressive fallback-safe driver.
 - Season AVG/OBP still enrich candidates when available, but no longer blocks the pool.
+
+
+HOTFIX E:
+- Players roster fetch now hydrates season hitting/pitching stats in the same grouped roster calls.
+- players_current now fills avg/obp/slg for hitters when MLB StatsAPI provides them.
+- starter throws fallback now uses hydrated people pitcher data when probablePitcher lacks pitchHand.
+- Added CHECK > Player Hydration audit button.

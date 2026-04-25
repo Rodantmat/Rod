@@ -1084,6 +1084,7 @@ function pitcherSeasonStats(person) {
   const statSplits = person?.stats?.[0]?.splits || [];
   const stat = statSplits?.[0]?.stat || {};
   return {
+    throws: person?.pitchHand?.code || null,
     era: stat.era !== undefined ? Number(stat.era) : null,
     whip: stat.whip !== undefined ? Number(stat.whip) : null,
     strikeouts: stat.strikeOuts !== undefined ? Number(stat.strikeOuts) : null,
@@ -1122,7 +1123,7 @@ function apiStarterRow(gameId, teamId, pitcher, slateDate, statsOverride) {
     game_id: gameId,
     team_id: teamId,
     starter_name: pitcher.fullName,
-    throws: pitcher.pitchHand?.code || null,
+    throws: pitcher.pitchHand?.code || stats.throws || null,
     era: stats.era,
     whip: stats.whip,
     strikeouts: stats.strikeouts,
@@ -1281,6 +1282,55 @@ function playerRoleFromPosition(positionCode, pitchHand) {
   return "BAT";
 }
 
+
+function firstStatSplitByGroup(person, groupName) {
+  const stats = Array.isArray(person?.stats) ? person.stats : [];
+  for (const block of stats) {
+    const group = String(block?.group?.displayName || block?.group || "").toLowerCase();
+    const splits = Array.isArray(block?.splits) ? block.splits : [];
+    if (groupName && group && !group.includes(String(groupName).toLowerCase())) continue;
+    if (splits[0]?.stat) return splits[0].stat;
+  }
+  for (const block of stats) {
+    const splits = Array.isArray(block?.splits) ? block.splits : [];
+    if (splits[0]?.stat) return splits[0].stat;
+  }
+  return {};
+}
+
+function toStatNumber(v) {
+  if (v === undefined || v === null || v === "" || v === "-.--") return null;
+  const n = Number(String(v).replace(/^0(?=\.)/, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+function hitterSeasonStats(person) {
+  const stat = firstStatSplitByGroup(person, "hitting");
+  return {
+    games: toStatNumber(stat.gamesPlayed ?? stat.games),
+    ab: toStatNumber(stat.atBats),
+    hits: toStatNumber(stat.hits),
+    avg: toStatNumber(stat.avg),
+    obp: toStatNumber(stat.obp),
+    slg: toStatNumber(stat.slg)
+  };
+}
+
+function pitcherIdentitySeasonStats(person) {
+  const stat = firstStatSplitByGroup(person, "pitching");
+  return {
+    games: toStatNumber(stat.gamesPlayed ?? stat.games),
+    innings_pitched: stat.inningsPitched !== undefined ? decimalInnings(stat.inningsPitched) : null,
+    strikeouts: toStatNumber(stat.strikeOuts),
+    walks: toStatNumber(stat.baseOnBalls),
+    hits_allowed: toStatNumber(stat.hits),
+    era: toStatNumber(stat.era),
+    k_per_9: toStatNumber(stat.strikeoutsPer9Inn ?? stat.strikeOutsPer9Inn),
+    whip: toStatNumber(stat.whip)
+  };
+}
+
+
 function playerIdentityRowFromRosterEntry(entry, teamId) {
   const person = entry?.person || entry || {};
   const position = entry?.position || person?.primaryPosition || {};
@@ -1292,29 +1342,32 @@ function playerIdentityRowFromRosterEntry(entry, teamId) {
   const positionAbbrev = position?.abbreviation || position?.code || null;
   const role = playerRoleFromPosition(position?.code, throws);
 
+  const h = hitterSeasonStats(person);
+  const p = pitcherIdentitySeasonStats(person);
+
   return {
     player_name: playerName,
     team_id: teamId,
     role,
-    games: null,
-    innings_pitched: null,
-    strikeouts: null,
-    walks: null,
-    hits_allowed: null,
-    era: null,
-    k_per_9: null,
-    whip: null,
-    ab: null,
-    hits: null,
-    avg: null,
-    obp: null,
-    slg: null,
+    games: role === "P" ? p.games : h.games,
+    innings_pitched: p.innings_pitched,
+    strikeouts: p.strikeouts,
+    walks: p.walks,
+    hits_allowed: p.hits_allowed,
+    era: p.era,
+    k_per_9: p.k_per_9,
+    whip: p.whip,
+    ab: h.ab,
+    hits: h.hits,
+    avg: h.avg,
+    obp: h.obp,
+    slg: h.slg,
     age: ageFromBirthDate(person?.birthDate),
     position: positionAbbrev,
     bats,
     throws,
-    source: "mlb_statsapi_roster_identity_handedness",
-    confidence: "official_identity"
+    source: "mlb_statsapi_roster_identity_handedness_season_stats",
+    confidence: h.avg !== null || p.era !== null ? "official_identity_season_stats" : "official_identity"
   };
 }
 
@@ -1374,7 +1427,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
   const rows = [];
 
   for (const t of selectedTeams) {
-    const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.mlbId)}/roster?rosterType=active&hydrate=person`, {
+    const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.mlbId)}/roster?rosterType=active&hydrate=person(stats(group=[hitting,pitching],type=[season],season=${encodeURIComponent(String(slateDate).slice(0,4))}))`, {
       headers: { "accept": "application/json" }
     });
     if (!r.ok) continue;
