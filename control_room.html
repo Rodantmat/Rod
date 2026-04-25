@@ -149,9 +149,12 @@ function marketAudit(){return `
 SELECT 'MARKETS_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = (SELECT COUNT(*) FROM games WHERE game_date='${D()}') THEN 'PASS' ELSE 'WARN' END AS status
 FROM markets_current WHERE game_id LIKE '${D()}_%';
 
-SELECT 'MARKET_NUMERIC_FILLED' AS audit_type,
-SUM(CASE WHEN moneyline_away IS NOT NULL OR moneyline_home IS NOT NULL OR total_over_under IS NOT NULL OR spread_away IS NOT NULL THEN 1 ELSE 0 END) AS count_value,
-'INFO_ONLY' AS status
+SELECT 'MARKET_ROWS_WITH_GAME_MATCH' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = (SELECT COUNT(*) FROM markets_current WHERE game_id LIKE '${D()}_%') THEN 'PASS' ELSE 'FAIL' END AS status
+FROM markets_current m
+JOIN games g ON m.game_id = g.game_id
+WHERE g.game_date='${D()}';
+
+SELECT 'MARKET_SAMPLE' AS audit_type, COUNT(*) AS count_value, 'INFO_ONLY_SCHEMA_SAFE' AS status
 FROM markets_current WHERE game_id LIKE '${D()}_%';
 `}
 
