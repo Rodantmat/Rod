@@ -1,26 +1,35 @@
-AlphaDog Market Implied Runs Null-Fix
+AlphaDog FULL RUN Limit Hard Fix
 
-Root cause found:
-- markets_current schema has current_total/game_total/open_total and moneylines
-- actual market rows currently have NULL totals and NULL moneylines
-- previous derived metrics displayed 0/0 because blank values were being treated as numeric zero
+Problem:
+- FULL RUN still exceeded the Cloudflare per-invocation API/D1 request limit.
 
-Fix:
-- Derived metrics now rejects 0/blank market values
-- If market totals/odds are unavailable, away_implied_runs/home_implied_runs stay NULL
-- implied_source becomes market_unavailable_null_no_zero_fill
-- Adds Control Room audit button: Market Implied Runs
+Root fix:
+- FULL RUN is now lean/core only:
+  1. Clean slate
+  2. Games/Markets
+  3. Starters
+  4. Bullpens
 
-Run order:
-1. SCRAPE > Run Derived Metrics
-2. CHECK > Market Implied Runs
-3. CHECK > Derived Metrics
-4. CHECK > Feed Readiness
-5. CHECK > Final Feed Audit
+Heavy/non-core layers must stay as separate buttons/jobs:
+- Run Lineups
+- Run Recent Usage
+- MLB Players G1-G6
+- Run Derived Metrics
 
-Expected:
-- MARKET_ZERO_FILL_CHECK = PASS_NO_FAKE_ZEROES
-- MARKET_IMPLIED_AVAILABLE may be INFO_UNAVAILABLE_SOURCE_EMPTY until real odds/totals populate markets_current
+Correct run order:
+1. SCRAPE > FULL RUN
+2. SCRAPE > Run Lineups
+3. SCRAPE > Run Recent Usage
+4. SCRAPE > MLB Players G1
+5. SCRAPE > MLB Players G2
+6. SCRAPE > MLB Players G3
+7. SCRAPE > MLB Players G4
+8. SCRAPE > MLB Players G5
+9. SCRAPE > MLB Players G6
+10. SCRAPE > Run Derived Metrics
+11. CHECK > Final Feed Audit
+12. CHECK > Feed Readiness
+13. CHECK > Scheduler Log
 
 No migration required.
 Do not replace config.txt.

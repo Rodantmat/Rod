@@ -716,9 +716,6 @@ async function runFullPipeline(input, env) {
   const lineupResult = await syncMlbApiLineups({ ...(input || {}), job: "scrape_lineups_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Lineups", job: "scrape_lineups_mlb_api", result: lineupResult });
 
-  const recentUsageResult = await syncMlbApiRecentUsage({ ...(input || {}), job: "scrape_recent_usage_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Recent Usage", job: "scrape_recent_usage_mlb_api", result: recentUsageResult });
-
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
   if (startersAfterApi < games * 2) {
@@ -820,10 +817,10 @@ async function runFullPipeline(input, env) {
     expected_starters: expectedStarters,
     starters_total: startersTotal,
     bullpens_total: bullpensTotal,
-    lineups_total: lineupsTotal,
-    recent_usage_total: recentUsageTotal,
-    players_total: playersTotal,
-    players_layer_mode: "manual_or_separate_run_to_avoid_worker_request_limit",
+    lineups_total: null,
+    recent_usage_total: null,
+    players_total: null,
+    players_layer_mode: "separate_buttons_to_avoid_worker_request_limit",
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
