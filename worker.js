@@ -386,6 +386,146 @@ async function augmentPromptForJob(env, jobName, job, basePrompt, resolvedSlateD
 }
 
 
+
+async function fetchPrompt(env, filename) {
+  if (!filename) throw new Error("Missing prompt filename");
+  if (!env.PROMPT_BASE_URL) throw new Error("Missing PROMPT_BASE_URL binding");
+
+  const base = String(env.PROMPT_BASE_URL).replace(/\/+$/, "");
+  const url = `${base}/${filename}`;
+  const res = await fetch(url, { headers: { "cache-control": "no-cache" } });
+
+  if (!res.ok) {
+    throw new Error(`Prompt fetch failed: ${res.status} ${url}`);
+  }
+
+  return await res.text();
+}
+
+function looksLikePlaceholderStarter(name) {
+  const n = String(name || "").trim().toUpperCase();
+  if (!n) return true;
+  const badExact = new Set(["ACE", "STARTER", "PROBABLE STARTER", "TBD", "TBA", "UNKNOWN", "TEAM ACE", "HOME ACE", "AWAY ACE"]);
+  if (badExact.has(n)) return true;
+  if (n.endsWith(" ACE")) return true;
+  if (n.includes(" UNKNOWN")) return true;
+  if (n.includes(" TBD")) return true;
+  if (n.includes(" TBA")) return true;
+  return false;
+}
+
+function validPositiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+
+function hasAllValues(row, keys) {
+  return keys.every(k => row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "");
+}
+
+function normalizeRow(table, input) {
+  const spec = TABLES[table];
+  const out = {};
+  for (const key of spec.allowed) {
+    if (Object.prototype.hasOwnProperty.call(input, key)) {
+      out[key] = input[key];
+    }
+  }
+  return out;
+}
+
+function validateRows(table, rows) {
+  const spec = TABLES[table];
+  if (!spec) return { ok: false, error: `Unknown table ${table}` };
+
+  const canonicalTeams = new Set(["ARI","ATL","BAL","BOS","CHC","CIN","CLE","COL","CWS","DET","HOU","KC","LAA","LAD","MIA","MIL","MIN","NYM","NYY","OAK","PHI","PIT","SD","SEA","SFG","STL","TB","TEX","TOR","WSN"]);
+  const forbiddenTeams = new Set(["CHW","KCR","SDP","SF","TBR","WSH"]);
+  const clean = [];
+  const skipped = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = normalizeRow(table, rows[i] || {});
+
+    for (const required of spec.required) {
+      if (row[required] === undefined || row[required] === null || String(row[required]).trim() === "") {
+        skipped.push({ row: i, reason: `missing required ${required}` });
+        continue;
+      }
+    }
+
+    if (table === "games") {
+      if (!row.game_id || !row.game_date || !String(row.game_id).startsWith(`${row.game_date}_`)) {
+        skipped.push({ row: i, reason: `game_id/date mismatch ${row.game_id}/${row.game_date}` });
+        continue;
+      }
+      if (!canonicalTeams.has(row.away_team) || !canonicalTeams.has(row.home_team) || forbiddenTeams.has(row.away_team) || forbiddenTeams.has(row.home_team)) {
+        skipped.push({ row: i, reason: `non-canonical team in game ${row.game_id}` });
+        continue;
+      }
+    }
+
+    if (table === "markets_current") {
+      if (!row.game_id) {
+        skipped.push({ row: i, reason: "market missing game_id" });
+        continue;
+      }
+    }
+
+    if (table === "starters_current") {
+      if (!canonicalTeams.has(row.team_id) || forbiddenTeams.has(row.team_id)) {
+        skipped.push({ row: i, reason: `non-canonical starter team ${row.team_id}` });
+        continue;
+      }
+
+      if (!hasAllValues(row, ["era", "whip", "strikeouts", "innings_pitched"])) {
+        skipped.push({ row: i, reason: `starter missing core stats rejected ${row.game_id}/${row.team_id}` });
+        continue;
+      }
+
+      if (!validPositiveNumber(row.era) || !validPositiveNumber(row.whip) || !validPositiveNumber(row.strikeouts) || !validPositiveNumber(row.innings_pitched)) {
+        skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
+        continue;
+      }
+
+      if (looksLikePlaceholderStarter(row.starter_name)) {
+        skipped.push({ row: i, reason: `placeholder starter rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
+        continue;
+      }
+    }
+
+    clean.push(row);
+  }
+
+  return { ok: true, rows: clean, skipped };
+}
+
+async function upsertRows(env, table, rows) {
+  if (!rows.length) return 0;
+  const spec = TABLES[table];
+  let inserted = 0;
+
+  for (const row of rows) {
+    const cols = Object.keys(row).filter(c => spec.allowed.includes(c));
+    if (!cols.length) continue;
+
+    const placeholders = cols.map(() => "?").join(", ");
+    const conflict = spec.conflict.join(", ");
+    const updateCols = cols.filter(c => !spec.conflict.includes(c));
+    const updateSql = updateCols.length
+      ? updateCols.map(c => `${c}=excluded.${c}`).join(", ")
+      : `${spec.conflict[0]}=excluded.${spec.conflict[0]}`;
+
+    const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders}) ON CONFLICT(${conflict}) DO UPDATE SET ${updateSql}`;
+    const values = cols.map(c => row[c]);
+
+    await env.DB.prepare(sql).bind(...values).run();
+    inserted++;
+  }
+
+  return inserted;
+}
+
+
 async function callGeminiWithFallback(env, prompt) {
   try {
     return await callGemini(env, SCRAPE_MODEL, prompt, { scrape: true });
