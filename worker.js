@@ -28,6 +28,11 @@ const JOBS = {
     tables: ["games", "markets_current"],
     note: "games+markets only"
   },
+  build_edge_candidates_hits: {
+    prompt: null,
+    tables: ["edge_candidates_hits"],
+    note: "scheduled-task edge prep candidate pool for hits"
+  },
   scrape_teams: {
     prompt: "scrape_teams_v1.txt",
     tables: ["teams_current"],
@@ -572,6 +577,217 @@ async function syncDerivedMetrics(input, env) {
 }
 
 
+async function ensureEdgeCandidateTables(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS edge_candidates_hits (
+      candidate_id TEXT PRIMARY KEY,
+      slate_date TEXT,
+      game_id TEXT,
+      team_id TEXT,
+      opponent_team TEXT,
+      player_name TEXT,
+      lineup_slot INTEGER,
+      bats TEXT,
+      opposing_starter TEXT,
+      opposing_throws TEXT,
+      player_avg REAL,
+      player_obp REAL,
+      player_slg REAL,
+      last_game_ab INTEGER,
+      last_game_hits INTEGER,
+      park_factor_run REAL,
+      park_factor_hr REAL,
+      bullpen_fatigue_score REAL,
+      bullpen_fatigue_tier TEXT,
+      lineup_context_status TEXT,
+      candidate_tier TEXT,
+      candidate_reason TEXT,
+      source TEXT,
+      confidence TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+}
+
+function edgeNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function edgeTxt(v) {
+  return String(v || "").trim();
+}
+
+function edgeSafeIdPart(v) {
+  return edgeTxt(v).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+}
+
+function hitCandidateTier(row) {
+  const slot = Number(row.lineup_slot || 99);
+  const avg = edgeNum(row.player_avg);
+  const obp = edgeNum(row.player_obp);
+  const lastAb = edgeNum(row.last_game_ab);
+  const parkRun = edgeNum(row.park_factor_run) || 1;
+  const bullpenScore = edgeNum(row.bullpen_fatigue_score);
+
+  let points = 0;
+  const reasons = [];
+
+  if (slot >= 1 && slot <= 3) { points += 3; reasons.push("premium_lineup_slot"); }
+  else if (slot >= 4 && slot <= 5) { points += 2; reasons.push("middle_lineup_slot"); }
+  else if (slot >= 6 && slot <= 7) { points += 1; reasons.push("acceptable_lineup_slot"); }
+
+  if (avg !== null && avg >= 0.275) { points += 3; reasons.push("strong_avg"); }
+  else if (avg !== null && avg >= 0.250) { points += 2; reasons.push("solid_avg"); }
+  else if (avg !== null && avg >= 0.230) { points += 1; reasons.push("playable_avg"); }
+
+  if (obp !== null && obp >= 0.340) { points += 2; reasons.push("strong_on_base_profile"); }
+  else if (obp !== null && obp >= 0.310) { points += 1; reasons.push("playable_on_base_profile"); }
+
+  if (lastAb !== null && lastAb >= 3) { points += 1; reasons.push("recent_ab_volume"); }
+  if (parkRun >= 1.02) { points += 1; reasons.push("positive_run_environment"); }
+  if (bullpenScore !== null && bullpenScore >= 65) { points += 1; reasons.push("opponent_bullpen_pressure"); }
+
+  if (points >= 8) return { tier: "A_POOL", reason: reasons.join("|") };
+  if (points >= 6) return { tier: "B_POOL", reason: reasons.join("|") };
+  return { tier: "WATCHLIST", reason: reasons.join("|") || "passed_base_filters" };
+}
+
+
+async function insertEdgeCandidatesHitsBatch(env, rows) {
+  if (!rows.length) return 0;
+  const cols = TABLES.edge_candidates_hits.allowed.filter(c => c !== "updated_at");
+  const insertCols = cols.filter(c => rows.some(r => Object.prototype.hasOwnProperty.call(r, c)));
+  const placeholders = insertCols.map(() => "?").join(", ");
+  const updateCols = insertCols.filter(c => c !== "candidate_id");
+  const updateSql = updateCols.map(c => `${c}=excluded.${c}`).join(", ");
+  const sql = `INSERT INTO edge_candidates_hits (${insertCols.join(", ")}) VALUES (${placeholders}) ON CONFLICT(candidate_id) DO UPDATE SET ${updateSql}, updated_at=CURRENT_TIMESTAMP`;
+
+  let written = 0;
+  const chunkSize = 75;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const statements = chunk.map(r => env.DB.prepare(sql).bind(...insertCols.map(c => r[c] ?? null)));
+    await env.DB.batch(statements);
+    written += chunk.length;
+  }
+  return written;
+}
+
+async function buildEdgeCandidatesHits(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  await ensureEdgeCandidateTables(env);
+
+  const rowsRes = await env.DB.prepare(`
+    SELECT
+      l.game_id,
+      g.game_date,
+      l.team_id,
+      CASE WHEN l.team_id = g.away_team THEN g.home_team ELSE g.away_team END AS opponent_team,
+      l.player_name,
+      l.slot AS lineup_slot,
+      COALESCE(NULLIF(l.bats,''), NULLIF(p.bats,'')) AS bats,
+      s.starter_name AS opposing_starter,
+      s.throws AS opposing_throws,
+      p.avg AS player_avg,
+      p.obp AS player_obp,
+      p.slg AS player_slg,
+      u.last_game_ab,
+      u.last_game_hits,
+      gc.park_factor_run,
+      gc.park_factor_hr,
+      CASE WHEN l.team_id = g.away_team THEN gc.home_bullpen_fatigue_score ELSE gc.away_bullpen_fatigue_score END AS bullpen_fatigue_score,
+      CASE WHEN l.team_id = g.away_team THEN gc.home_bullpen_fatigue_tier ELSE gc.away_bullpen_fatigue_tier END AS bullpen_fatigue_tier,
+      gc.lineup_context_status
+    FROM lineups_current l
+    JOIN games g ON g.game_id = l.game_id
+    LEFT JOIN players_current p ON p.player_name = l.player_name AND p.team_id = l.team_id
+    LEFT JOIN player_recent_usage u ON u.player_name = l.player_name AND u.team_id = l.team_id
+    LEFT JOIN game_context_current gc ON gc.game_id = l.game_id
+    LEFT JOIN starters_current s
+      ON s.game_id = l.game_id
+      AND s.team_id = CASE WHEN l.team_id = g.away_team THEN g.home_team ELSE g.away_team END
+    WHERE g.game_date = ?
+      AND l.slot BETWEEN 1 AND 7
+      AND l.player_name IS NOT NULL
+      AND l.player_name != ''
+      AND COALESCE(u.last_game_ab, 0) >= 2
+      AND COALESCE(p.avg, 0) >= 0.225
+      AND COALESCE(p.obp, 0) >= 0.290
+      AND COALESCE(gc.park_factor_run, 1.0) >= 0.94
+    ORDER BY l.game_id, l.team_id, l.slot
+  `).bind(slateDate).all();
+
+  const rawRows = rowsRes.results || [];
+  const seen = new Set();
+  const rows = [];
+
+  for (const r of rawRows) {
+    const candidateId = `${slateDate}_${edgeSafeIdPart(r.game_id)}_${edgeSafeIdPart(r.team_id)}_${edgeSafeIdPart(r.player_name)}_HITS`;
+    if (seen.has(candidateId)) continue;
+    seen.add(candidateId);
+
+    const tier = hitCandidateTier(r);
+    if (tier.tier === "WATCHLIST") continue;
+
+    rows.push({
+      candidate_id: candidateId,
+      slate_date: slateDate,
+      game_id: r.game_id,
+      team_id: r.team_id,
+      opponent_team: r.opponent_team,
+      player_name: r.player_name,
+      lineup_slot: edgeNum(r.lineup_slot),
+      bats: r.bats || null,
+      opposing_starter: r.opposing_starter || null,
+      opposing_throws: r.opposing_throws || null,
+      player_avg: edgeNum(r.player_avg),
+      player_obp: edgeNum(r.player_obp),
+      player_slg: edgeNum(r.player_slg),
+      last_game_ab: edgeNum(r.last_game_ab),
+      last_game_hits: edgeNum(r.last_game_hits),
+      park_factor_run: edgeNum(r.park_factor_run),
+      park_factor_hr: edgeNum(r.park_factor_hr),
+      bullpen_fatigue_score: edgeNum(r.bullpen_fatigue_score),
+      bullpen_fatigue_tier: r.bullpen_fatigue_tier || "unknown",
+      lineup_context_status: r.lineup_context_status || "unknown",
+      candidate_tier: tier.tier,
+      candidate_reason: tier.reason,
+      source: "scheduled_edge_prep_hits_b_aggressive",
+      confidence: "deterministic_candidate_pool_not_scored"
+    });
+  }
+
+  await env.DB.prepare(`DELETE FROM edge_candidates_hits WHERE slate_date = ?`).bind(slateDate).run();
+  const validated = validateRows("edge_candidates_hits", rows);
+  if (!validated.ok) throw new Error(`Hits candidate validation failed: ${validated.error}`);
+  const inserted = await insertEdgeCandidatesHitsBatch(env, validated.rows);
+
+  const aPool = validated.rows.filter(r => r.candidate_tier === "A_POOL").length;
+  const bPool = validated.rows.filter(r => r.candidate_tier === "B_POOL").length;
+
+  return {
+    ok: true,
+    job: input.job || "build_edge_candidates_hits",
+    slate_date: slateDate,
+    source: "scheduled_edge_prep_hits_b_aggressive",
+    mode: "zero_api_subrequest_deterministic",
+    filter_mode: "B_AGGRESSIVE",
+    raw_rows: rawRows.length,
+    fetched_rows: validated.rows.length,
+    inserted: { edge_candidates_hits: inserted },
+    a_pool: aPool,
+    b_pool: bPool,
+    skipped_count: validated.skipped.length,
+    skipped: validated.skipped.slice(0, 25),
+    complete: true,
+    note: "Candidate pool only. No probabilities, scores, or betting decisions."
+  };
+}
+
+
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -590,6 +806,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "scrape_derived_metrics") {
     return await syncDerivedMetrics({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "build_edge_candidates_hits") {
+    return await buildEdgeCandidatesHits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
     return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
