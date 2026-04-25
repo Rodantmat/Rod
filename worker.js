@@ -107,6 +107,11 @@ const JOBS = {
     prompt: "scrape_recent_usage_v1.txt",
     tables: ["player_recent_usage"],
     note: "recent usage only"
+  },
+  scrape_recent_usage_mlb_api: {
+    prompt: null,
+    tables: ["player_recent_usage"],
+    note: "MLB Stats API previous-game player usage"
   }
 };
 
@@ -150,7 +155,8 @@ const TABLES = {
   player_recent_usage: {
     allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot", "source", "confidence"],
     required: ["player_name"],
-    conflict: ["player_name"]
+    conflict: ["player_name"],
+    deleteInsert: true
   }
 };
 
@@ -373,6 +379,8 @@ async function handleTaskRun(request, env) {
     result = await syncMlbApiBullpens({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else if (jobName === "scrape_lineups_mlb_api" || jobName === "scrape_lineups") {
     result = await syncMlbApiLineups({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else if (jobName === "scrape_recent_usage_mlb_api" || jobName === "scrape_recent_usage") {
+    result = await syncMlbApiRecentUsage({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else {
     result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
@@ -461,6 +469,9 @@ async function runFullPipeline(input, env) {
   const lineupResult = await syncMlbApiLineups({ ...(input || {}), job: "scrape_lineups_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Lineups", job: "scrape_lineups_mlb_api", result: lineupResult });
 
+  const recentUsageResult = await syncMlbApiRecentUsage({ ...(input || {}), job: "scrape_recent_usage_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+  steps.push({ label: "MLB API Recent Usage", job: "scrape_recent_usage_mlb_api", result: recentUsageResult });
+
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
   if (startersAfterApi < games * 2) {
@@ -474,6 +485,7 @@ async function runFullPipeline(input, env) {
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const lineupsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?", `${slateDate}_%`);
+  const recentUsageTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM player_recent_usage");
   const badRows = await countScalar(env, `
     SELECT COUNT(*) AS c
     FROM starters_current
@@ -561,6 +573,7 @@ async function runFullPipeline(input, env) {
     starters_total: startersTotal,
     bullpens_total: bullpensTotal,
     lineups_total: lineupsTotal,
+    recent_usage_total: recentUsageTotal,
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
@@ -753,6 +766,99 @@ async function bullpenUsageForTeam(teamAbbr, slateDate) {
   };
 }
 
+
+
+
+function battingUsageToRecentRow(teamId, playerObj, lineupSlot) {
+  const person = playerObj?.person || {};
+  const batting = playerObj?.stats?.batting || {};
+  const playerName = person?.fullName || null;
+  if (!playerName) return null;
+
+  const ab = batting.atBats ?? null;
+  const hits = batting.hits ?? null;
+
+  return {
+    player_name: playerName,
+    team_id: teamId,
+    last_pitch_count: null,
+    last_innings: null,
+    days_rest: null,
+    last_game_ab: ab,
+    last_game_hits: hits,
+    lineup_slot: lineupSlot || null,
+    source: "mlb_statsapi_previous_game_boxscore_usage",
+    confidence: "official_usage_lite"
+  };
+}
+
+async function syncMlbApiRecentUsage(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const previousDate = addDaysISO(slateDate, -1);
+
+  const slateGames = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
+  const slateTeams = [...new Set((slateGames.results || []).flatMap(g => [g.away_team, g.home_team]))];
+
+  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, { headers: { "accept": "application/json" } });
+  const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
+
+  const previousGames = [];
+  for (const d of (scheduleJson.dates || [])) {
+    for (const g of (d.games || [])) {
+      if (String(g?.status?.abstractGameState || "").toLowerCase() !== "final") continue;
+      const away = MLB_TEAM_ABBR[g?.teams?.away?.team?.id];
+      const home = MLB_TEAM_ABBR[g?.teams?.home?.team?.id];
+      if (!away || !home) continue;
+      if (slateTeams.includes(away) || slateTeams.includes(home)) previousGames.push({ gamePk: g.gamePk, away, home });
+    }
+  }
+
+  const rows = [];
+  for (const g of previousGames) {
+    const box = await fetchMlbBoxscore(g.gamePk);
+    if (!box) continue;
+
+    for (const side of ["away", "home"]) {
+      const teamId = side === "away" ? g.away : g.home;
+      if (!slateTeams.includes(teamId)) continue;
+
+      const team = box?.teams?.[side];
+      const battingOrder = team?.battingOrder || [];
+      const slotById = new Map(battingOrder.map((id, idx) => [String(id), idx + 1]));
+      const players = Object.values(team?.players || {});
+
+      for (const p of players) {
+        const playerId = String(p?.person?.id || "");
+        const batting = p?.stats?.batting;
+        if (!batting) continue;
+        const hasUsage = batting.atBats !== undefined || batting.hits !== undefined || batting.plateAppearances !== undefined;
+        if (!hasUsage) continue;
+
+        const row = battingUsageToRecentRow(teamId, p, slotById.get(playerId) || null);
+        if (row) rows.push(row);
+      }
+    }
+  }
+
+  const validated = validateRows("player_recent_usage", rows);
+  if (!validated.ok) throw new Error(`MLB recent usage validation failed: ${validated.error}`);
+  const inserted = await upsertRows(env, "player_recent_usage", validated.rows);
+
+  return {
+    ok: true,
+    job: input.job || "scrape_recent_usage_mlb_api",
+    slate_date: slateDate,
+    source: "mlb_statsapi_previous_game_boxscore_usage",
+    mode: "previous_day_subrequest_safe",
+    teams_checked: slateTeams.length,
+    previous_games_checked: previousGames.length,
+    fetched_rows: rows.length,
+    inserted: { player_recent_usage: inserted },
+    skipped_count: validated.skipped?.length || 0,
+    skipped: (validated.skipped || []).slice(0, 20)
+  };
+}
 
 
 async function fetchMlbGameLineupRows(gamePk, gameId) {
