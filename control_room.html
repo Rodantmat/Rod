@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.10 — Galactic Pickle</div>
+<div id="versionTag">v1.2.12 — RBI Clean Room
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -65,7 +65,8 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('MLB Lineups','scrape_lineups_mlb_api')">MLB Lineups</button>
 <button onclick="runJobButton('MLB Usage','scrape_recent_usage_mlb_api')">MLB Usage</button>
 <button onclick="runJobButton('Run Derived Metrics','scrape_derived_metrics')">Run Derived Metrics</button>
-<button onclick="runJobButton('Build Hits Candidates','build_edge_candidates_hits')">Build Hits Candidates</button>
+<button onclick="runJobButton('Build Hits Candidates</button>
+<button class="btn blue" onclick="runTask('build_edge_candidates_rbi')">Build Hits Candidates</button>
 <button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button>
 <button onclick="runJobButton('Teams','scrape_teams')">Teams</button>
 <button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button>
