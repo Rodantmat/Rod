@@ -1,10 +1,10 @@
-AlphaDog Cron Log Buttons Fix
+AlphaDog MLB Stats Enrichment Patch
 
-Fix:
-- Forces CHECK > Scheduler Log button.
-- Forces CHECK > Failed Runs button.
-- Forces CHECK > Stats Missing button.
-- Adds SQL functions even if previous regex failed.
+What changed:
+- MLB API starter sync now also calls MLB People endpoint for season pitching stats.
+- Attempts to fill ERA, WHIP, strikeouts, innings pitched, walks, hits allowed, HR allowed.
+- Names remain hard truth from MLB API.
+- Missing stats remain soft/non-blocking.
 
 Upload to GitHub root:
 - worker.js
@@ -16,8 +16,10 @@ Upload to GitHub root:
 Do not replace config.txt.
 
 Test:
-DEBUG > Config
-CHECK > Scheduler Log
-CHECK > Failed Runs
+CLEAN > Full
+SCRAPE > FULL RUN
+CHECK > Starters
 CHECK > Stats Missing
+CHECK > Bad Start
 CHECK > Truth Audit
+CHECK > Scheduler Log

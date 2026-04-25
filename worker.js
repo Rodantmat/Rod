@@ -583,9 +583,30 @@ function pitcherSeasonStats(person) {
   };
 }
 
-function apiStarterRow(gameId, teamId, pitcher, slateDate) {
+
+async function fetchMlbPitcherStatsMap(pitcherIds, season) {
+  const uniqueIds = [...new Set((pitcherIds || []).filter(Boolean))];
+  const map = new Map();
+  if (!uniqueIds.length) return map;
+
+  for (let i = 0; i < uniqueIds.length; i += 40) {
+    const batch = uniqueIds.slice(i, i + 40);
+    const url = `https://statsapi.mlb.com/api/v1/people?personIds=${batch.join(",")}&hydrate=stats(group=[pitching],type=[season],season=${encodeURIComponent(season)})`;
+    const res = await fetch(url, { headers: { "accept": "application/json" } });
+    if (!res.ok) continue;
+
+    const data = await res.json();
+    for (const person of (data.people || [])) {
+      map.set(Number(person.id), pitcherSeasonStats(person));
+    }
+  }
+
+  return map;
+}
+
+function apiStarterRow(gameId, teamId, pitcher, slateDate, statsOverride) {
   if (!pitcher || !pitcher.fullName) return null;
-  const stats = pitcherSeasonStats(pitcher);
+  const stats = statsOverride || pitcherSeasonStats(pitcher);
   return {
     game_id: gameId,
     team_id: teamId,
@@ -696,8 +717,21 @@ async function syncMlbApiGamesMarkets(input, env) {
 async function syncMlbApiProbableStarters(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
+  const season = slateDate.slice(0, 4);
   const data = await fetchMlbScheduleProbables(slateDate);
   const rows = [];
+
+  const pitcherIds = [];
+  for (const dateBlock of (data.dates || [])) {
+    for (const game of (dateBlock.games || [])) {
+      const awayPitcher = game?.teams?.away?.probablePitcher || null;
+      const homePitcher = game?.teams?.home?.probablePitcher || null;
+      if (awayPitcher?.id) pitcherIds.push(Number(awayPitcher.id));
+      if (homePitcher?.id) pitcherIds.push(Number(homePitcher.id));
+    }
+  }
+
+  const statsMap = await fetchMlbPitcherStatsMap(pitcherIds, season);
 
   for (const dateBlock of (data.dates || [])) {
     for (const game of (dateBlock.games || [])) {
@@ -710,8 +744,11 @@ async function syncMlbApiProbableStarters(input, env) {
       const awayPitcher = game?.teams?.away?.probablePitcher || null;
       const homePitcher = game?.teams?.home?.probablePitcher || null;
 
-      const awayRow = apiStarterRow(gameId, awayTeam, awayPitcher, slateDate);
-      const homeRow = apiStarterRow(gameId, homeTeam, homePitcher, slateDate);
+      const awayStats = awayPitcher?.id ? statsMap.get(Number(awayPitcher.id)) : null;
+      const homeStats = homePitcher?.id ? statsMap.get(Number(homePitcher.id)) : null;
+
+      const awayRow = apiStarterRow(gameId, awayTeam, awayPitcher, slateDate, awayStats);
+      const homeRow = apiStarterRow(gameId, homeTeam, homePitcher, slateDate, homeStats);
 
       if (awayRow) rows.push(awayRow);
       if (homeRow) rows.push(homeRow);
@@ -722,12 +759,21 @@ async function syncMlbApiProbableStarters(input, env) {
   if (!validated.ok) throw new Error(`MLB starter validation failed: ${validated.error}`);
   const inserted = await upsertRows(env, "starters_current", validated.rows);
 
+  const statsFilled = validated.rows.filter(r =>
+    r.era !== null && r.era !== undefined && Number(r.era) > 0 &&
+    r.whip !== null && r.whip !== undefined && Number(r.whip) > 0 &&
+    r.strikeouts !== null && r.strikeouts !== undefined && Number(r.strikeouts) > 0 &&
+    r.innings_pitched !== null && r.innings_pitched !== undefined && Number(r.innings_pitched) > 0
+  ).length;
+
   return {
     ok: true,
     job: input.job || "scrape_starters_mlb_api",
     slate_date: slateDate,
-    source: "mlb_statsapi_schedule_probablePitcher",
+    source: "mlb_statsapi_schedule_probablePitcher_people_stats",
     fetched_rows: rows.length,
+    stats_filled: statsFilled,
+    stats_missing: validated.rows.length - statsFilled,
     inserted: { starters_current: inserted },
     skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
