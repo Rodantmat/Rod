@@ -129,7 +129,8 @@ const TABLES = {
   bullpens_current: {
     allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"],
     required: ["game_id", "team_id"],
-    conflict: ["game_id", "team_id"]
+    conflict: ["game_id", "team_id"],
+    deleteInsert: true
   },
   lineups_current: {
     allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed", "source", "confidence"],
@@ -1226,6 +1227,17 @@ async function upsertRows(env, table, rows) {
     if (!cols.length) continue;
 
     const placeholders = cols.map(() => "?").join(", ");
+    const values = cols.map(c => row[c]);
+
+    if (spec.deleteInsert) {
+      const whereSql = spec.conflict.map(c => `${c} = ?`).join(" AND ");
+      const whereVals = spec.conflict.map(c => row[c]);
+      await env.DB.prepare(`DELETE FROM ${table} WHERE ${whereSql}`).bind(...whereVals).run();
+      await env.DB.prepare(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`).bind(...values).run();
+      inserted++;
+      continue;
+    }
+
     const conflict = spec.conflict.join(", ");
     const updateCols = cols.filter(c => !spec.conflict.includes(c));
     const updateSql = updateCols.length
@@ -1233,7 +1245,6 @@ async function upsertRows(env, table, rows) {
       : `${spec.conflict[0]}=excluded.${spec.conflict[0]}`;
 
     const sql = `INSERT INTO ${table} (${cols.join(", ")}) VALUES (${placeholders}) ON CONFLICT(${conflict}) DO UPDATE SET ${updateSql}`;
-    const values = cols.map(c => row[c]);
 
     await env.DB.prepare(sql).bind(...values).run();
     inserted++;
