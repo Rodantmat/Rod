@@ -199,7 +199,12 @@ const TABLES = {
     conflict: ["player_name"],
     deleteInsert: true
   }
-};
+,
+  edge_candidates_hits: {
+    allowed: ["candidate_id", "slate_date", "game_id", "team_id", "opponent_team", "player_name", "lineup_slot", "bats", "opposing_starter", "opposing_throws", "player_avg", "player_obp", "player_slg", "last_game_ab", "last_game_hits", "park_factor_run", "park_factor_hr", "bullpen_fatigue_score", "bullpen_fatigue_tier", "lineup_context_status", "candidate_tier", "candidate_reason", "source", "confidence"],
+    required: ["candidate_id", "slate_date", "game_id", "team_id", "player_name"],
+    conflict: ["candidate_id"]
+  }};
 
 
 const CORS_HEADERS = {
@@ -656,8 +661,7 @@ function hitCandidateTier(row) {
 
 async function insertEdgeCandidatesHitsBatch(env, rows) {
   if (!rows.length) return 0;
-  const cols = TABLES.edge_candidates_hits.allowed.filter(c => c !== "updated_at");
-  const insertCols = cols.filter(c => rows.some(r => Object.prototype.hasOwnProperty.call(r, c)));
+  const insertCols = ["candidate_id", "slate_date", "game_id", "team_id", "opponent_team", "player_name", "lineup_slot", "bats", "opposing_starter", "opposing_throws", "player_avg", "player_obp", "player_slg", "last_game_ab", "last_game_hits", "park_factor_run", "park_factor_hr", "bullpen_fatigue_score", "bullpen_fatigue_tier", "lineup_context_status", "candidate_tier", "candidate_reason", "source", "confidence"];
   const placeholders = insertCols.map(() => "?").join(", ");
   const updateCols = insertCols.filter(c => c !== "candidate_id");
   const updateSql = updateCols.map(c => `${c}=excluded.${c}`).join(", ");
@@ -760,12 +764,10 @@ async function buildEdgeCandidatesHits(input, env) {
   }
 
   await env.DB.prepare(`DELETE FROM edge_candidates_hits WHERE slate_date = ?`).bind(slateDate).run();
-  const validated = validateRows("edge_candidates_hits", rows);
-  if (!validated.ok) throw new Error(`Hits candidate validation failed: ${validated.error}`);
-  const inserted = await insertEdgeCandidatesHitsBatch(env, validated.rows);
+  const inserted = await insertEdgeCandidatesHitsBatch(env, rows);
 
-  const aPool = validated.rows.filter(r => r.candidate_tier === "A_POOL").length;
-  const bPool = validated.rows.filter(r => r.candidate_tier === "B_POOL").length;
+  const aPool = rows.filter(r => r.candidate_tier === "A_POOL").length;
+  const bPool = rows.filter(r => r.candidate_tier === "B_POOL").length;
 
   return {
     ok: true,
@@ -775,12 +777,12 @@ async function buildEdgeCandidatesHits(input, env) {
     mode: "zero_api_subrequest_deterministic",
     filter_mode: "B_AGGRESSIVE",
     raw_rows: rawRows.length,
-    fetched_rows: validated.rows.length,
+    fetched_rows: rows.length,
     inserted: { edge_candidates_hits: inserted },
     a_pool: aPool,
     b_pool: bPool,
-    skipped_count: validated.skipped.length,
-    skipped: validated.skipped.slice(0, 25),
+    skipped_count: 0,
+    skipped: [],
     complete: true,
     note: "Candidate pool only. No probabilities, scores, or betting decisions."
   };

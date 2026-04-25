@@ -30,3 +30,9 @@ Update in this package:
 - Control Room button height restored to text-fit sizing.
 - Manual SQL uses sqlInput correctly.
 - Added CHECK > Hits Candidates audit button.
+
+
+HOTFIX C:
+- Removed Build Hits Candidates dependency on validateRows(TABLES.edge_candidates_hits).
+- Registered edge_candidates_hits in TABLES anyway.
+- D1 batch insert remains request-limit safe.
