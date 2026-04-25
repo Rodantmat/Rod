@@ -693,6 +693,18 @@ function validateRows(table, rows) {
         ["Zack Greinke", new Set(["KC", "HOU", "ARI", "LAD"])]
       ]);
 
+      const fictionalStarterNames = new Set([
+        "Ethan Miller", "Liam Johnson", "Miguel Rodriguez", "David Chen", "Sophia Lee",
+        "Noah Williams", "Olivia Davis", "Lucas Garcia", "Daniel Kim", "Chloe Brown",
+        "Noah Davis", "Olivia White", "William Brown", "Sophia Green", "Isabella King",
+        "James Taylor", "Emily Chen", "Michael Lee"
+      ]);
+
+      if (fictionalStarterNames.has(String(row.starter_name || "").trim())) {
+        skipped.push({ row: i, reason: `fictional/generated starter name rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
+        continue;
+      }
+
       const blockedTeams = stalePairs.get(String(row.starter_name || "").trim());
       if (blockedTeams && blockedTeams.has(row.team_id)) {
         skipped.push({ row: i, reason: `stale roster pair rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
