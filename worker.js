@@ -741,22 +741,59 @@ async function bullpenUsageForTeam(teamAbbr, slateDate) {
   };
 }
 
+
 async function syncMlbApiBullpens(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
+  const previousDate = addDaysISO(slateDate, -1);
 
-  const games = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
-  const rows = [];
-  const usageCache = new Map();
+  const slateGames = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
+  const slateTeams = [...new Set((slateGames.results || []).flatMap(g => [g.away_team, g.home_team]))];
 
-  async function usage(teamId) {
-    if (!usageCache.has(teamId)) usageCache.set(teamId, await bullpenUsageForTeam(teamId, slateDate));
-    return usageCache.get(teamId);
+  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, { headers: { "accept": "application/json" } });
+  const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
+
+  const previousGames = [];
+  for (const d of (scheduleJson.dates || [])) {
+    for (const g of (d.games || [])) {
+      if (String(g?.status?.abstractGameState || "").toLowerCase() !== "final") continue;
+      const away = MLB_TEAM_ABBR[g?.teams?.away?.team?.id];
+      const home = MLB_TEAM_ABBR[g?.teams?.home?.team?.id];
+      if (!away || !home) continue;
+      if (slateTeams.includes(away) || slateTeams.includes(home)) {
+        previousGames.push({ gamePk: g.gamePk, away, home });
+      }
+    }
   }
 
-  for (const g of (games.results || [])) {
+  const usageByTeam = new Map();
+  for (const game of previousGames) {
+    const box = await fetchMlbBoxscore(game.gamePk);
+    if (!box) continue;
+
+    if (slateTeams.includes(game.away)) {
+      const outs = bullpenOutsFromBoxscore(box, "away");
+      usageByTeam.set(game.away, {
+        last_game_ip: outsToIpDecimal(outs),
+        last3_ip: null,
+        fatigue: fatigueFromOuts(outs, 0)
+      });
+    }
+
+    if (slateTeams.includes(game.home)) {
+      const outs = bullpenOutsFromBoxscore(box, "home");
+      usageByTeam.set(game.home, {
+        last_game_ip: outsToIpDecimal(outs),
+        last3_ip: null,
+        fatigue: fatigueFromOuts(outs, 0)
+      });
+    }
+  }
+
+  const rows = [];
+  for (const g of (slateGames.results || [])) {
     for (const teamId of [g.away_team, g.home_team]) {
-      const u = await usage(teamId);
+      const u = usageByTeam.get(teamId) || { last_game_ip: null, last3_ip: null, fatigue: "unknown" };
       rows.push({
         game_id: g.game_id,
         team_id: teamId,
@@ -765,8 +802,8 @@ async function syncMlbApiBullpens(input, env) {
         last_game_ip: u.last_game_ip,
         last3_ip: u.last3_ip,
         fatigue: u.fatigue,
-        source: "mlb_statsapi_boxscore_bullpen_usage",
-        confidence: "official_usage"
+        source: "mlb_statsapi_previous_day_boxscore_bullpen_usage",
+        confidence: "official_usage_lite"
       });
     }
   }
@@ -779,14 +816,15 @@ async function syncMlbApiBullpens(input, env) {
     ok: true,
     job: input.job || "scrape_bullpens_mlb_api",
     slate_date: slateDate,
-    source: "mlb_statsapi_boxscore_bullpen_usage",
+    source: "mlb_statsapi_previous_day_boxscore_bullpen_usage",
+    mode: "lite_subrequest_safe",
     fetched_rows: rows.length,
+    previous_games_checked: previousGames.length,
     inserted: { bullpens_current: inserted },
     skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
   };
 }
-
 
 async function syncMlbApiGamesMarkets(input, env) {
   const slate = resolveSlateDate(input || {});

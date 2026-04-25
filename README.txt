@@ -1,15 +1,12 @@
-AlphaDog MLB Bullpen Fatigue Patch
+AlphaDog MLB Bullpen Lite Patch
 
-What changed:
-- Adds MLB API bullpen fatigue layer.
-- New job: scrape_bullpens_mlb_api
-- Control Room: SCRAPE > MLB Bullpen
-- Control Room: CHECK > Bullpen
-- Control Room: CHECK > Bullpen List
-- FULL RUN now includes MLB API Bullpens.
-- Bullpen usage uses previous completed games boxscores.
-- last_game_ip and last3_ip are calculated from reliever innings.
-- fatigue is low / medium / high.
+Fix:
+- Previous bullpen version exceeded Cloudflare Worker subrequest limit.
+- This version is subrequest-safe.
+- It checks only previous day's completed games for teams on the slate.
+- It fills last_game_ip and fatigue.
+- last3_ip remains null for now to avoid subrequest overload.
+- FULL RUN includes bullpen lite safely.
 
 Upload to GitHub root:
 - worker.js
@@ -23,8 +20,6 @@ Do not replace config.txt.
 Test:
 CLEAN > Full
 SCRAPE > FULL RUN
-CHECK > Games
-CHECK > Starters
 CHECK > Bullpen
 CHECK > Bullpen List
 CHECK > Truth Audit
