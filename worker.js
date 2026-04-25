@@ -427,8 +427,32 @@ async function runFullPipeline(input, env) {
       AND s.team_id NOT IN (g.away_team, g.home_team)
   `, slateDate);
 
+  const duplicateStarters = await countScalar(env, `
+    SELECT COUNT(*) AS c FROM (
+      SELECT starter_name
+      FROM starters_current
+      WHERE game_id LIKE ?
+      GROUP BY starter_name
+      HAVING COUNT(*) > 1
+    )
+  `, `${slateDate}_%`);
+
+  const stalePairs = await countScalar(env, `
+    SELECT COUNT(*) AS c
+    FROM starters_current
+    WHERE game_id LIKE ?
+      AND (
+        (starter_name='Justin Verlander' AND team_id IN ('HOU','NYM'))
+        OR (starter_name='Chris Sale' AND team_id IN ('BOS','CHW'))
+        OR (starter_name='Corbin Burnes' AND team_id='MIL')
+        OR (starter_name='Clayton Kershaw' AND team_id='LAD')
+        OR (starter_name='Max Scherzer' AND team_id IN ('NYM','TEX','WSN'))
+        OR (starter_name='Zack Greinke' AND team_id IN ('KC','HOU','ARI','LAD'))
+      )
+  `, `${slateDate}_%`);
+
   const expectedStarters = games * 2;
-  const success = games > 0 && startersTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0;
+  const success = games > 0 && startersTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
 
   return {
     ok: success,
@@ -443,6 +467,8 @@ async function runFullPipeline(input, env) {
     bad_rows: badRows,
     missing_games: missingGames,
     team_mismatch: teamMismatch,
+    duplicate_starters: duplicateStarters,
+    stale_pairs: stalePairs,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     steps
@@ -655,6 +681,21 @@ function validateRows(table, rows) {
 
       if (!validPositiveNumber(row.era) || !validPositiveNumber(row.whip) || !validPositiveNumber(row.strikeouts) || !validPositiveNumber(row.innings_pitched)) {
         skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
+        continue;
+      }
+
+      const stalePairs = new Map([
+        ["Justin Verlander", new Set(["HOU", "NYM"])],
+        ["Chris Sale", new Set(["BOS", "CHW"])],
+        ["Corbin Burnes", new Set(["MIL"])],
+        ["Clayton Kershaw", new Set(["LAD"])],
+        ["Max Scherzer", new Set(["NYM", "TEX", "WSN"])],
+        ["Zack Greinke", new Set(["KC", "HOU", "ARI", "LAD"])]
+      ]);
+
+      const blockedTeams = stalePairs.get(String(row.starter_name || "").trim());
+      if (blockedTeams && blockedTeams.has(row.team_id)) {
+        skipped.push({ row: i, reason: `stale roster pair rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
         continue;
       }
 
