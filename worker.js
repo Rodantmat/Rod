@@ -415,13 +415,36 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function usablePositiveNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function marketTeamTotals(market) {
-  const total = numOrNull(market?.current_total ?? market?.game_total ?? market?.open_total);
-  const awayExisting = numOrNull(market?.away_implied_runs);
-  const homeExisting = numOrNull(market?.home_implied_runs);
-  if (awayExisting !== null || homeExisting !== null) return { away_implied_runs: awayExisting, home_implied_runs: homeExisting, source: "market_existing" };
-  if (total !== null) return { away_implied_runs: Number((total / 2).toFixed(2)), home_implied_runs: Number((total / 2).toFixed(2)), source: "market_total_split" };
-  return { away_implied_runs: null, home_implied_runs: null, source: "market_unavailable" };
+  const awayExisting = usablePositiveNumber(market?.away_implied_runs);
+  const homeExisting = usablePositiveNumber(market?.home_implied_runs);
+  if (awayExisting !== null || homeExisting !== null) {
+    return {
+      away_implied_runs: awayExisting,
+      home_implied_runs: homeExisting,
+      source: "market_existing_positive"
+    };
+  }
+
+  const total = usablePositiveNumber(market?.current_total) ?? usablePositiveNumber(market?.game_total) ?? usablePositiveNumber(market?.open_total);
+  if (total !== null) {
+    return {
+      away_implied_runs: Number((total / 2).toFixed(2)),
+      home_implied_runs: Number((total / 2).toFixed(2)),
+      source: "market_total_even_split_positive"
+    };
+  }
+
+  return {
+    away_implied_runs: null,
+    home_implied_runs: null,
+    source: "market_unavailable_null_no_zero_fill"
+  };
 }
 
 function bullpenFatigueScore(row) {

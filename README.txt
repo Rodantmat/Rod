@@ -1,22 +1,26 @@
-AlphaDog Derived Context Manual Safe-Safe Limit Fix
+AlphaDog Market Implied Runs Null-Fix
 
-Root fix:
-- FULL RUN no longer calls Derived Metrics inside the same Worker invocation.
-- This prevents Cloudflare "Too many API requests by single Worker invocation" failures.
-- Derived Metrics remains available as a separate Control Room button/job.
+Root cause found:
+- markets_current schema has current_total/game_total/open_total and moneylines
+- actual market rows currently have NULL totals and NULL moneylines
+- previous derived metrics displayed 0/0 because blank values were being treated as numeric zero
 
-Why:
-The feed pipeline is already near the Cloudflare per-invocation D1/API request ceiling.
-Derived Metrics performs extra D1 reads/writes and must run as its own separate scheduled/manual task.
+Fix:
+- Derived metrics now rejects 0/blank market values
+- If market totals/odds are unavailable, away_implied_runs/home_implied_runs stay NULL
+- implied_source becomes market_unavailable_null_no_zero_fill
+- Adds Control Room audit button: Market Implied Runs
 
 Run order:
-1. CLEAN > Full
-2. SCRAPE > FULL RUN
-3. SCRAPE > Run Derived Metrics
-4. CHECK > Derived Metrics
-5. CHECK > Park Context Audit
-6. CHECK > Feed Readiness
-7. CHECK > Final Feed Audit
+1. SCRAPE > Run Derived Metrics
+2. CHECK > Market Implied Runs
+3. CHECK > Derived Metrics
+4. CHECK > Feed Readiness
+5. CHECK > Final Feed Audit
+
+Expected:
+- MARKET_ZERO_FILL_CHECK = PASS_NO_FAKE_ZEROES
+- MARKET_IMPLIED_AVAILABLE may be INFO_UNAVAILABLE_SOURCE_EMPTY until real odds/totals populate markets_current
 
 No migration required.
 Do not replace config.txt.
