@@ -123,6 +123,21 @@ const JOBS = {
     tables: ["players_current"],
     note: "MLB Stats API player identity and handedness group 3"
   },
+  scrape_players_mlb_api_g4: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 4"
+  },
+  scrape_players_mlb_api_g5: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 5"
+  },
+  scrape_players_mlb_api_g6: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 6"
+  },
   scrape_recent_usage: {
     prompt: "scrape_recent_usage_v1.txt",
     tables: ["player_recent_usage"],
@@ -361,56 +376,66 @@ function val(obj, key) {
   return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null;
 }
 
+async function executeTaskJob(jobName, body, slate, env) {
+  if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
+    return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api") {
+    return await syncMlbApiProbableStarters({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_bullpens_mlb_api" || jobName === "scrape_bullpens") {
+    return await syncMlbApiBullpens({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_lineups_mlb_api" || jobName === "scrape_lineups") {
+    return await syncMlbApiLineups({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_recent_usage_mlb_api" || jobName === "scrape_recent_usage") {
+    return await syncMlbApiRecentUsage({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
+    return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  return await runJob({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+}
+
 async function handleTaskRun(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   const body = await safeJson(request);
   const slate = resolveSlateDate(body || {});
   const jobName = String((body || {}).job || "scrape_games_markets");
-  let result;
+  const taskId = crypto.randomUUID();
+  const input = { ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" };
 
-  if (jobName === "run_full_pipeline") {
-    const taskId = crypto.randomUUID();
-    const input = { ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" };
+  await env.DB.prepare(`
+    INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+  `).bind(taskId, jobName, "running", JSON.stringify(input)).run();
+
+  let result;
+  try {
+    result = jobName === "run_full_pipeline"
+      ? await runFullPipeline(input, env)
+      : await executeTaskJob(jobName, body, slate, env);
 
     await env.DB.prepare(`
-      INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-    `).bind(taskId, "run_full_pipeline", "running", JSON.stringify(input)).run();
-
+      UPDATE task_runs
+      SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
+      WHERE task_id = ?
+    `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+  } catch (err) {
+    result = { ok: false, status: "FAILED_EXCEPTION", error: String(err?.message || err), task_id: taskId };
     try {
-      result = await runFullPipeline(input, env);
-      await env.DB.prepare(`
-        UPDATE task_runs
-        SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
-        WHERE task_id = ?
-      `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
-    } catch (err) {
-      result = { ok: false, status: "FAILED_EXCEPTION", error: String(err?.message || err), task_id: taskId };
       await env.DB.prepare(`
         UPDATE task_runs
         SET status = ?, finished_at = CURRENT_TIMESTAMP, error = ?
         WHERE task_id = ?
       `).bind("failed", result.error, taskId).run();
-    }
-  } else if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
-    result = await syncMlbApiGamesMarkets({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api") {
-    result = await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_bullpens_mlb_api" || jobName === "scrape_bullpens") {
-    result = await syncMlbApiBullpens({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_lineups_mlb_api" || jobName === "scrape_lineups") {
-    result = await syncMlbApiLineups({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_recent_usage_mlb_api" || jobName === "scrape_recent_usage") {
-    result = await syncMlbApiRecentUsage({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || jobName === "scrape_players_mlb_api_g1" || jobName === "scrape_players_mlb_api_g2" || jobName === "scrape_players_mlb_api_g3") {
-    result = await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else {
-    result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    } catch (_) {}
   }
 
+  if (result && typeof result === "object" && !result.task_id) result.task_id = taskId;
   return Response.json(result, { status: result.ok ? 200 : 500 });
 }
-
 
 async function countScalar(env, sql, bindValue) {
   const stmt = bindValue !== undefined ? env.DB.prepare(sql).bind(bindValue) : env.DB.prepare(sql);
@@ -882,16 +907,14 @@ function extractRosterEntriesFromHydratedTeam(teamNode) {
 
 
 function playerIdentityGroupFromJob(job) {
-  if (String(job || "").endsWith("_g1")) return 1;
-  if (String(job || "").endsWith("_g2")) return 2;
-  if (String(job || "").endsWith("_g3")) return 3;
-  return null;
+  const match = String(job || "").match(/_g([1-6])$/);
+  return match ? Number(match[1]) : null;
 }
 
 function selectPlayerIdentityTeams(teamList, group) {
   const sorted = [...teamList].sort((a, b) => a.teamId.localeCompare(b.teamId));
-  if (!group) return sorted;
-  const size = Math.ceil(sorted.length / 3);
+  if (!group) return sorted.slice(0, 5);
+  const size = Math.ceil(sorted.length / 6);
   const start = (group - 1) * size;
   return sorted.slice(start, start + size);
 }
@@ -900,7 +923,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
   const group = playerIdentityGroupFromJob(input.job);
-  const maxWrites = group ? 175 : 140;
+  const maxWrites = 170;
 
   const games = await env.DB.prepare("SELECT away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
   const teamCodes = [...new Set((games.results || []).flatMap(g => [g.away_team, g.home_team]))].filter(Boolean);
@@ -922,6 +945,9 @@ async function syncMlbApiPlayersIdentity(input, env) {
   }
 
   const selectedTeams = selectPlayerIdentityTeams([...teamMap.values()], group);
+  if (group === 1) {
+    await env.DB.prepare("DELETE FROM players_current").run();
+  }
   const rows = [];
 
   for (const t of selectedTeams) {

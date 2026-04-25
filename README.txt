@@ -1,29 +1,40 @@
-AlphaDog Players Chunked Safe-Safe Patch
+AlphaDog Re-Attack Sweep Safe-Safe Patch
 
-Root cause:
-- One MLB Players job writes roughly 500 rows.
-- D1 write calls can hit Cloudflare per-invocation API request limits.
+What changed:
+1. Player Identity is now 6 chunks, not 3:
+   - MLB Players G1 through G6
+   - About 5 teams per group
+   - Under D1/API request limits
+   - G1 clears players_current to prevent stale carryover
+2. Manual jobs now write to task_runs:
+   - Player Job Log works
+   - Failed Runs captures non-full jobs too
+3. Added Control Room re-attack audits:
+   - Market Audit
+   - Lineup Freshness
+   - Player Cleanliness
+4. Final Feed Audit tightened:
+   - Players must be >=600
+   - Duplicate player/team check included
+   - Handedness gaps still checked
 
-Fix:
-- MLB Players is now split into 3 safe chunks:
-  SCRAPE > MLB Players G1
-  SCRAPE > MLB Players G2
-  SCRAPE > MLB Players G3
-- Each group fetches about 10 teams and writes under a safe cap.
-- FULL RUN remains clean and stable.
-- Adds CHECK > Player Job Log.
+No migration required.
+Do not replace config.txt.
 
-Correct workflow:
+Test order:
 1. CLEAN > Full
 2. SCRAPE > FULL RUN
 3. CHECK > Final Feed Audit
 4. SCRAPE > MLB Players G1
 5. SCRAPE > MLB Players G2
 6. SCRAPE > MLB Players G3
-7. CHECK > Players
-8. CHECK > Handedness Gaps
-9. CHECK > Player Job Log
-10. CHECK > Final Feed Audit
-
-No migration required.
-Do not replace config.txt.
+7. SCRAPE > MLB Players G4
+8. SCRAPE > MLB Players G5
+9. SCRAPE > MLB Players G6
+10. CHECK > Players
+11. CHECK > Handedness Gaps
+12. CHECK > Player Job Log
+13. CHECK > Market Audit
+14. CHECK > Lineup Freshness
+15. CHECK > Player Cleanliness
+16. CHECK > Final Feed Audit
