@@ -16,6 +16,10 @@ textarea{height:90px}
 pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:420px;min-height:150px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
 .status{background:#111;color:#fff;padding:8px;border-radius:6px;border:1px solid #30363d;margin:8px 0;white-space:pre-wrap}
 .small{font-size:11px;color:#aaa}
+
+/* label-sql-fix */
+.grid button{min-height:76px;white-space:normal;overflow:hidden;text-overflow:clip;line-height:1.15;}
+textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-events:auto;}
 </style>
 </head>
 <body>
@@ -35,10 +39,29 @@ pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-h
 <button class="debug" onclick="debugConfig()">Config</button><button class="debug" onclick="health()">Health</button><button class="debug" onclick="testSQL()">SQL Test</button><button class="debug" onclick="loadConfig()">Reload</button>
 </div></div>
 
+
 <div class="section"><h3>SCRAPE</h3><div class="grid">
-<button onclick="runJobButton('FULL RUN','run_full_pipeline')">FULL RUN</button><button onclick="runJobButton('Markets','scrape_games_markets')">Markets</button><button onclick="runJobButton('G1','scrape_starters_group_1')">G1</button><button onclick="runJobButton('G2','scrape_starters_group_2')">G2</button><button onclick="runJobButton('G3','scrape_starters_group_3')">G3</button>
-<button onclick="runJobButton('MLB API','scrape_starters_mlb_api')">MLB API</button><button onclick="runJobButton('MLB Bullpen','scrape_bullpens_mlb_api')">MLB Bullpen</button><button onclick="runJobButton('MLB Lineups','scrape_lineups_mlb_api')">MLB Lineups</button><button onclick="runJobButton('MLB Usage','scrape_recent_usage_mlb_api')">MLB Usage</button><button onclick="runJobButton('Run Derived Metrics','scrape_derived_metrics')"></button><button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button><button onclick="runJobButton('Teams','scrape_teams')">Teams</button><button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button><button onclick="runJobButton('Lineups','scrape_lineups')">Lineups</button>
-<button onclick="runJobButton('Players','scrape_players')">Players</button><button onclick="runJobButton('MLB Players G1','scrape_players_mlb_api_g1')"></button><button onclick="runJobButton('MLB Players G2','scrape_players_mlb_api_g2')"></button><button onclick="runJobButton('MLB Players G3','scrape_players_mlb_api_g3')"></button><button onclick="runJobButton('MLB Players G4','scrape_players_mlb_api_g4')"></button><button onclick="runJobButton('MLB Players G5','scrape_players_mlb_api_g5')"></button><button onclick="runJobButton('MLB Players G6','scrape_players_mlb_api_g6')"></button>
+<button onclick="runJobButton('FULL RUN','run_full_pipeline')">FULL RUN</button>
+<button onclick="runJobButton('Markets','scrape_games_markets')">Markets</button>
+<button onclick="runJobButton('G1','scrape_starters_group_1')">G1</button>
+<button onclick="runJobButton('G2','scrape_starters_group_2')">G2</button>
+<button onclick="runJobButton('G3','scrape_starters_group_3')">G3</button>
+<button onclick="runJobButton('MLB API','scrape_starters_mlb_api')">MLB API</button>
+<button onclick="runJobButton('MLB Bullpen','scrape_bullpens_mlb_api')">MLB Bullpen</button>
+<button onclick="runJobButton('MLB Lineups','scrape_lineups_mlb_api')">MLB Lineups</button>
+<button onclick="runJobButton('MLB Usage','scrape_recent_usage_mlb_api')">MLB Usage</button>
+<button onclick="runJobButton('Run Derived Metrics','scrape_derived_metrics')">Run Derived Metrics</button>
+<button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button>
+<button onclick="runJobButton('Teams','scrape_teams')">Teams</button>
+<button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button>
+<button onclick="runJobButton('Lineups','scrape_lineups')">Lineups</button>
+<button onclick="runJobButton('Players','scrape_players')">Players</button>
+<button onclick="runJobButton('MLB Players G1','scrape_players_mlb_api_g1')">MLB Players G1</button>
+<button onclick="runJobButton('MLB Players G2','scrape_players_mlb_api_g2')">MLB Players G2</button>
+<button onclick="runJobButton('MLB Players G3','scrape_players_mlb_api_g3')">MLB Players G3</button>
+<button onclick="runJobButton('MLB Players G4','scrape_players_mlb_api_g4')">MLB Players G4</button>
+<button onclick="runJobButton('MLB Players G5','scrape_players_mlb_api_g5')">MLB Players G5</button>
+<button onclick="runJobButton('MLB Players G6','scrape_players_mlb_api_g6')">MLB Players G6</button>
 </div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
@@ -51,7 +74,9 @@ pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-h
 <button class="check" onclick="runSQLButton('Tasks', latestTasks())">Tasks</button><button class="audit" onclick="runSQLButton('Scheduler Log', schedulerLog())">Scheduler Log</button><button class="audit" onclick="runSQLButton('Failed Runs', failedRuns())">Failed Runs</button><button class="check" onclick="runSQLButton('Player Job Log', playerJobLog())">Player Job Log</button>
 </div></div>
 
-<div class="section"><h3>MANUAL SQL</h3><textarea id="sql"></textarea><button class="sql" onclick="runManualSQL()">Run SQL</button></div>
+<div class="section"><h3>MANUAL SQL</h3><textarea id="sqlInput" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="none" inputmode="text"></textarea><button class="sql" onclick="runManualSQL()">Run SQL</button>
+<button class="debug" type="button" onclick="clearSqlInput()">Clear SQL</button>
+<button class="debug" type="button" onclick="selectSqlInput()">Select SQL</button></div>
 <pre id="output">Output will appear here.</pre><button class="copy" onclick="copyOutput()">COPY OUTPUT</button>
 
 <script>
@@ -274,5 +299,34 @@ WHERE game_id LIKE '${D()}_%'
 ORDER BY game_id;
 `}
 
+</script>
+
+<script>
+function clearSqlInput(){
+  const el = document.getElementById('sqlInput') || document.querySelector('textarea');
+  if (!el) return;
+  el.removeAttribute('readonly');
+  el.removeAttribute('disabled');
+  el.value = '';
+  el.focus();
+}
+function selectSqlInput(){
+  const el = document.getElementById('sqlInput') || document.querySelector('textarea');
+  if (!el) return;
+  el.removeAttribute('readonly');
+  el.removeAttribute('disabled');
+  el.focus();
+  el.select();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('sqlInput') || document.querySelector('textarea');
+  if (el) {
+    el.removeAttribute('readonly');
+    el.removeAttribute('disabled');
+    el.style.userSelect = 'text';
+    el.style.webkitUserSelect = 'text';
+    el.style.pointerEvents = 'auto';
+  }
+});
 </script>
 </body></html>
