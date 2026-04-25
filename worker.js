@@ -376,6 +376,179 @@ function val(obj, key) {
   return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null;
 }
 
+
+const PARK_CONTEXT_BY_HOME_TEAM = {
+  ARI: { venue: "Chase Field", park_factor_run: 1.02, park_factor_hr: 1.03, altitude_tier: "medium", roof_type: "retractable" },
+  ATL: { venue: "Truist Park", park_factor_run: 1.01, park_factor_hr: 1.03, altitude_tier: "low", roof_type: "open" },
+  BAL: { venue: "Oriole Park at Camden Yards", park_factor_run: 0.98, park_factor_hr: 0.96, altitude_tier: "low", roof_type: "open" },
+  BOS: { venue: "Fenway Park", park_factor_run: 1.05, park_factor_hr: 0.98, altitude_tier: "low", roof_type: "open" },
+  CHC: { venue: "Wrigley Field", park_factor_run: 1.00, park_factor_hr: 1.02, altitude_tier: "low", roof_type: "open" },
+  CIN: { venue: "Great American Ball Park", park_factor_run: 1.04, park_factor_hr: 1.12, altitude_tier: "low", roof_type: "open" },
+  CLE: { venue: "Progressive Field", park_factor_run: 0.99, park_factor_hr: 0.98, altitude_tier: "low", roof_type: "open" },
+  COL: { venue: "Coors Field", park_factor_run: 1.18, park_factor_hr: 1.12, altitude_tier: "high", roof_type: "open" },
+  CWS: { venue: "Rate Field", park_factor_run: 1.00, park_factor_hr: 1.05, altitude_tier: "low", roof_type: "open" },
+  DET: { venue: "Comerica Park", park_factor_run: 1.00, park_factor_hr: 0.95, altitude_tier: "low", roof_type: "open" },
+  HOU: { venue: "Daikin Park", park_factor_run: 1.00, park_factor_hr: 1.02, altitude_tier: "low", roof_type: "retractable" },
+  KC: { venue: "Kauffman Stadium", park_factor_run: 1.01, park_factor_hr: 0.94, altitude_tier: "low", roof_type: "open" },
+  LAA: { venue: "Angel Stadium", park_factor_run: 0.99, park_factor_hr: 0.98, altitude_tier: "low", roof_type: "open" },
+  LAD: { venue: "Dodger Stadium", park_factor_run: 0.98, park_factor_hr: 1.02, altitude_tier: "low", roof_type: "open" },
+  MIA: { venue: "loanDepot park", park_factor_run: 0.97, park_factor_hr: 0.94, altitude_tier: "low", roof_type: "retractable" },
+  MIL: { venue: "American Family Field", park_factor_run: 1.01, park_factor_hr: 1.04, altitude_tier: "low", roof_type: "retractable" },
+  MIN: { venue: "Target Field", park_factor_run: 0.99, park_factor_hr: 0.98, altitude_tier: "low", roof_type: "open" },
+  NYM: { venue: "Citi Field", park_factor_run: 0.98, park_factor_hr: 0.96, altitude_tier: "low", roof_type: "open" },
+  NYY: { venue: "Yankee Stadium", park_factor_run: 1.01, park_factor_hr: 1.08, altitude_tier: "low", roof_type: "open" },
+  OAK: { venue: "Oakland Coliseum", park_factor_run: 0.97, park_factor_hr: 0.94, altitude_tier: "low", roof_type: "open" },
+  PHI: { venue: "Citizens Bank Park", park_factor_run: 1.03, park_factor_hr: 1.08, altitude_tier: "low", roof_type: "open" },
+  PIT: { venue: "PNC Park", park_factor_run: 0.99, park_factor_hr: 0.95, altitude_tier: "low", roof_type: "open" },
+  SD: { venue: "Petco Park", park_factor_run: 0.95, park_factor_hr: 0.92, altitude_tier: "low", roof_type: "open" },
+  SEA: { venue: "T-Mobile Park", park_factor_run: 0.96, park_factor_hr: 0.95, altitude_tier: "low", roof_type: "retractable" },
+  SFG: { venue: "Oracle Park", park_factor_run: 0.96, park_factor_hr: 0.90, altitude_tier: "low", roof_type: "open" },
+  STL: { venue: "Busch Stadium", park_factor_run: 0.99, park_factor_hr: 0.97, altitude_tier: "low", roof_type: "open" },
+  TB: { venue: "Tropicana Field", park_factor_run: 0.98, park_factor_hr: 0.97, altitude_tier: "low", roof_type: "dome" },
+  TEX: { venue: "Globe Life Field", park_factor_run: 1.00, park_factor_hr: 1.01, altitude_tier: "low", roof_type: "retractable" },
+  TOR: { venue: "Rogers Centre", park_factor_run: 1.01, park_factor_hr: 1.03, altitude_tier: "low", roof_type: "retractable" },
+  WSN: { venue: "Nationals Park", park_factor_run: 1.00, park_factor_hr: 1.00, altitude_tier: "low", roof_type: "open" }
+};
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function marketTeamTotals(market) {
+  const total = numOrNull(market?.current_total ?? market?.game_total ?? market?.open_total);
+  const awayExisting = numOrNull(market?.away_implied_runs);
+  const homeExisting = numOrNull(market?.home_implied_runs);
+  if (awayExisting !== null || homeExisting !== null) return { away_implied_runs: awayExisting, home_implied_runs: homeExisting, source: "market_existing" };
+  if (total !== null) return { away_implied_runs: Number((total / 2).toFixed(2)), home_implied_runs: Number((total / 2).toFixed(2)), source: "market_total_split" };
+  return { away_implied_runs: null, home_implied_runs: null, source: "market_unavailable" };
+}
+
+function bullpenFatigueScore(row) {
+  const ip = numOrNull(row?.last_game_ip);
+  if (ip === null) return { score: null, tier: "unknown" };
+  if (ip >= 4.0) return { score: 85, tier: "high" };
+  if (ip >= 3.0) return { score: 65, tier: "medium" };
+  return { score: 35, tier: "low" };
+}
+
+async function ensureDerivedTables(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS game_context_current (
+      game_id TEXT PRIMARY KEY,
+      game_date TEXT,
+      away_team TEXT,
+      home_team TEXT,
+      venue TEXT,
+      park_factor_run REAL,
+      park_factor_hr REAL,
+      altitude_tier TEXT,
+      roof_type TEXT,
+      away_implied_runs REAL,
+      home_implied_runs REAL,
+      implied_source TEXT,
+      away_bullpen_fatigue_score REAL,
+      home_bullpen_fatigue_score REAL,
+      away_bullpen_fatigue_tier TEXT,
+      home_bullpen_fatigue_tier TEXT,
+      away_lineup_count INTEGER,
+      home_lineup_count INTEGER,
+      lineup_context_status TEXT,
+      source TEXT,
+      confidence TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+}
+
+async function syncDerivedMetrics(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  await ensureDerivedTables(env);
+
+  const gamesRes = await env.DB.prepare(`
+    SELECT game_id, game_date, away_team, home_team, venue, start_time_utc
+    FROM games
+    WHERE game_date = ?
+    ORDER BY game_id
+  `).bind(slateDate).all();
+
+  const rows = [];
+  for (const g of (gamesRes.results || [])) {
+    const market = await env.DB.prepare(`SELECT * FROM markets_current WHERE game_id = ?`).bind(g.game_id).first();
+    const awayBullpen = await env.DB.prepare(`SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ?`).bind(g.game_id, g.away_team).first();
+    const homeBullpen = await env.DB.prepare(`SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ?`).bind(g.game_id, g.home_team).first();
+    const awayLineup = await env.DB.prepare(`SELECT COUNT(*) AS c FROM lineups_current WHERE game_id = ? AND team_id = ?`).bind(g.game_id, g.away_team).first();
+    const homeLineup = await env.DB.prepare(`SELECT COUNT(*) AS c FROM lineups_current WHERE game_id = ? AND team_id = ?`).bind(g.game_id, g.home_team).first();
+
+    const park = PARK_CONTEXT_BY_HOME_TEAM[g.home_team] || {};
+    const totals = marketTeamTotals(market || {});
+    const awayFatigue = bullpenFatigueScore(awayBullpen || {});
+    const homeFatigue = bullpenFatigueScore(homeBullpen || {});
+    const awayCount = Number(awayLineup?.c || 0);
+    const homeCount = Number(homeLineup?.c || 0);
+
+    rows.push({
+      game_id: g.game_id,
+      game_date: g.game_date,
+      away_team: g.away_team,
+      home_team: g.home_team,
+      venue: park.venue || g.venue || null,
+      park_factor_run: park.park_factor_run ?? null,
+      park_factor_hr: park.park_factor_hr ?? null,
+      altitude_tier: park.altitude_tier || "unknown",
+      roof_type: park.roof_type || "unknown",
+      away_implied_runs: totals.away_implied_runs,
+      home_implied_runs: totals.home_implied_runs,
+      implied_source: totals.source,
+      away_bullpen_fatigue_score: awayFatigue.score,
+      home_bullpen_fatigue_score: homeFatigue.score,
+      away_bullpen_fatigue_tier: awayFatigue.tier,
+      home_bullpen_fatigue_tier: homeFatigue.tier,
+      away_lineup_count: awayCount,
+      home_lineup_count: homeCount,
+      lineup_context_status: awayCount >= 9 && homeCount >= 9 ? "usable" : "partial",
+      source: "derived_metrics_static_park_context",
+      confidence: "deterministic_zero_subrequest"
+    });
+  }
+
+  await env.DB.prepare(`DELETE FROM game_context_current WHERE game_id LIKE ?`).bind(`${slateDate}_%`).run();
+
+  let inserted = 0;
+  for (const r of rows) {
+    await env.DB.prepare(`
+      INSERT INTO game_context_current (
+        game_id, game_date, away_team, home_team, venue, park_factor_run, park_factor_hr, altitude_tier, roof_type,
+        away_implied_runs, home_implied_runs, implied_source,
+        away_bullpen_fatigue_score, home_bullpen_fatigue_score, away_bullpen_fatigue_tier, home_bullpen_fatigue_tier,
+        away_lineup_count, home_lineup_count, lineup_context_status, source, confidence, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).bind(
+      r.game_id, r.game_date, r.away_team, r.home_team, r.venue, r.park_factor_run, r.park_factor_hr, r.altitude_tier, r.roof_type,
+      r.away_implied_runs, r.home_implied_runs, r.implied_source,
+      r.away_bullpen_fatigue_score, r.home_bullpen_fatigue_score, r.away_bullpen_fatigue_tier, r.home_bullpen_fatigue_tier,
+      r.away_lineup_count, r.home_lineup_count, r.lineup_context_status, r.source, r.confidence
+    ).run();
+    inserted++;
+  }
+
+  return {
+    ok: true,
+    job: input.job || "scrape_derived_metrics",
+    slate_date: slateDate,
+    source: "derived_metrics_static_park_context",
+    mode: "zero_subrequest_deterministic",
+    fetched_rows: rows.length,
+    inserted: { game_context_current: inserted },
+    park_context_rows: rows.filter(r => r.park_factor_run !== null && r.park_factor_hr !== null).length,
+    implied_rows: rows.filter(r => r.away_implied_runs !== null || r.home_implied_runs !== null).length,
+    bullpen_context_rows: rows.filter(r => r.away_bullpen_fatigue_tier !== "unknown" && r.home_bullpen_fatigue_tier !== "unknown").length,
+    lineup_context_rows: rows.filter(r => r.lineup_context_status === "usable").length
+  };
+}
+
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -391,6 +564,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "scrape_recent_usage_mlb_api" || jobName === "scrape_recent_usage") {
     return await syncMlbApiRecentUsage({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "scrape_derived_metrics") {
+    return await syncDerivedMetrics({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
     return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -519,6 +695,9 @@ async function runFullPipeline(input, env) {
 
   const recentUsageResult = await syncMlbApiRecentUsage({ ...(input || {}), job: "scrape_recent_usage_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Recent Usage", job: "scrape_recent_usage_mlb_api", result: recentUsageResult });
+
+  const derivedMetricsResult = await syncDerivedMetrics({ ...(input || {}), job: "scrape_derived_metrics", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+  steps.push({ label: "MLB API Derived Metrics", job: "scrape_derived_metrics", result: derivedMetricsResult });
 
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 

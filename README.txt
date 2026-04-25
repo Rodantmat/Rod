@@ -1,19 +1,27 @@
-AlphaDog Market Audit Schema-Safe Fix
+AlphaDog Derived Context Safe-Safe Patch
 
-What changed:
-- Fixes CHECK > Market Audit.
-- Removes references to spread_away / odds columns that do not exist in the current D1 schema.
-- Market Audit now checks:
-  1. markets_current count matches games count
-  2. every market row joins to a valid game row
-  3. schema-safe sample/info count
+Adds deterministic zero-subrequest derived context:
+- game_context_current auto-created by worker
+- park factors / roof / altitude from static manifest
+- implied totals shell from existing markets
+- bullpen fatigue score from existing bullpen feed
+- lineup count/status from existing lineup feed
 
-No worker logic change required, but worker.js is included unchanged for flat upload consistency.
+New Control Room:
+- Run Derived Metrics
+- Derived Metrics
+- Park Context Audit
+- Feed Readiness
 
-Upload:
-- control_room.html
-- worker.js optional/unchanged
+FULL RUN now runs Derived Metrics after Recent Usage.
+
+No migration required.
+Do not replace config.txt.
 
 Test:
-CHECK > Market Audit
-CHECK > Final Feed Audit
+1. CLEAN > Full
+2. SCRAPE > FULL RUN
+3. CHECK > Derived Metrics
+4. CHECK > Park Context Audit
+5. CHECK > Feed Readiness
+6. CHECK > Final Feed Audit
