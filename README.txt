@@ -1,15 +1,15 @@
-AlphaDog MLB Lineups Patch
+AlphaDog Lineup Buttons Fix
 
-What changed:
-- Adds MLB API lineups layer.
-- New job: scrape_lineups_mlb_api
-- Control Room:
-  SCRAPE > MLB Lineups
-  CHECK > Lineups
-  CHECK > Lineup List
-- FULL RUN now attempts MLB API Lineups after bullpens.
-- Lineups are non-blocking because official lineups may not be posted early.
-- This keeps Gemini out of raw lineup/player identity data.
+Fix:
+- Forces SCRAPE > MLB Lineups button.
+- Forces CHECK > Lineups button.
+- Forces CHECK > Lineup List button.
+- Adds checkLineups() and listLineups() functions if missing.
+
+Current result is healthy:
+- FULL RUN success
+- lineups_total = 0 is acceptable before official lineups are posted
+- lineups are non-blocking by design
 
 Upload to GitHub root:
 - worker.js
@@ -21,12 +21,8 @@ Upload to GitHub root:
 Do not replace config.txt.
 
 Test:
-CLEAN > Full
-SCRAPE > FULL RUN
-CHECK > Games
-CHECK > Starters
-CHECK > Bullpen
+DEBUG > Config
 CHECK > Lineups
 CHECK > Lineup List
-CHECK > Truth Audit
+SCRAPE > MLB Lineups
 CHECK > Scheduler Log
