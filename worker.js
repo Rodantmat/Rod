@@ -251,7 +251,28 @@ function health(env) {
 }
 
 async function runScheduled(event, env) {
-  await runFullPipeline({ job: "run_full_pipeline", cron: event?.cron || null, slate_mode: "AUTO" }, env);
+  const taskId = crypto.randomUUID();
+  const input = { job: "run_full_pipeline", cron: event?.cron || null, slate_mode: "AUTO", trigger: "scheduled" };
+
+  await env.DB.prepare(`
+    INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+  `).bind(taskId, "run_full_pipeline", "running", JSON.stringify(input)).run();
+
+  try {
+    const result = await runFullPipeline(input, env);
+    await env.DB.prepare(`
+      UPDATE task_runs
+      SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
+      WHERE task_id = ?
+    `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+  } catch (err) {
+    await env.DB.prepare(`
+      UPDATE task_runs
+      SET status = ?, finished_at = CURRENT_TIMESTAMP, error = ?
+      WHERE task_id = ?
+    `).bind("failed", String(err?.message || err), taskId).run();
+  }
 }
 
 function isAuthorized(request, env) {
@@ -308,13 +329,40 @@ async function handleTaskRun(request, env) {
   const body = await safeJson(request);
   const slate = resolveSlateDate(body || {});
   const jobName = String((body || {}).job || "scrape_games_markets");
-  const result = jobName === "run_full_pipeline"
-    ? await runFullPipeline({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-    : (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate")
-      ? await syncMlbApiGamesMarkets({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-      : (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api")
-        ? await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-        : await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  let result;
+
+  if (jobName === "run_full_pipeline") {
+    const taskId = crypto.randomUUID();
+    const input = { ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" };
+
+    await env.DB.prepare(`
+      INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+    `).bind(taskId, "run_full_pipeline", "running", JSON.stringify(input)).run();
+
+    try {
+      result = await runFullPipeline(input, env);
+      await env.DB.prepare(`
+        UPDATE task_runs
+        SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
+        WHERE task_id = ?
+      `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+    } catch (err) {
+      result = { ok: false, status: "FAILED_EXCEPTION", error: String(err?.message || err), task_id: taskId };
+      await env.DB.prepare(`
+        UPDATE task_runs
+        SET status = ?, finished_at = CURRENT_TIMESTAMP, error = ?
+        WHERE task_id = ?
+      `).bind("failed", result.error, taskId).run();
+    }
+  } else if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
+    result = await syncMlbApiGamesMarkets({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else if (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api") {
+    result = await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else {
+    result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+
   return Response.json(result, { status: result.ok ? 200 : 500 });
 }
 

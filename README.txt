@@ -1,15 +1,4 @@
-AlphaDog MLB API Schedule Lock Patch
-
-Root cause fixed:
-- Gemini games/markets schedule did not match MLB API starters schedule.
-- Truth Audit showed missing starters because game_id sets were different.
-
-Fix:
-- scrape_games_markets now uses MLB Stats API schedule as the source of truth.
-- MLB API starters use the same schedule/game_id construction.
-- Games and starters now align deterministically.
-- Markets are inserted with null odds from official schedule source.
-- Gemini is no longer primary for games or starter names.
+AlphaDog Cron + Log Phase
 
 Upload to GitHub root:
 - worker.js
@@ -20,14 +9,25 @@ Upload to GitHub root:
 
 Do not replace config.txt.
 
-Test:
-CLEAN > Full
-SCRAPE > Markets
-SCRAPE > MLB API
-CHECK > Games
-CHECK > Starters
-CHECK > Bad Start
-CHECK > Stats Missing
-CHECK > Truth Audit
+Cloudflare cron trigger to add:
+*/30 * * * *
+
+What changed:
+- Cloudflare scheduled event runs run_full_pipeline automatically.
+- Manual FULL RUN is logged to task_runs.
+- Scheduled FULL RUN is logged to task_runs.
+- Control Room added:
+  CHECK > Scheduler Log
+  CHECK > Failed Runs
+  CHECK > Stats Missing
+
+Test after deploy:
+DEBUG > Health
 SCRAPE > FULL RUN
+CHECK > Scheduler Log
+CHECK > Failed Runs
 CHECK > Truth Audit
+
+Cron test:
+After adding the cron trigger, wait for the next 30-minute mark, then run:
+CHECK > Scheduler Log
