@@ -405,10 +405,15 @@ async function runFullPipeline(input, env) {
       AND (
         starter_name LIKE '%Ace%'
         OR starter_name IN ('TBD','TBA','Unknown','Starter')
-        OR era IS NULL OR era <= 0
-        OR whip IS NULL OR whip <= 0
-        OR strikeouts IS NULL OR strikeouts <= 0
-        OR innings_pitched IS NULL OR innings_pitched <= 0
+        OR (
+          source != 'mlb_statsapi_probable_pitcher'
+          AND (
+            era IS NULL OR era <= 0
+            OR whip IS NULL OR whip <= 0
+            OR strikeouts IS NULL OR strikeouts <= 0
+            OR innings_pitched IS NULL OR innings_pitched <= 0
+          )
+        )
       )
   `, `${slateDate}_%`);
 
@@ -455,6 +460,18 @@ async function runFullPipeline(input, env) {
       )
   `, `${slateDate}_%`);
 
+  const statsMissing = await countScalar(env, `
+    SELECT COUNT(*) AS c
+    FROM starters_current
+    WHERE game_id LIKE ?
+      AND (
+        era IS NULL OR era <= 0
+        OR whip IS NULL OR whip <= 0
+        OR strikeouts IS NULL OR strikeouts <= 0
+        OR innings_pitched IS NULL OR innings_pitched <= 0
+      )
+  `, `${slateDate}_%`);
+
   const expectedStarters = games * 2;
   const success = games > 0 && startersTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
 
@@ -473,6 +490,7 @@ async function runFullPipeline(input, env) {
     team_mismatch: teamMismatch,
     duplicate_starters: duplicateStarters,
     stale_pairs: stalePairs,
+    stats_missing: statsMissing,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     steps
@@ -788,14 +806,18 @@ function validateRows(table, rows) {
         continue;
       }
 
-      if (!hasAllValues(row, ["era", "whip", "strikeouts", "innings_pitched"])) {
-        skipped.push({ row: i, reason: `starter missing core stats rejected ${row.game_id}/${row.team_id}` });
-        continue;
-      }
+      const isOfficialMlbApiStarter = String(row.source || "") === "mlb_statsapi_probable_pitcher";
 
-      if (!validPositiveNumber(row.era) || !validPositiveNumber(row.whip) || !validPositiveNumber(row.strikeouts) || !validPositiveNumber(row.innings_pitched)) {
-        skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
-        continue;
+      if (!isOfficialMlbApiStarter) {
+        if (!hasAllValues(row, ["era", "whip", "strikeouts", "innings_pitched"])) {
+          skipped.push({ row: i, reason: `starter missing core stats rejected ${row.game_id}/${row.team_id}` });
+          continue;
+        }
+
+        if (!validPositiveNumber(row.era) || !validPositiveNumber(row.whip) || !validPositiveNumber(row.strikeouts) || !validPositiveNumber(row.innings_pitched)) {
+          skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
+          continue;
+        }
       }
 
       const stalePairs = new Map([

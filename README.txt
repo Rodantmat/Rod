@@ -1,11 +1,11 @@
-AlphaDog MLB API Starters Patch
+AlphaDog MLB API Names-First Patch
 
-Major architecture change:
-- Gemini is no longer the primary starter name source.
-- Starters now sync from MLB Stats API:
-  https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=YYYY-MM-DD&hydrate=probablePitcher(...)
-- Gemini missing repair remains fallback only.
-- FULL RUN now uses MLB API starter sync after markets.
+Fix:
+- Official MLB Stats API probable pitcher rows now insert even if stats are null.
+- Missing stats are non-blocking for official MLB API rows.
+- Bad Start no longer flags official MLB API rows only because stats are missing.
+- Added CHECK > Stats Missing as a separate soft enrichment check.
+- FULL RUN success is name/truth based first.
 
 Upload to GitHub root:
 - worker.js
@@ -21,6 +21,8 @@ CLEAN > Full
 SCRAPE > Markets
 SCRAPE > MLB API
 CHECK > Starters
+CHECK > Bad Start
+CHECK > Stats Missing
 CHECK > Truth Audit
 SCRAPE > FULL RUN
 CHECK > Starters
