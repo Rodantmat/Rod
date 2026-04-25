@@ -632,29 +632,37 @@ function hitCandidateTier(row) {
   const avg = edgeNum(row.player_avg);
   const obp = edgeNum(row.player_obp);
   const lastAb = edgeNum(row.last_game_ab);
+  const lastHits = edgeNum(row.last_game_hits);
   const parkRun = edgeNum(row.park_factor_run) || 1;
   const bullpenScore = edgeNum(row.bullpen_fatigue_score);
 
   let points = 0;
   const reasons = [];
 
-  if (slot >= 1 && slot <= 3) { points += 3; reasons.push("premium_lineup_slot"); }
-  else if (slot >= 4 && slot <= 5) { points += 2; reasons.push("middle_lineup_slot"); }
+  if (slot >= 1 && slot <= 3) { points += 4; reasons.push("premium_lineup_slot"); }
+  else if (slot >= 4 && slot <= 5) { points += 3; reasons.push("middle_lineup_slot"); }
   else if (slot >= 6 && slot <= 7) { points += 1; reasons.push("acceptable_lineup_slot"); }
+
+  if (lastAb !== null && lastAb >= 4) { points += 2; reasons.push("strong_recent_ab_volume"); }
+  else if (lastAb !== null && lastAb >= 3) { points += 1; reasons.push("recent_ab_volume"); }
+
+  if (lastHits !== null && lastHits >= 2) { points += 2; reasons.push("recent_multi_hit_signal"); }
+  else if (lastHits !== null && lastHits >= 1) { points += 1; reasons.push("recent_hit_signal"); }
 
   if (avg !== null && avg >= 0.275) { points += 3; reasons.push("strong_avg"); }
   else if (avg !== null && avg >= 0.250) { points += 2; reasons.push("solid_avg"); }
   else if (avg !== null && avg >= 0.230) { points += 1; reasons.push("playable_avg"); }
+  else if (avg === null) { reasons.push("season_avg_unavailable_no_penalty"); }
 
   if (obp !== null && obp >= 0.340) { points += 2; reasons.push("strong_on_base_profile"); }
   else if (obp !== null && obp >= 0.310) { points += 1; reasons.push("playable_on_base_profile"); }
+  else if (obp === null) { reasons.push("season_obp_unavailable_no_penalty"); }
 
-  if (lastAb !== null && lastAb >= 3) { points += 1; reasons.push("recent_ab_volume"); }
   if (parkRun >= 1.02) { points += 1; reasons.push("positive_run_environment"); }
   if (bullpenScore !== null && bullpenScore >= 65) { points += 1; reasons.push("opponent_bullpen_pressure"); }
 
   if (points >= 8) return { tier: "A_POOL", reason: reasons.join("|") };
-  if (points >= 6) return { tier: "B_POOL", reason: reasons.join("|") };
+  if (points >= 5) return { tier: "B_POOL", reason: reasons.join("|") };
   return { tier: "WATCHLIST", reason: reasons.join("|") || "passed_base_filters" };
 }
 
@@ -717,8 +725,6 @@ async function buildEdgeCandidatesHits(input, env) {
       AND l.player_name IS NOT NULL
       AND l.player_name != ''
       AND COALESCE(u.last_game_ab, 0) >= 2
-      AND COALESCE(p.avg, 0) >= 0.225
-      AND COALESCE(p.obp, 0) >= 0.290
       AND COALESCE(gc.park_factor_run, 1.0) >= 0.94
     ORDER BY l.game_id, l.team_id, l.slot
   `).bind(slateDate).all();
@@ -775,7 +781,7 @@ async function buildEdgeCandidatesHits(input, env) {
     slate_date: slateDate,
     source: "scheduled_edge_prep_hits_b_aggressive",
     mode: "zero_api_subrequest_deterministic",
-    filter_mode: "B_AGGRESSIVE",
+    filter_mode: "B_AGGRESSIVE_FALLBACK_SAFE",
     raw_rows: rawRows.length,
     fetched_rows: rows.length,
     inserted: { edge_candidates_hits: inserted },
@@ -784,7 +790,7 @@ async function buildEdgeCandidatesHits(input, env) {
     skipped_count: 0,
     skipped: [],
     complete: true,
-    note: "Candidate pool only. No probabilities, scores, or betting decisions."
+    note: "Candidate pool only. No probabilities, scores, or betting decisions. Season stats are optional; lineup slot and recent usage drive fallback-safe candidate generation."
   };
 }
 

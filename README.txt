@@ -36,3 +36,9 @@ HOTFIX C:
 - Removed Build Hits Candidates dependency on validateRows(TABLES.edge_candidates_hits).
 - Registered edge_candidates_hits in TABLES anyway.
 - D1 batch insert remains request-limit safe.
+
+
+HOTFIX D:
+- Fixed zero-candidate issue caused by strict season AVG/OBP filters when players_current has identity/handedness but not batting baseline for every player.
+- Candidate pool now uses lineup slot + recent AB/hit usage + park/bullpen context as the aggressive fallback-safe driver.
+- Season AVG/OBP still enrich candidates when available, but no longer blocks the pool.
