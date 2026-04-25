@@ -1278,7 +1278,7 @@ function ageFromBirthDate(birthDate) {
 }
 
 function playerRoleFromPosition(positionCode, pitchHand) {
-  if (positionCode === "1" || pitchHand) return "P";
+  if (positionCode === "1") return "P";
   return "BAT";
 }
 
