@@ -37,7 +37,7 @@ const JOBS = {
     prompt: "scrape_starters_group_v1.txt",
     tables: ["starters_current"],
     note: "starter profile group 1",
-    gameDate: "2026-04-24",
+    gameDate: "{{SLATE_DATE}}",
     gameGroupIndex: 0,
     gameGroupSize: 5
   },
@@ -45,7 +45,7 @@ const JOBS = {
     prompt: "scrape_starters_group_v1.txt",
     tables: ["starters_current"],
     note: "starter profile group 2",
-    gameDate: "2026-04-24",
+    gameDate: "{{SLATE_DATE}}",
     gameGroupIndex: 1,
     gameGroupSize: 5
   },
@@ -53,7 +53,7 @@ const JOBS = {
     prompt: "scrape_starters_group_v1.txt",
     tables: ["starters_current"],
     note: "starter profile group 3",
-    gameDate: "2026-04-24",
+    gameDate: "{{SLATE_DATE}}",
     gameGroupIndex: 2,
     gameGroupSize: 5
   },
@@ -61,7 +61,7 @@ const JOBS = {
     prompt: "scrape_starters_missing_v1.txt",
     tables: ["starters_current"],
     note: "targeted missing starter repair",
-    gameDate: "2026-04-24"
+    gameDate: "{{SLATE_DATE}}"
   },
   scrape_lineups: {
     prompt: "scrape_lineups_v1.txt",
@@ -129,59 +129,63 @@ const TABLES = {
   }
 };
 
-
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, x-ingest-token"
-};
-
-function json(data, init = {}) {
-  return new Response(JSON.stringify(data), {
-    ...init,
-    headers: {
-      ...CORS_HEADERS,
-      "Content-Type": "application/json",
-      ...(init.headers || {})
-    }
-  });
-}
-
-function withCors(response) {
-  const headers = new Headers(response.headers);
-  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers
-  });
-}
-
-
 export default {
   async fetch(request, env) {
     try {
       const url = new URL(request.url);
-
-      if (request.method === "OPTIONS") {
-        return new Response(null, { headers: CORS_HEADERS });
-      }
-
-      if (url.pathname === "/health") return json(health(env));
-      if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
-      if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
-      if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
-      if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
-      if (url.pathname === "/ingest/upsert" && request.method === "POST") return withCors(await handleUpsert(request, env));
-      return json({ ok: false, error: "Not found", path: url.pathname }, { status: 404 });
+      if (url.pathname === "/health") return Response.json(health(env));
+      if (url.pathname === "/tasks/run" && request.method === "POST") return await handleTaskRun(request, env);
+      if (url.pathname === "/packet/leg" && request.method === "POST") return await handleLegPacket(request, env);
+      if (url.pathname === "/score/leg" && request.method === "POST") return await handleScoreLeg(request, env);
+      if (url.pathname === "/ingest/upsert" && request.method === "POST") return await handleUpsert(request, env);
+      return Response.json({ ok: false, error: "Not found", path: url.pathname }, { status: 404 });
     } catch (err) {
-      return json({ ok: false, error: String(err?.message || err), stack: String(err?.stack || "") }, { status: 500 });
+      return Response.json({ ok: false, error: String(err?.message || err), stack: String(err?.stack || "") }, { status: 500 });
     }
   },
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runScheduled(event, env));
   }
 };
+
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function addDaysISO(dateISO, days) {
+  const [y, m, d] = dateISO.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + Number(days || 0));
+  return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth() + 1)}-${pad2(dt.getUTCDate())}`;
+}
+
+function getPTParts(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  }).formatToParts(now);
+  const m = {};
+  for (const p of parts) m[p.type] = p.value;
+  return { date: `${m.year}-${m.month}-${m.day}`, hour: Number(m.hour), time: `${m.hour}:${m.minute}:${m.second}` };
+}
+
+function resolveSlateDate(input = {}) {
+  const mode = String(input.slate_mode || input.mode || "AUTO").toUpperCase();
+  const manual = String(input.manual_slate_date || input.slate_date || "").trim();
+  const pt = getPTParts();
+
+  if (mode === "MANUAL" && /^\d{4}-\d{2}-\d{2}$/.test(manual)) {
+    return { slate_date: manual, slate_mode: "MANUAL", pt_date: pt.date, pt_time: pt.time };
+  }
+  if (mode === "TODAY") return { slate_date: pt.date, slate_mode: "TODAY", pt_date: pt.date, pt_time: pt.time };
+  if (mode === "TOMORROW") return { slate_date: addDaysISO(pt.date, 1), slate_mode: "TOMORROW", pt_date: pt.date, pt_time: pt.time };
+
+  return { slate_date: pt.hour >= 20 ? addDaysISO(pt.date, 1) : pt.date, slate_mode: "AUTO", pt_date: pt.date, pt_time: pt.time };
+}
+
+function hydratePromptTemplate(prompt, slateDate) {
+  return String(prompt || "").replaceAll("{{SLATE_DATE}}", slateDate);
+}
 
 function health(env) {
   return {
@@ -211,47 +215,6 @@ function unauthorized() {
   return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
-async function handleDebugSQL(request, env) {
-  if (!isAuthorized(request, env)) return json({ ok: false, error: "Unauthorized" }, { status: 401 });
-
-  try {
-    const body = await safeJson(request);
-    const sql = String(body?.sql || "").trim();
-
-    if (!sql) return json({ ok: false, error: "Missing SQL" }, { status: 400 });
-
-    const statements = sql
-      .split(";")
-      .map(s => s.trim())
-      .filter(Boolean);
-
-    if (!statements.length) return json({ ok: false, error: "No SQL statements found" }, { status: 400 });
-
-    const outputs = [];
-
-    for (const statement of statements) {
-      const upper = statement.toUpperCase();
-      if (upper.includes("DROP TABLE") || upper.includes("ALTER TABLE") || upper.includes("CREATE TABLE")) {
-        return json({ ok: false, error: "DDL blocked in Control Room SQL endpoint" }, { status: 400 });
-      }
-
-      if (upper.startsWith("SELECT") || upper.startsWith("PRAGMA")) {
-        const result = await env.DB.prepare(statement).all();
-        outputs.push({ sql: statement, rows: result.results || [], meta: result.meta || {} });
-      } else if (upper.startsWith("DELETE") || upper.startsWith("UPDATE") || upper.startsWith("INSERT")) {
-        const result = await env.DB.prepare(statement).run();
-        outputs.push({ sql: statement, success: result.success, meta: result.meta || {} });
-      } else {
-        return json({ ok: false, error: `SQL command not allowed: ${statement.slice(0, 40)}` }, { status: 400 });
-      }
-    }
-
-    return json({ ok: true, outputs });
-  } catch (err) {
-    return json({ ok: false, error: String(err?.message || err) }, { status: 500 });
-  }
-}
-
 function val(obj, key) {
   return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null;
 }
@@ -259,6 +222,7 @@ function val(obj, key) {
 async function handleTaskRun(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   const body = await safeJson(request);
+  const slate = resolveSlateDate(body || {});
   const result = await runJob(body || {}, env);
   return Response.json(result, { status: result.ok ? 200 : 500 });
 }
@@ -289,7 +253,9 @@ async function runJob(input, env) {
 
     await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`)
       .bind("success", JSON.stringify(results), taskId).run();
-    return { ok: true, task_id: taskId, job: jobName, prompt: job.prompt, inserted: results };
+    return { ok: true, task_id: taskId, job: jobName, prompt: job.prompt,
+      slate_date: slate.slate_date,
+      slate_mode: slate.slate_mode, inserted: results };
   } catch (err) {
     await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE task_id=?`)
       .bind("failed", String(err?.message || err), taskId).run();
@@ -297,8 +263,10 @@ async function runJob(input, env) {
   }
 }
 
-async function augmentPromptForJob(env, jobName, job, basePrompt) {
-  const date = job.gameDate || "2026-04-24";
+async function augmentPromptForJob(env, jobName, job, basePrompt, resolvedSlateDate) {
+  if (job.gameGroupIndex === undefined || job.gameGroupIndex === null) return basePrompt;
+
+  const date = resolvedSlateDate || job.gameDate || getPTParts().date;
 
   if (jobName === "scrape_starters_missing") {
     const result = await env.DB.prepare(`
@@ -329,9 +297,6 @@ async function augmentPromptForJob(env, jobName, job, basePrompt) {
     const lines = missing.map(m => `- ${m.game_id}: missing ${m.team_id} starter only (${m.matchup})`).join("\n");
     return `${basePrompt}\n\nRUNTIME MISSING STARTER REPAIR:\nReturn starters ONLY for these missing team/game pairs. Do not return already-filled teams.\n${lines}\n\nIf the missing starter is not knowable with real nonzero stats, omit that row. Always return valid JSON.`;
   }
-
-  if (job.gameGroupIndex === undefined || job.gameGroupIndex === null) return basePrompt;
-
   const size = Number(job.gameGroupSize || 5);
   const offset = Number(job.gameGroupIndex || 0) * size;
   const result = await env.DB.prepare(
@@ -420,21 +385,6 @@ function validateRows(table, rows) {
       continue;
     }
 
-    if (table === "starters_current" && (
-      !validPositiveNumber(row.era) ||
-      !validPositiveNumber(row.whip) ||
-      !validPositiveNumber(row.strikeouts) ||
-      !validPositiveNumber(row.innings_pitched)
-    )) {
-      skipped.push({ row: i, reason: `starter zero/invalid core stats rejected ${row.game_id}/${row.team_id}` });
-      continue;
-    }
-
-    if (table === "starters_current" && looksLikePlaceholderStarter(row.starter_name)) {
-      skipped.push({ row: i, reason: `placeholder starter rejected ${row.game_id}/${row.team_id}/${row.starter_name}` });
-      continue;
-    }
-
     const out = {};
     for (const col of config.allowed) if (row[col] !== undefined) out[col] = row[col];
     if (config.allowed.includes("source") && out.source === undefined) out.source = "gemini_split_job";
@@ -446,34 +396,6 @@ function validateRows(table, rows) {
     return { ok: false, error: `all ${table} rows rejected: ${JSON.stringify(skipped).slice(0, 900)}` };
   }
   return { ok: true, rows: cleaned, skipped };
-}
-
-
-function looksLikePlaceholderStarter(name) {
-  const n = String(name || "").trim().toUpperCase();
-  if (!n) return true;
-  const badExact = new Set([
-    "ACE",
-    "STARTER",
-    "PROBABLE STARTER",
-    "TBD",
-    "TBA",
-    "UNKNOWN",
-    "TEAM ACE",
-    "HOME ACE",
-    "AWAY ACE"
-  ]);
-  if (badExact.has(n)) return true;
-  if (n.endsWith(" ACE")) return true;
-  if (n.includes(" UNKNOWN")) return true;
-  if (n.includes(" TBD")) return true;
-  if (n.includes(" TBA")) return true;
-  return false;
-}
-
-function validPositiveNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0;
 }
 
 function normalizeRow(table, input) {

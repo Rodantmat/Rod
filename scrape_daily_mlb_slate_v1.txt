@@ -1,14 +1,14 @@
 You are a STRICT JSON generator for MLB slate ingestion.
 
 TASK:
-Return ONLY valid JSON for MLB games and market shells on 2026-04-24.
+Return ONLY valid JSON for MLB games and market shells on {{SLATE_DATE}}.
 
 IMPORTANT:
 This prompt is intentionally limited to TWO tables only:
 1. games
 2. markets_current
 
-DO NOT return team stats, starters, bullpens, lineups, players, or usage.
+DO NOT return team stats, starters, bullpens, lineups, players, or usage yet.
 
 ABSOLUTE RULES:
 - JSON ONLY.
@@ -18,34 +18,35 @@ ABSOLUTE RULES:
 - No trailing commas.
 - Always close the JSON object.
 - Use null for unknown values.
-- Use ONLY date 2026-04-24.
-- Do NOT use 2024 or 2025.
+- Use ONLY date {{SLATE_DATE}}.
+- Do NOT use any other date.
 - Do NOT truncate.
 - Do NOT use away_team_id.
 - Do NOT use home_team_id.
 - Use away_team and home_team exactly.
 - game_id format MUST be YYYY-MM-DD_AWAY_HOME.
+- game_id date prefix MUST equal {{SLATE_DATE}}.
+- Return the active/upcoming MLB slate for {{SLATE_DATE}}.
+- If the slate has fewer games because earlier games are no longer active/playable, return only the active/upcoming games.
 
 RETURN SHAPE EXACTLY:
 {
   "games": [
     {
-      "game_id": "2026-04-24_AAA_BBB",
-      "game_date": "2026-04-24",
+      "game_id": "{{SLATE_DATE}}_AWAY_HOME",
+      "game_date": "{{SLATE_DATE}}",
       "away_team": "AAA",
       "home_team": "BBB",
       "start_time_utc": null,
       "venue": null,
       "series_game": null,
       "getaway_day": 0,
-      "status": "scheduled",
-      "source": "gemini_games_markets_split",
-      "confidence": "low"
+      "status": "scheduled"
     }
   ],
   "markets_current": [
     {
-      "game_id": "2026-04-24_AAA_BBB",
+      "game_id": "{{SLATE_DATE}}_AWAY_HOME",
       "game_total": null,
       "open_total": null,
       "current_total": null,
@@ -54,8 +55,14 @@ RETURN SHAPE EXACTLY:
       "away_implied_runs": null,
       "home_implied_runs": null,
       "runline": null,
-      "source": "gemini_games_markets_split",
+      "source": "gemini_slate_scrape",
       "confidence": "low"
     }
-  ]
+  ],
+  "teams_current": [],
+  "starters_current": [],
+  "bullpens_current": [],
+  "lineups_current": [],
+  "players_current": [],
+  "player_recent_usage": []
 }
