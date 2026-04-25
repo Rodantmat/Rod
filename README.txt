@@ -1,9 +1,15 @@
-AlphaDog Bullpen Schema Fix
+AlphaDog MLB Lineups Patch
 
-Root cause:
-- bullpens_current currently has PRIMARY KEY(game_id).
-- Bullpen data needs two rows per game: one for away team and one for home team.
-- That requires PRIMARY KEY(game_id, team_id).
+What changed:
+- Adds MLB API lineups layer.
+- New job: scrape_lineups_mlb_api
+- Control Room:
+  SCRAPE > MLB Lineups
+  CHECK > Lineups
+  CHECK > Lineup List
+- FULL RUN now attempts MLB API Lineups after bullpens.
+- Lineups are non-blocking because official lineups may not be posted early.
+- This keeps Gemini out of raw lineup/player identity data.
 
 Upload to GitHub root:
 - worker.js
@@ -12,16 +18,15 @@ Upload to GitHub root:
 - scrape_starters_group_v1.txt
 - scrape_starters_missing_v1.txt
 
-Then run the included D1 migration once:
-- d1_migration_bullpens_current_composite_pk.sql
+Do not replace config.txt.
 
-Cloudflare D1 command:
-wrangler d1 execute <YOUR_DB_NAME> --remote --file=d1_migration_bullpens_current_composite_pk.sql
-
-After migration, test:
+Test:
 CLEAN > Full
 SCRAPE > FULL RUN
+CHECK > Games
+CHECK > Starters
 CHECK > Bullpen
-CHECK > Bullpen List
+CHECK > Lineups
+CHECK > Lineup List
 CHECK > Truth Audit
 CHECK > Scheduler Log

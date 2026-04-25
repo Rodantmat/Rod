@@ -78,6 +78,11 @@ const JOBS = {
     tables: ["bullpens_current"],
     note: "MLB Stats API bullpen fatigue sync"
   },
+  scrape_lineups_mlb_api: {
+    prompt: null,
+    tables: ["lineups_current"],
+    note: "MLB Stats API probable/official lineup sync"
+  },
   repair_starters_mlb_api: {
     prompt: null,
     tables: ["starters_current"],
@@ -366,6 +371,8 @@ async function handleTaskRun(request, env) {
     result = await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else if (jobName === "scrape_bullpens_mlb_api" || jobName === "scrape_bullpens") {
     result = await syncMlbApiBullpens({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else if (jobName === "scrape_lineups_mlb_api" || jobName === "scrape_lineups") {
+    result = await syncMlbApiLineups({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else {
     result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
@@ -451,6 +458,9 @@ async function runFullPipeline(input, env) {
   const bullpenResult = await syncMlbApiBullpens({ ...(input || {}), job: "scrape_bullpens_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Bullpens", job: "scrape_bullpens_mlb_api", result: bullpenResult });
 
+  const lineupResult = await syncMlbApiLineups({ ...(input || {}), job: "scrape_lineups_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+  steps.push({ label: "MLB API Lineups", job: "scrape_lineups_mlb_api", result: lineupResult });
+
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
   if (startersAfterApi < games * 2) {
@@ -463,6 +473,7 @@ async function runFullPipeline(input, env) {
 
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`);
+  const lineupsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const badRows = await countScalar(env, `
     SELECT COUNT(*) AS c
     FROM starters_current
@@ -549,6 +560,7 @@ async function runFullPipeline(input, env) {
     expected_starters: expectedStarters,
     starters_total: startersTotal,
     bullpens_total: bullpensTotal,
+    lineups_total: lineupsTotal,
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
@@ -738,6 +750,79 @@ async function bullpenUsageForTeam(teamAbbr, slateDate) {
     last_game_ip: outsToIpDecimal(lastOuts),
     last3_ip: outsToIpDecimal(last3Outs),
     fatigue: fatigueFromOuts(lastOuts, last3Outs)
+  };
+}
+
+
+
+async function fetchMlbGameLineupRows(gamePk, gameId) {
+  const box = await fetchMlbBoxscore(gamePk);
+  if (!box) return [];
+
+  const rows = [];
+  const sides = [
+    { side: "away", teamId: gameId.split("_")[1] },
+    { side: "home", teamId: gameId.split("_")[2] }
+  ];
+
+  for (const { side, teamId } of sides) {
+    const team = box?.teams?.[side];
+    const battingOrder = team?.battingOrder || [];
+    const players = team?.players || {};
+
+    for (let i = 0; i < battingOrder.length && i < 9; i++) {
+      const playerKey = `ID${battingOrder[i]}`;
+      const player = players[playerKey];
+      const person = player?.person || {};
+      rows.push({
+        game_id: gameId,
+        team_id: teamId,
+        slot: i + 1,
+        player_name: person.fullName || null,
+        bats: player?.battingHand?.code || null,
+        k_rate: null,
+        is_confirmed: 1,
+        source: "mlb_statsapi_boxscore_lineup",
+        confidence: "official_or_pregame_boxscore"
+      });
+    }
+  }
+
+  return rows.filter(r => r.player_name);
+}
+
+async function syncMlbApiLineups(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const data = await fetchMlbScheduleProbables(slateDate);
+  const rows = [];
+  let gamesChecked = 0;
+
+  for (const dateBlock of (data.dates || [])) {
+    for (const game of (dateBlock.games || [])) {
+      const gameId = gameIdFromMlbGame(game, slateDate);
+      if (!gameId || !game?.gamePk) continue;
+      gamesChecked++;
+
+      const gameRows = await fetchMlbGameLineupRows(game.gamePk, gameId);
+      rows.push(...gameRows);
+    }
+  }
+
+  const validated = validateRows("lineups_current", rows);
+  if (!validated.ok) throw new Error(`MLB lineup validation failed: ${validated.error}`);
+  const inserted = await upsertRows(env, "lineups_current", validated.rows);
+
+  return {
+    ok: true,
+    job: input.job || "scrape_lineups_mlb_api",
+    slate_date: slateDate,
+    source: "mlb_statsapi_boxscore_lineup",
+    games_checked: gamesChecked,
+    fetched_rows: rows.length,
+    inserted: { lineups_current: inserted },
+    skipped_count: validated.skipped?.length || 0,
+    skipped: (validated.skipped || []).slice(0, 20)
   };
 }
 
