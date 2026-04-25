@@ -1,10 +1,20 @@
-AlphaDog Final Feed Audit Patch
+AlphaDog Player Identity + Handedness Patch
 
 What changed:
-- Adds CHECK > Final Feed Audit.
-- Cleans Bad Start so official MLB API soft stat gaps are not treated as hard bad starters.
-- No migration required.
-- No logic drift.
+- Adds MLB API player identity / handedness layer.
+- New job: scrape_players_mlb_api
+- Pulls official MLB roster identity:
+  player_name, team_id, role, position, bats, throws, age, source, confidence
+- Adds Control Room buttons:
+  SCRAPE > MLB Players
+  CHECK > Players
+  CHECK > Player List
+  CHECK > Handedness Gaps
+- FULL RUN includes MLB API Player Identity before starters.
+- Final Feed Audit includes PLAYERS and HANDEDNESS_GAPS.
+
+No migration required.
+No config.txt replacement.
 
 Upload to GitHub root:
 - worker.js
@@ -13,18 +23,12 @@ Upload to GitHub root:
 - scrape_starters_group_v1.txt
 - scrape_starters_missing_v1.txt
 
-Do not replace config.txt.
-
 Test:
 CLEAN > Full
 SCRAPE > FULL RUN
+CHECK > Players
+CHECK > Player List
+CHECK > Handedness Gaps
 CHECK > Final Feed Audit
-CHECK > Bad Start
 CHECK > Truth Audit
 CHECK > Scheduler Log
-
-Pass target:
-- FULL RUN = success
-- Final Feed Audit hard checks = PASS
-- Bad Start = empty or only true hard rows
-- Truth Audit = clean
