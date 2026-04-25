@@ -153,7 +153,7 @@ const TABLES = {
     conflict: ["player_name"]
   },
   player_recent_usage: {
-    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot", "source", "confidence"],
+    allowed: ["player_name", "team_id", "last_pitch_count", "last_innings", "days_rest", "last_game_ab", "last_game_hits", "lineup_slot"],
     required: ["player_name"],
     conflict: ["player_name"],
     deleteInsert: true
@@ -786,9 +786,7 @@ function battingUsageToRecentRow(teamId, playerObj, lineupSlot) {
     days_rest: null,
     last_game_ab: ab,
     last_game_hits: hits,
-    lineup_slot: lineupSlot || null,
-    source: "mlb_statsapi_previous_game_boxscore_usage",
-    confidence: "official_usage_lite"
+    lineup_slot: lineupSlot || null
   };
 }
 
@@ -855,6 +853,7 @@ async function syncMlbApiRecentUsage(input, env) {
     previous_games_checked: previousGames.length,
     fetched_rows: rows.length,
     inserted: { player_recent_usage: inserted },
+    write_mode: "existing_schema_no_source_confidence_columns",
     skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
   };
