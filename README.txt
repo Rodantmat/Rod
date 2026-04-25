@@ -1,12 +1,9 @@
-AlphaDog Scheduler FK Fix 2
+AlphaDog Scheduler Retry Fix
 
-Root cause:
-Markets were still allowed through if Gemini returned zero valid game rows but nonzero market rows.
-That caused markets_current to insert game_ids that did not exist in games.
-
-Fix:
-markets_current rows are now ALWAYS filtered against the valid games returned in the same Gemini payload.
-If games are rejected/empty, markets insert count becomes 0 instead of causing a foreign-key crash.
+Fixes:
+- FULL RUN now retries Markets internally up to 3 times until games > 0.
+- FULL RUN no longer stops after a single 0/0 markets response.
+- Control Room final status is clearer when HTTP/body is failed.
 
 Upload to GitHub root:
 - worker.js
@@ -20,6 +17,7 @@ Do not replace config.txt.
 Test:
 DEBUG > Health
 CLEAN > Full
-SCRAPE > Markets
+SCRAPE > FULL RUN
 CHECK > Games
-CHECK > Markets
+CHECK > Starters
+CHECK > Truth Audit

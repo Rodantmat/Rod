@@ -325,6 +325,20 @@ async function runFullPipeline(input, env) {
     return result;
   }
 
+  async function stepWithRetry(label, job, maxAttempts, successCheck) {
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+      last = result;
+      steps.push({ label, job, attempt, result });
+
+      if (result.ok && (!successCheck || await successCheck(result))) {
+        return result;
+      }
+    }
+    return last || { ok: false, error: "No attempts executed" };
+  }
+
   await env.DB.prepare("DELETE FROM starters_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM bullpens_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM lineups_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
@@ -332,12 +346,25 @@ async function runFullPipeline(input, env) {
   await env.DB.prepare("DELETE FROM games WHERE game_date = ?").bind(slateDate).run();
   steps.push({ label: "Clean Slate", job: "internal_clean", result: { ok: true, slate_date: slateDate } });
 
-  const markets = await step("Markets", "scrape_games_markets");
-  if (!markets.ok) {
-    return { ok: false, status: "FAILED", failed_step: "Markets", slate_date: slateDate, started_at: startedAt, steps };
-  }
+  const markets = await stepWithRetry("Markets", "scrape_games_markets", 3, async () => {
+    const gameCount = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate);
+    return gameCount > 0;
+  });
 
   const games = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate);
+
+  if (!markets.ok || games <= 0) {
+    return {
+      ok: false,
+      status: "FAILED",
+      failed_step: "Markets",
+      slate_date: slateDate,
+      games,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      steps
+    };
+  }
   let groupPlan = "NONE";
   if (games > 0 && games <= 5) groupPlan = "G1";
   else if (games <= 10) groupPlan = "G1+G2";
