@@ -1,9 +1,11 @@
-AlphaDog Scheduler Retry Fix
+AlphaDog Daily Slate Prompt Fix
 
-Fixes:
-- FULL RUN now retries Markets internally up to 3 times until games > 0.
-- FULL RUN no longer stops after a single 0/0 markets response.
-- Control Room final status is clearer when HTTP/body is failed.
+Fix:
+- Markets prompt now asks for FULL SCHEDULED slate for resolved slate date.
+- It no longer asks for only active/upcoming betting slate.
+- It requires games even when odds are unavailable.
+- It keeps market values null when unknown.
+- It keeps exact database schema fields.
 
 Upload to GitHub root:
 - worker.js
@@ -15,9 +17,10 @@ Upload to GitHub root:
 Do not replace config.txt.
 
 Test:
-DEBUG > Health
 CLEAN > Full
-SCRAPE > FULL RUN
+SCRAPE > Markets
 CHECK > Games
+CHECK > Markets
+SCRAPE > FULL RUN
 CHECK > Starters
 CHECK > Truth Audit

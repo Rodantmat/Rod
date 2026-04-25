@@ -1,7 +1,14 @@
 You are a STRICT JSON generator for MLB slate ingestion.
 
 TASK:
-Return ONLY valid JSON for MLB games and market shells on {{SLATE_DATE}}.
+Return ONLY valid JSON for the FULL SCHEDULED MLB slate on {{SLATE_DATE}}.
+
+CRITICAL DATE RULE:
+The resolved slate date is {{SLATE_DATE}}.
+Return games scheduled for {{SLATE_DATE}}.
+Do NOT return games from any other date.
+Do NOT use the current clock/date as the target date.
+Do NOT return "today" unless today equals {{SLATE_DATE}}.
 
 IMPORTANT:
 This prompt is intentionally limited to TWO tables only:
@@ -10,7 +17,17 @@ This prompt is intentionally limited to TWO tables only:
 
 DO NOT return team stats, starters, bullpens, lineups, players, or usage yet.
 
-ABSOLUTE RULES:
+SLATE RULES:
+- Return every MLB game scheduled for {{SLATE_DATE}} that can be identified.
+- Do NOT omit games because betting lines are unavailable.
+- Do NOT require active/live markets.
+- Do NOT return only currently active games.
+- Do NOT return only games with odds.
+- If odds/markets are unknown, include the game anyway and set market values to null.
+- Every games row MUST have exactly one matching markets_current row.
+- Every markets_current.game_id MUST exactly match a game_id returned in games.
+
+ABSOLUTE OUTPUT RULES:
 - JSON ONLY.
 - No markdown.
 - No comments.
@@ -19,17 +36,20 @@ ABSOLUTE RULES:
 - Always close the JSON object.
 - Use null for unknown values.
 - Use ONLY date {{SLATE_DATE}}.
-- Do NOT use any other date.
-- Do NOT truncate.
-- Do NOT use away_team_id.
-- Do NOT use home_team_id.
-- Use away_team and home_team exactly.
 - game_id format MUST be YYYY-MM-DD_AWAY_HOME.
 - game_id date prefix MUST equal {{SLATE_DATE}}.
-- Return the active/upcoming MLB slate for {{SLATE_DATE}}.
-- If the slate has fewer games because earlier games are no longer active/playable, return only the active/upcoming games.
+- Use away_team and home_team exactly.
+- Do NOT use away_team_id.
+- Do NOT use home_team_id.
+
+CANONICAL TEAM IDS ONLY:
+ARI, ATL, BAL, BOS, CHC, CIN, CLE, COL, CWS, DET, HOU, KC, LAA, LAD, MIA, MIL, MIN, NYM, NYY, OAK, PHI, PIT, SD, SEA, SFG, STL, TB, TEX, TOR, WSN
+
+FORBIDDEN TEAM IDS:
+CHW, KCR, SDP, SF, TBR, WSH
 
 RETURN SHAPE EXACTLY:
+
 {
   "games": [
     {
@@ -55,7 +75,7 @@ RETURN SHAPE EXACTLY:
       "away_implied_runs": null,
       "home_implied_runs": null,
       "runline": null,
-      "source": "gemini_slate_scrape",
+      "source": "gemini_scheduled_slate_v2",
       "confidence": "low"
     }
   ],
@@ -66,3 +86,11 @@ RETURN SHAPE EXACTLY:
   "players_current": [],
   "player_recent_usage": []
 }
+
+FINAL VALIDATION:
+Before returning JSON, internally verify:
+- games.length > 0 if MLB has scheduled games on {{SLATE_DATE}}.
+- markets_current.length equals games.length.
+- every markets_current.game_id is present in games.
+- no forbidden team IDs appear.
+- no game_id has a date other than {{SLATE_DATE}}.
