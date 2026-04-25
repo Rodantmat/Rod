@@ -108,6 +108,21 @@ const JOBS = {
     tables: ["players_current"],
     note: "MLB Stats API player identity and handedness"
   },
+  scrape_players_mlb_api_g1: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 1"
+  },
+  scrape_players_mlb_api_g2: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 2"
+  },
+  scrape_players_mlb_api_g3: {
+    prompt: null,
+    tables: ["players_current"],
+    note: "MLB Stats API player identity and handedness group 3"
+  },
   scrape_recent_usage: {
     prompt: "scrape_recent_usage_v1.txt",
     tables: ["player_recent_usage"],
@@ -387,8 +402,8 @@ async function handleTaskRun(request, env) {
     result = await syncMlbApiLineups({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else if (jobName === "scrape_recent_usage_mlb_api" || jobName === "scrape_recent_usage") {
     result = await syncMlbApiRecentUsage({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  } else if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players") {
-    result = await syncMlbApiPlayersIdentity({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || jobName === "scrape_players_mlb_api_g1" || jobName === "scrape_players_mlb_api_g2" || jobName === "scrape_players_mlb_api_g3") {
+    result = await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else {
     result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
@@ -865,55 +880,59 @@ function extractRosterEntriesFromHydratedTeam(teamNode) {
   return Array.isArray(roster) ? roster : [];
 }
 
+
+function playerIdentityGroupFromJob(job) {
+  if (String(job || "").endsWith("_g1")) return 1;
+  if (String(job || "").endsWith("_g2")) return 2;
+  if (String(job || "").endsWith("_g3")) return 3;
+  return null;
+}
+
+function selectPlayerIdentityTeams(teamList, group) {
+  const sorted = [...teamList].sort((a, b) => a.teamId.localeCompare(b.teamId));
+  if (!group) return sorted;
+  const size = Math.ceil(sorted.length / 3);
+  const start = (group - 1) * size;
+  return sorted.slice(start, start + size);
+}
+
 async function syncMlbApiPlayersIdentity(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
+  const group = playerIdentityGroupFromJob(input.job);
+  const maxWrites = group ? 175 : 140;
 
-  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}&hydrate=team(roster(person))`, {
+  const games = await env.DB.prepare("SELECT away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
+  const teamCodes = [...new Set((games.results || []).flatMap(g => [g.away_team, g.home_team]))].filter(Boolean);
+
+  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}`, {
     headers: { "accept": "application/json" }
   });
   const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
 
-  const rows = [];
-  const teamIdsSeen = new Set();
-  let hydratedRosterRows = 0;
-
+  const teamMap = new Map();
   for (const d of (scheduleJson.dates || [])) {
     for (const g of (d.games || [])) {
-      const pairs = [
-        { side: "away", node: g?.teams?.away, teamId: MLB_TEAM_ABBR[g?.teams?.away?.team?.id] },
-        { side: "home", node: g?.teams?.home, teamId: MLB_TEAM_ABBR[g?.teams?.home?.team?.id] }
-      ];
-
-      for (const p of pairs) {
-        if (!p.teamId) continue;
-        teamIdsSeen.add(`${g?.teams?.[p.side]?.team?.id}|${p.teamId}`);
-        const rosterEntries = extractRosterEntriesFromHydratedTeam(p.node);
-        for (const entry of rosterEntries) {
-          const row = playerIdentityRowFromRosterEntry(entry, p.teamId);
-          if (row) {
-            rows.push(row);
-            hydratedRosterRows++;
-          }
-        }
+      for (const side of ["away", "home"]) {
+        const mlbId = g?.teams?.[side]?.team?.id;
+        const teamId = MLB_TEAM_ABBR[mlbId];
+        if (mlbId && teamId && teamCodes.includes(teamId)) teamMap.set(teamId, { mlbId: String(mlbId), teamId });
       }
     }
   }
 
-  // Safe fallback: if schedule hydration does not include roster payloads, fetch active rosters.
-  // This runs only for this job/step and remains under the 50-subrequest ceiling when paired with current slate flow.
-  if (rows.length === 0 && teamIdsSeen.size > 0) {
-    for (const packed of teamIdsSeen) {
-      const [mlbId, teamId] = packed.split("|");
-      const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(mlbId)}/roster?rosterType=active&hydrate=person`, {
-        headers: { "accept": "application/json" }
-      });
-      if (!r.ok) continue;
-      const rosterJson = await r.json();
-      for (const entry of (rosterJson.roster || [])) {
-        const row = playerIdentityRowFromRosterEntry(entry, teamId);
-        if (row) rows.push(row);
-      }
+  const selectedTeams = selectPlayerIdentityTeams([...teamMap.values()], group);
+  const rows = [];
+
+  for (const t of selectedTeams) {
+    const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.mlbId)}/roster?rosterType=active&hydrate=person`, {
+      headers: { "accept": "application/json" }
+    });
+    if (!r.ok) continue;
+    const rosterJson = await r.json();
+    for (const entry of (rosterJson.roster || [])) {
+      const row = playerIdentityRowFromRosterEntry(entry, t.teamId);
+      if (row) rows.push(row);
     }
   }
 
@@ -926,7 +945,10 @@ async function syncMlbApiPlayersIdentity(input, env) {
     deduped.push(row);
   }
 
-  const validated = validateRows("players_current", deduped);
+  const rowsToWrite = deduped.slice(0, maxWrites);
+  const deferred = Math.max(0, deduped.length - rowsToWrite.length);
+
+  const validated = validateRows("players_current", rowsToWrite);
   if (!validated.ok) throw new Error(`MLB player identity validation failed: ${validated.error}`);
   const inserted = await upsertRows(env, "players_current", validated.rows);
 
@@ -934,13 +956,19 @@ async function syncMlbApiPlayersIdentity(input, env) {
     ok: true,
     job: input.job || "scrape_players_mlb_api",
     slate_date: slateDate,
-    source: "mlb_statsapi_roster_identity_handedness",
-    mode: rows.length === hydratedRosterRows && rows.length > 0 ? "schedule_hydrate_roster" : "active_roster_fallback",
-    teams_checked: teamIdsSeen.size,
+    source: "mlb_statsapi_active_roster_identity_handedness",
+    mode: group ? `chunked_group_${group}` : "single_safe_capped",
+    group,
+    teams_total: teamMap.size,
+    teams_checked: selectedTeams.length,
     fetched_rows: deduped.length,
+    written_rows: inserted,
+    deferred_rows: deferred,
+    write_cap: maxWrites,
     inserted: { players_current: inserted },
     skipped_count: validated.skipped?.length || 0,
-    skipped: (validated.skipped || []).slice(0, 20)
+    skipped: (validated.skipped || []).slice(0, 20),
+    complete: deferred === 0
   };
 }
 
