@@ -1,4 +1,12 @@
-AlphaDog Scheduler FK Fix
+AlphaDog Scheduler FK Fix 2
+
+Root cause:
+Markets were still allowed through if Gemini returned zero valid game rows but nonzero market rows.
+That caused markets_current to insert game_ids that did not exist in games.
+
+Fix:
+markets_current rows are now ALWAYS filtered against the valid games returned in the same Gemini payload.
+If games are rejected/empty, markets insert count becomes 0 instead of causing a foreign-key crash.
 
 Upload to GitHub root:
 - worker.js
@@ -9,19 +17,9 @@ Upload to GitHub root:
 
 Do not replace config.txt.
 
-Fixes:
-- Removes duplicate FULL RUN button.
-- FULL RUN cleans the resolved slate before starting.
-- Markets rows are filtered so only game_ids inserted into games can be inserted into markets_current.
-- Prevents foreign-key failure caused by Gemini returning markets for games rejected from games validation.
-
 Test:
 DEBUG > Health
-DEBUG > Config
 CLEAN > Full
 SCRAPE > Markets
 CHECK > Games
 CHECK > Markets
-SCRAPE > FULL RUN
-CHECK > Starters
-CHECK > Truth Audit

@@ -460,7 +460,7 @@ async function runJob(input, env) {
     for (const table of job.tables) {
       let rows = validatedByTable[table] || [];
 
-      if (table === "markets_current" && returnedGameIds.size > 0) {
+      if (table === "markets_current") {
         rows = rows.filter(row => returnedGameIds.has(row.game_id));
       }
 
