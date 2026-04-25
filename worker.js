@@ -696,9 +696,6 @@ async function runFullPipeline(input, env) {
   const recentUsageResult = await syncMlbApiRecentUsage({ ...(input || {}), job: "scrape_recent_usage_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Recent Usage", job: "scrape_recent_usage_mlb_api", result: recentUsageResult });
 
-  const derivedMetricsResult = await syncDerivedMetrics({ ...(input || {}), job: "scrape_derived_metrics", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Derived Metrics", job: "scrape_derived_metrics", result: derivedMetricsResult });
-
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
   if (startersAfterApi < games * 2) {
