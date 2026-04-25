@@ -1,10 +1,15 @@
-AlphaDog MLB Stats Enrichment Patch
+AlphaDog MLB Bullpen Fatigue Patch
 
 What changed:
-- MLB API starter sync now also calls MLB People endpoint for season pitching stats.
-- Attempts to fill ERA, WHIP, strikeouts, innings pitched, walks, hits allowed, HR allowed.
-- Names remain hard truth from MLB API.
-- Missing stats remain soft/non-blocking.
+- Adds MLB API bullpen fatigue layer.
+- New job: scrape_bullpens_mlb_api
+- Control Room: SCRAPE > MLB Bullpen
+- Control Room: CHECK > Bullpen
+- Control Room: CHECK > Bullpen List
+- FULL RUN now includes MLB API Bullpens.
+- Bullpen usage uses previous completed games boxscores.
+- last_game_ip and last3_ip are calculated from reliever innings.
+- fatigue is low / medium / high.
 
 Upload to GitHub root:
 - worker.js
@@ -18,8 +23,9 @@ Do not replace config.txt.
 Test:
 CLEAN > Full
 SCRAPE > FULL RUN
+CHECK > Games
 CHECK > Starters
-CHECK > Stats Missing
-CHECK > Bad Start
+CHECK > Bullpen
+CHECK > Bullpen List
 CHECK > Truth Audit
 CHECK > Scheduler Log

@@ -73,6 +73,11 @@ const JOBS = {
     tables: ["starters_current"],
     note: "MLB Stats API probable pitcher sync"
   },
+  scrape_bullpens_mlb_api: {
+    prompt: null,
+    tables: ["bullpens_current"],
+    note: "MLB Stats API bullpen fatigue sync"
+  },
   repair_starters_mlb_api: {
     prompt: null,
     tables: ["starters_current"],
@@ -359,6 +364,8 @@ async function handleTaskRun(request, env) {
     result = await syncMlbApiGamesMarkets({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else if (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api") {
     result = await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  } else if (jobName === "scrape_bullpens_mlb_api" || jobName === "scrape_bullpens") {
+    result = await syncMlbApiBullpens({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   } else {
     result = await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
@@ -441,6 +448,9 @@ async function runFullPipeline(input, env) {
     return { ok: false, status: "FAILED", failed_step: "MLB_API_STarters", slate_date: slateDate, games, group_plan: groupPlan, steps };
   }
 
+  const bullpenResult = await syncMlbApiBullpens({ ...(input || {}), job: "scrape_bullpens_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+  steps.push({ label: "MLB API Bullpens", job: "scrape_bullpens_mlb_api", result: bullpenResult });
+
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
   if (startersAfterApi < games * 2) {
@@ -452,6 +462,7 @@ async function runFullPipeline(input, env) {
   }
 
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
+  const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const badRows = await countScalar(env, `
     SELECT COUNT(*) AS c
     FROM starters_current
@@ -527,7 +538,7 @@ async function runFullPipeline(input, env) {
   `, `${slateDate}_%`);
 
   const expectedStarters = games * 2;
-  const success = games > 0 && startersTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
+  const success = games > 0 && startersTotal === expectedStarters && bullpensTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
 
   return {
     ok: success,
@@ -537,6 +548,7 @@ async function runFullPipeline(input, env) {
     games,
     expected_starters: expectedStarters,
     starters_total: startersTotal,
+    bullpens_total: bullpensTotal,
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
@@ -639,6 +651,140 @@ function gameIdFromMlbGame(game, slateDate) {
   const home = MLB_TEAM_ABBR[homeId];
   if (!away || !home) return null;
   return `${slateDate}_${away}_${home}`;
+}
+
+
+
+const MLB_TEAM_ID_BY_ABBR = Object.fromEntries(Object.entries(MLB_TEAM_ABBR).map(([id, abbr]) => [abbr, Number(id)]));
+
+function ipToOuts(ip) {
+  if (ip === undefined || ip === null || ip === "") return 0;
+  const raw = String(ip);
+  const [whole, frac = "0"] = raw.split(".");
+  const thirds = frac === "1" ? 1 : frac === "2" ? 2 : 0;
+  return Number(whole || 0) * 3 + thirds;
+}
+
+function outsToIpDecimal(outs) {
+  const whole = Math.floor(Number(outs || 0) / 3);
+  const rem = Number(outs || 0) % 3;
+  return Number(`${whole}.${rem}`);
+}
+
+async function fetchMlbScheduleForTeam(teamId, startDate, endDate) {
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${encodeURIComponent(teamId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
+  const res = await fetch(url, { headers: { "accept": "application/json" } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  const games = [];
+  for (const d of (data.dates || [])) for (const g of (d.games || [])) games.push(g);
+  return games;
+}
+
+async function fetchMlbBoxscore(gamePk) {
+  const res = await fetch(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, { headers: { "accept": "application/json" } });
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+function bullpenOutsFromBoxscore(box, teamSide) {
+  const team = box?.teams?.[teamSide];
+  if (!team?.players) return 0;
+
+  let outs = 0;
+  for (const player of Object.values(team.players)) {
+    const p = player?.stats?.pitching;
+    if (!p) continue;
+    const gamesStarted = Number(p.gamesStarted || 0);
+    if (gamesStarted > 0) continue;
+    outs += ipToOuts(p.inningsPitched);
+  }
+  return outs;
+}
+
+function fatigueFromOuts(lastOuts, last3Outs) {
+  const lastIp = lastOuts / 3;
+  const last3Ip = last3Outs / 3;
+  if (lastIp >= 4 || last3Ip >= 12) return "high";
+  if (lastIp >= 3 || last3Ip >= 9) return "medium";
+  return "low";
+}
+
+async function bullpenUsageForTeam(teamAbbr, slateDate) {
+  const teamId = MLB_TEAM_ID_BY_ABBR[teamAbbr];
+  if (!teamId) return { last_game_ip: null, last3_ip: null, fatigue: "unknown" };
+
+  const startDate = addDaysISO(slateDate, -7);
+  const endDate = addDaysISO(slateDate, -1);
+  const games = await fetchMlbScheduleForTeam(teamId, startDate, endDate);
+  const finals = games
+    .filter(g => String(g?.status?.abstractGameState || "").toLowerCase() === "final")
+    .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate))
+    .slice(0, 3);
+
+  let lastOuts = 0;
+  let last3Outs = 0;
+
+  for (let i = 0; i < finals.length; i++) {
+    const g = finals[i];
+    const box = await fetchMlbBoxscore(g.gamePk);
+    const side = Number(g?.teams?.away?.team?.id) === Number(teamId) ? "away" : "home";
+    const outs = bullpenOutsFromBoxscore(box, side);
+    if (i === 0) lastOuts = outs;
+    last3Outs += outs;
+  }
+
+  return {
+    last_game_ip: outsToIpDecimal(lastOuts),
+    last3_ip: outsToIpDecimal(last3Outs),
+    fatigue: fatigueFromOuts(lastOuts, last3Outs)
+  };
+}
+
+async function syncMlbApiBullpens(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+
+  const games = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
+  const rows = [];
+  const usageCache = new Map();
+
+  async function usage(teamId) {
+    if (!usageCache.has(teamId)) usageCache.set(teamId, await bullpenUsageForTeam(teamId, slateDate));
+    return usageCache.get(teamId);
+  }
+
+  for (const g of (games.results || [])) {
+    for (const teamId of [g.away_team, g.home_team]) {
+      const u = await usage(teamId);
+      rows.push({
+        game_id: g.game_id,
+        team_id: teamId,
+        bullpen_era: null,
+        bullpen_whip: null,
+        last_game_ip: u.last_game_ip,
+        last3_ip: u.last3_ip,
+        fatigue: u.fatigue,
+        source: "mlb_statsapi_boxscore_bullpen_usage",
+        confidence: "official_usage"
+      });
+    }
+  }
+
+  const validated = validateRows("bullpens_current", rows);
+  if (!validated.ok) throw new Error(`MLB bullpen validation failed: ${validated.error}`);
+  const inserted = await upsertRows(env, "bullpens_current", validated.rows);
+
+  return {
+    ok: true,
+    job: input.job || "scrape_bullpens_mlb_api",
+    slate_date: slateDate,
+    source: "mlb_statsapi_boxscore_bullpen_usage",
+    fetched_rows: rows.length,
+    inserted: { bullpens_current: inserted },
+    skipped_count: validated.skipped?.length || 0,
+    skipped: (validated.skipped || []).slice(0, 20)
+  };
 }
 
 
