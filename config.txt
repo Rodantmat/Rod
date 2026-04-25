@@ -1,1 +1,3 @@
-# TOKEN=LindaMaria123@
+# AlphaDog Control Room config
+# Put your real ingest token after TOKEN=
+TOKEN=LindaMaria123@
