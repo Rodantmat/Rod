@@ -68,6 +68,16 @@ const JOBS = {
     note: "targeted missing starter repair",
     gameDate: "{{SLATE_DATE}}"
   },
+  scrape_starters_mlb_api: {
+    prompt: null,
+    tables: ["starters_current"],
+    note: "MLB Stats API probable pitcher sync"
+  },
+  repair_starters_mlb_api: {
+    prompt: null,
+    tables: ["starters_current"],
+    note: "MLB Stats API missing starter repair"
+  },
   scrape_lineups: {
     prompt: "scrape_lineups_v1.txt",
     tables: ["lineups_current"],
@@ -300,7 +310,9 @@ async function handleTaskRun(request, env) {
   const jobName = String((body || {}).job || "scrape_games_markets");
   const result = jobName === "run_full_pipeline"
     ? await runFullPipeline({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-    : await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    : (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api")
+      ? await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
+      : await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   return Response.json(result, { status: result.ok ? 200 : 500 });
 }
 
@@ -365,32 +377,24 @@ async function runFullPipeline(input, env) {
       steps
     };
   }
-  let groupPlan = "NONE";
-  if (games > 0 && games <= 5) groupPlan = "G1";
-  else if (games <= 10) groupPlan = "G1+G2";
-  else groupPlan = "G1+G2+G3";
+  let groupPlan = "MLB_API_PRIMARY";
 
-  if (games > 0) {
-    const g1 = await step("G1", "scrape_starters_group_1");
-    groupsRun.push("G1");
-    if (!g1.ok) return { ok: false, status: "FAILED", failed_step: "G1", slate_date: slateDate, games, group_plan: groupPlan, steps };
+  const mlbApi = await syncMlbApiProbableStarters({ ...(input || {}), job: "scrape_starters_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+  steps.push({ label: "MLB API Starters", job: "scrape_starters_mlb_api", result: mlbApi });
+  groupsRun.push("MLB_API");
+
+  if (!mlbApi.ok) {
+    return { ok: false, status: "FAILED", failed_step: "MLB_API_STarters", slate_date: slateDate, games, group_plan: groupPlan, steps };
   }
 
-  if (games > 5) {
-    const g2 = await step("G2", "scrape_starters_group_2");
-    groupsRun.push("G2");
-    if (!g2.ok) return { ok: false, status: "FAILED", failed_step: "G2", slate_date: slateDate, games, group_plan: groupPlan, steps };
-  }
+  const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
-  if (games > 10) {
-    const g3 = await step("G3", "scrape_starters_group_3");
-    groupsRun.push("G3");
-    if (!g3.ok) return { ok: false, status: "FAILED", failed_step: "G3", slate_date: slateDate, games, group_plan: groupPlan, steps };
-  }
-
-  const missingRepair = await step("Missing", "scrape_starters_missing");
-  if (!missingRepair.ok) {
-    return { ok: false, status: "FAILED", failed_step: "Missing", slate_date: slateDate, games, group_plan: groupPlan, steps };
+  if (startersAfterApi < games * 2) {
+    const missingRepair = await step("Gemini Missing Fallback", "scrape_starters_missing");
+    groupsRun.push("MISSING_FALLBACK");
+    if (!missingRepair.ok) {
+      return { ok: false, status: "FAILED", failed_step: "Missing", slate_date: slateDate, games, group_plan: groupPlan, steps };
+    }
   }
 
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
@@ -472,6 +476,116 @@ async function runFullPipeline(input, env) {
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     steps
+  };
+}
+
+
+
+const MLB_TEAM_ABBR = {
+  109: "ARI", 144: "ATL", 110: "BAL", 111: "BOS", 112: "CHC", 113: "CIN",
+  114: "CLE", 115: "COL", 145: "CWS", 116: "DET", 117: "HOU", 118: "KC",
+  108: "LAA", 119: "LAD", 146: "MIA", 158: "MIL", 142: "MIN", 121: "NYM",
+  147: "NYY", 133: "OAK", 143: "PHI", 134: "PIT", 135: "SD", 136: "SEA",
+  137: "SFG", 138: "STL", 139: "TB", 140: "TEX", 141: "TOR", 120: "WSN"
+};
+
+function decimalInnings(ip) {
+  if (ip === undefined || ip === null || ip === "") return null;
+  const raw = String(ip);
+  if (!raw.includes(".")) return Number(raw);
+  const [whole, frac] = raw.split(".");
+  return Number(`${Number(whole)}.${frac}`);
+}
+
+function pitcherSeasonStats(person) {
+  const statSplits = person?.stats?.[0]?.splits || [];
+  const stat = statSplits?.[0]?.stat || {};
+  return {
+    era: stat.era !== undefined ? Number(stat.era) : null,
+    whip: stat.whip !== undefined ? Number(stat.whip) : null,
+    strikeouts: stat.strikeOuts !== undefined ? Number(stat.strikeOuts) : null,
+    innings_pitched: stat.inningsPitched !== undefined ? decimalInnings(stat.inningsPitched) : null,
+    walks: stat.baseOnBalls !== undefined ? Number(stat.baseOnBalls) : null,
+    hits_allowed: stat.hits !== undefined ? Number(stat.hits) : null,
+    hr_allowed: stat.homeRuns !== undefined ? Number(stat.homeRuns) : null
+  };
+}
+
+function apiStarterRow(gameId, teamId, pitcher, slateDate) {
+  if (!pitcher || !pitcher.fullName) return null;
+  const stats = pitcherSeasonStats(pitcher);
+  return {
+    game_id: gameId,
+    team_id: teamId,
+    starter_name: pitcher.fullName,
+    throws: pitcher.pitchHand?.code || null,
+    era: stats.era,
+    whip: stats.whip,
+    strikeouts: stats.strikeouts,
+    innings_pitched: stats.innings_pitched,
+    walks: stats.walks,
+    hits_allowed: stats.hits_allowed,
+    hr_allowed: stats.hr_allowed,
+    days_rest: null,
+    source: "mlb_statsapi_probable_pitcher",
+    confidence: "official_probable"
+  };
+}
+
+async function fetchMlbScheduleProbables(slateDate) {
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}&hydrate=probablePitcher(stats(group=[pitching],type=[season]))`;
+  const res = await fetch(url, { headers: { "accept": "application/json" } });
+  if (!res.ok) throw new Error(`MLB schedule fetch failed: ${res.status}`);
+  return await res.json();
+}
+
+function gameIdFromMlbGame(game, slateDate) {
+  const awayId = game?.teams?.away?.team?.id;
+  const homeId = game?.teams?.home?.team?.id;
+  const away = MLB_TEAM_ABBR[awayId];
+  const home = MLB_TEAM_ABBR[homeId];
+  if (!away || !home) return null;
+  return `${slateDate}_${away}_${home}`;
+}
+
+async function syncMlbApiProbableStarters(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const data = await fetchMlbScheduleProbables(slateDate);
+  const rows = [];
+
+  for (const dateBlock of (data.dates || [])) {
+    for (const game of (dateBlock.games || [])) {
+      const gameId = gameIdFromMlbGame(game, slateDate);
+      if (!gameId) continue;
+
+      const awayTeam = MLB_TEAM_ABBR[game?.teams?.away?.team?.id];
+      const homeTeam = MLB_TEAM_ABBR[game?.teams?.home?.team?.id];
+
+      const awayPitcher = game?.teams?.away?.probablePitcher || null;
+      const homePitcher = game?.teams?.home?.probablePitcher || null;
+
+      const awayRow = apiStarterRow(gameId, awayTeam, awayPitcher, slateDate);
+      const homeRow = apiStarterRow(gameId, homeTeam, homePitcher, slateDate);
+
+      if (awayRow) rows.push(awayRow);
+      if (homeRow) rows.push(homeRow);
+    }
+  }
+
+  const validated = validateRows("starters_current", rows);
+  if (!validated.ok) throw new Error(`MLB starter validation failed: ${validated.error}`);
+  const inserted = await upsertRows(env, "starters_current", validated.rows);
+
+  return {
+    ok: true,
+    job: input.job || "scrape_starters_mlb_api",
+    slate_date: slateDate,
+    source: "mlb_statsapi_schedule_probablePitcher",
+    fetched_rows: rows.length,
+    inserted: { starters_current: inserted },
+    skipped_count: validated.skipped?.length || 0,
+    skipped: (validated.skipped || []).slice(0, 20)
   };
 }
 
