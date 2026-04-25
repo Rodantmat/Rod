@@ -1,1 +1,80 @@
-<!-- updated control room with FULL RUN button -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AlphaDog Control Room</title>
+<style>
+body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
+h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
+.section{border-top:1px solid #30363d;padding-top:8px;margin-top:10px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:5px}
+button{padding:10px 4px;font-size:12px;border:0;border-radius:7px;background:#1f6feb;color:#fff}
+.clean{background:#da3633}.check{background:#238636}.sql{background:#d29922}.debug{background:#8957e5}.audit{background:#0f766e}.slate{background:#7c3aed}
+.copy{background:#8957e5;width:100%;margin-top:6px}
+input,textarea{width:100%;box-sizing:border-box;background:#111;color:#00ff88;border:1px solid #30363d;border-radius:6px;margin-top:6px;padding:8px}
+textarea{height:90px}
+pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-height:420px;min-height:150px;border:1px solid #30363d;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+.status{background:#111;color:#fff;padding:8px;border-radius:6px;border:1px solid #30363d;margin:8px 0;white-space:pre-wrap}
+.small{font-size:11px;color:#aaa}
+</style>
+</head>
+<body>
+<h2>ALPHADOG CONTROL ROOM</h2>
+<div class="small">PT Now: <span id="ptNowLabel"></span></div>
+<div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
+<div class="status" id="status">READY</div>
+
+<div class="section"><h3>SLATE</h3><div class="grid">
+<button class="slate" onclick="setSlateMode('AUTO')">Auto</button>
+<button class="slate" onclick="setSlateMode('TODAY')">Today</button>
+<button class="slate" onclick="setSlateMode('TOMORROW')">Tomorrow</button>
+<button class="slate" onclick="setSlateMode('MANUAL')">Manual</button>
+</div><input id="manualDate" placeholder="YYYY-MM-DD manual date" onchange="setManualDate(this.value)"></div>
+
+<div class="section"><h3>DEBUG</h3><div class="grid">
+<button class="debug" onclick="debugConfig()">Config</button><button class="debug" onclick="health()">Health</button><button class="debug" onclick="testSQL()">SQL Test</button><button class="debug" onclick="loadConfig()">Reload</button>
+</div></div>
+
+<div class="section"><h3>SCRAPE</h3><div class="grid">
+<button onclick="runJobButton('FULL RUN','run_full_pipeline')">FULL RUN</button><button onclick="runJobButton('FULL RUN','run_full_pipeline')">FULL RUN</button><button onclick="runJobButton('Markets','scrape_games_markets')">Markets</button><button onclick="runJobButton('G1','scrape_starters_group_1')">G1</button><button onclick="runJobButton('G2','scrape_starters_group_2')">G2</button><button onclick="runJobButton('G3','scrape_starters_group_3')">G3</button>
+<button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button><button onclick="runJobButton('Teams','scrape_teams')">Teams</button><button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button><button onclick="runJobButton('Lineups','scrape_lineups')">Lineups</button>
+<button onclick="runJobButton('Players','scrape_players')">Players</button>
+</div></div>
+
+<div class="section"><h3>CLEAN</h3><div class="grid">
+<button class="clean" onclick="runSQLButton('Clean Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('Clean Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('Clean Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('Clean Games', cleanGames())">Games</button>
+</div></div>
+
+<div class="section"><h3>CHECK</h3><div class="grid">
+<button class="check" onclick="runSQLButton('Check Games', checkGames())">Games</button><button class="check" onclick="runSQLButton('Check Markets', checkMarkets())">Markets</button><button class="check" onclick="runSQLButton('Check Starters', checkStarters())">Starters</button><button class="check" onclick="runSQLButton('Active Size', activeSlateSize())">Active Size</button>
+<button class="check" onclick="runSQLButton('Game List', listGames())">Game List</button><button class="check" onclick="runSQLButton('Starter List', listStarters())">Starter List</button><button class="check" onclick="runSQLButton('Bad Starters', badStarters())">Bad Start</button><button class="audit" onclick="runSQLButton('Truth Audit', truthAudit())">Truth Audit</button>
+<button class="check" onclick="runSQLButton('Tasks', latestTasks())">Tasks</button>
+</div></div>
+
+<div class="section"><h3>MANUAL SQL</h3><textarea id="sql"></textarea><button class="sql" onclick="runManualSQL()">Run SQL</button></div>
+<pre id="output">Output will appear here.</pre><button class="copy" onclick="copyOutput()">COPY OUTPUT</button>
+
+<script>
+const BASE="https://prop-ingestion-git.rodolfoaamattos.workers.dev", JOB_URL=BASE+"/tasks/run", SQL_URL=BASE+"/debug/sql", HEALTH_URL=BASE+"/health", CONFIG_URL="https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt";
+let TOKEN="", CONFIG_LOADED=false, SLATE_MODE=localStorage.getItem("alphadog_slate_mode")||"AUTO", MANUAL_DATE=localStorage.getItem("alphadog_manual_date")||"";
+function pad2(n){return String(n).padStart(2,"0")}
+function addDaysISO(s,d){const p=s.split("-").map(Number),x=new Date(Date.UTC(p[0],p[1]-1,p[2]));x.setUTCDate(x.getUTCDate()+d);return x.getUTCFullYear()+"-"+pad2(x.getUTCMonth()+1)+"-"+pad2(x.getUTCDate())}
+function ptParts(){const parts=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Los_Angeles",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).formatToParts(new Date()),m={};parts.forEach(p=>m[p.type]=p.value);return {date:m.year+"-"+m.month+"-"+m.day,hour:Number(m.hour),time:m.hour+":"+m.minute+":"+m.second}}
+function resolveSlateDate(){const p=ptParts();if(SLATE_MODE==="MANUAL"&&/^\d{4}-\d{2}-\d{2}$/.test(MANUAL_DATE))return MANUAL_DATE;if(SLATE_MODE==="TODAY")return p.date;if(SLATE_MODE==="TOMORROW")return addDaysISO(p.date,1);return p.hour>=20?addDaysISO(p.date,1):p.date}
+function updateSlateLabels(){const p=ptParts();document.getElementById("ptNowLabel").textContent=p.date+" "+p.time;document.getElementById("slateModeLabel").textContent=SLATE_MODE;document.getElementById("targetDateLabel").textContent=resolveSlateDate();document.getElementById("manualDate").value=MANUAL_DATE;document.getElementById("sql").value="SELECT COUNT(*) AS games_today FROM games WHERE game_date = '"+resolveSlateDate()+"';"}
+function setSlateMode(m){SLATE_MODE=m;localStorage.setItem("alphadog_slate_mode",m);updateSlateLabels();setOutput("Slate Mode",{slate_mode:SLATE_MODE,resolved_slate:resolveSlateDate()})}
+function setManualDate(v){MANUAL_DATE=String(v||"").trim();localStorage.setItem("alphadog_manual_date",MANUAL_DATE);updateSlateLabels()}
+function setStatus(m){document.getElementById("status").textContent="["+new Date().toLocaleTimeString()+"] "+m}
+function setOutput(l,o){document.getElementById("output").textContent="ACTION: "+l+"\nTIME: "+new Date().toISOString()+"\n\n"+(typeof o==="string"?o:JSON.stringify(o,null,2));window.scrollTo(0,document.body.scrollHeight)}
+function loading(l,e){setStatus("RUNNING: "+l);setOutput(l,"Loading..."+(e?"\n"+e:""))}
+function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
+async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
+function debugConfig(){setOutput("Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_scheduler_phase_2026_04_25"})}
+async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
+async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
+function shouldRetry(r,j){const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing")return false;return true}}return false}
+async function requestJobWithRetry(l,j){const a=[],d=resolveSlateDate();for(let i=1;i<=3;i++){loading(l,"Try "+i+" of 3 started.\nSlate: "+d);const r=await rawRequest(l+" try "+i,JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});a.push({try:i,result:r});if(!shouldRetry(r,j)){setStatus("DONE: "+l+" / success");setOutput(l,{final:"success",slate_date:d,attempts:a});return}if(i<3){setOutput(l,{status:"retrying",reason:"503/cancelled/zero inserted",next_try:i+1,slate_date:d,attempts:a});await new Promise(x=>setTimeout(x,10000))}}setOutput(l,{final:"failed_after_3_attempts",slate_date:d,attempts:a})}
+function health(){requestJSON("Health",HEALTH_URL,null)}function testSQL(){requestJSON("SQL Test",SQL_URL,{sql:"SELECT COUNT(*) AS total_games FROM games;"})}function runJobButton(l,j){requestJobWithRetry(l,j)}function runSQLButton(l,s){requestJSON(l,SQL_URL,{sql:s})}function runManualSQL(){runSQLButton("Manual SQL",document.getElementById("sql").value)}function copyOutput(){navigator.clipboard.writeText(document.getElementById("output").textContent);setStatus("COPIED OUTPUT")}
+function D(){return resolveSlateDate()}function cleanAll(){return `DELETE FROM starters_current WHERE game_id LIKE '${D()}_%'; DELETE FROM bullpens_current WHERE game_id LIKE '${D()}_%'; DELETE FROM lineups_current WHERE game_id LIKE '${D()}_%'; DELETE FROM markets_current WHERE game_id LIKE '${D()}_%'; DELETE FROM games WHERE game_date = '${D()}';`}function cleanStarters(){return `DELETE FROM starters_current WHERE game_id LIKE '${D()}_%';`}function cleanMarkets(){return `DELETE FROM markets_current WHERE game_id LIKE '${D()}_%';`}function cleanGames(){return `DELETE FROM games WHERE game_date = '${D()}';`}function checkGames(){return `SELECT COUNT(*) AS games_today FROM games WHERE game_date = '${D()}';`}function checkMarkets(){return `SELECT COUNT(*) AS markets_today FROM markets_current WHERE game_id LIKE '${D()}_%';`}function checkStarters(){return `SELECT COUNT(*) AS starters_today FROM starters_current WHERE game_id LIKE '${D()}_%';`}function activeSlateSize(){return `SELECT COUNT(*) AS active_games, CASE WHEN COUNT(*) <= 5 THEN 'RUN G1 ONLY' WHEN COUNT(*) <= 10 THEN 'RUN G1 + G2' ELSE 'RUN G1 + G2 + G3' END AS starter_group_plan FROM games WHERE game_date = '${D()}';`}function listGames(){return `SELECT game_id FROM games WHERE game_date = '${D()}' ORDER BY game_id;`}function listStarters(){return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${D()}_%' ORDER BY game_id, team_id;`}function badStarters(){return `SELECT game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched, source FROM starters_current WHERE game_id LIKE '${D()}_%' AND (starter_name LIKE '%Ace%' OR starter_name IN ('TBD','TBA','Unknown','Starter') OR era IS NULL OR era <= 0 OR whip IS NULL OR whip <= 0 OR strikeouts IS NULL OR strikeouts <= 0 OR innings_pitched IS NULL OR innings_pitched <= 0) ORDER BY game_id, team_id;`}function latestTasks(){return `SELECT task_id, job_name, status, started_at, finished_at, output_json, error FROM task_runs ORDER BY started_at DESC LIMIT 8;`}function truthAudit(){return `SELECT 'MISSING_STARTER' AS audit_type, g.game_id, COUNT(s.team_id) AS starters_found, GROUP_CONCAT(s.team_id) AS teams_found FROM games g LEFT JOIN starters_current s ON g.game_id=s.game_id WHERE g.game_date='${D()}' GROUP BY g.game_id HAVING starters_found < 2; SELECT 'STAT_OUTLIER' AS audit_type, game_id, team_id, starter_name, era, whip, strikeouts, innings_pitched FROM starters_current WHERE game_id LIKE '${D()}_%' AND (strikeouts > 300 OR innings_pitched > 220 OR era > 10 OR whip > 2) ORDER BY game_id; SELECT 'DUPLICATE_STARTER_NAME' AS audit_type, starter_name, COUNT(*) AS occurrences FROM starters_current WHERE game_id LIKE '${D()}_%' GROUP BY starter_name HAVING occurrences > 1; SELECT 'TEAM_NOT_IN_GAME' AS audit_type, s.game_id, s.team_id, s.starter_name FROM starters_current s JOIN games g ON s.game_id=g.game_id WHERE g.game_date='${D()}' AND s.team_id NOT IN (g.away_team,g.home_team) ORDER BY s.game_id,s.team_id;`}
+updateSlateLabels();setInterval(updateSlateLabels,1000);loadConfig();
+</script></body></html>
