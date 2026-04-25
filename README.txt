@@ -1,14 +1,10 @@
-AlphaDog Recent Usage Schema-Safe Fix
+AlphaDog Final Feed Audit Patch
 
-Root cause:
-- Existing player_recent_usage table has no source/confidence columns.
-- Previous patch tried to write source/confidence and crashed.
-
-Fix:
-- Uses existing player_recent_usage schema only.
-- Writes:
-  player_name, team_id, last_game_ab, last_game_hits, lineup_slot
+What changed:
+- Adds CHECK > Final Feed Audit.
+- Cleans Bad Start so official MLB API soft stat gaps are not treated as hard bad starters.
 - No migration required.
+- No logic drift.
 
 Upload to GitHub root:
 - worker.js
@@ -22,8 +18,13 @@ Do not replace config.txt.
 Test:
 CLEAN > Full
 SCRAPE > FULL RUN
-CHECK > Usage
-CHECK > Usage List
+CHECK > Final Feed Audit
 CHECK > Bad Start
 CHECK > Truth Audit
 CHECK > Scheduler Log
+
+Pass target:
+- FULL RUN = success
+- Final Feed Audit hard checks = PASS
+- Bad Start = empty or only true hard rows
+- Truth Audit = clean
