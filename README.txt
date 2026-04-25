@@ -1,11 +1,15 @@
-AlphaDog MLB API Names-First Patch
+AlphaDog MLB API Schedule Lock Patch
+
+Root cause fixed:
+- Gemini games/markets schedule did not match MLB API starters schedule.
+- Truth Audit showed missing starters because game_id sets were different.
 
 Fix:
-- Official MLB Stats API probable pitcher rows now insert even if stats are null.
-- Missing stats are non-blocking for official MLB API rows.
-- Bad Start no longer flags official MLB API rows only because stats are missing.
-- Added CHECK > Stats Missing as a separate soft enrichment check.
-- FULL RUN success is name/truth based first.
+- scrape_games_markets now uses MLB Stats API schedule as the source of truth.
+- MLB API starters use the same schedule/game_id construction.
+- Games and starters now align deterministically.
+- Markets are inserted with null odds from official schedule source.
+- Gemini is no longer primary for games or starter names.
 
 Upload to GitHub root:
 - worker.js
@@ -20,10 +24,10 @@ Test:
 CLEAN > Full
 SCRAPE > Markets
 SCRAPE > MLB API
+CHECK > Games
 CHECK > Starters
 CHECK > Bad Start
 CHECK > Stats Missing
 CHECK > Truth Audit
 SCRAPE > FULL RUN
-CHECK > Starters
 CHECK > Truth Audit

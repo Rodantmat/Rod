@@ -310,9 +310,11 @@ async function handleTaskRun(request, env) {
   const jobName = String((body || {}).job || "scrape_games_markets");
   const result = jobName === "run_full_pipeline"
     ? await runFullPipeline({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-    : (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api")
-      ? await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
-      : await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    : (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate")
+      ? await syncMlbApiGamesMarkets({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
+      : (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api")
+        ? await syncMlbApiProbableStarters({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env)
+        : await runJob({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   return Response.json(result, { status: result.ok ? 200 : 500 });
 }
 
@@ -332,7 +334,9 @@ async function runFullPipeline(input, env) {
   const groupsRun = [];
 
   async function step(label, job) {
-    const result = await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+    const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
+      ? await syncMlbApiGamesMarkets({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
+      : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
     steps.push({ label, job, result });
     return result;
   }
@@ -340,7 +344,9 @@ async function runFullPipeline(input, env) {
   async function stepWithRetry(label, job, maxAttempts, successCheck) {
     let last = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+      const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
+        ? await syncMlbApiGamesMarkets({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
+        : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
       last = result;
       steps.push({ label, job, attempt, result });
 
@@ -565,6 +571,79 @@ function gameIdFromMlbGame(game, slateDate) {
   if (!away || !home) return null;
   return `${slateDate}_${away}_${home}`;
 }
+
+
+async function syncMlbApiGamesMarkets(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const data = await fetchMlbScheduleProbables(slateDate);
+
+  const gamesRows = [];
+  const marketsRows = [];
+
+  for (const dateBlock of (data.dates || [])) {
+    for (const game of (dateBlock.games || [])) {
+      const gameId = gameIdFromMlbGame(game, slateDate);
+      if (!gameId) continue;
+
+      const away = MLB_TEAM_ABBR[game?.teams?.away?.team?.id];
+      const home = MLB_TEAM_ABBR[game?.teams?.home?.team?.id];
+      if (!away || !home) continue;
+
+      gamesRows.push({
+        game_id: gameId,
+        game_date: slateDate,
+        away_team: away,
+        home_team: home,
+        start_time_utc: game.gameDate || null,
+        venue: game?.venue?.name || null,
+        series_game: null,
+        getaway_day: 0,
+        status: game?.status?.detailedState || "scheduled"
+      });
+
+      marketsRows.push({
+        game_id: gameId,
+        game_total: null,
+        open_total: null,
+        current_total: null,
+        away_moneyline: null,
+        home_moneyline: null,
+        away_implied_runs: null,
+        home_implied_runs: null,
+        runline: null,
+        source: "mlb_statsapi_schedule",
+        confidence: "official_schedule"
+      });
+    }
+  }
+
+  const gamesValid = validateRows("games", gamesRows);
+  if (!gamesValid.ok) throw new Error(`MLB games validation failed: ${gamesValid.error}`);
+  const marketsValid = validateRows("markets_current", marketsRows);
+  if (!marketsValid.ok) throw new Error(`MLB markets validation failed: ${marketsValid.error}`);
+
+  const insertedGames = await upsertRows(env, "games", gamesValid.rows);
+  const insertedMarkets = await upsertRows(env, "markets_current", marketsValid.rows);
+
+  return {
+    ok: true,
+    job: input.job || "scrape_games_markets",
+    prompt: "mlb_statsapi_schedule",
+    slate_date: slateDate,
+    slate_mode: slate.slate_mode,
+    source: "mlb_statsapi_schedule",
+    inserted: {
+      games: insertedGames,
+      markets_current: insertedMarkets
+    },
+    skipped: {
+      games: gamesValid.skipped || [],
+      markets_current: marketsValid.skipped || []
+    }
+  };
+}
+
 
 async function syncMlbApiProbableStarters(input, env) {
   const slate = resolveSlateDate(input || {});
