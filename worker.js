@@ -2172,3 +2172,41 @@ function parseStrictJson(text) {
 async function safeJson(request) {
   try { return await request.json(); } catch { return {}; }
 }
+
+
+async function buildEdgeCandidatesRBI(env, slateDate) {
+  const db = env.DB;
+
+  await db.prepare(`
+    DELETE FROM edge_candidates_rbi WHERE slate_date = ?
+  `).bind(slateDate).run();
+
+  await db.prepare(`
+    INSERT INTO edge_candidates_rbi (
+      slate_date, game_id, team_id, opponent_team,
+      player_name, lineup_slot, bats,
+      opposing_starter, opposing_throws,
+      player_avg, player_obp, player_slg,
+      bullpen_fatigue_tier, run_environment_flag,
+      candidate_tier, candidate_reason
+    )
+    SELECT
+      ?, l.game_id, l.team_id, l.opponent_team,
+      l.player_name, l.lineup_slot, p.bats,
+      s.starter_name, s.throws,
+      p.avg, p.obp, p.slg,
+      gc.bullpen_fatigue_tier,
+      CASE WHEN gc.park_factor > 1.05 THEN 'positive' ELSE 'neutral' END,
+      CASE WHEN l.lineup_slot IN (3,4,5) AND p.slg >= 0.42 THEN 'A_POOL' ELSE 'B_POOL' END,
+      (CASE WHEN l.lineup_slot IN (3,4,5) THEN 'premium_rbi_slot|' ELSE '' END ||
+       CASE WHEN p.slg >= 0.42 THEN 'strong_power_profile|' ELSE '' END ||
+       CASE WHEN gc.bullpen_fatigue_tier = 'high' THEN 'bullpen_pressure|' ELSE '' END)
+    FROM lineups_current l
+    JOIN players_current p ON p.player_name = l.player_name
+    LEFT JOIN starters_current s ON s.team_id = l.opponent_team AND s.game_id = l.game_id
+    LEFT JOIN game_context_current gc ON gc.game_id = l.game_id
+    WHERE l.game_id LIKE ? AND l.lineup_slot BETWEEN 2 AND 6
+  `).bind(slateDate, slateDate + '%').run();
+
+  return { ok: true, job: "build_edge_candidates_rbi", slate_date: slateDate };
+}
