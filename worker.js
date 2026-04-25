@@ -463,9 +463,6 @@ async function runFullPipeline(input, env) {
   }
   let groupPlan = "MLB_API_PRIMARY";
 
-  const playerIdentityResult = await syncMlbApiPlayersIdentity({ ...(input || {}), job: "scrape_players_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Player Identity", job: "scrape_players_mlb_api", result: playerIdentityResult });
-
   const mlbApi = await syncMlbApiProbableStarters({ ...(input || {}), job: "scrape_starters_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
   steps.push({ label: "MLB API Starters", job: "scrape_starters_mlb_api", result: mlbApi });
   groupsRun.push("MLB_API");
@@ -587,6 +584,7 @@ async function runFullPipeline(input, env) {
     lineups_total: lineupsTotal,
     recent_usage_total: recentUsageTotal,
     players_total: playersTotal,
+    players_layer_mode: "manual_or_separate_run_to_avoid_worker_request_limit",
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
