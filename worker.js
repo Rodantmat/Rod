@@ -129,8 +129,7 @@ const TABLES = {
   bullpens_current: {
     allowed: ["game_id", "team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"],
     required: ["game_id", "team_id"],
-    conflict: ["game_id", "team_id"],
-    deleteInsert: true
+    conflict: ["game_id", "team_id"]
   },
   lineups_current: {
     allowed: ["game_id", "team_id", "slot", "player_name", "bats", "k_rate", "is_confirmed", "source", "confidence"],
