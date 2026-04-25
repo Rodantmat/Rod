@@ -325,6 +325,13 @@ async function runFullPipeline(input, env) {
     return result;
   }
 
+  await env.DB.prepare("DELETE FROM starters_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
+  await env.DB.prepare("DELETE FROM bullpens_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
+  await env.DB.prepare("DELETE FROM lineups_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
+  await env.DB.prepare("DELETE FROM markets_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
+  await env.DB.prepare("DELETE FROM games WHERE game_date = ?").bind(slateDate).run();
+  steps.push({ label: "Clean Slate", job: "internal_clean", result: { ok: true, slate_date: slateDate } });
+
   const markets = await step("Markets", "scrape_games_markets");
   if (!markets.ok) {
     return { ok: false, status: "FAILED", failed_step: "Markets", slate_date: slateDate, started_at: startedAt, steps };
@@ -434,12 +441,30 @@ async function runJob(input, env) {
     const clean = cleanJsonText(raw);
     const data = parseStrictJson(clean);
     const results = {};
+    const validatedByTable = {};
+    const returnedGameIds = new Set();
 
     for (const table of job.tables) {
       const rows = Array.isArray(data[table]) ? data[table] : [];
       const validated = validateRows(table, rows);
       if (!validated.ok) throw new Error(`${table} validation failed: ${validated.error}`);
-      results[table] = await upsertRows(env, table, validated.rows);
+      validatedByTable[table] = validated.rows;
+
+      if (table === "games") {
+        for (const row of validated.rows) {
+          if (row.game_id) returnedGameIds.add(row.game_id);
+        }
+      }
+    }
+
+    for (const table of job.tables) {
+      let rows = validatedByTable[table] || [];
+
+      if (table === "markets_current" && returnedGameIds.size > 0) {
+        rows = rows.filter(row => returnedGameIds.has(row.game_id));
+      }
+
+      results[table] = await upsertRows(env, table, rows);
     }
 
     await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`)
