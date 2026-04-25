@@ -21,9 +21,23 @@ pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-h
 .grid button{min-height:0;height:auto;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;padding:10px 4px;}
 textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-events:auto;}
 </style>
+
+<style id="versionTagStyle">
+#versionTag{
+  color:#9ae6b4;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  margin-top: 6px;
+  margin-bottom: 12px;
+}
+</style>
+
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
+<div id="versionTag">v1.2.10 — Galactic Pickle</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
