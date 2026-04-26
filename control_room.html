@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.29 — Regression Execution Hard Lock</div>
+<div id="versionTag">v1.2.30 — Regression Completion Hard Seal</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -111,7 +111,7 @@ function setOutput(l,o){document.getElementById("output").textContent="ACTION: "
 function loading(l,e){setStatus("RUNNING: "+l);setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_29_regression_execution_hard_lock"})}
+function debugConfig(){setOutput("Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_30_regression_completion_hard_seal"})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing")return false;return true}}return false}
@@ -330,14 +330,15 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.29 — Regression Execution Hard Lock",
+    version: "v1.2.30 — Regression Completion Hard Seal",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
-    regression: {status:"not_started",mode:"anchored_individual_sql",complete:false,outputs:[]},
+    regression: {status:"not_started",mode:"anchored_single_sql_payload",complete:false,outputs:[]},
     pass_notes: [
       "Cycles store compact summaries only to prevent browser/output payload interruption.",
-      "Final regression checks execute one SQL request at a time and must all return expected status."
+      "Final regression checks execute as one anchored SQL payload so the suite cannot stop after a partial check list.",
+      "ok=true requires all RFI, RBI, Hits, players, starters, and lineups baseline checks to pass."
     ]
   };
 
@@ -377,10 +378,6 @@ async function runRfiRegressionSuite(){
     setOutput("RFI Regression x3", suite);
   }
 
-  setStatus("RFI REGRESSION FINAL CHECKS: anchored individual SQL");
-  suite.regression = {status:"running",mode:"anchored_individual_sql",complete:false,outputs:[]};
-  setOutput("RFI Regression x3", suite);
-
   const checks = [
     {check:"RFI_TOTAL", sql:`SELECT 'RFI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 15 THEN 'PASS_EXPECTED_15' WHEN COUNT(*) > 0 THEN 'WARN_COUNT_REVIEW' ELSE 'FAIL_EMPTY' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}'`, expect:"PASS_EXPECTED_15"},
     {check:"RFI_WARNINGS", sql:`SELECT 'RFI_WARNINGS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 3 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_MORE_THAN_BASELINE' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%warn_%'`, expect:"PASS_EXPECTED_OR_BETTER"},
@@ -396,29 +393,47 @@ async function runRfiRegressionSuite(){
     {check:"LINEUPS_TODAY", sql:`SELECT 'LINEUPS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 200 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM lineups_current WHERE game_id LIKE '${d}_%'`, expect:"PASS"}
   ];
 
-  const outputs = [];
-  for(const item of checks){
-    setStatus("RFI FINAL CHECK: " + item.check);
-    const r = await rawRequest("RFI Final " + item.check, SQL_URL, {sql:item.sql});
-    const rawOutputs = r && r.body && Array.isArray(r.body.outputs) ? r.body.outputs : [];
-    const raw = rawOutputs[0] || null;
+  setStatus("RFI REGRESSION FINAL CHECKS: anchored single SQL payload");
+  suite.regression = {status:"running",mode:"anchored_single_sql_payload",complete:false,outputs:[]};
+  setOutput("RFI Regression x3", suite);
+
+  const regressionSql = checks.map(c => c.sql.trim().replace(/;+$/g, "") + ";").join("\n");
+  const regressionResponse = await rawRequest("RFI Regression Final Baselines", SQL_URL, {sql:regressionSql});
+  const rawOutputs = regressionResponse && regressionResponse.body && Array.isArray(regressionResponse.body.outputs) ? regressionResponse.body.outputs : [];
+  const outputs = checks.map((item, idx) => {
+    const raw = rawOutputs[idx] || null;
     const rows = raw && Array.isArray(raw.rows) ? raw.rows : [];
     const result = rows.length === 1 ? rows[0] : rows;
     const status = rows.length === 1 ? String(rows[0].status || "") : "";
-    outputs.push({check:item.check,sql:item.sql,result,status,expected_status:item.expect,pass:status===item.expect,http_status:r?r.http_status:null,ok:!!(r&&r.http_status===200&&r.body&&r.body.ok&&raw)});
-    suite.regression = {status:"running",mode:"anchored_individual_sql",complete:false,outputs};
-    setOutput("RFI Regression x3", suite);
-  }
+    return {
+      check:item.check,
+      sql:item.sql,
+      result,
+      status,
+      expected_status:item.expect,
+      pass:status===item.expect,
+      http_status:regressionResponse?regressionResponse.http_status:null,
+      ok:!!(regressionResponse&&regressionResponse.http_status===200&&regressionResponse.body&&regressionResponse.body.ok&&raw)
+    };
+  });
 
   const cycleOk = suite.cycles.length === cycles && suite.cycles.every(c => c.build_ok && c.audit_ok && c.raw_games === 15 && c.fetched_rows === 15 && c.inserted_edge_candidates_rfi === 15 && c.yes_rfi === 7 && c.lean_yes === 4 && c.watchlist_or_no === 4 && c.warning_rows === 3 && c.audit_tier_counts.YES_RFI === 7 && c.audit_tier_counts.LEAN_YES === 4 && c.audit_tier_counts.WATCHLIST === 4 && c.audit_warning_rows === 3 && c.audit_missing_starters === 0 && c.audit_incomplete_yes_leak === 0);
   const regressionOk = outputs.length === checks.length && outputs.every(o => o.ok && o.pass);
-  suite.regression = {mode:"anchored_individual_sql",complete:regressionOk,outputs};
+  suite.regression = {
+    status:regressionOk ? "pass" : "review",
+    mode:"anchored_single_sql_payload",
+    complete:regressionOk,
+    expected_checks:checks.length,
+    returned_checks:rawOutputs.length,
+    outputs
+  };
   suite.ok = cycleOk && regressionOk;
   suite.final = suite.ok ? "pass" : "review";
   suite.candidate_summary = {YES_RFI:7, LEAN_YES:4, WATCHLIST:4};
   setStatus((suite.ok ? "DONE: " : "REVIEW: ") + "RFI Regression x3");
   setOutput("RFI Regression x3", suite);
 }
+
 
 function rfiCandidatesAudit(){return `
 SELECT 'RFI_CANDIDATES_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'WARN_EMPTY' END AS status

@@ -1,4 +1,4 @@
-// AlphaDog v1.2.29 — Regression Execution Hard Lock compatible worker
+// AlphaDog v1.2.30 — Regression Completion Hard Seal compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
