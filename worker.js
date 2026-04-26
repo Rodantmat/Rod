@@ -34,7 +34,13 @@ const JOBS = {
     tables: ["edge_candidates_hits"],
     note: "scheduled-task edge prep candidate pool for hits"
   },
-  build_edge_candidates_rbi: {
+  build_edge_candidates_rbi:
+  ,
+  build_edge_candidates_rfi: {
+    prompt: null,
+    tables: ["edge_candidates_rfi"],
+    note: "scheduled-task edge prep candidate pool for RFI"
+  }, {
     prompt: null,
     tables: ["edge_candidates_rbi"],
     note: "scheduled-task edge prep candidate pool for RBI"
@@ -1038,6 +1044,11 @@ async function executeTaskJob(jobName, body, slate, env) {
     return await buildEdgeCandidatesHits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "build_edge_candidates_rbi") {
+    return await buildEdgeCandidatesRbi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "build_edge_candidates_rfi") {
+    return await buildEdgeCandidatesRfi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
     return await buildEdgeCandidatesRbi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
