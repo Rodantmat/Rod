@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1L MLB Cleanup Pass';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 MLB Wiring';
 
   const state = {
     version: SYSTEM_VERSION,

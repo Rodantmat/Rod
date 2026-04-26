@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1L MLB Cleanup Pass';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 MLB Wiring';
 
   function el(id) {
     return document.getElementById(id);

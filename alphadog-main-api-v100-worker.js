@@ -1,686 +1,1515 @@
-const SYSTEM_VERSION = "alphadog-main-api-v100.6 - Main-1M Priority 1 Matrix Bridge";
-const WORKER_NAME = "alphadog-main-api-v100";
-const MLB_BASE = "https://statsapi.mlb.com";
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization"
-};
+const WORKER_VERSION = "alphadog-main-api-v100.6 - Priority 1 MLB Matrix Wiring";
+const DEFAULT_SLATE_DATE = "2026-04-25";
+const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
+const MLB_API_CACHE_TABLE = "main_supplemental_mlb_api_cache";
 
-function json(body, status = 200) {
+function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body, null, 2), {
     status,
-    headers: { ...CORS, "content-type": "application/json; charset=utf-8" }
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type,authorization"
+    }
   });
 }
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+function safeText(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  return String(value);
 }
 
-function safeNumber(v, fallback = null) {
-  if (v === null || v === undefined || v === "") return fallback;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
+function n(value, fallback = null) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
 }
 
-function clamp(n, lo = 0, hi = 100) {
-  const x = safeNumber(n, 0);
-  return Math.max(lo, Math.min(hi, x));
+function clamp(value, min = 0, max = 100) {
+  const num = n(value, 0);
+  return Math.max(min, Math.min(max, num));
 }
 
-function light(score) {
-  const s = clamp(score);
-  if (s >= 80) return "🟢";
-  if (s >= 65) return "🟡";
-  return "🔴";
+function nowSql() {
+  return new Date().toISOString();
 }
 
-function factor(label, value, score, source = "system", confidence = "controlled", detail = "") {
-  const s = clamp(score);
-  return {
-    label,
-    value: value === null || value === undefined || value === "" ? "N/A" : String(value),
-    score: s,
-    light: light(s),
-    display: `${value === null || value === undefined || value === "" ? "N/A" : String(value)} - ${s}/100 ${light(s)}`,
-    source,
-    confidence,
-    detail
-  };
+function normalizeDateFromRequest(request) {
+  const url = new URL(request.url);
+  return url.searchParams.get("slate_date") || DEFAULT_SLATE_DATE;
 }
 
-function normalizeTeam(t) {
-  return String(t || "").trim().toUpperCase();
+async function readJson(request) {
+  try { return await request.json(); } catch (_err) { return {}; }
 }
 
-function normalizeName(n) {
-  return String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/gi, " ").trim().toLowerCase();
+async function one(db, sql, bindings = []) {
+  const stmt = db.prepare(sql);
+  const bound = bindings.length ? stmt.bind(...bindings) : stmt;
+  return await bound.first();
 }
 
-async function one(env, sql, binds = []) {
-  return await env.DB.prepare(sql).bind(...binds).first();
+async function all(db, sql, bindings = []) {
+  const stmt = db.prepare(sql);
+  const bound = bindings.length ? stmt.bind(...bindings) : stmt;
+  const res = await bound.all();
+  return res.results || [];
 }
 
-async function all(env, sql, binds = []) {
-  const out = await env.DB.prepare(sql).bind(...binds).all();
-  return out && Array.isArray(out.results) ? out.results : [];
+async function run(db, sql, bindings = []) {
+  const stmt = db.prepare(sql);
+  const bound = bindings.length ? stmt.bind(...bindings) : stmt;
+  return await bound.run();
 }
 
-async function tableCount(env, table) {
+async function countTable(db, tableName, whereSql = "", bindings = []) {
   try {
-    const row = await one(env, `SELECT COUNT(*) AS n FROM ${table}`);
-    return { check: table.toUpperCase(), value: row ? row.n : 0, status: (row && row.n > 0) ? "PASS" : "REVIEW", ok: !!(row && row.n > 0), error: null };
-  } catch (e) {
-    return { check: table.toUpperCase(), value: 0, status: "ERROR", ok: false, error: String(e && e.message || e) };
+    const row = await one(db, `SELECT COUNT(*) AS value FROM ${tableName} ${whereSql}`, bindings);
+    return Number(row?.value || 0);
+  } catch (err) {
+    return { error: err?.message || String(err) };
   }
 }
 
-async function getSlateDate(env, payload = {}) {
-  if (payload.slate_date) return payload.slate_date;
-  try {
-    const g = await one(env, `SELECT game_date FROM games ORDER BY game_date DESC LIMIT 1`);
-    if (g && g.game_date) return g.game_date;
-  } catch (_) {}
-  return todayIso();
+async function handleDebugRoutes() {
+  return jsonResponse({
+    ok: true,
+    worker: "alphadog-main-api-v100",
+    version: WORKER_VERSION,
+    purpose: "isolated_main_app_api_matrix_fill_mlb_api_bridge_controlled_cache",
+    no_cron: true,
+    no_scheduled_handler: true,
+    no_task_runner: true,
+    no_candidate_builders: true,
+    no_bulk_scraping: true,
+    controlled_d1_writes: true,
+    writes_only_to: [SUPPLEMENTAL_TABLE, MLB_API_CACHE_TABLE],
+    routes: [
+      "GET /main/debug/routes",
+      "GET /main/health?slate_date=YYYY-MM-DD",
+      "POST /main/packet/leg",
+      "POST /main/score/leg"
+    ]
+  });
 }
 
-async function handleHealth(env) {
-  const tables = [
-    ["games", "GAMES_TODAY"],
-    ["starters_current", "STARTERS_TODAY"],
-    ["lineups_current", "LINEUPS_TODAY"],
-    ["bullpens_current", "BULLPENS_TODAY"],
-    ["markets_current", "MARKETS_TODAY"],
-    ["players_current", "PLAYERS_CURRENT"],
-    ["edge_candidates_rfi", "RFI_CANDIDATES"],
-    ["edge_candidates_rbi", "RBI_CANDIDATES"],
-    ["edge_candidates_hits", "HITS_CANDIDATES"]
-  ];
+async function handleMainHealth(request, env) {
+  const slateDate = normalizeDateFromRequest(request);
+  const gamePrefix = `${slateDate}_%`;
   const checks = [];
-  for (const [table, label] of tables) {
-    const c = await tableCount(env, table);
-    c.check = label;
-    checks.push(c);
+
+  async function addCheck(name, tableName, whereSql = "", bindings = [], passFn = v => v > 0) {
+    const value = await countTable(env.DB, tableName, whereSql, bindings);
+    if (typeof value === "object" && value.error) {
+      checks.push({ check: name, value: null, status: "ERROR", ok: false, error: value.error });
+      return;
+    }
+    const ok = passFn(Number(value));
+    checks.push({ check: name, value: Number(value), status: ok ? "PASS" : "REVIEW", ok, error: null });
   }
-  const summary = checks.reduce((a, c) => {
-    a.total += 1;
-    if (c.status === "PASS") a.pass += 1;
-    else if (c.status === "ERROR") a.error += 1;
-    else a.review += 1;
-    return a;
-  }, { pass: 0, review: 0, error: 0, total: 0 });
-  const status = summary.error ? "error" : summary.review ? "review" : "pass";
-  const slate = await getSlateDate(env, {});
-  return json({ ok: summary.error === 0, version: SYSTEM_VERSION, worker: WORKER_NAME, job: "main_health_read_plus_priority_1", slate_date: slate, status, table_checks: checks, summary, note: "Main API with controlled Priority 1 matrix bridge. Scheduled backend remains separate." });
-}
 
-async function findGame(env, payload, slateDate) {
-  const team = normalizeTeam(payload.team_id || payload.team);
-  const opp = normalizeTeam(payload.opponent_team || payload.opponent);
-  const binds = [slateDate, team, opp, opp, team];
-  let g = null;
+  await addCheck("GAMES_TODAY", "games", "WHERE game_id LIKE ?", [gamePrefix], v => v > 0);
+  await addCheck("STARTERS_TODAY", "starters_current", "WHERE game_id LIKE ?", [gamePrefix], v => v >= 20);
+  await addCheck("LINEUPS_TODAY", "lineups_current", "WHERE game_id LIKE ?", [gamePrefix], v => v >= 100);
+  await addCheck("BULLPENS_TODAY", "bullpens_current", "WHERE game_id LIKE ?", [gamePrefix], v => v >= 20);
+  await addCheck("MARKETS_TODAY", "markets_current", "WHERE game_id LIKE ?", [gamePrefix], v => v > 0);
+  await addCheck("PLAYERS_CURRENT", "players_current", "", [], v => v >= 700);
+  await addCheck("RFI_CANDIDATES", "edge_candidates_rfi", "WHERE slate_date = ?", [slateDate], v => v > 0);
+  await addCheck("RBI_CANDIDATES", "edge_candidates_rbi", "", [], v => v > 0);
+  await addCheck("HITS_CANDIDATES", "edge_candidates_hits", "", [], v => v > 0);
+
+  let supplemental = { ok: true, table: SUPPLEMENTAL_TABLE, mode: "not_checked_until_first_leg_run" };
   try {
-    g = await one(env, `SELECT * FROM games WHERE game_date = ? AND ((home_team = ? AND away_team = ?) OR (home_team = ? AND away_team = ?)) LIMIT 1`, binds);
-  } catch (_) {}
-  if (!g) {
-    try {
-      g = await one(env, `SELECT * FROM games WHERE ((home_team = ? AND away_team = ?) OR (home_team = ? AND away_team = ?)) ORDER BY game_date DESC LIMIT 1`, [team, opp, opp, team]);
-    } catch (_) {}
+    const count = await countTable(env.DB, SUPPLEMENTAL_TABLE, "", []);
+    supplemental = typeof count === "object" && count.error
+      ? { ok: false, table: SUPPLEMENTAL_TABLE, rows: null, error: count.error, note: "Table will be created lazily on first leg packet if D1 allows it." }
+      : { ok: true, table: SUPPLEMENTAL_TABLE, rows: count, error: null };
+  } catch (err) {
+    supplemental = { ok: false, table: SUPPLEMENTAL_TABLE, rows: null, error: err?.message || String(err) };
   }
-  return g || null;
-}
 
-async function getMarket(env, gameId) {
-  try { return await one(env, `SELECT * FROM markets_current WHERE game_id = ? LIMIT 1`, [gameId]); } catch (_) { return null; }
-}
-
-async function getPlayer(env, playerName, teamId) {
+  let mlbApiCache = { ok: true, table: MLB_API_CACHE_TABLE, mode: "not_checked_until_first_mlb_api_run" };
   try {
-    return await one(env, `SELECT * FROM players_current WHERE team_id = ? AND lower(player_name) = lower(?) LIMIT 1`, [teamId, playerName]);
-  } catch (_) {}
+    await ensureMlbCacheTable(env);
+    const count = await countTable(env.DB, MLB_API_CACHE_TABLE, "", []);
+    mlbApiCache = typeof count === "object" && count.error
+      ? { ok: false, table: MLB_API_CACHE_TABLE, rows: null, error: count.error }
+      : { ok: true, table: MLB_API_CACHE_TABLE, rows: count, error: null };
+  } catch (err) {
+    mlbApiCache = { ok: false, table: MLB_API_CACHE_TABLE, rows: null, error: err?.message || String(err) };
+  }
+
+  const pass = checks.filter(c => c.ok).length;
+  const error = checks.filter(c => c.status === "ERROR").length;
+  const review = checks.filter(c => c.status === "REVIEW").length;
+  const ok = error === 0 && review === 0;
+
+  return jsonResponse({
+    ok,
+    version: WORKER_VERSION,
+    worker: "alphadog-main-api-v100",
+    job: "main_health_matrix_fill_cache",
+    slate_date: slateDate,
+    status: ok ? "pass" : "review",
+    table_checks: checks,
+    supplemental_cache: supplemental,
+    mlb_api_cache: mlbApiCache,
+    summary: { pass, review, error, total: checks.length },
+    note: "Main API health. No cron, no task runner, no candidate builders. Controlled writes only to supplemental leg cache and MLB API cache tables."
+  });
+}
+
+function normalizeFamily(propType) {
+  const raw = safeText(propType).toLowerCase();
+  if (raw.includes("hit")) return "HITS";
+  if (raw.includes("rbi") || raw.includes("batted")) return "RBI";
+  if (raw.includes("rfi") || raw.includes("first inning")) return "RFI";
+  if (raw.includes("strikeout") || raw === "ks" || raw.includes(" k")) return "KS";
+  return "UNKNOWN";
+}
+
+async function findGame(env, slateDate, teamId, opponentTeam) {
+  return await one(env.DB, `
+    SELECT * FROM games
+    WHERE game_id LIKE ?
+      AND ((away_team = ? AND home_team = ?) OR (away_team = ? AND home_team = ?))
+    ORDER BY game_id DESC
+    LIMIT 1
+  `, [`${slateDate}_%`, teamId, opponentTeam, opponentTeam, teamId]);
+}
+
+async function findMarket(env, gameId) {
+  if (!gameId) return null;
+  return await one(env.DB, `SELECT * FROM markets_current WHERE game_id = ? LIMIT 1`, [gameId]);
+}
+
+async function findPlayer(env, playerName, teamId) {
+  const name = safeText(playerName).trim();
+  if (!name) return null;
+  return await one(env.DB, `
+    SELECT * FROM players_current
+    WHERE LOWER(player_name) = LOWER(?)
+       OR (LOWER(player_name) LIKE LOWER(?) AND team_id = ?)
+    ORDER BY CASE WHEN team_id = ? THEN 0 ELSE 1 END
+    LIMIT 1
+  `, [name, `%${name}%`, teamId, teamId]);
+}
+
+async function findLineup(env, slateDate, playerName, teamId, gameId) {
+  const name = safeText(playerName).trim();
+  if (!name) return null;
+  if (gameId) {
+    const exact = await one(env.DB, `
+      SELECT * FROM lineups_current
+      WHERE game_id = ? AND team_id = ? AND LOWER(player_name) = LOWER(?)
+      LIMIT 1
+    `, [gameId, teamId, name]);
+    if (exact) return exact;
+  }
+  return await one(env.DB, `
+    SELECT * FROM lineups_current
+    WHERE game_id LIKE ? AND team_id = ? AND LOWER(player_name) = LOWER(?)
+    ORDER BY game_id DESC
+    LIMIT 1
+  `, [`${slateDate}_%`, teamId, name]);
+}
+
+async function findStarter(env, gameId, opponentTeam) {
+  if (!gameId) return null;
+  return await one(env.DB, `SELECT * FROM starters_current WHERE game_id = ? AND team_id = ? LIMIT 1`, [gameId, opponentTeam]);
+}
+
+async function findBullpen(env, gameId, opponentTeam) {
+  if (!gameId) return null;
+  return await one(env.DB, `SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ? LIMIT 1`, [gameId, opponentTeam]);
+}
+
+async function findTeamLineup(env, gameId, teamId) {
+  if (!gameId || !teamId) return [];
   try {
-    const rows = await all(env, `SELECT * FROM players_current WHERE team_id = ?`, [teamId]);
-    const target = normalizeName(playerName);
-    return rows.find(r => normalizeName(r.player_name) === target) || rows.find(r => normalizeName(r.player_name).includes(target) || target.includes(normalizeName(r.player_name))) || null;
-  } catch (_) { return null; }
+    return await all(env.DB, `
+      SELECT * FROM lineups_current
+      WHERE game_id = ? AND team_id = ?
+      ORDER BY slot ASC, player_name ASC
+      LIMIT 14
+    `, [gameId, teamId]);
+  } catch (_err) { return []; }
 }
 
-async function getLineup(env, gameId, teamId, playerName) {
-  try { return await one(env, `SELECT * FROM lineups_current WHERE game_id = ? AND team_id = ? AND lower(player_name) = lower(?) LIMIT 1`, [gameId, teamId, playerName]); } catch (_) { return null; }
-}
-
-async function getStarter(env, gameId, oppTeam) {
-  try { return await one(env, `SELECT * FROM starters_current WHERE game_id = ? AND team_id = ? LIMIT 1`, [gameId, oppTeam]); } catch (_) { return null; }
-}
-
-async function getBullpen(env, gameId, oppTeam) {
-  try { return await one(env, `SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ? LIMIT 1`, [gameId, oppTeam]); } catch (_) { return null; }
-}
-
-async function getCandidate(env, family, slateDate, gameId, teamId, oppTeam, playerName) {
-  const table = family === "RBI" ? "edge_candidates_rbi" : family === "HITS" ? "edge_candidates_hits" : family === "RFI" ? "edge_candidates_rfi" : null;
-  if (!table) return null;
+async function findGameStarters(env, gameId) {
+  if (!gameId) return [];
   try {
-    if (family === "RFI") return await one(env, `SELECT * FROM ${table} WHERE slate_date = ? AND game_id = ? LIMIT 1`, [slateDate, gameId]);
-    return await one(env, `SELECT * FROM ${table} WHERE slate_date = ? AND game_id = ? AND team_id = ? AND opponent_team = ? AND lower(player_name) = lower(?) LIMIT 1`, [slateDate, gameId, teamId, oppTeam, playerName]);
-  } catch (_) { return null; }
+    return await all(env.DB, `
+      SELECT * FROM starters_current
+      WHERE game_id = ?
+      ORDER BY team_id ASC
+      LIMIT 4
+    `, [gameId]);
+  } catch (_err) { return []; }
 }
 
-async function getTeamLineup(env, gameId, teamId) {
-  try { return await all(env, `SELECT * FROM lineups_current WHERE game_id = ? AND team_id = ? ORDER BY slot ASC`, [gameId, teamId]); } catch (_) { return []; }
+async function findGameBullpens(env, gameId) {
+  if (!gameId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT * FROM bullpens_current
+      WHERE game_id = ?
+      ORDER BY team_id ASC
+      LIMIT 4
+    `, [gameId]);
+  } catch (_err) { return []; }
 }
 
-async function getTeamPlayers(env, teamId) {
-  try { return await all(env, `SELECT player_name, team_id, role, position, bats, throws, games, ab, hits, avg, obp, slg, innings_pitched, strikeouts, era, whip, source, confidence, updated_at FROM players_current WHERE team_id = ? ORDER BY role ASC, ab DESC LIMIT 40`, [teamId]); } catch (_) { return []; }
+async function findTeamPlayers(env, teamId) {
+  if (!teamId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT player_name, team_id, role, position, bats, throws, games, ab, hits, avg, obp, slg, innings_pitched, strikeouts, era, whip, source, confidence, updated_at
+      FROM players_current
+      WHERE team_id = ?
+      ORDER BY CASE WHEN role = 'BAT' THEN 0 ELSE 1 END, ab DESC, games DESC, player_name ASC
+      LIMIT 40
+    `, [teamId]);
+  } catch (_err) { return []; }
 }
 
-async function getGameStarters(env, gameId) {
-  try { return await all(env, `SELECT * FROM starters_current WHERE game_id = ? ORDER BY team_id`, [gameId]); } catch (_) { return []; }
-}
-
-async function getGameBullpens(env, gameId) {
-  try { return await all(env, `SELECT * FROM bullpens_current WHERE game_id = ? ORDER BY team_id`, [gameId]); } catch (_) { return []; }
-}
-
-async function getRelatedCandidates(env, slateDate, gameId, teamId, oppTeam) {
+async function findRelatedCandidates(env, family, playerName, teamId, gameId, slateDate) {
   const out = { hits: [], rbi: [], rfi: [] };
-  try { out.hits = await all(env, `SELECT * FROM edge_candidates_hits WHERE slate_date = ? AND game_id = ? AND team_id = ? ORDER BY CASE candidate_tier WHEN 'A_POOL' THEN 1 ELSE 2 END, lineup_slot ASC LIMIT 12`, [slateDate, gameId, teamId]); } catch (_) {}
-  try { out.rbi = await all(env, `SELECT * FROM edge_candidates_rbi WHERE slate_date = ? AND game_id = ? AND team_id = ? ORDER BY CASE candidate_tier WHEN 'A_POOL' THEN 1 ELSE 2 END, lineup_slot ASC LIMIT 12`, [slateDate, gameId, teamId]); } catch (_) {}
-  try { out.rfi = await all(env, `SELECT * FROM edge_candidates_rfi WHERE slate_date = ? AND game_id = ? LIMIT 3`, [slateDate, gameId]); } catch (_) {}
+  try {
+    out.hits = await all(env.DB, `
+      SELECT * FROM edge_candidates_hits
+      WHERE LOWER(player_name) = LOWER(?) OR team_id = ? OR game_id = ?
+      ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, candidate_tier ASC, lineup_slot ASC
+      LIMIT 12
+    `, [playerName, teamId, gameId, playerName]);
+  } catch (_err) {}
+  try {
+    out.rbi = await all(env.DB, `
+      SELECT * FROM edge_candidates_rbi
+      WHERE LOWER(player_name) = LOWER(?) OR team_id = ? OR game_id = ?
+      ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, candidate_tier ASC, lineup_slot ASC
+      LIMIT 12
+    `, [playerName, teamId, gameId, playerName]);
+  } catch (_err) {}
+  try {
+    out.rfi = await all(env.DB, `
+      SELECT * FROM edge_candidates_rfi
+      WHERE slate_date = ? AND game_id = ?
+      LIMIT 4
+    `, [slateDate, gameId]);
+  } catch (_err) {}
   return out;
 }
 
-async function ensureSupplementalTables(env) {
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS main_supplemental_leg_cache (
-    cache_key TEXT PRIMARY KEY,
-    slate_date TEXT,
-    game_id TEXT,
-    team_id TEXT,
-    opponent_team TEXT,
-    player_name TEXT,
-    prop_family TEXT,
-    packet_json TEXT,
-    matrix_json TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )`).run();
-  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS main_supplemental_mlb_api_cache (
-    cache_key TEXT PRIMARY KEY,
-    url TEXT,
-    body_json TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-  )`).run();
+function summarizeLineup(rows = []) {
+  return rows.map(r => '#' + (r.slot || '?') + ' ' + (r.player_name || 'UNKNOWN')).join(' / ') || null;
 }
 
-async function cacheGet(env, key) {
-  try {
-    const row = await one(env, `SELECT body_json FROM main_supplemental_mlb_api_cache WHERE cache_key = ? LIMIT 1`, [key]);
-    if (row && row.body_json) return JSON.parse(row.body_json);
-  } catch (_) {}
-  return null;
+function average(values) {
+  const nums = values.map(v => n(v, null)).filter(v => v !== null);
+  return nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : null;
 }
 
-async function cachePut(env, key, url, body) {
-  try {
-    await env.DB.prepare(`INSERT INTO main_supplemental_mlb_api_cache (cache_key, url, body_json, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(cache_key) DO UPDATE SET url = excluded.url, body_json = excluded.body_json, updated_at = CURRENT_TIMESTAMP`).bind(key, url, JSON.stringify(body)).run();
-  } catch (_) {}
+function scoreAverage(value, strong, review, risk = null) {
+  const v = n(value, null);
+  if (v === null) return 0;
+  if (v >= strong) return 88;
+  if (v >= review) return 74;
+  if (risk !== null && v >= risk) return 65;
+  return 56;
 }
 
-async function fetchJsonCached(env, key, url, ttlMode = "daily") {
-  await ensureSupplementalTables(env);
-  const cached = await cacheGet(env, key);
-  if (cached) return { ok: true, from_cache: true, url, body: cached, error: null };
-  try {
-    const res = await fetch(url, { headers: { "accept": "application/json" } });
-    const text = await res.text();
-    if (!res.ok) return { ok: false, from_cache: false, url, body: null, error: `HTTP ${res.status}: ${text.slice(0, 300)}` };
-    const body = JSON.parse(text);
-    await cachePut(env, key, url, body);
-    return { ok: true, from_cache: false, url, body, error: null };
-  } catch (e) {
-    return { ok: false, from_cache: false, url, body: null, error: String(e && e.message || e) };
-  }
-}
-
-function parseMlbDate(iso) {
-  if (!iso) return null;
-  return String(iso).slice(0, 10);
-}
-
-function dateAdd(dateIso, days) {
-  const d = new Date(`${dateIso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
+function addDays(dateText, delta) {
+  const d = new Date(`${dateText}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateText;
+  d.setUTCDate(d.getUTCDate() + delta);
   return d.toISOString().slice(0, 10);
 }
 
-function findMlbGamePk(scheduleBody, teamId, oppTeam, gameDate) {
-  const dates = scheduleBody && scheduleBody.dates || [];
-  const team = normalizeTeam(teamId);
-  const opp = normalizeTeam(oppTeam);
-  for (const d of dates) {
-    for (const g of (d.games || [])) {
-      const home = normalizeTeam(g.teams && g.teams.home && g.teams.home.team && (g.teams.home.team.abbreviation || g.teams.home.team.teamCode || g.teams.home.team.fileCode));
-      const away = normalizeTeam(g.teams && g.teams.away && g.teams.away.team && (g.teams.away.team.abbreviation || g.teams.away.team.teamCode || g.teams.away.team.fileCode));
-      if ((home === team && away === opp) || (home === opp && away === team)) return g.gamePk;
+function parseIp(ip) {
+  if (ip === null || ip === undefined || ip === '') return 0;
+  const text = String(ip);
+  const [whole, frac] = text.split('.');
+  const outs = Number(whole || 0) * 3 + Number(frac || 0);
+  return outs / 3;
+}
+
+function ipToBaseball(value) {
+  const outs = Math.round(Number(value || 0) * 3);
+  return `${Math.floor(outs / 3)}.${outs % 3}`;
+}
+
+function lowerName(value) {
+  return safeText(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function teamAbbrevFromScheduleTeam(team) {
+  return safeText(team?.abbreviation || team?.teamCode || team?.fileCode || team?.name).toUpperCase();
+}
+
+async function ensureMlbCacheTable(env) {
+  try {
+    await run(env.DB, `
+      CREATE TABLE IF NOT EXISTS ${MLB_API_CACHE_TABLE} (
+        cache_key TEXT PRIMARY KEY,
+        source_url TEXT,
+        payload_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT
+      )
+    `);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+async function readMlbApiCache(env, cacheKey, ttlMinutes = 360) {
+  try {
+    await ensureMlbCacheTable(env);
+    const row = await one(env.DB, `SELECT payload_json, updated_at FROM ${MLB_API_CACHE_TABLE} WHERE cache_key = ? LIMIT 1`, [cacheKey]);
+    if (!row?.payload_json) return null;
+    const updated = Date.parse(row.updated_at || '');
+    if (Number.isFinite(updated)) {
+      const ageMs = Date.now() - updated;
+      if (ageMs > ttlMinutes * 60 * 1000) return null;
     }
+    return JSON.parse(row.payload_json);
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function writeMlbApiCache(env, cacheKey, sourceUrl, payload) {
+  try {
+    await ensureMlbCacheTable(env);
+    await run(env.DB, `
+      INSERT INTO ${MLB_API_CACHE_TABLE} (cache_key, source_url, payload_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        source_url = excluded.source_url,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `, [cacheKey, sourceUrl, JSON.stringify(payload), nowSql()]);
+    return { ok: true, table: MLB_API_CACHE_TABLE, cache_key: cacheKey };
+  } catch (err) {
+    return { ok: false, table: MLB_API_CACHE_TABLE, cache_key: cacheKey, error: err?.message || String(err) };
+  }
+}
+
+async function fetchMlbJson(env, cacheKey, url, ttlMinutes = 360) {
+  const cached = await readMlbApiCache(env, cacheKey, ttlMinutes);
+  if (cached) return { ok: true, from_cache: true, url, data: cached, error: null };
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort('timeout'), 6500);
+    const res = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
+    clearTimeout(timeout);
+    const data = await res.json();
+    if (!res.ok) return { ok: false, from_cache: false, url, data: null, error: `HTTP ${res.status}` };
+    await writeMlbApiCache(env, cacheKey, url, data);
+    return { ok: true, from_cache: false, url, data, error: null };
+  } catch (err) {
+    return { ok: false, from_cache: false, url, data: null, error: err?.message || String(err) };
+  }
+}
+
+async function getMlbSchedule(env, startDate, endDate) {
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&hydrate=probablePitcher,team,linescore`;
+  return await fetchMlbJson(env, `schedule|${startDate}|${endDate}`, url, 240);
+}
+
+function flattenScheduleGames(schedule) {
+  const dates = Array.isArray(schedule?.dates) ? schedule.dates : [];
+  return dates.flatMap(d => (Array.isArray(d.games) ? d.games : []).map(g => ({ ...g, game_date: d.date })));
+}
+
+function scheduleTeamAbbrevs(game) {
+  return {
+    away: teamAbbrevFromScheduleTeam(game?.teams?.away?.team),
+    home: teamAbbrevFromScheduleTeam(game?.teams?.home?.team)
+  };
+}
+
+function findScheduleGame(games, teamId, opponentTeam) {
+  const t = safeText(teamId).toUpperCase();
+  const o = safeText(opponentTeam).toUpperCase();
+  return games.find(g => {
+    const a = scheduleTeamAbbrevs(g);
+    return (a.away === t && a.home === o) || (a.away === o && a.home === t);
+  }) || null;
+}
+
+async function getMlbBoxscore(env, gamePk) {
+  if (!gamePk) return { ok: false, data: null, error: 'missing_game_pk' };
+  const url = `https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`;
+  return await fetchMlbJson(env, `boxscore|${gamePk}`, url, 240);
+}
+
+async function getMlbLiveFeed(env, gamePk) {
+  if (!gamePk) return { ok: false, data: null, error: 'missing_game_pk' };
+  const url = `https://statsapi.mlb.com/api/v1.1/game/${gamePk}/feed/live`;
+  return await fetchMlbJson(env, `live|${gamePk}`, url, 60);
+}
+
+function boxscoreSideForTeam(boxscore, teamId) {
+  const t = safeText(teamId).toUpperCase();
+  const teams = boxscore?.teams || {};
+  const homeAbbr = teamAbbrevFromScheduleTeam(teams.home?.team);
+  const awayAbbr = teamAbbrevFromScheduleTeam(teams.away?.team);
+  if (homeAbbr === t) return 'home';
+  if (awayAbbr === t) return 'away';
+  return null;
+}
+
+function extractBoxscoreLineup(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return [];
+  const team = boxscore.teams?.[side] || {};
+  const players = team.players || {};
+  const ids = Array.isArray(team.batters) ? team.batters : Object.keys(players).map(k => Number(k.replace('ID', ''))).filter(Boolean);
+  const rows = ids.map((id) => {
+    const row = players[`ID${id}`] || {};
+    const batting = row.stats?.batting || {};
+    const battingOrderRaw = row.battingOrder ? Number(row.battingOrder) : null;
+    const slot = battingOrderRaw ? Math.floor(battingOrderRaw / 100) : null;
+    const orderSeq = battingOrderRaw ? battingOrderRaw % 100 : null;
+    const isLineupBatter = slot !== null && slot >= 1 && slot <= 9;
+    const isStarter = isLineupBatter && orderSeq === 0;
+    return {
+      player_id: id,
+      player_name: row.person?.fullName || null,
+      team_id: teamId,
+      slot,
+      batting_order_raw: battingOrderRaw,
+      order_sequence: orderSeq,
+      is_starter: !!isStarter,
+      is_substitution: !!(isLineupBatter && !isStarter),
+      position: row.position?.abbreviation || row.position?.code || null,
+      status: row.status?.code || null,
+      ab: n(batting.atBats, null),
+      hits: n(batting.hits, null),
+      runs: n(batting.runs, null),
+      rbi: n(batting.rbi, null),
+      bb: n(batting.baseOnBalls, null),
+      so: n(batting.strikeOuts, null),
+      hr: n(batting.homeRuns, null),
+      doubles: n(batting.doubles, null),
+      triples: n(batting.triples, null),
+      total_bases: n(batting.totalBases, null)
+    };
+  }).filter(r => r.player_name);
+  return rows.sort((a,b) => (a.slot || 99) - (b.slot || 99) || (a.order_sequence ?? 99) - (b.order_sequence ?? 99));
+}
+
+function getStartingLineupFromBoxscoreRows(rows = []) {
+  const starters = rows.filter(r => r.is_starter && r.slot >= 1 && r.slot <= 9);
+  if (starters.length >= 9) return starters.slice(0, 9);
+  const bySlot = new Map();
+  rows.filter(r => r.slot >= 1 && r.slot <= 9).forEach((row) => {
+    if (!bySlot.has(row.slot)) bySlot.set(row.slot, row);
+  });
+  return Array.from(bySlot.values()).sort((a,b) => a.slot - b.slot).slice(0, 9);
+}
+
+function getSubstitutionsFromBoxscoreRows(rows = []) {
+  return rows.filter(r => r.is_substitution && r.slot >= 1 && r.slot <= 9);
+}
+
+function getPitchersFromBoxscoreRows(rows = []) {
+  return rows.filter(r => !r.slot || String(r.position || '').toUpperCase() === 'P');
+}
+
+function findPlayerBoxscoreRow(boxscore, teamId, playerName) {
+  const target = lowerName(playerName);
+  return extractBoxscoreLineup(boxscore, teamId).find(r => lowerName(r.player_name) === target || lowerName(r.player_name).includes(target) || target.includes(lowerName(r.player_name))) || null;
+}
+
+function extractTeamBoxStats(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return null;
+  const team = boxscore.teams?.[side] || {};
+  const batting = team.teamStats?.batting || {};
+  const pitching = team.teamStats?.pitching || {};
+  return {
+    runs: n(batting.runs, null),
+    hits: n(batting.hits, null),
+    ab: n(batting.atBats, null),
+    rbi: n(batting.rbi, null),
+    bb: n(batting.baseOnBalls, null),
+    so: n(batting.strikeOuts, null),
+    hr: n(batting.homeRuns, null),
+    pitching_ip: pitching.inningsPitched || null,
+    pitching_hits_allowed: n(pitching.hits, null),
+    pitching_runs_allowed: n(pitching.runs, null),
+    pitching_so: n(pitching.strikeOuts, null),
+    pitching_bb: n(pitching.baseOnBalls, null)
+  };
+}
+
+function findBoxscoreParticipant(boxscore, teamId, playerName) {
+  const target = lowerName(playerName);
+  if (!target) return null;
+  const rows = extractBoxscoreLineup(boxscore, teamId);
+  return rows.find(r => lowerName(r.player_name) === target)
+    || rows.find(r => lowerName(r.player_name).includes(target) || target.includes(lowerName(r.player_name)))
+    || null;
+}
+
+function extractCurrentPlayerBoxscoreSummary(boxscore, teamId, playerName) {
+  const row = boxscore ? findBoxscoreParticipant(boxscore, teamId, playerName) : null;
+  if (!row) return null;
+  return { ...row, source: 'mlb_statsapi_current_boxscore_player' };
+}
+
+function extractPitchingRow(boxscore, teamId, pitcherName) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return null;
+  const team = boxscore.teams?.[side] || {};
+  const players = team.players || {};
+  const target = lowerName(pitcherName);
+  if (!target) return null;
+  const rows = Object.values(players).map(row => {
+    const pitching = row.stats?.pitching || {};
+    const hasPitching = pitching.inningsPitched !== undefined || pitching.hits !== undefined || pitching.runs !== undefined;
+    if (!hasPitching) return null;
+    return {
+      player_id: row.person?.id || null,
+      player_name: row.person?.fullName || null,
+      team_id: teamId,
+      innings_pitched: pitching.inningsPitched || null,
+      innings_pitched_num: parseIp(pitching.inningsPitched),
+      hits_allowed: n(pitching.hits, null),
+      runs_allowed: n(pitching.runs, null),
+      earned_runs: n(pitching.earnedRuns, null),
+      walks: n(pitching.baseOnBalls, null),
+      strikeouts: n(pitching.strikeOuts, null),
+      hr_allowed: n(pitching.homeRuns, null),
+      pitches: n(pitching.numberOfPitches, null),
+      source: 'mlb_statsapi_boxscore_pitching'
+    };
+  }).filter(Boolean);
+  return rows.find(r => lowerName(r.player_name) === target)
+    || rows.find(r => lowerName(r.player_name).includes(target) || target.includes(lowerName(r.player_name)))
+    || null;
+}
+
+function summarizeTeamRecentGames(rows = []) {
+  const games = Array.isArray(rows) ? rows.slice(0, 5) : [];
+  const sum = key => games.reduce((acc, r) => acc + n(r[key], 0), 0);
+  const count = games.length;
+  return {
+    games: count,
+    runs_for_last5: games.map(r => r.runs_for ?? null).filter(v => v !== null).join(' / ') || null,
+    hits_for_last5: games.map(r => r.hits_for ?? null).filter(v => v !== null).join(' / ') || null,
+    strikeouts_last5: games.map(r => r.strikeouts ?? null).filter(v => v !== null).join(' / ') || null,
+    walks_last5: games.map(r => r.walks ?? null).filter(v => v !== null).join(' / ') || null,
+    avg_runs_for: count ? Number((sum('runs_for') / count).toFixed(2)) : null,
+    avg_hits_for: count ? Number((sum('hits_for') / count).toFixed(2)) : null,
+    avg_strikeouts: count ? Number((sum('strikeouts') / count).toFixed(2)) : null,
+    avg_walks: count ? Number((sum('walks') / count).toFixed(2)) : null,
+    source: 'mlb_statsapi_recent_team_boxscores'
+  };
+}
+
+function summarizeBullpenRecent(rows = []) {
+  const games = Array.isArray(rows) ? rows.slice(0, 3) : [];
+  const total = games.reduce((acc, r) => acc + n(r.bullpen_ip, 0), 0);
+  return {
+    games: games.length,
+    last3_ip: games.map(r => r.bullpen_ip_text || r.bullpen_ip).filter(Boolean).join(' / ') || null,
+    total_last3_ip: games.length ? Number(total.toFixed(3)) : null,
+    total_last3_ip_text: games.length ? ipToBaseball(total) : null,
+    source: 'mlb_statsapi_recent_bullpen_boxscores'
+  };
+}
+
+function summarizeWeather(live) {
+  const w = live?.gameData?.weather || {};
+  const parts = [];
+  if (w.condition) parts.push(w.condition);
+  if (w.temp) parts.push(`${w.temp}F`);
+  if (w.wind) parts.push(`Wind ${w.wind}`);
+  return { condition: w.condition || null, temp: w.temp || null, wind: w.wind || null, summary: parts.join(' / ') || null, source: 'mlb_statsapi_live_weather' };
+}
+
+function summarizeOfficials(live) {
+  const officials = Array.isArray(live?.gameData?.officials) ? live.gameData.officials : [];
+  const homePlate = officials.find(o => safeText(o.officialType).toLowerCase().includes('home')) || null;
+  return { count: officials.length, home_plate: homePlate?.official?.fullName || null, summary: homePlate?.official?.fullName ? `HP ${homePlate.official.fullName}` : (officials.length ? `${officials.length} officials loaded` : null), source: 'mlb_statsapi_live_officials' };
+}
+
+async function buildStarterRecentLogs(env, scheduleGames, starterName, starterTeam, currentGamePk) {
+  const team = safeText(starterTeam).toUpperCase();
+  const name = safeText(starterName).trim();
+  if (!team || !name) return [];
+  const games = scheduleGames
+    .filter(g => String(g.gamePk) !== String(currentGamePk || ''))
+    .filter(g => { const ab = scheduleTeamAbbrevs(g); return ab.away === team || ab.home === team; })
+    .sort((a,b) => String(b.gameDate || b.game_date).localeCompare(String(a.gameDate || a.game_date)))
+    .slice(0, 3);
+  const rows = [];
+  for (const g of games) {
+    const box = await getMlbBoxscore(env, g.gamePk);
+    if (!box.ok || !box.data) continue;
+    const abbr = scheduleTeamAbbrevs(g);
+    const isHome = abbr.home === team;
+    const opp = isHome ? abbr.away : abbr.home;
+    const pitching = extractPitchingRow(box.data, team, name);
+    if (!pitching) continue;
+    rows.push({ game_date: g.game_date || String(g.gameDate || '').slice(0,10), game_pk: g.gamePk, opponent: opp, is_home: isHome, ...pitching, source: 'mlb_statsapi_recent_starter_boxscore' });
+  }
+  return rows;
+}
+
+function summarizeStarterRecent(rows = []) {
+  const games = Array.isArray(rows) ? rows.slice(0, 3) : [];
+  const sum = key => games.reduce((acc, r) => acc + n(r[key], 0), 0);
+  const ip = sum('innings_pitched_num');
+  return {
+    games: games.length,
+    last3_ip: games.map(r => r.innings_pitched).filter(Boolean).join(' / ') || null,
+    last3_hits_allowed: games.map(r => r.hits_allowed ?? null).filter(v => v !== null).join(' / ') || null,
+    total_ip: ip ? Number(ip.toFixed(3)) : null,
+    hits_per_ip: ip ? Number((sum('hits_allowed') / ip).toFixed(2)) : null,
+    source: 'mlb_statsapi_recent_starter_boxscores'
+  };
+}
+
+function bullpenIpFromBoxscore(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return null;
+  const team = boxscore.teams?.[side] || {};
+  const players = team.players || {};
+  const pitcherIds = Array.isArray(team.pitchers) ? team.pitchers : [];
+  if (!pitcherIds.length) return null;
+  const reliefIds = pitcherIds.slice(1);
+  const ip = reliefIds.reduce((sum, id) => {
+    const row = players[`ID${id}`] || {};
+    return sum + parseIp(row.stats?.pitching?.inningsPitched);
+  }, 0);
+  return Number(ip.toFixed(3));
+}
+
+async function buildRecentMlbLogs(env, scheduleGames, playerName, teamId, opponentTeam, currentGamePk) {
+  const t = safeText(teamId).toUpperCase();
+  const games = scheduleGames
+    .filter(g => String(g.gamePk) !== String(currentGamePk || ''))
+    .filter(g => {
+      const ab = scheduleTeamAbbrevs(g);
+      return ab.away === t || ab.home === t;
+    })
+    .sort((a,b) => String(b.gameDate || b.game_date).localeCompare(String(a.gameDate || a.game_date)))
+    .slice(0, 5);
+
+  const playerLogs = [];
+  const teamLogs = [];
+  for (const g of games) {
+    const box = await getMlbBoxscore(env, g.gamePk);
+    if (!box.ok || !box.data) continue;
+    const abbr = scheduleTeamAbbrevs(g);
+    const isHome = abbr.home === t;
+    const opp = isHome ? abbr.away : abbr.home;
+    const playerRow = findPlayerBoxscoreRow(box.data, t, playerName);
+    if (playerRow) {
+      playerLogs.push({
+        game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+        game_pk: g.gamePk,
+        opponent: opp,
+        is_home: isHome,
+        ab: playerRow.ab,
+        h: playerRow.hits,
+        r: playerRow.runs,
+        rbi: playerRow.rbi,
+        bb: playerRow.bb,
+        so: playerRow.so,
+        hr: playerRow.hr,
+        doubles: playerRow.doubles,
+        total_bases: playerRow.total_bases,
+        source: 'mlb_statsapi_boxscore_recent_player'
+      });
+    }
+    const teamStats = extractTeamBoxStats(box.data, t);
+    const oppStats = extractTeamBoxStats(box.data, opp);
+    if (teamStats) {
+      teamLogs.push({
+        game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+        game_pk: g.gamePk,
+        opponent: opp,
+        is_home: isHome,
+        runs_for: teamStats.runs,
+        hits_for: teamStats.hits,
+        strikeouts: teamStats.so,
+        walks: teamStats.bb,
+        runs_against: oppStats?.runs ?? null,
+        hits_against: oppStats?.hits ?? null,
+        source: 'mlb_statsapi_boxscore_recent_team'
+      });
+    }
+  }
+  return { player_logs: playerLogs, team_logs: teamLogs };
+}
+
+async function buildRecentBullpenLogs(env, scheduleGames, teamId, currentGamePk) {
+  const t = safeText(teamId).toUpperCase();
+  const games = scheduleGames
+    .filter(g => String(g.gamePk) !== String(currentGamePk || ''))
+    .filter(g => {
+      const ab = scheduleTeamAbbrevs(g);
+      return ab.away === t || ab.home === t;
+    })
+    .sort((a,b) => String(b.gameDate || b.game_date).localeCompare(String(a.gameDate || a.game_date)))
+    .slice(0, 3);
+  const rows = [];
+  for (const g of games) {
+    const box = await getMlbBoxscore(env, g.gamePk);
+    if (!box.ok || !box.data) continue;
+    const abbr = scheduleTeamAbbrevs(g);
+    const opp = abbr.home === t ? abbr.away : abbr.home;
+    const ip = bullpenIpFromBoxscore(box.data, t);
+    rows.push({
+      game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+      game_pk: g.gamePk,
+      opponent: opp,
+      bullpen_ip: ip,
+      bullpen_ip_text: ip === null ? null : ipToBaseball(ip),
+      source: 'mlb_statsapi_boxscore_recent_bullpen'
+    });
+  }
+  return rows;
+}
+
+function summarizeRecentPlayerLogs(rows = []) {
+  const logs = Array.isArray(rows) ? rows : [];
+  const last5 = logs.slice(0, 5);
+  const sum = (key, size = 5) => last5.slice(0, size).reduce((acc, r) => acc + n(r[key], 0), 0);
+  const ab = sum('ab');
+  const h = sum('h');
+  return {
+    games: last5.length,
+    last5_hits: last5.map(r => r.h ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_ab: last5.map(r => r.ab ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_runs: last5.map(r => r.r ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_rbi: last5.map(r => r.rbi ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_so: last5.map(r => r.so ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_total_hits: h,
+    last5_total_ab: ab,
+    last5_avg: ab ? Number((h / ab).toFixed(3)) : null,
+    last3_hits_total: sum('h', 3),
+    last3_ab_total: sum('ab', 3),
+    source: 'mlb_statsapi_recent_boxscores'
+  };
+}
+
+async function enrichFromMlbApi(env, packetSeed) {
+  const slateDate = packetSeed.slate_date || DEFAULT_SLATE_DATE;
+  const startDate = addDays(slateDate, -14);
+  const endDate = slateDate;
+  const scheduleRes = await getMlbSchedule(env, startDate, endDate);
+  const allGames = flattenScheduleGames(scheduleRes.data || {});
+  const scheduleGame = findScheduleGame(allGames.filter(g => (g.game_date || String(g.gameDate || '').slice(0,10)) === slateDate), packetSeed.leg.team_id, packetSeed.leg.opponent_team)
+    || findScheduleGame(allGames, packetSeed.leg.team_id, packetSeed.leg.opponent_team);
+  const gamePk = scheduleGame?.gamePk || null;
+  const boxRes = await getMlbBoxscore(env, gamePk);
+  const liveRes = await getMlbLiveFeed(env, gamePk);
+  const boxscore = boxRes.data || null;
+  const live = liveRes.data || null;
+
+  const currentTeamParticipants = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.team_id) : [];
+  const currentOpponentParticipants = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.opponent_team) : [];
+  const currentTeamLineup = getStartingLineupFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentLineup = getStartingLineupFromBoxscoreRows(currentOpponentParticipants);
+  const currentTeamSubstitutions = getSubstitutionsFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentSubstitutions = getSubstitutionsFromBoxscoreRows(currentOpponentParticipants);
+  const currentTeamPitchers = getPitchersFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentPitchers = getPitchersFromBoxscoreRows(currentOpponentParticipants);
+  const recent = await buildRecentMlbLogs(env, allGames, packetSeed.leg.player_name, packetSeed.leg.team_id, packetSeed.leg.opponent_team, gamePk);
+  const oppBullpenRecent = await buildRecentBullpenLogs(env, allGames, packetSeed.leg.opponent_team, gamePk);
+  const currentPlayerBoxscore = extractCurrentPlayerBoxscoreSummary(boxscore, packetSeed.leg.team_id, packetSeed.leg.player_name);
+  const starterName = packetSeed.opposing_starter?.starter_name || packetSeed.candidate?.opposing_starter || null;
+  const starterRecentLogs = await buildStarterRecentLogs(env, allGames, starterName, packetSeed.leg.opponent_team, gamePk);
+  const teamRecentSummary = summarizeTeamRecentGames(recent.team_logs);
+  const opponentBullpenSummary = summarizeBullpenRecent(oppBullpenRecent);
+  const weather = summarizeWeather(live);
+  const officials = summarizeOfficials(live);
+
+  const status = scheduleGame?.status || live?.gameData?.status || {};
+  const lineScore = live?.liveData?.linescore || scheduleGame?.linescore || {};
+  const apiRequests = [scheduleRes, boxRes, liveRes].map(r => ({ ok: r.ok, from_cache: !!r.from_cache, url: r.url, error: r.error || null }));
+
+  return {
+    ok: !!scheduleRes.ok,
+    source: 'mlb_statsapi_official_safe_enrichment',
+    mode: 'main_api_read_through_cache',
+    game_pk: gamePk,
+    schedule_game_found: !!scheduleGame,
+    live_status: {
+      abstract_game_state: status.abstractGameState || null,
+      detailed_state: status.detailedState || null,
+      coded_game_state: status.codedGameState || null,
+      status_code: status.statusCode || null,
+      start_time_utc: scheduleGame?.gameDate || live?.gameData?.datetime?.dateTime || null,
+      current_inning: lineScore.currentInning || null,
+      inning_state: lineScore.inningState || null,
+      away_score: lineScore.teams?.away?.runs ?? scheduleGame?.teams?.away?.score ?? null,
+      home_score: lineScore.teams?.home?.runs ?? scheduleGame?.teams?.home?.score ?? null
+    },
+    boxscore_lineup: currentTeamLineup,
+    opponent_boxscore_lineup: currentOpponentLineup,
+    boxscore_participants: currentTeamParticipants,
+    opponent_boxscore_participants: currentOpponentParticipants,
+    boxscore_substitutions: currentTeamSubstitutions,
+    opponent_boxscore_substitutions: currentOpponentSubstitutions,
+    boxscore_pitchers: currentTeamPitchers,
+    opponent_boxscore_pitchers: currentOpponentPitchers,
+    current_player_boxscore: currentPlayerBoxscore,
+    player_recent_logs: recent.player_logs,
+    player_recent_summary: summarizeRecentPlayerLogs(recent.player_logs),
+    team_recent_games: recent.team_logs,
+    team_recent_summary: teamRecentSummary,
+    opponent_bullpen_recent: oppBullpenRecent,
+    opponent_bullpen_summary: opponentBullpenSummary,
+    opposing_starter_recent_logs: starterRecentLogs,
+    opposing_starter_recent_summary: summarizeStarterRecent(starterRecentLogs),
+    weather,
+    officials,
+    cache_summary: {
+      schedule_cached: !!scheduleRes.from_cache,
+      boxscore_cached: !!boxRes.from_cache,
+      live_cached: !!liveRes.from_cache,
+      cache_hits: [scheduleRes, boxRes, liveRes].filter(r => !!r.from_cache).length,
+      total_requests: [scheduleRes, boxRes, liveRes].length,
+      all_from_cache: [scheduleRes, boxRes, liveRes].every(r => !!r.from_cache),
+      cache_table: MLB_API_CACHE_TABLE
+    },
+    api_requests: apiRequests,
+    warnings: [scheduleRes, boxRes, liveRes].filter(r => !r.ok).map(r => r.error).filter(Boolean)
+  };
+}
+
+async function findRecentUsage(env, playerName, teamId) {
+  const name = safeText(playerName).trim();
+  if (!name) return [];
+  try {
+    return await all(env.DB, `
+      SELECT * FROM player_recent_usage
+      WHERE LOWER(player_name) = LOWER(?) AND team_id = ?
+      ORDER BY game_date DESC
+      LIMIT 5
+    `, [name, teamId]);
+  } catch (_err) {
+    return [];
+  }
+}
+
+async function findCandidate(env, family, playerName, teamId, gameId, slateDate) {
+  try {
+    if (family === "HITS") {
+      return await one(env.DB, `
+        SELECT * FROM edge_candidates_hits
+        WHERE LOWER(player_name) = LOWER(?) AND team_id = ?
+        ORDER BY candidate_tier ASC
+        LIMIT 1
+      `, [playerName, teamId]);
+    }
+    if (family === "RBI") {
+      return await one(env.DB, `
+        SELECT * FROM edge_candidates_rbi
+        WHERE LOWER(player_name) = LOWER(?) AND team_id = ?
+        ORDER BY candidate_tier ASC
+        LIMIT 1
+      `, [playerName, teamId]);
+    }
+    if (family === "RFI") {
+      return await one(env.DB, `
+        SELECT * FROM edge_candidates_rfi
+        WHERE slate_date = ? AND game_id = ?
+        LIMIT 1
+      `, [slateDate, gameId]);
+    }
+  } catch (_err) {
+    return null;
   }
   return null;
 }
 
-function extractBoxLineup(box, side, teamId, startersOnly = false) {
-  const teamBlock = box && box.teams && box.teams[side];
-  const players = teamBlock && teamBlock.players || {};
-  const rows = [];
-  for (const key of Object.keys(players)) {
-    const p = players[key];
-    const boRaw = p.battingOrder ? Number(p.battingOrder) : null;
-    const slot = boRaw ? Math.floor(boRaw / 100) : null;
-    const seq = boRaw ? boRaw % 100 : null;
-    const isStarter = boRaw !== null && seq === 0;
-    if (startersOnly && !isStarter) continue;
-    const batting = p.stats && p.stats.batting || {};
-    rows.push({
-      player_id: p.person && p.person.id || null,
-      player_name: p.person && p.person.fullName || null,
-      team_id: teamId,
-      slot,
-      batting_order_raw: boRaw,
-      order_sequence: seq,
-      is_starter: !!isStarter,
-      is_substitution: boRaw !== null && seq > 0,
-      position: p.position && (p.position.abbreviation || p.position.code) || null,
-      status: p.status && p.status.code || null,
-      ab: safeNumber(batting.atBats),
-      hits: safeNumber(batting.hits),
-      runs: safeNumber(batting.runs),
-      rbi: safeNumber(batting.rbi),
-      bb: safeNumber(batting.baseOnBalls),
-      so: safeNumber(batting.strikeOuts),
-      hr: safeNumber(batting.homeRuns),
-      doubles: safeNumber(batting.doubles),
-      triples: safeNumber(batting.triples),
-      total_bases: safeNumber(batting.totalBases)
-    });
-  }
-  rows.sort((a, b) => (a.slot ?? 99) - (b.slot ?? 99) || (a.order_sequence ?? 99) - (b.order_sequence ?? 99));
-  return rows;
+function buildMissing(packet) {
+  const missing = [];
+  if (!packet.game) missing.push("game");
+  if (!packet.player) missing.push("player");
+  if (!packet.market) missing.push("market");
+  if (!packet.lineup) missing.push("lineup");
+  if (!packet.opposing_starter) missing.push("opposing_starter");
+  if (!packet.candidate) missing.push("candidate");
+  return missing;
 }
 
-function summarizeRecentPlayer(logs) {
-  const safe = logs || [];
-  const hits = safe.map(x => safeNumber(x.h, 0));
-  const ab = safe.map(x => safeNumber(x.ab, 0));
-  const runs = safe.map(x => safeNumber(x.r, 0));
-  const rbi = safe.map(x => safeNumber(x.rbi, 0));
-  const so = safe.map(x => safeNumber(x.so, 0));
-  const totalHits = hits.reduce((a, b) => a + b, 0);
-  const totalAb = ab.reduce((a, b) => a + b, 0);
-  return {
-    games: safe.length,
-    last5_hits: hits.join(" / "),
-    last5_ab: ab.join(" / "),
-    last5_runs: runs.join(" / "),
-    last5_rbi: rbi.join(" / "),
-    last5_so: so.join(" / "),
-    last5_total_hits: totalHits,
-    last5_total_ab: totalAb,
-    last5_avg: totalAb ? Number((totalHits / totalAb).toFixed(3)) : null,
-    last3_hits_total: hits.slice(0, 3).reduce((a, b) => a + b, 0),
-    last3_ab_total: ab.slice(0, 3).reduce((a, b) => a + b, 0),
-    source: "mlb_statsapi_recent_boxscores"
-  };
+function factor(key, label, value, score, source = "packet", status = null) {
+  const s = value === null || value === undefined || value === "" || value === "MISSING" ? 0 : clamp(score);
+  return { key, label, value: value === null || value === undefined || value === "" ? "MISSING" : value, score: Math.round(s), source, status: status || (s >= 80 ? "STRONG" : s >= 65 ? "REVIEW" : "RISK") };
 }
 
-async function getMlbApiBridge(env, packet) {
-  const warnings = [];
-  const apiRequests = [];
-  const slate = packet.slate_date;
-  const start = dateAdd(slate, -14);
-  const scheduleUrl = `${MLB_BASE}/api/v1/schedule?sportId=1&startDate=${start}&endDate=${slate}&hydrate=probablePitcher,team,linescore`;
-  const schedule = await fetchJsonCached(env, `schedule|${start}|${slate}`, scheduleUrl);
-  apiRequests.push({ ok: schedule.ok, from_cache: schedule.from_cache, url: schedule.url, error: schedule.error });
-  if (!schedule.ok) warnings.push(`MLB schedule fetch failed: ${schedule.error}`);
-  const gamePk = schedule.ok ? findMlbGamePk(schedule.body, packet.leg.team_id, packet.leg.opponent_team, slate) : null;
-  if (!gamePk) warnings.push("MLB schedule gamePk not found; using D1-only packet.");
-  if (!gamePk) return { ok: false, source: "mlb_statsapi_official_safe_enrichment", mode: "d1_only_no_game_pk", game_pk: null, warnings, api_requests: apiRequests };
-
-  const boxUrl = `${MLB_BASE}/api/v1/game/${gamePk}/boxscore`;
-  const liveUrl = `${MLB_BASE}/api/v1.1/game/${gamePk}/feed/live`;
-  const box = await fetchJsonCached(env, `boxscore|${gamePk}`, boxUrl);
-  apiRequests.push({ ok: box.ok, from_cache: box.from_cache, url: box.url, error: box.error });
-  if (!box.ok) warnings.push(`MLB boxscore fetch failed: ${box.error}`);
-  const live = await fetchJsonCached(env, `live|${gamePk}`, liveUrl);
-  apiRequests.push({ ok: live.ok, from_cache: live.from_cache, url: live.url, error: live.error });
-  if (!live.ok) warnings.push(`MLB live feed fetch failed: ${live.error}`);
-
-  const teamIsHome = normalizeTeam(packet.game.home_team) === normalizeTeam(packet.leg.team_id);
-  const teamSide = teamIsHome ? "home" : "away";
-  const oppSide = teamIsHome ? "away" : "home";
-  const teamLine = box.ok ? extractBoxLineup(box.body, teamSide, packet.leg.team_id, true) : [];
-  const oppLine = box.ok ? extractBoxLineup(box.body, oppSide, packet.leg.opponent_team, true) : [];
-  const teamParticipants = box.ok ? extractBoxLineup(box.body, teamSide, packet.leg.team_id, false) : [];
-  const oppParticipants = box.ok ? extractBoxLineup(box.body, oppSide, packet.leg.opponent_team, false) : [];
-  const subs = teamParticipants.filter(x => x.is_substitution);
-  const oppSubs = oppParticipants.filter(x => x.is_substitution);
-
-  const liveData = live.ok ? live.body && live.body.gameData : null;
-  const liveStatus = liveData && liveData.status ? {
-    abstract_game_state: liveData.status.abstractGameState || null,
-    detailed_state: liveData.status.detailedState || null,
-    coded_game_state: liveData.status.codedGameState || null,
-    status_code: liveData.status.statusCode || null,
-    start_time_utc: liveData.datetime && liveData.datetime.dateTime || null,
-    current_inning: live.body && live.body.liveData && live.body.liveData.linescore && live.body.liveData.linescore.currentInning || null,
-    inning_state: live.body && live.body.liveData && live.body.liveData.linescore && live.body.liveData.linescore.inningState || null,
-    away_score: live.body && live.body.liveData && live.body.liveData.linescore && live.body.liveData.linescore.teams && live.body.liveData.linescore.teams.away && live.body.liveData.linescore.teams.away.runs || null,
-    home_score: live.body && live.body.liveData && live.body.liveData.linescore && live.body.liveData.linescore.teams && live.body.liveData.linescore.teams.home && live.body.liveData.linescore.teams.home.runs || null
-  } : null;
-
-  const recentPlayer = await buildRecentPlayerLogs(env, packet.leg.player_name, packet.leg.team_id, slate, schedule.body);
-  const teamRecent = await buildRecentTeamLogs(env, packet.leg.team_id, slate, schedule.body);
-  const oppBullpenRecent = await buildRecentBullpenLogs(env, packet.leg.opponent_team, slate, schedule.body);
-
-  return {
-    ok: true,
-    source: "mlb_statsapi_official_safe_enrichment",
-    mode: "main_api_read_through_cache_priority_1",
-    game_pk: gamePk,
-    schedule_game_found: true,
-    live_status: liveStatus,
-    boxscore_lineup: teamLine,
-    opponent_boxscore_lineup: oppLine,
-    boxscore_participants: teamParticipants,
-    opponent_boxscore_participants: oppParticipants,
-    boxscore_substitutions: subs,
-    opponent_boxscore_substitutions: oppSubs,
-    player_recent_logs: recentPlayer.logs,
-    player_recent_summary: summarizeRecentPlayer(recentPlayer.logs),
-    team_recent_games: teamRecent.logs,
-    opponent_bullpen_recent: oppBullpenRecent.logs,
-    priority_1: buildPriority1Factors({ packet, teamLine, oppLine, teamParticipants, oppParticipants, recentPlayer: recentPlayer.logs, teamRecent: teamRecent.logs, oppBullpenRecent: oppBullpenRecent.logs, liveStatus }),
-    cache_summary: { schedule_cached: schedule.from_cache, boxscore_cached: box.from_cache, live_cached: live.from_cache, cache_table: "main_supplemental_mlb_api_cache" },
-    api_requests: apiRequests,
-    warnings
-  };
+function scoreLineupSlot(slot) {
+  const s = n(slot, null);
+  if (!s) return 0;
+  if (s <= 1) return 94;
+  if (s === 2) return 90;
+  if (s === 3) return 86;
+  if (s === 4) return 80;
+  if (s === 5) return 74;
+  if (s === 6) return 68;
+  return 58;
 }
 
-async function buildRecentPlayerLogs(env, playerName, teamId, slate, scheduleBody) {
-  const logs = [];
-  const normPlayer = normalizeName(playerName);
-  const dates = (scheduleBody && scheduleBody.dates || []).slice().reverse();
-  for (const d of dates) {
-    for (const g of (d.games || [])) {
-      if (logs.length >= 5) break;
-      const home = normalizeTeam(g.teams && g.teams.home && g.teams.home.team && (g.teams.home.team.abbreviation || g.teams.home.team.teamCode || g.teams.home.team.fileCode));
-      const away = normalizeTeam(g.teams && g.teams.away && g.teams.away.team && (g.teams.away.team.abbreviation || g.teams.away.team.teamCode || g.teams.away.team.fileCode));
-      const team = normalizeTeam(teamId);
-      if (home !== team && away !== team) continue;
-      if (parseMlbDate(g.gameDate) >= slate) continue;
-      const boxUrl = `${MLB_BASE}/api/v1/game/${g.gamePk}/boxscore`;
-      const box = await fetchJsonCached(env, `boxscore|${g.gamePk}`, boxUrl);
-      if (!box.ok) continue;
-      const side = home === team ? "home" : "away";
-      const opp = home === team ? away : home;
-      const rows = extractBoxLineup(box.body, side, team, false);
-      const row = rows.find(r => normalizeName(r.player_name) === normPlayer);
-      if (row) logs.push({ game_date: parseMlbDate(g.gameDate), game_pk: g.gamePk, opponent: opp, is_home: home === team, ab: row.ab, h: row.hits, r: row.runs, rbi: row.rbi, bb: row.bb, so: row.so, hr: row.hr, doubles: row.doubles, total_bases: row.total_bases, source: "mlb_statsapi_boxscore_recent_player" });
-    }
-    if (logs.length >= 5) break;
-  }
-  return { logs };
+function scoreAvg(avg) {
+  const v = n(avg, null);
+  if (v === null) return 0;
+  if (v >= 0.280) return 90;
+  if (v >= 0.250) return 80;
+  if (v >= 0.230) return 70;
+  return 58;
 }
 
-async function buildRecentTeamLogs(env, teamId, slate, scheduleBody) {
-  const logs = [];
-  const dates = (scheduleBody && scheduleBody.dates || []).slice().reverse();
-  const team = normalizeTeam(teamId);
-  for (const d of dates) {
-    for (const g of (d.games || [])) {
-      if (logs.length >= 5) break;
-      const home = normalizeTeam(g.teams && g.teams.home && g.teams.home.team && (g.teams.home.team.abbreviation || g.teams.home.team.teamCode || g.teams.home.team.fileCode));
-      const away = normalizeTeam(g.teams && g.teams.away && g.teams.away.team && (g.teams.away.team.abbreviation || g.teams.away.team.teamCode || g.teams.away.team.fileCode));
-      if (home !== team && away !== team) continue;
-      if (parseMlbDate(g.gameDate) >= slate) continue;
-      const box = await fetchJsonCached(env, `boxscore|${g.gamePk}`, `${MLB_BASE}/api/v1/game/${g.gamePk}/boxscore`);
-      if (!box.ok) continue;
-      const side = home === team ? "home" : "away";
-      const oppSide = side === "home" ? "away" : "home";
-      const sideRows = extractBoxLineup(box.body, side, team, false).filter(x => x.ab !== null);
-      const oppRows = extractBoxLineup(box.body, oppSide, side === "home" ? away : home, false).filter(x => x.ab !== null);
-      logs.push({
-        game_date: parseMlbDate(g.gameDate), game_pk: g.gamePk, opponent: side === "home" ? away : home, is_home: side === "home",
-        runs_for: sideRows.reduce((a, x) => a + safeNumber(x.runs, 0), 0),
-        hits_for: sideRows.reduce((a, x) => a + safeNumber(x.hits, 0), 0),
-        strikeouts: sideRows.reduce((a, x) => a + safeNumber(x.so, 0), 0),
-        walks: sideRows.reduce((a, x) => a + safeNumber(x.bb, 0), 0),
-        runs_against: oppRows.reduce((a, x) => a + safeNumber(x.runs, 0), 0),
-        hits_against: oppRows.reduce((a, x) => a + safeNumber(x.hits, 0), 0),
-        source: "mlb_statsapi_boxscore_recent_team"
-      });
-    }
-    if (logs.length >= 5) break;
-  }
-  return { logs };
+function scoreObp(obp) {
+  const v = n(obp, null);
+  if (v === null) return 0;
+  if (v >= 0.370) return 90;
+  if (v >= 0.340) return 82;
+  if (v >= 0.315) return 72;
+  return 58;
 }
 
-async function buildRecentBullpenLogs(env, teamId, slate, scheduleBody) {
-  const logs = [];
-  const team = normalizeTeam(teamId);
-  const dates = (scheduleBody && scheduleBody.dates || []).slice().reverse();
-  for (const d of dates) {
-    for (const g of (d.games || [])) {
-      if (logs.length >= 3) break;
-      const home = normalizeTeam(g.teams && g.teams.home && g.teams.home.team && (g.teams.home.team.abbreviation || g.teams.home.team.teamCode || g.teams.home.team.fileCode));
-      const away = normalizeTeam(g.teams && g.teams.away && g.teams.away.team && (g.teams.away.team.abbreviation || g.teams.away.team.teamCode || g.teams.away.team.fileCode));
-      if (home !== team && away !== team) continue;
-      if (parseMlbDate(g.gameDate) >= slate) continue;
-      const side = home === team ? "home" : "away";
-      const box = await fetchJsonCached(env, `boxscore|${g.gamePk}`, `${MLB_BASE}/api/v1/game/${g.gamePk}/boxscore`);
-      if (!box.ok) continue;
-      const players = box.body && box.body.teams && box.body.teams[side] && box.body.teams[side].players || {};
-      let bullpenOuts = 0;
-      for (const key of Object.keys(players)) {
-        const p = players[key];
-        const pitching = p.stats && p.stats.pitching || null;
-        if (!pitching) continue;
-        const gamesStarted = safeNumber(pitching.gamesStarted, 0);
-        if (gamesStarted > 0) continue;
-        const outs = safeNumber(pitching.outs, 0);
-        bullpenOuts += outs;
-      }
-      const ip = Number((bullpenOuts / 3).toFixed(3));
-      logs.push({ game_date: parseMlbDate(g.gameDate), game_pk: g.gamePk, opponent: home === team ? away : home, bullpen_ip: ip, bullpen_ip_text: outsToIpText(bullpenOuts), source: "mlb_statsapi_boxscore_recent_bullpen" });
-    }
-    if (logs.length >= 3) break;
-  }
-  return { logs };
+function scoreSlg(slg) {
+  const v = n(slg, null);
+  if (v === null) return 0;
+  if (v >= 0.500) return 90;
+  if (v >= 0.430) return 78;
+  if (v >= 0.380) return 68;
+  return 56;
 }
 
-function outsToIpText(outs) {
-  const whole = Math.floor(outs / 3);
-  const rem = outs % 3;
-  return `${whole}.${rem}`;
+function scoreStarterWhip(whip) {
+  const v = n(whip, null);
+  if (v === null) return 0;
+  if (v >= 1.35) return 88;
+  if (v >= 1.20) return 78;
+  if (v >= 1.05) return 68;
+  return 56;
 }
 
-function buildPriority1Factors({ packet, teamLine, oppLine, teamParticipants, oppParticipants, recentPlayer, teamRecent, oppBullpenRecent, liveStatus }) {
-  const out = [];
-  const playerRow = teamParticipants.find(r => normalizeName(r.player_name) === normalizeName(packet.leg.player_name));
-  const recentSummary = summarizeRecentPlayer(recentPlayer || []);
-  const last5HitsScore = recentSummary.games ? clamp(50 + (recentSummary.last5_avg || 0) * 150) : 50;
-  out.push(factor("P1 Last 5 Hits", recentSummary.last5_hits || "N/A", last5HitsScore, "mlb_statsapi_recent_boxscores", "official_boxscore", "Recent player hit trend."));
-  out.push(factor("P1 Last 5 AB", recentSummary.last5_ab || "N/A", recentSummary.last5_ab ? 75 : 45, "mlb_statsapi_recent_boxscores", "official_boxscore", "Recent opportunity volume."));
-  const lineupScore = playerRow && playerRow.slot ? clamp(96 - ((playerRow.slot - 1) * 5)) : packet.lineup && packet.lineup.slot ? clamp(96 - ((packet.lineup.slot - 1) * 5)) : 50;
-  out.push(factor("P1 Confirmed Lineup Slot", playerRow && playerRow.slot ? `Slot ${playerRow.slot}` : packet.lineup && packet.lineup.slot ? `Slot ${packet.lineup.slot}` : "N/A", lineupScore, "mlb_statsapi_boxscore_lineup", "official_or_pregame_boxscore", "Starter/substitution aware lineup slot."));
-  const starter = packet.opposing_starter || {};
-  const starterScore = starter.era !== null && starter.era !== undefined ? clamp(45 + safeNumber(starter.era, 4) * 6 + safeNumber(starter.whip, 1.2) * 10) : 50;
-  out.push(factor("P1 Opposing Starter Contact Window", `${starter.starter_name || "N/A"} ERA ${starter.era ?? "N/A"} WHIP ${starter.whip ?? "N/A"}`, starterScore, "D1 starters_current", "official_probable", "Uses official probable starter stats already loaded by scheduled system."));
-  const penIp = (oppBullpenRecent || []).map(x => x.bullpen_ip_text || String(x.bullpen_ip ?? "N/A")).join(" / ");
-  const penAvg = (oppBullpenRecent || []).length ? (oppBullpenRecent.reduce((a, x) => a + safeNumber(x.bullpen_ip, 0), 0) / oppBullpenRecent.length) : null;
-  out.push(factor("P1 Opponent Bullpen Recent IP", penIp || "N/A", penAvg === null ? 50 : clamp(50 + penAvg * 9), "mlb_statsapi_boxscore_recent_bullpen", "official_boxscore", "Recent bullpen workload; main system read-through cache."));
-  const teamRuns = (teamRecent || []).map(x => safeNumber(x.runs_for, 0));
-  const teamRunsDisplay = teamRuns.join(" / ");
-  const teamRunsAvg = teamRuns.length ? teamRuns.reduce((a, b) => a + b, 0) / teamRuns.length : null;
-  out.push(factor("P1 Team Last 5 Runs", teamRunsDisplay || "N/A", teamRunsAvg === null ? 50 : clamp(45 + teamRunsAvg * 8), "mlb_statsapi_boxscore_recent_team", "official_boxscore", "Team offense form from recent boxscores."));
-  const liveValue = liveStatus ? `${liveStatus.detailed_state || liveStatus.abstract_game_state || "N/A"} ${liveStatus.away_score ?? ""}-${liveStatus.home_score ?? ""}`.trim() : "N/A";
-  out.push(factor("P1 Live/Final Game State", liveValue, liveStatus ? 80 : 45, "mlb_statsapi_live_feed", "official_live_or_final", "Official game state used to verify completed/live context."));
-  const subs = (teamParticipants || []).filter(x => x.is_substitution).length + (oppParticipants || []).filter(x => x.is_substitution).length;
-  out.push(factor("P1 Substitution Cleanup", `${subs} substitutions tracked`, subs >= 0 ? 80 : 50, "mlb_statsapi_boxscore_lineup", "official_boxscore", "Separates starters from substitutions to prevent duplicate lineup slots."));
-  return out;
+function scoreStarterEra(era) {
+  const v = n(era, null);
+  if (v === null) return 0;
+  if (v >= 4.50) return 86;
+  if (v >= 3.75) return 76;
+  if (v >= 3.00) return 68;
+  return 58;
 }
 
-function buildMatrix(packet) {
+function scoreTier(tier) {
+  const t = safeText(tier).toUpperCase();
+  if (["A_POOL", "YES_RFI"].includes(t)) return 88;
+  if (["B_POOL", "LEAN_YES"].includes(t)) return 72;
+  if (["WATCHLIST"].includes(t)) return 62;
+  return t ? 58 : 0;
+}
+
+function last5HitsString(recentUsage) {
+  const rows = Array.isArray(recentUsage) ? recentUsage : [];
+  const values = rows.map(r => n(r.hits ?? r.H ?? r.hit ?? r.last_game_hits ?? r.h, null)).filter(v => v !== null).slice(0, 5);
+  return values.length ? values.join(" / ") : null;
+}
+
+function last5StatString(rows, key) {
+  const values = (Array.isArray(rows) ? rows : []).map(r => n(r[key], null)).filter(v => v !== null).slice(0, 5);
+  return values.length ? values.join(" / ") : null;
+}
+
+function scoreRecentHits(summary = {}) {
+  const avg = n(summary.last5_avg, null);
+  if (avg === null) return 0;
+  if (avg >= 0.330) return 90;
+  if (avg >= 0.280) return 82;
+  if (avg >= 0.230) return 70;
+  return 56;
+}
+
+function scoreRecentVolume(summary = {}) {
+  const ab = n(summary.last5_total_ab, null);
+  if (ab === null) return 0;
+  if (ab >= 20) return 88;
+  if (ab >= 15) return 78;
+  if (ab >= 10) return 68;
+  return 55;
+}
+
+function scoreBullpenRecentIp(rows = []) {
+  const total = (Array.isArray(rows) ? rows : []).slice(0, 3).reduce((sum, r) => sum + n(r.bullpen_ip, 0), 0);
+  if (!total) return 0;
+  if (total >= 10) return 88;
+  if (total >= 7) return 78;
+  if (total >= 4) return 66;
+  return 56;
+}
+
+function buildMatrixFactors(packet) {
   const p = packet.player || {};
-  const candidate = packet.candidate || {};
-  const lineup = packet.lineup || {};
-  const starter = packet.opposing_starter || {};
-  const bullpen = packet.bullpen || {};
-  const market = packet.market || {};
+  const c = packet.candidate || {};
+  const l = packet.lineup || {};
+  const st = packet.opposing_starter || {};
+  const bp = packet.bullpen || {};
+  const m = packet.market || {};
+  const game = packet.game || {};
+  const recent = Array.isArray(packet.recent_usage) ? packet.recent_usage : [];
+  const teamLineup = Array.isArray(packet.team_lineup) ? packet.team_lineup : [];
+  const oppLineup = Array.isArray(packet.opponent_lineup) ? packet.opponent_lineup : [];
+  const teamPlayers = Array.isArray(packet.team_players) ? packet.team_players : [];
+  const oppPlayers = Array.isArray(packet.opponent_players) ? packet.opponent_players : [];
+  const gameStarters = Array.isArray(packet.game_starters) ? packet.game_starters : [];
+  const gameBullpens = Array.isArray(packet.game_bullpens) ? packet.game_bullpens : [];
+  const related = packet.related_candidates || { hits: [], rbi: [], rfi: [] };
   const mlb = packet.mlb_api || {};
-  const p1 = mlb.priority_1 || [];
-  const groups = {
+  const mlbSummary = mlb.player_recent_summary || {};
+  const mlbPlayerLogs = Array.isArray(mlb.player_recent_logs) ? mlb.player_recent_logs : [];
+  const mlbTeamRecent = Array.isArray(mlb.team_recent_games) ? mlb.team_recent_games : [];
+  const mlbOppBullpen = Array.isArray(mlb.opponent_bullpen_recent) ? mlb.opponent_bullpen_recent : [];
+  const currentBox = mlb.current_player_boxscore || {};
+  const teamRecentSummary = mlb.team_recent_summary || {};
+  const oppBullpenSummary = mlb.opponent_bullpen_summary || {};
+  const starterRecentSummary = mlb.opposing_starter_recent_summary || {};
+  const weatherSummary = mlb.weather || {};
+  const officialsSummary = mlb.officials || {};
+  const mlbLast5Hits = mlbSummary.last5_hits || last5StatString(mlbPlayerLogs, 'h');
+  const mlbLast5Ab = mlbSummary.last5_ab || last5StatString(mlbPlayerLogs, 'ab');
+  const mlbLast5Runs = mlbSummary.last5_runs || last5StatString(mlbPlayerLogs, 'r');
+  const mlbLast5Rbi = mlbSummary.last5_rbi || last5StatString(mlbPlayerLogs, 'rbi');
+  const mlbLast5So = mlbSummary.last5_so || last5StatString(mlbPlayerLogs, 'so');
+  const last5 = last5HitsString(recent) || mlbLast5Hits;
+  const completeness = 100 - Math.min((packet.missing || []).length * 14, 70);
+  const starterHitsPerIp = st.innings_pitched ? n(st.hits_allowed, 0) / Math.max(n(st.innings_pitched, 1), 1) : null;
+  const starterHitsPerIpScore = starterHitsPerIp === null ? 0 : (starterHitsPerIp >= 1.10 ? 86 : starterHitsPerIp >= 0.90 ? 76 : starterHitsPerIp >= 0.75 ? 66 : 56);
+  const bullpenFatigue = safeText(bp.fatigue || c.bullpen_fatigue_tier).toLowerCase();
+  const bullpenScore = bullpenFatigue === "high" ? 78 : bullpenFatigue === "medium" ? 68 : bullpenFatigue === "low" ? 58 : 0;
+  const lastGameHits = n(c.last_game_hits, null);
+  const lastGameScore = lastGameHits === null ? 0 : lastGameHits >= 2 ? 86 : lastGameHits === 1 ? 74 : 58;
+  const top3 = teamLineup.filter(r => n(r.slot, 99) <= 3);
+  const top5 = teamLineup.filter(r => n(r.slot, 99) <= 5);
+  const teamAvg = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.avg));
+  const teamObp = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.obp));
+  const teamSlg = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.slg));
+  const oppAvg = average(oppPlayers.filter(r => r.role === 'BAT').map(r => r.avg));
+  const oppObp = average(oppPlayers.filter(r => r.role === 'BAT').map(r => r.obp));
+  const scoreLineText = packet.leg?.side ? `${packet.leg.side} ${packet.leg.line}` : packet.leg?.line;
+
+  return {
     identity: [
-      factor("Player Identity", `${p.player_name || packet.leg.player_name} | ${p.position || "N/A"} | Bats ${p.bats || candidate.bats || "N/A"}`, p.player_name ? 90 : 55, "D1 players_current", p.confidence || "official_identity"),
-      factor("Season AVG/OBP/SLG", `${p.avg ?? candidate.player_avg ?? "N/A"} / ${p.obp ?? candidate.player_obp ?? "N/A"} / ${p.slg ?? candidate.player_slg ?? "N/A"}`, p.avg ? clamp(45 + safeNumber(p.avg, .23) * 100 + safeNumber(p.obp, .32) * 40) : 50, "D1 players_current", p.confidence || "official_stats")
-    ],
-    role_usage: [
-      factor("Lineup Slot", lineup.slot ? `Slot ${lineup.slot}` : candidate.lineup_slot ? `Slot ${candidate.lineup_slot}` : "N/A", lineup.slot || candidate.lineup_slot ? clamp(96 - ((lineup.slot || candidate.lineup_slot) - 1) * 5) : 45, "D1 lineups_current", lineup.confidence || "official_or_pregame"),
-      factor("Confirmed Lineup", lineup.is_confirmed === 1 ? "Confirmed" : "Partial/Unknown", lineup.is_confirmed === 1 ? 85 : 60, "D1 lineups_current", lineup.confidence || "lineup_context")
+      factor("player_identity", "Player Identity", p.player_name || packet.leg.player_name, p.player_name ? 100 : 70, p.source || "payload"),
+      factor("team_match", "Team / Opponent", `${packet.leg.team_id || "MISSING"} vs/@ ${packet.leg.opponent_team || "MISSING"}`, packet.game ? 100 : 65, "games"),
+      factor("game_id", "Resolved Game ID", packet.game_id, packet.game_id ? 100 : 0, "games"),
+      factor("prop_family", "Prop Family", packet.leg.prop_family, packet.leg.prop_family !== "UNKNOWN" ? 92 : 0, "parser"),
+      factor("player_role_position", "Role / Position", `${p.role || "MISSING"} / ${p.position || "MISSING"}`, p.role ? 86 : 0, p.source),
+      factor("handedness", "Bats / Throws", `${p.bats || "MISSING"} / ${p.throws || "MISSING"}`, (p.bats || p.throws) ? 82 : 0, p.source)
     ],
     trend: [
-      factor("Last 5 Hits", mlb.player_recent_summary && mlb.player_recent_summary.last5_hits || "N/A", mlb.player_recent_summary ? clamp(50 + safeNumber(mlb.player_recent_summary.last5_avg, 0) * 150) : 45, "MLB StatsAPI", "official_boxscore"),
-      factor("Last 3 Hits Total", mlb.player_recent_summary ? String(mlb.player_recent_summary.last3_hits_total) : "N/A", mlb.player_recent_summary ? clamp(45 + safeNumber(mlb.player_recent_summary.last3_hits_total, 0) * 12) : 45, "MLB StatsAPI", "official_boxscore")
+      factor("last5_hits", "Last 5 Hits", last5 || (lastGameHits !== null ? `Last game: ${lastGameHits}` : "MISSING"), last5 ? 81 : lastGameScore, last5 ? "player_recent_usage" : "candidate"),
+      factor("mlb_current_game_hits", "MLB Current Game Hits", currentBox.hits ?? "MISSING", currentBox.hits >= 1 ? 86 : currentBox.hits === 0 ? 58 : 0, "mlb_statsapi_current_boxscore_player"),
+      factor("mlb_current_game_ab", "MLB Current Game AB", currentBox.ab ?? "MISSING", currentBox.ab >= 4 ? 84 : currentBox.ab >= 3 ? 74 : currentBox.ab >= 1 ? 62 : 0, "mlb_statsapi_current_boxscore_player"),
+      factor("last_game_hits", "Last Game Hits", lastGameHits, lastGameScore, c.source),
+      factor("last_game_ab", "Last Game AB", c.last_game_ab, c.last_game_ab >= 4 ? 84 : c.last_game_ab >= 3 ? 74 : c.last_game_ab >= 1 ? 62 : 0, c.source),
+      factor("season_avg", "Season AVG", p.avg ?? c.player_avg, scoreAvg(p.avg ?? c.player_avg), p.source || c.source),
+      factor("season_obp", "Season OBP", p.obp ?? c.player_obp, scoreObp(p.obp ?? c.player_obp), p.source || c.source),
+      factor("season_slg", "Season SLG", p.slg ?? c.player_slg, scoreSlg(p.slg ?? c.player_slg), p.source || c.source),
+      factor("season_hits_ab", "Season Hits / AB", (p.hits !== undefined && p.ab !== undefined) ? `${p.hits}/${p.ab}` : "MISSING", p.ab >= 80 ? 82 : p.ab >= 40 ? 72 : p.ab ? 62 : 0, p.source),
+      factor("games_played", "Games Played", p.games, p.games >= 20 ? 82 : p.games >= 10 ? 70 : p.games ? 58 : 0, p.source)
     ],
     matchup: [
-      factor("Opposing Starter", `${starter.starter_name || candidate.opposing_starter || "N/A"} | Throws ${starter.throws || candidate.opposing_throws || "N/A"}`, starter.starter_name || candidate.opposing_starter ? 75 : 45, "D1 starters_current", starter.confidence || "official_probable"),
-      factor("Starter ERA/WHIP", `${starter.era ?? "N/A"} / ${starter.whip ?? "N/A"}`, starter.era ? clamp(45 + safeNumber(starter.era, 4) * 6 + safeNumber(starter.whip, 1.2) * 10) : 50, "D1 starters_current", starter.confidence || "official_probable")
+      factor("opposing_starter", "Opposing Starter", st.starter_name || c.opposing_starter, (st.starter_name || c.opposing_starter) ? 90 : 0, st.source || c.source),
+      factor("starter_throws", "Starter Hand", st.throws || c.opposing_throws, (st.throws || c.opposing_throws) ? 84 : 0, st.source || c.source),
+      factor("starter_whip", "Starter WHIP", st.whip, scoreStarterWhip(st.whip), st.source),
+      factor("starter_era", "Starter ERA", st.era, scoreStarterEra(st.era), st.source),
+      factor("starter_hits_per_ip", "Starter H/IP", starterHitsPerIp === null ? "MISSING" : starterHitsPerIp.toFixed(2), starterHitsPerIpScore, st.source),
+      factor("starter_hits_allowed", "Starter Hits Allowed", st.hits_allowed, scoreAverage(st.hits_allowed, 35, 20, 10), st.source),
+      factor("starter_walks", "Starter Walks", st.walks, scoreAverage(st.walks, 15, 8, 4), st.source),
+      factor("starter_hr_allowed", "Starter HR Allowed", st.hr_allowed, scoreAverage(st.hr_allowed, 5, 3, 1), st.source),
+      factor("starter_recent_hits_allowed", "MLB Starter Recent H Allowed", starterRecentSummary.last3_hits_allowed || "MISSING", starterRecentSummary.games ? scoreAverage(starterRecentSummary.hits_per_ip, 1.15, 0.95, 0.75) : 0, "mlb_statsapi_recent_starter_boxscores"),
+      factor("starter_recent_hits_per_ip", "MLB Starter Recent H/IP", starterRecentSummary.hits_per_ip ?? "MISSING", starterRecentSummary.hits_per_ip ? scoreAverage(starterRecentSummary.hits_per_ip, 1.15, 0.95, 0.75) : 0, "mlb_statsapi_recent_starter_boxscores"),
+      factor("game_starters_rows", "Both Starters Loaded", gameStarters.length, gameStarters.length >= 2 ? 100 : gameStarters.length ? 65 : 0, "starters_current")
     ],
-    environment: [
-      factor("Park Factor Run/HR", `${candidate.park_factor_run ?? "N/A"} / ${candidate.park_factor_hr ?? "N/A"}`, candidate.park_factor_run ? clamp(50 + (safeNumber(candidate.park_factor_run, 1) - 1) * 100 + (safeNumber(candidate.park_factor_hr, 1) - 1) * 40) : 50, "D1 candidate pool", candidate.confidence || "controlled_candidate"),
-      factor("Game State", mlb.live_status ? `${mlb.live_status.detailed_state || "N/A"}` : packet.game.status || "N/A", mlb.live_status ? 80 : 60, "MLB StatsAPI/D1", "official_schedule_live")
+    role_usage: [
+      factor("lineup_slot", "Lineup Slot", l.slot || c.lineup_slot, scoreLineupSlot(l.slot || c.lineup_slot), l.source || c.source),
+      factor("mlb_current_batting_slot", "MLB Current Batting Slot", currentBox.slot ?? "MISSING", scoreLineupSlot(currentBox.slot), "mlb_statsapi_current_boxscore_player"),
+      factor("mlb_current_starter_flag", "MLB Current Starter Flag", currentBox.is_starter === true ? "YES" : currentBox.is_substitution === true ? "SUB" : "MISSING", currentBox.is_starter === true ? 90 : currentBox.is_substitution === true ? 55 : 0, "mlb_statsapi_current_boxscore_player"),
+      factor("lineup_confirmed", "Lineup Confirmed", l.is_confirmed ? "YES" : "NO / MISSING", l.is_confirmed ? 88 : 45, l.source),
+      factor("team_lineup_rows", "Team Lineup Rows", teamLineup.length, teamLineup.length >= 9 ? 90 : teamLineup.length >= 5 ? 72 : teamLineup.length ? 58 : 0, "lineups_current"),
+      factor("opponent_lineup_rows", "Opponent Lineup Rows", oppLineup.length, oppLineup.length >= 9 ? 90 : oppLineup.length >= 5 ? 72 : oppLineup.length ? 58 : 0, "lineups_current"),
+      factor("top3_lineup", "Team Top 3", summarizeLineup(top3) || "MISSING", top3.length >= 3 ? 86 : top3.length ? 65 : 0, "lineups_current"),
+      factor("top5_lineup", "Team Top 5", summarizeLineup(top5) || "MISSING", top5.length >= 5 ? 86 : top5.length ? 68 : 0, "lineups_current"),
+      factor("role_type", "Role Type", p.role || "MISSING", p.role ? 86 : 0, p.source),
+      factor("recent_ab_volume", "Recent AB Volume", c.last_game_ab !== undefined ? `Last game AB: ${c.last_game_ab}` : "MISSING", c.last_game_ab >= 4 ? 84 : c.last_game_ab >= 3 ? 74 : c.last_game_ab >= 1 ? 62 : 0, c.source)
     ],
     market: [
-      factor("Game Total", market.current_total ?? market.game_total ?? "N/A", market.current_total || market.game_total ? 70 : 45, "D1 markets_current", market.confidence || "official_schedule_or_market_shell"),
-      factor("Implied Runs", `${market.home_implied_runs ?? "N/A"} / ${market.away_implied_runs ?? "N/A"}`, market.home_implied_runs || market.away_implied_runs ? 70 : 45, "D1 markets_current", market.confidence || "market_shell")
+      factor("prop_line", "Prop / Line / Direction", `${packet.leg.prop_type || "MISSING"} ${scoreLineText || ""}`, packet.leg.line !== null ? 82 : 0, "screen1_payload"),
+      factor("game_total", "Game Total", m.current_total ?? m.game_total, (m.current_total ?? m.game_total) ? 76 : 0, m.source),
+      factor("open_total", "Open Total", m.open_total, m.open_total ? 70 : 0, m.source),
+      factor("team_implied_runs", "Team Implied Runs", packet.leg.team_id === game.home_team ? m.home_implied_runs : m.away_implied_runs, (m.home_implied_runs || m.away_implied_runs) ? 76 : 0, m.source),
+      factor("opponent_implied_runs", "Opponent Implied Runs", packet.leg.team_id === game.home_team ? m.away_implied_runs : m.home_implied_runs, (m.home_implied_runs || m.away_implied_runs) ? 68 : 0, m.source),
+      factor("moneyline", "Moneyline", `Away ${m.away_moneyline ?? "MISSING"} / Home ${m.home_moneyline ?? "MISSING"}`, (m.away_moneyline || m.home_moneyline) ? 70 : 0, m.source),
+      factor("runline", "Runline", m.runline, m.runline ? 70 : 0, m.source),
+      factor("market_source", "Market Source", m.source || "MISSING", m.source ? 66 : 0, m.confidence || "markets_current")
     ],
-    bullpen: [
-      factor("Bullpen Fatigue", bullpen.fatigue || candidate.bullpen_fatigue_tier || "N/A", bullpen.fatigue === "high" || candidate.bullpen_fatigue_tier === "high" ? 85 : 60, "D1 bullpens_current", bullpen.confidence || "official_usage_lite"),
-      factor("Bullpen Recent IP", mlb.priority_1 ? (mlb.priority_1.find(x => x.label === "P1 Opponent Bullpen Recent IP") || {}).value : "N/A", mlb.priority_1 ? ((mlb.priority_1.find(x => x.label === "P1 Opponent Bullpen Recent IP") || {}).score || 50) : 50, "MLB StatsAPI", "official_boxscore")
+    environment: [
+      factor("venue", "Venue / Park", game.venue || "MISSING", game.venue ? 84 : 0, "games"),
+      factor("park_run_factor", "Park Run Factor", c.park_factor_run, c.park_factor_run ? 72 : 0, c.source),
+      factor("park_hr_factor", "Park HR Factor", c.park_factor_hr, c.park_factor_hr ? 72 : 0, c.source),
+      factor("bullpen_fatigue", "Opponent Bullpen Fatigue", bullpenFatigue || "MISSING", bullpenScore, bp.source || c.source),
+      factor("bullpen_last_game_ip", "Opponent Bullpen Last Game IP", bp.last_game_ip, bp.last_game_ip >= 4 ? 82 : bp.last_game_ip >= 2 ? 70 : bp.last_game_ip !== null && bp.last_game_ip !== undefined ? 60 : 0, bp.source),
+      factor("bullpen_last3_ip", "Opponent Bullpen Last 3 IP", bp.last3_ip, bp.last3_ip >= 10 ? 82 : bp.last3_ip >= 6 ? 70 : bp.last3_ip ? 60 : 0, bp.source),
+      factor("game_bullpen_rows", "Both Bullpens Loaded", gameBullpens.length, gameBullpens.length >= 2 ? 100 : gameBullpens.length ? 65 : 0, "bullpens_current"),
+      factor("start_time", "Start Time UTC", game.start_time_utc, game.start_time_utc ? 80 : 0, "games"),
+      factor("weather", "Weather", weatherSummary.summary || "MISSING", weatherSummary.summary ? 76 : 0, weatherSummary.source || "mlb_statsapi_live_weather"),
+      factor("home_plate_umpire", "Home Plate Umpire", officialsSummary.home_plate || "MISSING", officialsSummary.home_plate ? 72 : 0, officialsSummary.source || "mlb_statsapi_live_officials")
     ],
-    priority_1: p1,
+    team_context: [
+      factor("team_avg", "Team Batter AVG Avg", teamAvg === null ? "MISSING" : teamAvg.toFixed(3), scoreAvg(teamAvg), "players_current"),
+      factor("team_obp", "Team Batter OBP Avg", teamObp === null ? "MISSING" : teamObp.toFixed(3), scoreObp(teamObp), "players_current"),
+      factor("team_slg", "Team Batter SLG Avg", teamSlg === null ? "MISSING" : teamSlg.toFixed(3), scoreSlg(teamSlg), "players_current"),
+      factor("mlb_team_recent_runs", "MLB Team Recent Runs", teamRecentSummary.runs_for_last5 || "MISSING", teamRecentSummary.avg_runs_for >= 5 ? 86 : teamRecentSummary.avg_runs_for >= 4 ? 76 : teamRecentSummary.avg_runs_for ? 62 : 0, "mlb_statsapi_recent_team_boxscores"),
+      factor("mlb_team_recent_hits", "MLB Team Recent Hits", teamRecentSummary.hits_for_last5 || "MISSING", teamRecentSummary.avg_hits_for >= 9 ? 86 : teamRecentSummary.avg_hits_for >= 7 ? 76 : teamRecentSummary.avg_hits_for ? 62 : 0, "mlb_statsapi_recent_team_boxscores"),
+      factor("opponent_avg", "Opponent Batter AVG Avg", oppAvg === null ? "MISSING" : oppAvg.toFixed(3), scoreAvg(oppAvg), "players_current"),
+      factor("opponent_obp", "Opponent Batter OBP Avg", oppObp === null ? "MISSING" : oppObp.toFixed(3), scoreObp(oppObp), "players_current"),
+      factor("team_players_loaded", "Team Players Loaded", teamPlayers.length, teamPlayers.length >= 20 ? 88 : teamPlayers.length >= 10 ? 74 : teamPlayers.length ? 60 : 0, "players_current"),
+      factor("opponent_players_loaded", "Opponent Players Loaded", oppPlayers.length, oppPlayers.length >= 20 ? 88 : oppPlayers.length >= 10 ? 74 : oppPlayers.length ? 60 : 0, "players_current")
+    ],
+    candidate_context: [
+      factor("candidate_tier", "Primary Candidate Tier", c.candidate_tier || "MISSING", scoreTier(c.candidate_tier), c.source),
+      factor("candidate_reason", "Primary Candidate Reason", c.candidate_reason || "MISSING", c.candidate_reason ? 80 : 0, c.source),
+      factor("related_hits_candidates", "Related Hits Candidates", related.hits?.length || 0, related.hits?.length ? 82 : 0, "edge_candidates_hits"),
+      factor("related_rbi_candidates", "Related RBI Candidates", related.rbi?.length || 0, related.rbi?.length ? 82 : 0, "edge_candidates_rbi"),
+      factor("related_rfi_candidates", "Related RFI Candidates", related.rfi?.length || 0, related.rfi?.length ? 82 : 0, "edge_candidates_rfi"),
+      factor("lineup_context", "Lineup Context", c.lineup_context_status || "MISSING", c.lineup_context_status === "complete" ? 86 : c.lineup_context_status === "partial" ? 70 : 0, c.source)
+    ],
+    mlb_api: [
+      factor("mlb_game_pk", "MLB GamePk", mlb.game_pk || "MISSING", mlb.game_pk ? 100 : 0, "mlb_statsapi_schedule"),
+      factor("mlb_live_status", "MLB Live Status", mlb.live_status?.detailed_state || mlb.live_status?.abstract_game_state || "MISSING", mlb.live_status?.detailed_state ? 86 : 0, "mlb_statsapi_live_feed"),
+      factor("mlb_score_state", "MLB Score State", `Away ${mlb.live_status?.away_score ?? "?"} / Home ${mlb.live_status?.home_score ?? "?"}`, (mlb.live_status?.away_score !== null && mlb.live_status?.away_score !== undefined) ? 76 : 0, "mlb_statsapi_live_feed"),
+      factor("mlb_boxscore_lineup", "MLB Boxscore Team Lineup", mlb.boxscore_lineup?.length || 0, mlb.boxscore_lineup?.length >= 9 ? 90 : mlb.boxscore_lineup?.length ? 70 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_opponent_boxscore_lineup", "MLB Boxscore Opponent Lineup", mlb.opponent_boxscore_lineup?.length || 0, mlb.opponent_boxscore_lineup?.length >= 9 ? 90 : mlb.opponent_boxscore_lineup?.length ? 70 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_last5_hits", "MLB Last 5 Hits", mlbLast5Hits || "MISSING", scoreRecentHits(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_ab", "MLB Last 5 AB", mlbLast5Ab || "MISSING", scoreRecentVolume(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_runs", "MLB Last 5 Runs", mlbLast5Runs || "MISSING", mlbLast5Runs ? 74 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_rbi", "MLB Last 5 RBI", mlbLast5Rbi || "MISSING", mlbLast5Rbi ? 74 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_so", "MLB Last 5 Strikeouts", mlbLast5So || "MISSING", mlbLast5So ? 70 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_recent_avg", "MLB Last 5 AVG", mlbSummary.last5_avg ?? "MISSING", scoreRecentHits(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_team_recent_games", "MLB Team Recent Games", mlbTeamRecent.length, mlbTeamRecent.length >= 3 ? 84 : mlbTeamRecent.length ? 66 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_opponent_bullpen_recent", "MLB Opponent Bullpen Last 3", mlbOppBullpen.map(r => r.bullpen_ip_text || r.bullpen_ip).filter(Boolean).join(" / ") || "MISSING", scoreBullpenRecentIp(mlbOppBullpen), "mlb_statsapi_boxscore"),
+      factor("mlb_opponent_bullpen_total_ip", "MLB Opp Bullpen Total Last 3 IP", oppBullpenSummary.total_last3_ip_text || "MISSING", scoreBullpenRecentIp(mlbOppBullpen), "mlb_statsapi_recent_bullpen_boxscores"),
+      factor("mlb_starter_recent_games", "MLB Starter Recent Games", starterRecentSummary.games || 0, starterRecentSummary.games >= 3 ? 82 : starterRecentSummary.games ? 66 : 0, "mlb_statsapi_recent_starter_boxscores"),
+      factor("mlb_weather_loaded", "MLB Weather Loaded", weatherSummary.summary || "MISSING", weatherSummary.summary ? 76 : 0, weatherSummary.source || "mlb_statsapi_live_weather"),
+      factor("mlb_officials_loaded", "MLB Officials Loaded", officialsSummary.summary || "MISSING", officialsSummary.count ? 72 : 0, officialsSummary.source || "mlb_statsapi_live_officials"),
+      factor("mlb_api_cache", "MLB API Cache", mlb.cache_summary ? JSON.stringify(mlb.cache_summary) : "MISSING", mlb.cache_summary ? 82 : 0, MLB_API_CACHE_TABLE),
+      factor("mlb_api_warnings", "MLB API Warnings", mlb.warnings?.length ? mlb.warnings.join(" | ") : "NONE", mlb.warnings?.length ? 45 : 92, "mlb_api_bridge")
+    ],
     risk: [
-      factor("Missing Fields", (packet.missing || []).length ? packet.missing.join(" | ") : "None", (packet.missing || []).length ? 45 : 90, "packet_validator", "controlled"),
-      factor("Warnings", (packet.warnings || []).length ? packet.warnings.join(" | ") : "None", (packet.warnings || []).length ? 45 : 90, "packet_validator", "controlled")
+      factor("packet_completeness", "Packet Completeness", (packet.missing || []).length ? `Missing: ${(packet.missing || []).join(", ")}` : "Complete", completeness, "packet"),
+      factor("db_inventory", "DB Inventory", packet.db_inventory ? JSON.stringify(packet.db_inventory) : "MISSING", packet.db_inventory ? 86 : 0, "packet"),
+      factor("warnings", "Warnings", (packet.warnings || []).length ? packet.warnings.join(" | ") : "NONE", (packet.warnings || []).length ? 45 : 96, "packet"),
+      factor("source_staleness", "Source Staleness", `game ${game.updated_at || "?"} / player ${p.updated_at || "?"} / candidate ${c.updated_at || "?"}`, (game.updated_at && p.updated_at && c.updated_at) ? 76 : 58, "updated_at_fields")
     ]
   };
-  const allFactors = Object.values(groups).flat();
-  const strong = allFactors.filter(f => f.score >= 80).length;
-  const review = allFactors.filter(f => f.score >= 65 && f.score < 80).length;
-  const risk = allFactors.filter(f => f.score < 65).length;
-  const avg = allFactors.length ? Math.round(allFactors.reduce((a, f) => a + f.score, 0) / allFactors.length) : 0;
-  return { groups, summary: { total: allFactors.length, strong, review, risk, average_factor_score: avg }, version: "Main-1M Priority 1 Matrix Bridge" };
+}
+function flattenFactors(matrixFactors) {
+  return Object.values(matrixFactors || {}).flat();
 }
 
-async function upsertLegCache(env, packet, matrix) {
+async function writeSupplementalCache(env, packet) {
+  const cacheKey = [packet.slate_date, packet.game_id || "no_game", packet.leg.team_id, packet.leg.player_name, packet.leg.prop_family].join("|");
+  const payload = JSON.stringify({
+    version: WORKER_VERSION,
+    slate_date: packet.slate_date,
+    game_id: packet.game_id,
+    leg: packet.leg,
+    game: packet.game,
+    player: packet.player,
+    lineup: packet.lineup,
+    opposing_starter: packet.opposing_starter,
+    bullpen: packet.bullpen,
+    candidate: packet.candidate,
+    team_lineup: packet.team_lineup,
+    opponent_lineup: packet.opponent_lineup,
+    game_starters: packet.game_starters,
+    game_bullpens: packet.game_bullpens,
+    team_players: packet.team_players,
+    opponent_players: packet.opponent_players,
+    related_candidates: packet.related_candidates,
+    mlb_api: packet.mlb_api,
+    db_inventory: packet.db_inventory,
+    matrix_factors: packet.matrix_factors,
+    missing: packet.missing,
+    warnings: packet.warnings
+  });
   try {
-    await ensureSupplementalTables(env);
-    const key = `${packet.slate_date}|${packet.game_id || "NO_GAME"}|${packet.leg.team_id}|${packet.leg.player_name}|${packet.leg.prop_family}`;
-    await env.DB.prepare(`INSERT INTO main_supplemental_leg_cache (cache_key, slate_date, game_id, team_id, opponent_team, player_name, prop_family, packet_json, matrix_json, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(cache_key) DO UPDATE SET packet_json = excluded.packet_json, matrix_json = excluded.matrix_json, updated_at = CURRENT_TIMESTAMP`)
-      .bind(key, packet.slate_date, packet.game_id, packet.leg.team_id, packet.leg.opponent_team, packet.leg.player_name, packet.leg.prop_family, JSON.stringify(packet), JSON.stringify(matrix)).run();
-    return { ok: true, table: "main_supplemental_leg_cache", cache_key: key, mode: "upsert_priority_1_leg_packet", rows_written: 1 };
-  } catch (e) {
-    return { ok: false, table: "main_supplemental_leg_cache", error: String(e && e.message || e) };
+    await run(env.DB, `
+      CREATE TABLE IF NOT EXISTS ${SUPPLEMENTAL_TABLE} (
+        cache_key TEXT PRIMARY KEY,
+        slate_date TEXT,
+        game_id TEXT,
+        player_name TEXT,
+        team_id TEXT,
+        prop_family TEXT,
+        source TEXT,
+        confidence TEXT,
+        packet_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT
+      )
+    `);
+    await run(env.DB, `
+      INSERT INTO ${SUPPLEMENTAL_TABLE}
+        (cache_key, slate_date, game_id, player_name, team_id, prop_family, source, confidence, packet_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        slate_date = excluded.slate_date,
+        game_id = excluded.game_id,
+        player_name = excluded.player_name,
+        team_id = excluded.team_id,
+        prop_family = excluded.prop_family,
+        source = excluded.source,
+        confidence = excluded.confidence,
+        packet_json = excluded.packet_json,
+        updated_at = excluded.updated_at
+    `, [
+      cacheKey,
+      packet.slate_date,
+      packet.game_id || null,
+      packet.leg.player_name,
+      packet.leg.team_id,
+      packet.leg.prop_family,
+      "main_api_incremental_leg_packet_cache",
+      "controlled_small_write",
+      payload,
+      nowSql()
+    ]);
+    return { ok: true, table: SUPPLEMENTAL_TABLE, cache_key: cacheKey, mode: "upsert_small_leg_packet", rows_written: 1 };
+  } catch (err) {
+    return { ok: false, table: SUPPLEMENTAL_TABLE, cache_key: cacheKey, error: err?.message || String(err), mode: "cache_write_failed_non_blocking" };
   }
 }
 
-async function buildLegPacket(env, payload) {
-  const slateDate = await getSlateDate(env, payload);
+async function buildLegPacket(payload, env, options = {}) {
+  const slateDate = payload.slate_date || DEFAULT_SLATE_DATE;
+  const playerName = safeText(payload.player_name || payload.player_id_hint || payload.parsedPlayer).trim();
+  const teamId = safeText(payload.team_id || payload.team).trim().toUpperCase();
+  const opponentTeam = safeText(payload.opponent_team || payload.opponent).trim().toUpperCase();
+  const propType = safeText(payload.prop_type || payload.prop).trim();
+  const family = safeText(payload.prop_family || payload.family || normalizeFamily(propType)).toUpperCase();
+
+  const game = await findGame(env, slateDate, teamId, opponentTeam);
+  const gameId = game?.game_id || payload.game_id || null;
+  const market = await findMarket(env, gameId);
+  const player = await findPlayer(env, playerName, teamId);
+  const lineup = await findLineup(env, slateDate, playerName, teamId, gameId);
+  const opposingStarter = await findStarter(env, gameId, opponentTeam);
+  const bullpen = await findBullpen(env, gameId, opponentTeam);
+  const recentUsage = await findRecentUsage(env, playerName, teamId);
+  const candidate = await findCandidate(env, family, playerName, teamId, gameId, slateDate);
+  const teamLineup = await findTeamLineup(env, gameId, teamId);
+  const opponentLineup = await findTeamLineup(env, gameId, opponentTeam);
+  const gameStarters = await findGameStarters(env, gameId);
+  const gameBullpens = await findGameBullpens(env, gameId);
+  const teamPlayers = await findTeamPlayers(env, teamId);
+  const opponentPlayers = await findTeamPlayers(env, opponentTeam);
+  const relatedCandidates = await findRelatedCandidates(env, family, playerName, teamId, gameId, slateDate);
   const leg = {
-    leg_id: payload.leg_id || "LEG-1",
-    row_index: payload.row_index || 1,
-    player_name: payload.player_name,
-    team_id: normalizeTeam(payload.team_id),
-    opponent_team: normalizeTeam(payload.opponent_team),
-    prop_type: payload.prop_type,
-    prop_family: payload.prop_family || familyFromProp(payload.prop_type),
-    line: payload.line,
-    side: payload.side || "More",
-    game_time_text: payload.game_time_text || ""
+    leg_id: payload.leg_id || null,
+    row_index: payload.row_index || null,
+    player_name: playerName,
+    team_id: teamId,
+    opponent_team: opponentTeam,
+    prop_type: propType,
+    prop_family: family,
+    line: payload.line ?? null,
+    side: payload.side || payload.direction || null,
+    game_time_text: payload.game_time_text || null
   };
-  const warnings = [];
-  const missing = [];
-  const game = await findGame(env, leg, slateDate);
-  if (!game) missing.push("game");
-  const gameId = game && game.game_id || null;
-  const market = gameId ? await getMarket(env, gameId) : null;
-  const player = await getPlayer(env, leg.player_name, leg.team_id);
-  if (!player) missing.push("player");
-  const lineup = gameId ? await getLineup(env, gameId, leg.team_id, leg.player_name) : null;
-  const opposingStarter = gameId ? await getStarter(env, gameId, leg.opponent_team) : null;
-  if (!opposingStarter) missing.push("opposing_starter");
-  const bullpen = gameId ? await getBullpen(env, gameId, leg.opponent_team) : null;
-  const candidate = gameId ? await getCandidate(env, leg.prop_family, slateDate, gameId, leg.team_id, leg.opponent_team, leg.player_name) : null;
-  const teamLineup = gameId ? await getTeamLineup(env, gameId, leg.team_id) : [];
-  const opponentLineupD1 = gameId ? await getTeamLineup(env, gameId, leg.opponent_team) : [];
-  const gameStarters = gameId ? await getGameStarters(env, gameId) : [];
-  const gameBullpens = gameId ? await getGameBullpens(env, gameId) : [];
-  const teamPlayers = await getTeamPlayers(env, leg.team_id);
-  const opponentPlayers = await getTeamPlayers(env, leg.opponent_team);
-  const relatedCandidates = gameId ? await getRelatedCandidates(env, slateDate, gameId, leg.team_id, leg.opponent_team) : { hits: [], rbi: [], rfi: [] };
-  const packet = { ok: true, source: WORKER_NAME, mode: "d1_packet_plus_priority_1_mlb_api_bridge", slate_date: slateDate, leg, game, game_id: gameId, market, player, lineup, opposing_starter: opposingStarter, bullpen, recent_usage: [], candidate, team_lineup: teamLineup, opponent_lineup: opponentLineupD1, game_starters: gameStarters, game_bullpens: gameBullpens, team_players: teamPlayers, opponent_players: opponentPlayers, related_candidates: relatedCandidates, derived_flags: [], warnings, raw_payload: payload, missing };
-  packet.mlb_api = await getMlbApiBridge(env, packet);
-  if (packet.mlb_api && packet.mlb_api.opponent_boxscore_lineup && packet.mlb_api.opponent_boxscore_lineup.length) packet.opponent_lineup = packet.mlb_api.opponent_boxscore_lineup;
-  if (packet.mlb_api && packet.mlb_api.player_recent_logs) packet.recent_usage = packet.mlb_api.player_recent_logs;
-  const matrix = buildMatrix(packet);
-  packet.matrix = matrix;
-  packet.incremental_cache = await upsertLegCache(env, packet, matrix);
+  let mlbApi = { ok: false, source: "mlb_statsapi_official_safe_enrichment", error: "not_started" };
+  try {
+    mlbApi = await enrichFromMlbApi(env, { slate_date: slateDate, leg, game_id: gameId, opposing_starter: opposingStarter, candidate });
+  } catch (err) {
+    mlbApi = { ok: false, source: "mlb_statsapi_official_safe_enrichment", error: err?.message || String(err), warnings: [err?.message || String(err)] };
+  }
+
+  const finalTeamLineup = teamLineup.length ? teamLineup : (mlbApi.boxscore_lineup || []);
+  const finalOpponentLineup = opponentLineup.length ? opponentLineup : (mlbApi.opponent_boxscore_lineup || []);
+  const finalRecentUsage = recentUsage.length ? recentUsage : (mlbApi.player_recent_logs || []);
+
+  const packet = {
+    ok: true,
+    source: "alphadog-main-api-v100",
+    mode: "d1_packet_plus_matrix_fill_controlled_cache_mlb_api_bridge",
+    slate_date: slateDate,
+    leg,
+    game,
+    game_id: gameId,
+    market,
+    player,
+    lineup,
+    opposing_starter: opposingStarter,
+    bullpen,
+    recent_usage: finalRecentUsage,
+    candidate,
+    team_lineup: finalTeamLineup,
+    opponent_lineup: finalOpponentLineup,
+    mlb_api: mlbApi,
+    game_starters: gameStarters,
+    game_bullpens: gameBullpens,
+    team_players: teamPlayers,
+    opponent_players: opponentPlayers,
+    related_candidates: relatedCandidates,
+    db_inventory: {
+      team_lineup_rows: finalTeamLineup.length,
+      opponent_lineup_rows: finalOpponentLineup.length,
+      mlb_api_player_recent_logs: (mlbApi.player_recent_logs || []).length,
+      mlb_api_team_recent_games: (mlbApi.team_recent_games || []).length,
+      mlb_api_opponent_bullpen_recent: (mlbApi.opponent_bullpen_recent || []).length,
+      game_starter_rows: gameStarters.length,
+      game_bullpen_rows: gameBullpens.length,
+      team_player_rows: teamPlayers.length,
+      opponent_player_rows: opponentPlayers.length,
+      related_hits_candidates: relatedCandidates.hits.length,
+      related_rbi_candidates: relatedCandidates.rbi.length,
+      related_rfi_candidates: relatedCandidates.rfi.length
+    },
+    derived_flags: [],
+    warnings: [],
+    raw_payload: payload
+  };
+
+  packet.missing = buildMissing(packet);
+  if (packet.missing.length) packet.warnings.push(`Missing packet sections: ${packet.missing.join(", ")}`);
+  if (mlbApi?.warnings?.length) packet.warnings.push(`MLB API enrichment warnings: ${mlbApi.warnings.join(" | ")}`);
+  if (family === "UNKNOWN") packet.warnings.push("Unsupported or unknown prop family");
+  packet.matrix_factors = buildMatrixFactors(packet);
+  packet.matrix_factor_summary = summarizeFactors(packet.matrix_factors);
+
+  if (options.writeCache !== false) {
+    packet.incremental_cache = await writeSupplementalCache(env, packet);
+    if (packet.incremental_cache && packet.incremental_cache.ok === false) {
+      packet.derived_flags.push("incremental_cache_write_failed_non_blocking");
+    }
+  } else {
+    packet.incremental_cache = { ok: true, mode: "disabled_for_this_request" };
+  }
+
   return packet;
 }
 
-function familyFromProp(prop) {
-  const p = String(prop || "").toLowerCase();
-  if (p.includes("rbi")) return "RBI";
-  if (p.includes("hit")) return "HITS";
-  if (p.includes("run first") || p.includes("rfi")) return "RFI";
-  if (p.includes("strikeout")) return "K";
-  if (p.includes("total base")) return "TB";
-  return "GENERIC";
+function summarizeFactors(matrixFactors) {
+  const factors = flattenFactors(matrixFactors);
+  const total = factors.length;
+  const strong = factors.filter(f => Number(f.score) >= 80).length;
+  const review = factors.filter(f => Number(f.score) >= 65 && Number(f.score) < 80).length;
+  const risk = factors.filter(f => Number(f.score) < 65).length;
+  const avg = total ? Math.round(factors.reduce((sum, f) => sum + Number(f.score || 0), 0) / total) : 0;
+  return { total, strong, review, risk, average_factor_score: avg };
 }
 
 async function handlePacketLeg(request, env) {
-  const payload = await request.json().catch(() => ({}));
-  const packet = await buildLegPacket(env, payload);
-  return json(packet);
+  const payload = await readJson(request);
+  const packet = await buildLegPacket(payload, env, { writeCache: true });
+  return jsonResponse(packet);
 }
 
-function scoreFromMatrix(matrix, candidate) {
-  const avg = matrix && matrix.summary ? matrix.summary.average_factor_score : 55;
-  const tierBoost = candidate && candidate.candidate_tier === "A_POOL" ? 4 : candidate && candidate.candidate_tier === "B_POOL" ? 1 : 0;
-  const finalScore = clamp(Math.round(avg + tierBoost));
-  return { final_score: finalScore, hit_probability: clamp(Math.round(finalScore * 0.82)), confidence: finalScore >= 80 ? "HIGH" : finalScore >= 65 ? "MEDIUM" : "LOW", verdict: finalScore >= 65 ? "QUALIFIED_CANDIDATE" : "REVIEW_ONLY" };
+function scoreFromCandidate(packet) {
+  const family = packet.leg.prop_family;
+  const candidate = packet.candidate;
+  let base = 50;
+  let verdict = "WATCHLIST";
+  let confidence = "LOW";
+  const reasons = [];
+
+  if (candidate) {
+    const tier = safeText(candidate.candidate_tier).toUpperCase();
+    if (["A_POOL", "YES_RFI"].includes(tier)) {
+      base = 72;
+      verdict = family === "RFI" ? "YES_RFI_CANDIDATE" : "QUALIFIED_CANDIDATE";
+      confidence = "MEDIUM";
+      reasons.push(`Candidate tier ${tier}`);
+    } else if (["B_POOL", "LEAN_YES"].includes(tier)) {
+      base = 63;
+      verdict = family === "RFI" ? "LEAN_YES_CANDIDATE" : "SECONDARY_CANDIDATE";
+      confidence = "LOW_MEDIUM";
+      reasons.push(`Candidate tier ${tier}`);
+    } else {
+      base = 55;
+      reasons.push(`Candidate tier ${tier || "UNKNOWN"}`);
+    }
+  } else {
+    reasons.push("No candidate row found for this leg/family");
+  }
+
+  const factorAvg = packet.matrix_factor_summary?.average_factor_score ?? 50;
+  const missingPenalty = Math.min(packet.missing.length * 4, 20);
+  const finalScore = Math.max(0, Math.min(100, Math.round((base * 0.65) + (factorAvg * 0.35) - missingPenalty)));
+  const hitProbability = Math.max(0, Math.min(99, Math.round(finalScore * 0.82)));
+
+  if (packet.missing.length >= 4) {
+    confidence = "LOW";
+    verdict = "DATA_REVIEW";
+  }
+
+  return {
+    ok: true,
+    source: "alphadog-main-api-v100",
+    mode: "matrix_fill_candidate_adapter_placeholder",
+    family,
+    final_score: finalScore,
+    hit_probability: hitProbability,
+    confidence,
+    verdict,
+    formula_source: "matrix-fill placeholder only; final scoring formula not locked; no Gemini call",
+    warnings: packet.warnings || [],
+    missing: packet.missing || [],
+    reasons,
+    matrix_factor_summary: packet.matrix_factor_summary,
+    factor_scores: {
+      identity: packet.player ? 1 : 0,
+      trend: packet.recent_usage?.length ? 1 : 0,
+      matchup: packet.opposing_starter ? 1 : 0,
+      role_usage: packet.lineup ? 1 : 0,
+      market: packet.market ? 1 : 0,
+      environment: packet.game ? 1 : 0,
+      risk: packet.missing.length
+    },
+    note: "Matrix fill and wiring proof only. Final scoring logic comes later."
+  };
 }
 
 async function handleScoreLeg(request, env) {
-  const payload = await request.json().catch(() => ({}));
-  const packet = await buildLegPacket(env, payload);
-  const s = scoreFromMatrix(packet.matrix, packet.candidate);
-  return json({ ok: true, version: SYSTEM_VERSION, packet, source: WORKER_NAME, mode: "matrix_fill_priority_1_adapter_placeholder", family: packet.leg.prop_family, ...s, formula_source: "Priority 1 matrix-fill placeholder only; final scoring formula not locked; no Gemini call", warnings: packet.warnings || [], missing: packet.missing || [], reasons: [packet.candidate && packet.candidate.candidate_tier ? `Candidate tier ${packet.candidate.candidate_tier}` : "No candidate tier"], matrix_factor_summary: packet.matrix.summary, factor_scores: { identity: 1, trend: 1, matchup: 1, role_usage: 1, market: packet.market ? 1 : 0, environment: 1, risk: (packet.warnings || []).length ? 0 : 1, priority_1: packet.mlb_api && packet.mlb_api.ok ? 1 : 0 }, note: "Matrix fill and Priority 1 wiring proof only. Final scoring logic comes later." });
+  const payload = await readJson(request);
+  const packet = await buildLegPacket(payload, env, { writeCache: true });
+  const score = scoreFromCandidate(packet);
+  return jsonResponse({ ok: true, version: WORKER_VERSION, packet, score });
 }
 
 export default {
   async fetch(request, env) {
-    if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
+    if (request.method === "OPTIONS") return jsonResponse({ ok: true });
     const url = new URL(request.url);
+    const path = url.pathname.replace(/\/$/, "") || "/";
+
     try {
-      if (url.pathname === "/" || url.pathname === "/main/health") return await handleHealth(env);
-      if (url.pathname === "/main/packet/leg" && request.method === "POST") return await handlePacketLeg(request, env);
-      if (url.pathname === "/main/score/leg" && request.method === "POST") return await handleScoreLeg(request, env);
-      return json({ ok: false, worker: WORKER_NAME, version: SYSTEM_VERSION, error: "not_found", path: url.pathname }, 404);
-    } catch (e) {
-      return json({ ok: false, worker: WORKER_NAME, version: SYSTEM_VERSION, error: String(e && e.message || e), stack: e && e.stack || null }, 500);
+      if (request.method === "GET" && path === "/main/debug/routes") return await handleDebugRoutes();
+      if (request.method === "GET" && path === "/main/health") return await handleMainHealth(request, env);
+      if (request.method === "POST" && path === "/main/packet/leg") return await handlePacketLeg(request, env);
+      if (request.method === "POST" && path === "/main/score/leg") return await handleScoreLeg(request, env);
+      return jsonResponse({
+        ok: false,
+        error: "Not found",
+        worker: "alphadog-main-api-v100",
+        available_routes: ["GET /main/debug/routes", "GET /main/health?slate_date=YYYY-MM-DD", "POST /main/packet/leg", "POST /main/score/leg"]
+      }, 404);
+    } catch (err) {
+      return jsonResponse({ ok: false, worker: "alphadog-main-api-v100", error: err?.message || String(err), stack: err?.stack || null }, 500);
     }
   }
 };
