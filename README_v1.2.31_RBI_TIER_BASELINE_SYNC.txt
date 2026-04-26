@@ -1,6 +1,6 @@
 AlphaDog v1.2.31 — RBI Tier Baseline Sync
 
-Surgical patch from v1.2.30.
+Surgical patch verified as v1.2.31 runtime build.
 
 Changed:
 - control_room.html version label/debug version.

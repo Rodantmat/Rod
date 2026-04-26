@@ -1,0 +1,12 @@
+AlphaDog v1.2.31 - RBI Tier Baseline Sync
+
+PRE-ZIP AND POST-ZIP AUDIT LOCKS:
+1. control_room.html versionTag = v1.2.31 - RBI Tier Baseline Sync.
+2. runRfiRegressionSuite JSON version = v1.2.31 - RBI Tier Baseline Sync.
+3. worker.js header = AlphaDog v1.2.31 - RBI Tier Baseline Sync compatible worker.
+4. RBI_TIER_SPLIT baseline = A_POOL 55 / B_POOL 64.
+5. RBI_TIER_SPLIT expected status = PASS_BASELINE_55_64.
+6. Runtime files control_room.html and worker.js contain no v1.2.30 label.
+
+EXPECTED TEST:
+RFI Regression x3 returns ok=true, regression.complete=true, expected_checks=12, returned_checks=12, RBI_TIER_SPLIT PASS_BASELINE_55_64.
