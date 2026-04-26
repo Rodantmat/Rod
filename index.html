@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OXYGEN-COBALT • v13.78.05 (OXYGEN-COBALT)</title>
+  <title>OXYGEN-COBALT • Main-1C DB Wiring Starter</title>
   <link rel="stylesheet" href="./main-system-styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <header class="hero">
-      <h1>OXYGEN-COBALT <span class="version-pill">v13.78.05 (OXYGEN-COBALT)</span></h1>
+      <h1>OXYGEN-COBALT <span class="version-pill">Main-1C DB Wiring Starter</span></h1>
       <p>Paste MLB board text, ingest the clean pool, and validate the current session.</p>
     </header>
 
@@ -33,21 +33,36 @@
       <section class="card analysis-toolbar">
         <div>
           <h2>Screen 2 • Data Matrix</h2>
-          <p class="muted tight">Matrix shell only. Backend packets and scoring will be wired in the next phases.</p>
+          <p class="muted tight">Database wiring starter. Daily Health is live; packet/scoring endpoints are probed safely per leg.</p>
         </div>
         <div class="btn-row toolbar-actions">
+          <button id="refreshBackendBtn" class="secondary">Refresh Daily Health</button>
+          <button id="rerunBackendBtn" class="primary-strong">Re-run DB Wiring</button>
           <button id="backToIngestBtn" class="secondary">Back to Screen 1</button>
           <button id="analysisResetBtn" class="secondary">Reset All</button>
         </div>
       </section>
+
+      <div class="backend-control-grid">
+        <label>Worker URL
+          <input id="backendUrlInput" type="url" placeholder="https://prop-ingestion-git...workers.dev" />
+        </label>
+        <label>Slate Date
+          <input id="slateDateInput" type="text" placeholder="YYYY-MM-DD or blank for auto" />
+        </label>
+        <label>Token Optional
+          <input id="backendTokenInput" type="password" placeholder="Only if INGEST_TOKEN is enabled" />
+        </label>
+      </div>
+      <div id="backendStatusMount"></div>
 
       <div id="analysisMount"></div>
     </main>
   </div>
 
   <script src="./main-system-parser.js"></script>
+  <script src="./main-system-connectors.js"></script>
   <script src="./main-system-ui-engine.js"></script>
   <script src="./main-system-core.js"></script>
-  <script src="./main-system-connectors.js"></script>
 </body>
 </html>
