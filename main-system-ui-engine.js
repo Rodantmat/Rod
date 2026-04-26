@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1C DB Wiring Starter';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1D Report Log Guard';
 
   function el(id) {
     return document.getElementById(id);
@@ -330,6 +330,136 @@ window.PickCalcUI = (() => {
     `;
   }
 
+  function renderSystemLog(logRows = []) {
+    const mount = el('systemLogMount');
+    if (!mount) return;
+
+    if (!Array.isArray(logRows) || !logRows.length) {
+      mount.innerHTML = '<div class="system-log-empty">No backend/mining steps logged yet.</div>';
+      return;
+    }
+
+    mount.innerHTML = logRows.slice().reverse().map((item) => {
+      const level = String(item.level || 'info').toLowerCase();
+      const safeLevel = ['info', 'success', 'warn', 'error'].includes(level) ? level : 'info';
+      return `
+        <div class="system-log-row system-log-${safeLevel}">
+          <div class="system-log-time">${escapeHtml(item.time || '')}</div>
+          <div class="system-log-level">${escapeHtml(safeLevel)}</div>
+          <div class="system-log-message">${escapeHtml(item.message || '')}</div>
+          ${item.detail ? `<div class="system-log-detail">${escapeHtml(item.detail)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  }
+
+  function buildDebugReport(report = {}) {
+    const lines = [];
+    const now = new Date().toISOString();
+    const state = report.state || {};
+    const rows = Array.isArray(state.cleanPool) ? state.cleanPool : [];
+    const vault = state.miningVault || {};
+    const health = state.backendHealth || null;
+    const logRows = Array.isArray(state.systemLog) ? state.systemLog : [];
+
+    lines.push('OXYGEN-COBALT MAIN SYSTEM DEBUG REPORT');
+    lines.push(`Generated: ${now}`);
+    lines.push(`Frontend Version: ${report.version || SYSTEM_VERSION}`);
+    lines.push(`Worker URL: ${report.backendUrl || 'UNKNOWN'}`);
+    lines.push(`Slate Date: ${state.slateDate || 'AUTO / BLANK'}`);
+    lines.push(`Active Screen: ${state.activeScreen || 'UNKNOWN'}`);
+    lines.push('');
+
+    lines.push('=== SCREEN 1 / INGEST SUMMARY ===');
+    lines.push(`Accepted Legs: ${rows.length}`);
+    lines.push(`Rejected Lines: ${Array.isArray(state.auditRows?.rejectedLines) ? state.auditRows.rejectedLines.length : 0}`);
+    rows.forEach((row, index) => {
+      lines.push(`${index + 1}. ${row.parsedPlayer || 'UNKNOWN'} | ${row.team || ''} vs/@ ${row.opponent || ''} | ${row.prop || ''} | line ${row.line || ''} | type ${row.type || ''} | time ${row.gameTimeText || ''}`);
+    });
+    lines.push('');
+
+    lines.push('=== DAILY HEALTH ===');
+    if (!health) {
+      lines.push('Daily Health: NOT CHECKED');
+    } else {
+      lines.push(`ok: ${health.ok}`);
+      lines.push(`version: ${health.version || 'UNKNOWN'}`);
+      lines.push(`status: ${health.status || 'UNKNOWN'}`);
+      lines.push(`slate_date: ${health.slate_date || 'UNKNOWN'}`);
+      lines.push(`error: ${health.error || 'NONE'}`);
+      lines.push('table_checks:');
+      (health.table_checks || []).forEach((check) => {
+        lines.push(`- ${check.check}: ${check.value} / ${check.status} / ok=${check.ok}`);
+      });
+      lines.push(`summary: ${compactJson(health.summary || {}, 3000)}`);
+    }
+    lines.push('');
+
+    lines.push('=== SCREEN 2 / LEG MATRIX STATE ===');
+    rows.forEach((row, index) => {
+      const key = String(row?.LEG_ID || row?.id || row?.idx || index + 1);
+      const item = vault[key] || {};
+      lines.push(`--- LEG ${index + 1} ---`);
+      lines.push(`Player: ${row.parsedPlayer || 'UNKNOWN'}`);
+      lines.push(`Team/Opponent: ${row.team || ''} vs/@ ${row.opponent || ''}`);
+      lines.push(`Prop: ${row.prop || ''}`);
+      lines.push(`Line: ${row.line || ''}`);
+      lines.push(`Family: ${item.family || (window.PickCalcConnectors?.normalizePropFamily ? window.PickCalcConnectors.normalizePropFamily(row) : 'UNKNOWN')}`);
+      lines.push(`Status: ${item.status || 'NOT STARTED'}`);
+      lines.push(`Packet Status: ${item.packet_status || 'NOT STARTED'}`);
+      lines.push(`Score Status: ${item.score_status || 'NOT STARTED'}`);
+      lines.push(`Warnings: ${Array.isArray(item.warnings) && item.warnings.length ? item.warnings.join(' | ') : 'NONE'}`);
+      lines.push(`Payload: ${compactJson(item.payload || {}, 3000)}`);
+      lines.push(`Packet Request: ${compactJson(item.packet_request || {}, 3000)}`);
+      lines.push(`Score Request: ${compactJson(item.score_request || {}, 3000)}`);
+      lines.push(`Packet: ${compactJson(item.packet || {}, 3000)}`);
+      lines.push(`Score: ${compactJson(item.score || {}, 3000)}`);
+    });
+    lines.push('');
+
+    lines.push('=== SYSTEM LOG ===');
+    if (!logRows.length) lines.push('No log rows captured.');
+    logRows.forEach((item) => {
+      lines.push(`[${item.time || ''}] ${String(item.level || 'info').toUpperCase()} ${item.message || ''}${item.detail ? ` | ${item.detail}` : ''}`);
+    });
+    lines.push('');
+
+    lines.push('=== RAW STATE SNAPSHOT ===');
+    lines.push(compactJson({
+      cleanPool: rows,
+      auditRows: state.auditRows,
+      miningVault: state.miningVault,
+      backendHealth: state.backendHealth,
+      systemLog: state.systemLog
+    }, 20000));
+
+    return lines.join('\n');
+  }
+
+  async function copyTextToClipboard(text) {
+    const value = String(text || '');
+    if (!value.trim()) return false;
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {}
+
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', 'readonly');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    textarea.remove();
+    return ok;
+  }
+
   return {
     SYSTEM_VERSION,
     el,
@@ -338,6 +468,9 @@ window.PickCalcUI = (() => {
     renderFeedStatus,
     renderPoolTable,
     renderBackendStatus,
-    renderAnalysisScreen
+    renderAnalysisScreen,
+    renderSystemLog,
+    buildDebugReport,
+    copyTextToClipboard
   };
 })();

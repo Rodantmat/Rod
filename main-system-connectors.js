@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1C DB Wiring Starter';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1D Report Log Guard';
   const DEFAULT_BACKEND_URL = 'https://prop-ingestion-git.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',

@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OXYGEN-COBALT • Main-1C DB Wiring Starter</title>
+  <title>OXYGEN-COBALT • Main-1D Report Log Guard</title>
   <link rel="stylesheet" href="./main-system-styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <header class="hero">
-      <h1>OXYGEN-COBALT <span class="version-pill">Main-1C DB Wiring Starter</span></h1>
+      <h1>OXYGEN-COBALT <span class="version-pill">Main-1D Report Log Guard</span></h1>
       <p>Paste MLB board text, ingest the clean pool, and validate the current session.</p>
     </header>
 
@@ -33,9 +33,10 @@
       <section class="card analysis-toolbar">
         <div>
           <h2>Screen 2 • Data Matrix</h2>
-          <p class="muted tight">Database wiring starter. Daily Health is live; packet/scoring endpoints are probed safely per leg.</p>
+          <p class="muted tight">Database wiring starter with debug report capture and system log. Daily Health is live; packet/scoring endpoints are probed safely per leg.</p>
         </div>
         <div class="btn-row toolbar-actions">
+          <button id="copyReportBtn" class="report-button">Copy Debug Report</button>
           <button id="refreshBackendBtn" class="secondary">Refresh Daily Health</button>
           <button id="rerunBackendBtn" class="primary-strong">Re-run DB Wiring</button>
           <button id="backToIngestBtn" class="secondary">Back to Screen 1</button>
@@ -57,6 +58,17 @@
       <div id="backendStatusMount"></div>
 
       <div id="analysisMount"></div>
+
+      <section class="card system-log-card">
+        <div class="system-log-head">
+          <div>
+            <h2>System Log</h2>
+            <p class="muted tight">Mining / backend wiring status. This is included in Copy Debug Report.</p>
+          </div>
+          <button id="copyReportBottomBtn" class="secondary">Copy Debug Report</button>
+        </div>
+        <div id="systemLogMount" class="system-log-mount"></div>
+      </section>
     </main>
   </div>
 
