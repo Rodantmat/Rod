@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.23 — RFI Regression Cannon</div>
+<div id="versionTag">v1.2.24 — RFI Guarded Tier Cannon</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -330,7 +330,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: true,
     suite: "rfi_regression_x3",
-    version: "v1.2.23 — RFI Regression Cannon",
+    version: "v1.2.24 — RFI Guarded Tier Cannon",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
@@ -371,6 +371,18 @@ FROM edge_candidates_rfi WHERE slate_date='${D()}';
 
 SELECT 'RFI_WARNINGS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 3 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_MORE_THAN_BASELINE' END AS status
 FROM edge_candidates_rfi WHERE slate_date='${D()}' AND candidate_reason LIKE '%warn_%';
+
+SELECT 'RFI_CAP_CRITICAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 1 THEN 'PASS_BASELINE_1' ELSE 'WARN_REVIEW' END AS status
+FROM edge_candidates_rfi WHERE slate_date='${D()}' AND candidate_reason LIKE '%cap_critical_data_missing%';
+
+SELECT 'RFI_CAP_PARTIAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 2 THEN 'PASS_BASELINE_2' ELSE 'WARN_REVIEW' END AS status
+FROM edge_candidates_rfi WHERE slate_date='${D()}' AND candidate_reason LIKE '%cap_partial_data_missing%';
+
+SELECT 'RFI_INCOMPLETE_YES_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+  AND candidate_tier = 'YES_RFI'
+  AND (candidate_reason LIKE '%warn_away_top3_lineup_incomplete%' OR candidate_reason LIKE '%warn_home_top3_lineup_incomplete%');
 
 SELECT candidate_tier, COUNT(*) AS count_value
 FROM edge_candidates_rfi
@@ -430,6 +442,28 @@ SELECT 'RFI_WARNING_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUN
 FROM edge_candidates_rfi
 WHERE slate_date='${D()}'
   AND candidate_reason LIKE '%warn_%';
+
+SELECT 'RFI_CAP_CRITICAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NONE' WHEN COUNT(*) = 1 THEN 'PASS_BASELINE_1' ELSE 'WARN_REVIEW' END AS status
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+  AND candidate_reason LIKE '%cap_critical_data_missing%';
+
+SELECT 'RFI_CAP_PARTIAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 2 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_REVIEW' END AS status
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+  AND candidate_reason LIKE '%cap_partial_data_missing%';
+
+SELECT 'RFI_INCOMPLETE_YES_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+  AND candidate_tier = 'YES_RFI'
+  AND (candidate_reason LIKE '%warn_away_top3_lineup_incomplete%' OR candidate_reason LIKE '%warn_home_top3_lineup_incomplete%');
+
+SELECT 'RFI_CRITICAL_CAP_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+  AND candidate_reason LIKE '%cap_critical_data_missing%'
+  AND candidate_tier IN ('YES_RFI','LEAN_YES');
 
 SELECT candidate_tier, COUNT(*) AS rows_count, MIN(rfi_score) AS min_score, MAX(rfi_score) AS max_score, AVG(rfi_score) AS avg_score
 FROM edge_candidates_rfi

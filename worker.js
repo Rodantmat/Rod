@@ -1,4 +1,4 @@
-// RFI BUILDER ACTIVE
+// RFI GUARDED TIER CAP ACTIVE
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -1092,6 +1092,16 @@ function rfiTier(score) {
   return "WATCHLIST";
 }
 
+function rfiApplyLineupCompletenessCap(tier, awayIncomplete, homeIncomplete) {
+  if (awayIncomplete && homeIncomplete) {
+    return { tier: "WATCHLIST", tag: "cap_critical_data_missing" };
+  }
+  if (awayIncomplete || homeIncomplete) {
+    return { tier: tier === "YES_RFI" ? "LEAN_YES" : tier, tag: "cap_partial_data_missing" };
+  }
+  return { tier, tag: null };
+}
+
 async function ensureEdgeCandidatesRfiTable(env) {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS edge_candidates_rfi (
@@ -1214,7 +1224,11 @@ async function buildEdgeCandidatesRfi(input, env) {
 
     let score = awayTop.score + homeTop.score + awayStarter.score + homeStarter.score + park.score;
     score = Math.max(0, Math.min(30, score));
-    const tier = rfiTier(score);
+    const baseTier = rfiTier(score);
+    const awayTop3Incomplete = awayTop.warnings.includes("away_top3_lineup_incomplete");
+    const homeTop3Incomplete = homeTop.warnings.includes("home_top3_lineup_incomplete");
+    const cap = rfiApplyLineupCompletenessCap(baseTier, awayTop3Incomplete, homeTop3Incomplete);
+    const tier = cap.tier;
     const reasonTags = [
       ...awayTop.reasons,
       ...homeTop.reasons,
@@ -1223,6 +1237,7 @@ async function buildEdgeCandidatesRfi(input, env) {
       ...park.reasons,
       ...gameWarnings.map(w => `warn_${w}`)
     ];
+    if (cap.tag) reasonTags.push(cap.tag);
 
     if (gameWarnings.length) warnings.push({ game_id: g.game_id, warnings: gameWarnings });
 
