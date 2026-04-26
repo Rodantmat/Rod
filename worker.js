@@ -1,4 +1,4 @@
-// AlphaDog v1.2.28 — RBI Baseline Audit Lock compatible worker
+// AlphaDog v1.2.29 — Regression Execution Hard Lock compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
