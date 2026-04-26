@@ -1,7 +1,7 @@
-// AlphaDog v1.2.38 - Scheduled Run Freshness Gate compatible worker
+// AlphaDog v1.2.39 - Freshness Visibility Expansion compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.38 - Scheduled Run Freshness Gate";
-const SYSTEM_CODENAME = "Scheduled Run Freshness Gate";
+const SYSTEM_VERSION = "v1.2.39 - Freshness Visibility Expansion";
+const SYSTEM_CODENAME = "Freshness Visibility Expansion";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -518,6 +518,43 @@ async function buildScheduledFreshnessGate(env, slateDate) {
   };
 }
 
+async function buildLatestRequiredJobVisibility(env, slateDate) {
+  const definitions = [
+    { key: "RUN_FULL_PIPELINE", label: "Latest full pipeline", job_names: ["run_full_pipeline"] },
+    { key: "RFI_CANDIDATE_BUILD", label: "Latest RFI candidate build", job_names: ["build_edge_candidates_rfi"] },
+    { key: "RBI_CANDIDATE_BUILD", label: "Latest RBI candidate build", job_names: ["build_edge_candidates_rbi"] },
+    { key: "HITS_CANDIDATE_BUILD", label: "Latest Hits candidate build", job_names: ["build_edge_candidates_hits"] }
+  ];
+
+  const jobs = [];
+  for (const def of definitions) {
+    const row = await latestSuccessfulTaskForSlate(env, def.key, def.job_names, slateDate);
+    jobs.push({
+      key: def.key,
+      label: def.label,
+      job_names: def.job_names,
+      ok: row.ok === true,
+      status: row.status,
+      slate_date: slateDate,
+      min_finished_at: row.min_finished_at || slateStartTimestamp(slateDate),
+      latest_success: row.latest_success || null,
+      error: row.error || null
+    });
+  }
+
+  const missingOrError = jobs.filter(row => row.ok !== true);
+  return {
+    ok: missingOrError.length === 0,
+    mode: "latest_success_per_required_job",
+    slate_date: slateDate,
+    expected_jobs: definitions.length,
+    returned_jobs: jobs.length,
+    jobs,
+    missing_or_error: missingOrError.length,
+    note: "Visibility-only rollup of the latest successful run per required scheduled job. Freshness gate remains the blocking source of truth."
+  };
+}
+
 async function reapStaleTaskRuns(env) {
   try {
     const before = await dailyHealthRows(env, `
@@ -579,6 +616,7 @@ async function handleDailyHealth(request, env) {
   const likeSlate = `${slateDate}_%`;
   const stale_reaper = await reapStaleTaskRuns(env);
   const freshness_gate = await buildScheduledFreshnessGate(env, slateDate);
+  const latest_required_jobs = await buildLatestRequiredJobVisibility(env, slateDate);
 
   const checks = [];
   async function addCheck(name, sql, bindValues, passFn, warnFn) {
@@ -702,6 +740,7 @@ async function handleDailyHealth(request, env) {
     failed_recent_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
     registry_audit: registryAudit,
     freshness_gate,
+    latest_required_jobs,
     stale_query_ok: staleRows.ok,
     stuck_query_ok: stuckRows.ok,
     full_run_query_ok: latestFullRun.ok,
@@ -717,8 +756,9 @@ async function handleDailyHealth(request, env) {
   const reaperError = stale_reaper && stale_reaper.ok === false;
   const registryError = registryAudit && registryAudit.ok === false;
   const freshnessError = freshness_gate && freshness_gate.ok === false;
+  const latestRequiredJobsError = latest_required_jobs && latest_required_jobs.ok === false;
   const activeFailureCount = scheduled.current_active_failure_rows.length;
-  const status = errorChecks.length || failedChecks.length || stuckCount || activeFailureCount || reaperError || registryError || freshnessError ? "review" : (warnChecks.length ? "warn" : "pass");
+  const status = errorChecks.length || failedChecks.length || stuckCount || activeFailureCount || reaperError || registryError || freshnessError || latestRequiredJobsError ? "review" : (warnChecks.length ? "warn" : "pass");
 
   return json({
     ok: status === "pass" || status === "warn",
@@ -740,10 +780,12 @@ async function handleDailyHealth(request, env) {
       registry_audit_ok: registryAudit?.ok === true,
       freshness_gate_ok: freshness_gate?.ok === true,
       freshness_blocking_failures: freshness_gate?.blocking_failures || 0,
+      latest_required_jobs_ok: latest_required_jobs?.ok === true,
+      latest_required_jobs_missing_or_error: latest_required_jobs?.missing_or_error || 0,
       active_failures: activeFailureCount,
       historical_resolved_failures: scheduled.historical_resolved_failure_rows.length
     },
-    note: "Daily health plus stale task cleanup plus job registry audit plus slate-scoped failure filtering plus scheduled run freshness gate only. No scoring logic or candidate logic changed."
+    note: "Daily health plus stale task cleanup plus job registry audit plus slate-scoped failure filtering plus scheduled run freshness gate plus freshness visibility expansion only. No scoring logic or candidate logic changed."
   });
 }
 

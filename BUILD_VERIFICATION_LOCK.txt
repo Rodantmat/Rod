@@ -1,21 +1,16 @@
-AlphaDog Build Verification Lock
-Release: v1.2.38 - Scheduled Run Freshness Gate
+BUILD VERIFICATION LOCK
+Release: v1.2.39 - Freshness Visibility Expansion
+Base zip: alphadog_v1_2_38_SCHEDULED_RUN_FRESHNESS_GATE_VERIFIED.zip
 
-Mandatory package checks completed before zip:
-- worker.js header contains v1.2.38 - Scheduled Run Freshness Gate.
-- worker.js SYSTEM_VERSION contains v1.2.38 - Scheduled Run Freshness Gate.
-- worker.js SYSTEM_CODENAME contains Scheduled Run Freshness Gate.
-- control_room.html visible version tag contains v1.2.38 - Scheduled Run Freshness Gate.
-- control_room.html debugConfig version contains control_room_v1_2_38_scheduled_run_freshness_gate.
-- worker.js syntax checked with node --check.
-- Flat-folder zip only. No subdirectories.
+Verified before packaging:
+- worker.js header contains v1.2.39 - Freshness Visibility Expansion.
+- worker.js SYSTEM_VERSION contains v1.2.39 - Freshness Visibility Expansion.
+- worker.js SYSTEM_CODENAME contains Freshness Visibility Expansion.
+- control_room.html visible version tag contains v1.2.39 - Freshness Visibility Expansion.
+- control_room.html debugConfig version contains control_room_v1_2_39_freshness_visibility_expansion.
+- Daily Health contains scheduled.latest_required_jobs.
+- Latest required job visibility covers run_full_pipeline, build_edge_candidates_rfi, build_edge_candidates_rbi, build_edge_candidates_hits.
+- node --check worker.js passes.
+- Flat ZIP only, no subdirectories.
 
-Do not deploy if /health, Daily Health, or RFI Regression x3 reports any version other than v1.2.38 - Scheduled Run Freshness Gate.
-
-Surgical change in this build:
-- Added Daily Health scheduled run freshness gate.
-- Daily Health now verifies fresh slate-scoped success rows for RFI, RBI, Hits, and full pipeline/slate prep.
-- Freshness gate uses task_runs.input_json/output_json/error slate-date matching plus finished_at/started_at >= slate start.
-- No scoring logic changed.
-- No candidate scoring logic changed.
-- No D1 schema changed.
+Do not deploy if /health, Daily Health, or RFI Regression x3 reports any version other than v1.2.39 - Freshness Visibility Expansion.
