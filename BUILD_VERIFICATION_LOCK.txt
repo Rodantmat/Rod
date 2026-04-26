@@ -1,15 +1,14 @@
-BUILD VERIFICATION LOCK
+AlphaDog Build Verification Lock
 
-Release: v1.2.33 - Daily Health Layer
-Base: locked prior Regression No-Interrupt Loop
+Release: v1.2.35 - Job Registry Alignment Lock
 
-Hard checks performed before zip:
-- worker.js header contains v1.2.33 - Daily Health Layer.
-- worker.js SYSTEM_VERSION contains v1.2.33 - Daily Health Layer.
-- worker.js route contains /health/daily.
-- control_room.html visible version tag contains v1.2.33 - Daily Health Layer.
-- control_room.html debugConfig version contains control_room_v1_2_33_daily_health_layer.
-- control_room.html includes Daily Health button.
-- no subdirectories in zip.
+Mandatory version checks before deployment:
+- worker.js header contains v1.2.35 - Job Registry Alignment Lock.
+- worker.js SYSTEM_VERSION contains v1.2.35 - Job Registry Alignment Lock.
+- control_room.html visible version tag contains v1.2.35 - Job Registry Alignment Lock.
+- control_room.html debugConfig version contains control_room_v1_2_35_job_registry_alignment_lock.
+- /health returns v1.2.35 - Job Registry Alignment Lock.
+- /health/daily returns registry_audit_ok=true.
+- build_edge_candidates_rbi is listed as an executable valid job and routes to buildEdgeCandidatesRbi.
 
-Do not deploy if the visible version tag does not say v1.2.33 - Daily Health Layer.
+Do not deploy if any visible or internal version does not match v1.2.35.

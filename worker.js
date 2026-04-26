@@ -1,7 +1,7 @@
-// AlphaDog v1.2.34 - Stale Task Reaper compatible worker
+// AlphaDog v1.2.35 - Job Registry Alignment Lock compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.34 - Stale Task Reaper";
-const SYSTEM_CODENAME = "Stale Task Reaper";
+const SYSTEM_VERSION = "v1.2.35 - Job Registry Alignment Lock";
+const SYSTEM_CODENAME = "Job Registry Alignment Lock";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -324,8 +324,55 @@ function health(env) {
     gemini_key_bound: !!env.GEMINI_API_KEY,
     prompt_base_url_bound: !!env.PROMPT_BASE_URL,
     jobs: Object.keys(JOBS),
+    executable_jobs: executableJobNames(),
     time: new Date().toISOString()
   };
+}
+
+function executableJobNames() {
+  return Array.from(new Set([
+    ...Object.keys(JOBS),
+    "scrape_starters_mlb_api",
+    "repair_starters_mlb_api",
+    "scrape_bullpens_mlb_api",
+    "scrape_bullpens",
+    "scrape_lineups_mlb_api",
+    "scrape_lineups",
+    "scrape_recent_usage_mlb_api",
+    "scrape_recent_usage",
+    "scrape_derived_metrics",
+    "scrape_players_mlb_api",
+    "scrape_players",
+    "scrape_players_mlb_api_g1",
+    "scrape_players_mlb_api_g2",
+    "scrape_players_mlb_api_g3",
+    "scrape_players_mlb_api_g4",
+    "scrape_players_mlb_api_g5",
+    "scrape_players_mlb_api_g6"
+  ])).sort();
+}
+
+function isExecutableJobName(jobName) {
+  return executableJobNames().includes(String(jobName || ""));
+}
+
+function jobRegistryRequiredAudit() {
+  const required = [
+    "run_full_pipeline",
+    "scrape_games_markets",
+    "build_edge_candidates_hits",
+    "build_edge_candidates_rbi",
+    "build_edge_candidates_rfi"
+  ];
+  const executable = executableJobNames();
+  return required.map(job_name => ({
+    job_name,
+    registered: executable.includes(job_name),
+    route: job_name === "build_edge_candidates_rbi" ? "buildEdgeCandidatesRbi" :
+      job_name === "build_edge_candidates_hits" ? "buildEdgeCandidatesHits" :
+      job_name === "build_edge_candidates_rfi" ? "buildEdgeCandidatesRfi" :
+      job_name === "run_full_pipeline" ? "runFullPipeline" : "executeTaskJob"
+  }));
 }
 
 function dailyHealthStatus(pass, warn) {
@@ -473,12 +520,33 @@ async function handleDailyHealth(request, env) {
     LIMIT 8
   `);
 
+  const executableJobs = executableJobNames();
+  const invalidJobMarks = executableJobs.map(() => "?").join(",");
+  const invalidJobRows = await dailyHealthRows(env, `
+    SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
+    FROM task_runs
+    WHERE job_name NOT IN (${invalidJobMarks})
+    ORDER BY started_at DESC
+    LIMIT 12
+  `, executableJobs);
+
+  const requiredJobAudit = jobRegistryRequiredAudit();
+  const registryAudit = {
+    ok: requiredJobAudit.every(row => row.registered) && invalidJobRows.ok,
+    executable_jobs_count: executableJobs.length,
+    required_jobs: requiredJobAudit,
+    invalid_job_rows: invalidJobRows.ok ? invalidJobRows.rows : [],
+    invalid_job_query_ok: invalidJobRows.ok,
+    error: invalidJobRows.error || null
+  };
+
   const scheduled = {
     stale_reaper,
     latest_success_rows: staleRows.ok ? staleRows.rows : [],
     stuck_running_rows: stuckRows.ok ? stuckRows.rows : [],
     latest_full_run_rows: latestFullRun.ok ? latestFullRun.rows : [],
     failed_recent_rows: failedRecent.ok ? failedRecent.rows : [],
+    registry_audit: registryAudit,
     stale_query_ok: staleRows.ok,
     stuck_query_ok: stuckRows.ok,
     full_run_query_ok: latestFullRun.ok,
@@ -490,7 +558,8 @@ async function handleDailyHealth(request, env) {
   const warnChecks = checks.filter(c => c.status === "WARN");
   const stuckCount = scheduled.stuck_running_rows.length;
   const reaperError = stale_reaper && stale_reaper.ok === false;
-  const status = errorChecks.length || failedChecks.length || stuckCount || reaperError ? "review" : (warnChecks.length ? "warn" : "pass");
+  const registryError = registryAudit && registryAudit.ok === false;
+  const status = errorChecks.length || failedChecks.length || stuckCount || reaperError || registryError ? "review" : (warnChecks.length ? "warn" : "pass");
 
   return json({
     ok: status === "pass" || status === "warn",
@@ -508,9 +577,10 @@ async function handleDailyHealth(request, env) {
       error: errorChecks.length,
       stuck_running: stuckCount,
       stale_reaped: stale_reaper?.reaped_count || 0,
-      stale_reaper_ok: stale_reaper?.ok === true
+      stale_reaper_ok: stale_reaper?.ok === true,
+      registry_audit_ok: registryAudit?.ok === true
     },
-    note: "Daily health plus stale task cleanup only. No scoring logic or candidate logic changed."
+    note: "Daily health plus stale task cleanup plus job registry audit only. No scoring logic or candidate logic changed."
   });
 }
 
@@ -1520,6 +1590,18 @@ async function handleTaskRun(request, env) {
   const jobName = String((body || {}).job || "scrape_games_markets");
   const taskId = crypto.randomUUID();
   const input = { ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" };
+
+  if (!isExecutableJobName(jobName)) {
+    return Response.json({
+      ok: false,
+      status: "REJECTED_UNKNOWN_JOB",
+      error: `Unknown job: ${jobName}`,
+      job: jobName,
+      valid_jobs: executableJobNames(),
+      registry_audit: jobRegistryRequiredAudit(),
+      note: "Rejected before task_runs insert. No failed task_run was created for this invalid job name."
+    }, { status: 400 });
+  }
 
   await env.DB.prepare(`
     INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
