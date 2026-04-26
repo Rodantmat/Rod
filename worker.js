@@ -1,7 +1,7 @@
-// AlphaDog v1.2.39 - Freshness Visibility Expansion compatible worker
+// AlphaDog v1.2.40 - Manual SQL Output Guard compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.39 - Freshness Visibility Expansion";
-const SYSTEM_CODENAME = "Freshness Visibility Expansion";
+const SYSTEM_VERSION = "v1.2.40 - Manual SQL Output Guard";
+const SYSTEM_CODENAME = "Manual SQL Output Guard";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -824,6 +824,28 @@ function unauthorized() {
   return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
+function clampDebugSQLMaxRows(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(1, Math.min(Math.floor(n), 100));
+}
+
+function compactDebugSQLValue(value, maxChars) {
+  if (typeof value !== "string") return value;
+  if (value.length <= maxChars) return value;
+  return value.slice(0, maxChars) + `...[truncated ${value.length - maxChars} chars]`;
+}
+
+function compactDebugSQLRows(rows, maxChars) {
+  return rows.map(row => {
+    const out = {};
+    for (const [key, value] of Object.entries(row || {})) {
+      out[key] = compactDebugSQLValue(value, maxChars);
+    }
+    return out;
+  });
+}
+
 async function handleDebugSQL(request, env) {
   if (!isAuthorized(request, env)) return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
@@ -831,6 +853,9 @@ async function handleDebugSQL(request, env) {
     const body = await safeJson(request);
     const sql = String(body?.sql || "").trim();
     if (!sql) return json({ ok: false, error: "Missing SQL" }, { status: 400 });
+
+    const maxRows = clampDebugSQLMaxRows(body?.max_rows ?? body?.maxRows);
+    const maxChars = Math.max(200, Math.min(Number(body?.max_chars ?? body?.maxChars) || 900, 2000));
 
     const statements = sql.split(";").map(s => s.trim()).filter(Boolean);
     if (!statements.length) return json({ ok: false, error: "No SQL statements found" }, { status: 400 });
@@ -844,7 +869,22 @@ async function handleDebugSQL(request, env) {
 
       if (upper.startsWith("SELECT") || upper.startsWith("PRAGMA")) {
         const result = await env.DB.prepare(statement).all();
-        outputs.push({ sql: statement, rows: result.results || [], meta: result.meta || {} });
+        const allRows = result.results || [];
+        const visibleRows = allRows.slice(0, maxRows);
+        outputs.push({
+          sql: statement,
+          rows: compactDebugSQLRows(visibleRows, maxChars),
+          row_count: allRows.length,
+          returned_rows: visibleRows.length,
+          truncated: allRows.length > visibleRows.length,
+          output_guard: {
+            enabled: true,
+            max_rows: maxRows,
+            max_chars_per_text_cell: maxChars,
+            note: "Manual SQL output is capped to prevent browser/app crashes. Add LIMIT in SQL or pass max_rows up to 100 for focused diagnostics."
+          },
+          meta: result.meta || {}
+        });
       } else if (upper.startsWith("DELETE") || upper.startsWith("UPDATE") || upper.startsWith("INSERT")) {
         const result = await env.DB.prepare(statement).run();
         outputs.push({ sql: statement, success: result.success, meta: result.meta || {} });
@@ -853,7 +893,7 @@ async function handleDebugSQL(request, env) {
       }
     }
 
-    return json({ ok: true, outputs });
+    return json({ ok: true, version: SYSTEM_VERSION, manual_sql_output_guard: { enabled: true, default_max_rows: 50, hard_max_rows: 100 }, outputs });
   } catch (err) {
     return json({ ok: false, error: String(err?.message || err) }, { status: 500 });
   }

@@ -1,16 +1,19 @@
-BUILD VERIFICATION LOCK
-Release: v1.2.39 - Freshness Visibility Expansion
-Base zip: alphadog_v1_2_38_SCHEDULED_RUN_FRESHNESS_GATE_VERIFIED.zip
+AlphaDog Build Verification Lock
+Release: v1.2.40 - Manual SQL Output Guard
+Base: v1.2.39 - Freshness Visibility Expansion
 
-Verified before packaging:
-- worker.js header contains v1.2.39 - Freshness Visibility Expansion.
-- worker.js SYSTEM_VERSION contains v1.2.39 - Freshness Visibility Expansion.
-- worker.js SYSTEM_CODENAME contains Freshness Visibility Expansion.
-- control_room.html visible version tag contains v1.2.39 - Freshness Visibility Expansion.
-- control_room.html debugConfig version contains control_room_v1_2_39_freshness_visibility_expansion.
-- Daily Health contains scheduled.latest_required_jobs.
-- Latest required job visibility covers run_full_pipeline, build_edge_candidates_rfi, build_edge_candidates_rbi, build_edge_candidates_hits.
-- node --check worker.js passes.
-- Flat ZIP only, no subdirectories.
+Verification performed before ZIP creation:
+- worker.js header contains v1.2.40 - Manual SQL Output Guard.
+- worker.js SYSTEM_VERSION contains v1.2.40 - Manual SQL Output Guard.
+- worker.js SYSTEM_CODENAME contains Manual SQL Output Guard.
+- control_room.html visible version tag contains v1.2.40 - Manual SQL Output Guard.
+- control_room.html debugConfig version contains control_room_v1_2_40_manual_sql_output_guard.
+- /debug/sql SELECT/PRAGMA path includes output_guard metadata.
+- /debug/sql default max_rows is 50 and hard max is 100.
+- Manual SQL UI sends max_rows=50 and max_chars=900.
+- No scoring logic changed.
+- No candidate logic changed.
+- No schema changed.
+- node --check worker.js passed locally.
 
-Do not deploy if /health, Daily Health, or RFI Regression x3 reports any version other than v1.2.39 - Freshness Visibility Expansion.
+Do not deploy if /health, Daily Health, or RFI Regression x3 reports any version other than v1.2.40 - Manual SQL Output Guard.
