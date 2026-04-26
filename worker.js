@@ -1,4 +1,4 @@
-// RBI BUILDER ACTIVE
+// RFI BUILDER ACTIVE
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -34,16 +34,15 @@ const JOBS = {
     tables: ["edge_candidates_hits"],
     note: "scheduled-task edge prep candidate pool for hits"
   },
-  build_edge_candidates_rbi:
-  ,
+  build_edge_candidates_rbi: {
+    prompt: null,
+    tables: ["edge_candidates_rbi"],
+    note: "scheduled-task edge prep candidate pool for RBI"
+  },
   build_edge_candidates_rfi: {
     prompt: null,
     tables: ["edge_candidates_rfi"],
     note: "scheduled-task edge prep candidate pool for RFI"
-  }, {
-    prompt: null,
-    tables: ["edge_candidates_rbi"],
-    note: "scheduled-task edge prep candidate pool for RBI"
   },
   scrape_teams: {
     prompt: "scrape_teams_v1.txt",
@@ -1020,6 +1019,259 @@ async function buildEdgeCandidatesRbi(input, env) {
 }
 
 
+function rfiStarterWeakness(prefix, era, whip) {
+  const e = edgeNum(era);
+  const w = edgeNum(whip);
+  let score = 0;
+  const reasons = [];
+  const warnings = [];
+
+  if (e === null) warnings.push(`${prefix}_starter_era_missing`);
+  else if (e >= 5.00) { score += 3; reasons.push(`${prefix}_starter_era_very_attackable`); }
+  else if (e >= 4.25) { score += 2; reasons.push(`${prefix}_starter_era_attackable`); }
+  else if (e >= 3.75) { score += 1; reasons.push(`${prefix}_starter_era_playable`); }
+
+  if (w === null) warnings.push(`${prefix}_starter_whip_missing`);
+  else if (w >= 1.40) { score += 3; reasons.push(`${prefix}_starter_whip_very_attackable`); }
+  else if (w >= 1.30) { score += 2; reasons.push(`${prefix}_starter_whip_attackable`); }
+  else if (w >= 1.20) { score += 1; reasons.push(`${prefix}_starter_whip_playable`); }
+
+  return { score, reasons, warnings };
+}
+
+function rfiTop3Strength(prefix, hitters) {
+  const rows = Array.isArray(hitters) ? hitters : [];
+  let score = 0;
+  const reasons = [];
+  const warnings = [];
+
+  if (rows.length < 3) warnings.push(`${prefix}_top3_lineup_incomplete`);
+  if (!rows.length) return { score, reasons, warnings, strength: null };
+
+  const obps = rows.map(r => edgeNum(r.obp)).filter(v => v !== null);
+  const slgs = rows.map(r => edgeNum(r.slg)).filter(v => v !== null);
+  const avgs = rows.map(r => edgeNum(r.avg)).filter(v => v !== null);
+
+  if (!obps.length) warnings.push(`${prefix}_top3_obp_missing`);
+  if (!slgs.length) warnings.push(`${prefix}_top3_slg_missing`);
+
+  const avgObp = obps.length ? obps.reduce((a, b) => a + b, 0) / obps.length : null;
+  const avgSlg = slgs.length ? slgs.reduce((a, b) => a + b, 0) / slgs.length : null;
+  const avgAvg = avgs.length ? avgs.reduce((a, b) => a + b, 0) / avgs.length : null;
+
+  if (avgObp !== null && avgObp >= 0.340) { score += 3; reasons.push(`${prefix}_top3_strong_obp`); }
+  else if (avgObp !== null && avgObp >= 0.320) { score += 2; reasons.push(`${prefix}_top3_playable_obp`); }
+  else if (avgObp !== null && avgObp >= 0.300) { score += 1; reasons.push(`${prefix}_top3_thin_obp`); }
+
+  if (avgSlg !== null && avgSlg >= 0.450) { score += 3; reasons.push(`${prefix}_top3_strong_slg`); }
+  else if (avgSlg !== null && avgSlg >= 0.410) { score += 2; reasons.push(`${prefix}_top3_playable_slg`); }
+  else if (avgSlg !== null && avgSlg >= 0.380) { score += 1; reasons.push(`${prefix}_top3_thin_slg`); }
+
+  const strengthPieces = [avgObp, avgSlg, avgAvg].filter(v => v !== null);
+  const strength = strengthPieces.length ? Number((strengthPieces.reduce((a, b) => a + b, 0) / strengthPieces.length).toFixed(4)) : null;
+  return { score, reasons, warnings, strength };
+}
+
+function rfiParkScore(parkFactorRun) {
+  const park = edgeNum(parkFactorRun);
+  const reasons = [];
+  const warnings = [];
+  let score = 0;
+  if (park === null) warnings.push("park_factor_run_missing");
+  else if (park >= 1.04) { score += 2; reasons.push("strong_first_inning_run_environment"); }
+  else if (park >= 1.01) { score += 1; reasons.push("playable_first_inning_run_environment"); }
+  else if (park <= 0.96) { score -= 1; reasons.push("suppressive_first_inning_run_environment"); }
+  return { score, reasons, warnings };
+}
+
+function rfiTier(score) {
+  const s = edgeNum(score) || 0;
+  if (s >= 14) return "YES_RFI";
+  if (s >= 10) return "LEAN_YES";
+  if (s <= 4) return "NO_RFI";
+  return "WATCHLIST";
+}
+
+async function ensureEdgeCandidatesRfiTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS edge_candidates_rfi (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slate_date TEXT,
+      game_id TEXT,
+      home_team TEXT,
+      away_team TEXT,
+      home_starter TEXT,
+      away_starter TEXT,
+      home_era REAL,
+      away_era REAL,
+      home_whip REAL,
+      away_whip REAL,
+      top3_home_strength REAL,
+      top3_away_strength REAL,
+      park_factor_run REAL,
+      rfi_score REAL,
+      candidate_tier TEXT,
+      candidate_reason TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+}
+
+async function insertEdgeCandidatesRfiBatch(env, rows) {
+  if (!rows.length) return 0;
+  const insertCols = [
+    "slate_date", "game_id", "home_team", "away_team", "home_starter", "away_starter",
+    "home_era", "away_era", "home_whip", "away_whip",
+    "top3_home_strength", "top3_away_strength", "park_factor_run",
+    "rfi_score", "candidate_tier", "candidate_reason"
+  ];
+  const placeholders = insertCols.map(() => "?").join(", ");
+  const sql = `INSERT INTO edge_candidates_rfi (${insertCols.join(", ")}) VALUES (${placeholders})`;
+  let written = 0;
+  const chunkSize = 75;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const statements = chunk.map(r => env.DB.prepare(sql).bind(...insertCols.map(c => r[c] ?? null)));
+    await env.DB.batch(statements);
+    written += chunk.length;
+  }
+  return written;
+}
+
+async function buildEdgeCandidatesRfi(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+
+  await ensureEdgeCandidatesRfiTable(env);
+
+  const gamesRes = await env.DB.prepare(`
+    SELECT
+      g.game_id,
+      g.game_date,
+      g.away_team,
+      g.home_team,
+      hs.starter_name AS home_starter,
+      hs.era AS home_era,
+      hs.whip AS home_whip,
+      ast.starter_name AS away_starter,
+      ast.era AS away_era,
+      ast.whip AS away_whip,
+      gc.park_factor_run
+    FROM games g
+    LEFT JOIN starters_current hs ON hs.game_id = g.game_id AND hs.team_id = g.home_team
+    LEFT JOIN starters_current ast ON ast.game_id = g.game_id AND ast.team_id = g.away_team
+    LEFT JOIN game_context_current gc ON gc.game_id = g.game_id
+    WHERE g.game_date = ?
+    ORDER BY g.game_id
+  `).bind(slateDate).all();
+
+  const games = gamesRes.results || [];
+  const lineupRes = await env.DB.prepare(`
+    SELECT
+      l.game_id,
+      l.team_id,
+      l.slot,
+      l.player_name,
+      p.avg,
+      p.obp,
+      p.slg
+    FROM lineups_current l
+    JOIN games g ON g.game_id = l.game_id
+    LEFT JOIN players_current p ON p.player_name = l.player_name AND p.team_id = l.team_id
+    WHERE g.game_date = ?
+      AND l.slot BETWEEN 1 AND 3
+      AND l.player_name IS NOT NULL
+      AND l.player_name != ''
+    ORDER BY l.game_id, l.team_id, l.slot
+  `).bind(slateDate).all();
+
+  const top3ByGameTeam = new Map();
+  for (const r of (lineupRes.results || [])) {
+    const key = `${r.game_id}|||${r.team_id}`;
+    if (!top3ByGameTeam.has(key)) top3ByGameTeam.set(key, []);
+    top3ByGameTeam.get(key).push(r);
+  }
+
+  const rows = [];
+  const warnings = [];
+
+  for (const g of games) {
+    const awayTop = rfiTop3Strength("away", top3ByGameTeam.get(`${g.game_id}|||${g.away_team}`) || []);
+    const homeTop = rfiTop3Strength("home", top3ByGameTeam.get(`${g.game_id}|||${g.home_team}`) || []);
+    const awayStarter = rfiStarterWeakness("away", g.away_era, g.away_whip);
+    const homeStarter = rfiStarterWeakness("home", g.home_era, g.home_whip);
+    const park = rfiParkScore(g.park_factor_run);
+
+    const gameWarnings = [
+      ...awayTop.warnings,
+      ...homeTop.warnings,
+      ...awayStarter.warnings,
+      ...homeStarter.warnings,
+      ...park.warnings
+    ];
+    if (!g.away_starter) gameWarnings.push("away_starter_missing");
+    if (!g.home_starter) gameWarnings.push("home_starter_missing");
+
+    let score = awayTop.score + homeTop.score + awayStarter.score + homeStarter.score + park.score;
+    score = Math.max(0, Math.min(30, score));
+    const tier = rfiTier(score);
+    const reasonTags = [
+      ...awayTop.reasons,
+      ...homeTop.reasons,
+      ...awayStarter.reasons,
+      ...homeStarter.reasons,
+      ...park.reasons,
+      ...gameWarnings.map(w => `warn_${w}`)
+    ];
+
+    if (gameWarnings.length) warnings.push({ game_id: g.game_id, warnings: gameWarnings });
+
+    rows.push({
+      slate_date: slateDate,
+      game_id: g.game_id,
+      home_team: g.home_team,
+      away_team: g.away_team,
+      home_starter: g.home_starter || null,
+      away_starter: g.away_starter || null,
+      home_era: edgeNum(g.home_era),
+      away_era: edgeNum(g.away_era),
+      home_whip: edgeNum(g.home_whip),
+      away_whip: edgeNum(g.away_whip),
+      top3_home_strength: homeTop.strength,
+      top3_away_strength: awayTop.strength,
+      park_factor_run: edgeNum(g.park_factor_run),
+      rfi_score: score,
+      candidate_tier: tier,
+      candidate_reason: reasonTags.length ? reasonTags.join("|") : "neutral_rfi_profile"
+    });
+  }
+
+  await env.DB.prepare(`DELETE FROM edge_candidates_rfi WHERE slate_date = ?`).bind(slateDate).run();
+  const inserted = await insertEdgeCandidatesRfiBatch(env, rows);
+
+  const yes = rows.filter(r => r.candidate_tier === "YES_RFI").length;
+  const lean = rows.filter(r => r.candidate_tier === "LEAN_YES").length;
+  const watchOrNo = rows.filter(r => r.candidate_tier === "WATCHLIST" || r.candidate_tier === "NO_RFI").length;
+
+  return {
+    ok: true,
+    job: input.job || "build_edge_candidates_rfi",
+    slate_date: slateDate,
+    source: "scheduled_edge_prep_rfi_game_level",
+    mode: "zero_api_subrequest_deterministic",
+    filter_mode: "RFI_GAME_LEVEL_ALL_GAMES",
+    raw_games: games.length,
+    fetched_rows: rows.length,
+    inserted: { edge_candidates_rfi: inserted },
+    yes_rfi: yes,
+    lean_yes: lean,
+    watchlist_or_no: watchOrNo,
+    warnings,
+    complete: true,
+    note: "RFI candidate pool only. Game-level setup rows. No probabilities, scores-as-bets, or betting decisions."
+  };
+}
+
 
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
@@ -1048,8 +1300,6 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "build_edge_candidates_rfi") {
     return await buildEdgeCandidatesRfi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  }
-    return await buildEdgeCandidatesRbi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
     return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);

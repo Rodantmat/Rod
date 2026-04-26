@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS edge_candidates_rfi (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slate_date TEXT,
+  game_id TEXT,
+  home_team TEXT,
+  away_team TEXT,
+  home_starter TEXT,
+  away_starter TEXT,
+  home_era REAL,
+  away_era REAL,
+  home_whip REAL,
+  away_whip REAL,
+  top3_home_strength REAL,
+  top3_away_strength REAL,
+  park_factor_run REAL,
+  rfi_score REAL,
+  candidate_tier TEXT,
+  candidate_reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
