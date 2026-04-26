@@ -1,4 +1,4 @@
-const WORKER_VERSION = "alphadog-main-api-v100.3 - Full DB Matrix Expansion";
+const WORKER_VERSION = "alphadog-main-api-v100.3 - Full DB Matrix Expansion =)";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
 
