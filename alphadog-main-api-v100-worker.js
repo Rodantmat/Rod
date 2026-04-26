@@ -1,4 +1,4 @@
-const WORKER_VERSION = "alphadog-main-api-v100";
+const WORKER_VERSION = "alphadog-main-api-v100.1 - Schema Column Alignment";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 
 function jsonResponse(body, status = 200) {
@@ -137,7 +137,7 @@ async function findGame(env, slateDate, teamId, opponentTeam) {
   return await one(env.DB, `
     SELECT * FROM games
     WHERE game_id LIKE ?
-      AND ((away_team_id = ? AND home_team_id = ?) OR (away_team_id = ? AND home_team_id = ?))
+      AND ((away_team = ? AND home_team = ?) OR (away_team = ? AND home_team = ?))
     ORDER BY game_id DESC
     LIMIT 1
   `, [like, teamId, opponentTeam, opponentTeam, teamId]);
