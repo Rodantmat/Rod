@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OXYGEN-COBALT • Main-1F New API Worker Lock</title>
-  <link rel="stylesheet" href="./alphadog-main-styles.css" />
+  <title>OXYGEN-COBALT • Main-1H Auto API Lock</title>
+  <link rel="stylesheet" href="./alphadog-main-1h-styles.css?v=main1h" />
 </head>
 <body>
   <div class="app-shell">
     <header class="hero">
-      <h1>OXYGEN-COBALT <span class="version-pill">Main-1F New API Worker Lock</span></h1>
+      <h1>OXYGEN-COBALT <span class="version-pill">Main-1H Auto API Lock</span></h1>
       <p>Paste MLB board text, ingest the clean pool, and validate the current session.</p>
     </header>
 
@@ -33,7 +33,7 @@
       <section class="card analysis-toolbar">
         <div>
           <h2>Screen 2 • Data Matrix</h2>
-          <p class="muted tight">Database wiring starter with debug report capture and system log. Daily Health is live; packet/scoring endpoints are probed safely per leg.</p>
+          <p class="muted tight">Auto-locked database wiring. Main API URL, slate date, and token are resolved by code; no manual fields needed.</p>
         </div>
         <div class="btn-row toolbar-actions">
           <button id="copyReportBtn" class="report-button">Copy Debug Report</button>
@@ -44,16 +44,11 @@
         </div>
       </section>
 
-      <div class="backend-control-grid">
-        <label>Worker URL
-          <input id="backendUrlInput" type="url" placeholder="https://alphadog-main-api-v100...workers.dev" />
-        </label>
-        <label>Slate Date
-          <input id="slateDateInput" type="text" placeholder="YYYY-MM-DD or blank for auto" />
-        </label>
-        <label>Token Optional
-          <input id="backendTokenInput" type="password" placeholder="Only if INGEST_TOKEN is enabled" />
-        </label>
+      <div class="backend-auto-lock-box">
+        <div class="auto-lock-title">Backend Auto Lock</div>
+        <div class="auto-lock-line"><strong>Main API:</strong> https://alphadog-main-api-v100.rodolfoaamattos.workers.dev</div>
+        <div class="auto-lock-line"><strong>Slate Date:</strong> auto-detected by backend unless supplied by code</div>
+        <div class="auto-lock-line"><strong>Token:</strong> not required for read-only main API</div>
       </div>
       <div id="backendStatusMount"></div>
 
@@ -72,9 +67,9 @@
     </main>
   </div>
 
-  <script src="./alphadog-main-parser.js"></script>
-  <script src="./alphadog-main-connectors.js"></script>
-  <script src="./alphadog-main-ui-engine.js"></script>
-  <script src="./alphadog-main-core.js"></script>
+  <script src="./alphadog-main-1h-parser.js?v=main1h"></script>
+  <script src="./alphadog-main-1h-connectors.js?v=main1h"></script>
+  <script src="./alphadog-main-1h-ui-engine.js?v=main1h"></script>
+  <script src="./alphadog-main-1h-core.js?v=main1h"></script>
 </body>
 </html>
