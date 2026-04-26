@@ -1,7 +1,7 @@
-// AlphaDog v1.2.36 - Historical Failure Filter compatible worker
+// AlphaDog v1.2.37 - Slate-Scoped Failure Filter compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.36 - Historical Failure Filter";
-const SYSTEM_CODENAME = "Historical Failure Filter";
+const SYSTEM_VERSION = "v1.2.37 - Slate-Scoped Failure Filter";
+const SYSTEM_CODENAME = "Slate-Scoped Failure Filter";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -512,10 +512,16 @@ async function handleDailyHealth(request, env) {
     LIMIT 3
   `);
 
+  const slateFailureBind = [slateDate, slateDate, slateDate];
   const currentActiveFailures = await dailyHealthRows(env, `
     SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
     FROM task_runs tr
     WHERE tr.status IN ('failed','stale')
+      AND (
+        COALESCE(tr.input_json, '') LIKE '%' || ? || '%'
+        OR COALESCE(tr.output_json, '') LIKE '%' || ? || '%'
+        OR COALESCE(tr.error, '') LIKE '%' || ? || '%'
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM task_runs newer_success
@@ -525,22 +531,29 @@ async function handleDailyHealth(request, env) {
       )
     ORDER BY started_at DESC
     LIMIT 8
-  `);
+  `, slateFailureBind);
 
   const historicalResolvedFailures = await dailyHealthRows(env, `
     SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
     FROM task_runs tr
     WHERE tr.status IN ('failed','stale')
-      AND EXISTS (
-        SELECT 1
-        FROM task_runs newer_success
-        WHERE newer_success.job_name = tr.job_name
-          AND newer_success.status = 'success'
-          AND datetime(newer_success.started_at) > datetime(tr.started_at)
+      AND (
+        EXISTS (
+          SELECT 1
+          FROM task_runs newer_success
+          WHERE newer_success.job_name = tr.job_name
+            AND newer_success.status = 'success'
+            AND datetime(newer_success.started_at) > datetime(tr.started_at)
+        )
+        OR NOT (
+          COALESCE(tr.input_json, '') LIKE '%' || ? || '%'
+          OR COALESCE(tr.output_json, '') LIKE '%' || ? || '%'
+          OR COALESCE(tr.error, '') LIKE '%' || ? || '%'
+        )
       )
     ORDER BY started_at DESC
     LIMIT 8
-  `);
+  `, slateFailureBind);
 
   const executableJobs = executableJobNames();
   const invalidJobMarks = executableJobs.map(() => "?").join(",");
@@ -609,7 +622,7 @@ async function handleDailyHealth(request, env) {
       active_failures: activeFailureCount,
       historical_resolved_failures: scheduled.historical_resolved_failure_rows.length
     },
-    note: "Daily health plus stale task cleanup plus job registry audit plus historical failure filtering only. No scoring logic or candidate logic changed."
+    note: "Daily health plus stale task cleanup plus job registry audit plus slate-scoped failure filtering only. No scoring logic or candidate logic changed."
   });
 }
 

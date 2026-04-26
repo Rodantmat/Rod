@@ -1,13 +1,17 @@
 AlphaDog Build Verification Lock
-Release: v1.2.36 - Historical Failure Filter
+Release: v1.2.37 - Slate-Scoped Failure Filter
 
 Verified before zip creation:
-- worker.js header contains v1.2.36 - Historical Failure Filter.
-- worker.js SYSTEM_VERSION contains v1.2.36 - Historical Failure Filter.
-- worker.js SYSTEM_CODENAME contains Historical Failure Filter.
-- control_room.html visible version tag contains v1.2.36 - Historical Failure Filter.
-- control_room.html debugConfig version contains control_room_v1_2_36_historical_failure_filter.
+- worker.js header contains v1.2.37 - Slate-Scoped Failure Filter.
+- worker.js SYSTEM_VERSION contains v1.2.37 - Slate-Scoped Failure Filter.
+- worker.js SYSTEM_CODENAME contains Slate-Scoped Failure Filter.
+- control_room.html visible version tag contains v1.2.37 - Slate-Scoped Failure Filter.
+- control_room.html debugConfig version contains control_room_v1_2_37_slate_scoped_failure_filter.
 - Daily Health uses output_json-derived preview only.
 - Zip was created from /mnt/data/v136 after patching.
 
-Do not deploy if /health or RFI Regression x3 reports any version other than v1.2.36 - Historical Failure Filter.
+Do not deploy if /health or RFI Regression x3 reports any version other than v1.2.37 - Slate-Scoped Failure Filter.
+
+Release audit addendum:
+- Verified worker.js, control_room.html, README, and BUILD_VERIFICATION_LOCK all reference v1.2.37.
+- Verified no stale prior-version labels remain in deployable files.
