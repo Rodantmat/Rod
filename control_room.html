@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.22 — RFI Audit Blade</div>
+<div id="versionTag">v1.2.23 — RFI Regression Cannon</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -87,7 +87,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 
 <div class="section"><h3>CHECK</h3><div class="grid">
 <button class="check" onclick="runSQLButton('Check Games', checkGames())">Games</button><button class="check" onclick="runSQLButton('Check Markets', checkMarkets())">Markets</button><button class="check" onclick="runSQLButton('Check Starters', checkStarters())">Starters</button><button class="check" onclick="runSQLButton('Check Bullpen', checkBullpen())">Bullpen</button><button class="check" onclick="runSQLButton('Check Lineups', checkLineups())">Lineups</button><button class="check" onclick="runSQLButton('Check Usage', checkUsage())">Usage</button><button class="check" onclick="runSQLButton('Check Players', checkPlayers())">Players</button><button class="check" onclick="runSQLButton('Active Size', activeSlateSize())">Active Size</button>
-<button class="check" onclick="runSQLButton('Game List', listGames())">Game List</button><button class="check" onclick="runSQLButton('Starter List', listStarters())">Starter List</button><button class="check" onclick="runSQLButton('Bullpen List', listBullpen())">Bullpen List</button><button class="check" onclick="runSQLButton('Lineup List', listLineups())">Lineup List</button><button class="check" onclick="runSQLButton('Usage List', listUsage())">Usage List</button><button class="check" onclick="runSQLButton('Player List', listPlayers())">Player List</button><button class="check" onclick="runSQLButton('Handedness Gaps', handednessGaps())">Handedness Gaps</button><button class="check" onclick="runSQLButton('Bad Starters', badStarters())">Bad Start</button><button class="check" onclick="runSQLButton('Stats Missing', statsMissing())">Stats Missing</button><button class="audit" onclick="runSQLButton('Truth Audit', truthAudit())">Truth Audit</button><button class="audit" onclick="runSQLButton('Final Feed Audit', finalFeedAudit())">Final Feed Audit</button><button class="audit" onclick="runSQLButton('Market Audit', marketAudit())">Market Audit</button><button class="audit" onclick="runSQLButton('Derived Metrics', derivedMetricsAudit())">Derived Metrics</button><button class="audit" onclick="runSQLButton('Park Context Audit', parkContextAudit())">Park Context Audit</button><button class="audit" onclick="runSQLButton('Market Implied Runs', marketImpliedRunsAudit())">Market Implied Runs</button><button class="audit" onclick="runSQLButton('Feed Readiness', feedReadinessAudit())">Feed Readiness</button><button class="audit" onclick="runSQLButton('Hits Candidates', hitsCandidatesAudit())">Hits Candidates</button><button class="audit" onclick="runSQLButton('RFI Candidates', rfiCandidatesAudit())">RFI Candidates</button><button class="audit" onclick="runSQLButton('Player Hydration', playerHydrationAudit())">Player Hydration</button><button class="audit" onclick="runSQLButton('Lineup Freshness', lineupFreshness())">Lineup Freshness</button><button class="audit" onclick="runSQLButton('Player Cleanliness', playerCleanliness())">Player Cleanliness</button>
+<button class="check" onclick="runSQLButton('Game List', listGames())">Game List</button><button class="check" onclick="runSQLButton('Starter List', listStarters())">Starter List</button><button class="check" onclick="runSQLButton('Bullpen List', listBullpen())">Bullpen List</button><button class="check" onclick="runSQLButton('Lineup List', listLineups())">Lineup List</button><button class="check" onclick="runSQLButton('Usage List', listUsage())">Usage List</button><button class="check" onclick="runSQLButton('Player List', listPlayers())">Player List</button><button class="check" onclick="runSQLButton('Handedness Gaps', handednessGaps())">Handedness Gaps</button><button class="check" onclick="runSQLButton('Bad Starters', badStarters())">Bad Start</button><button class="check" onclick="runSQLButton('Stats Missing', statsMissing())">Stats Missing</button><button class="audit" onclick="runSQLButton('Truth Audit', truthAudit())">Truth Audit</button><button class="audit" onclick="runSQLButton('Final Feed Audit', finalFeedAudit())">Final Feed Audit</button><button class="audit" onclick="runSQLButton('Market Audit', marketAudit())">Market Audit</button><button class="audit" onclick="runSQLButton('Derived Metrics', derivedMetricsAudit())">Derived Metrics</button><button class="audit" onclick="runSQLButton('Park Context Audit', parkContextAudit())">Park Context Audit</button><button class="audit" onclick="runSQLButton('Market Implied Runs', marketImpliedRunsAudit())">Market Implied Runs</button><button class="audit" onclick="runSQLButton('Feed Readiness', feedReadinessAudit())">Feed Readiness</button><button class="audit" onclick="runSQLButton('Hits Candidates', hitsCandidatesAudit())">Hits Candidates</button><button class="audit" onclick="runSQLButton('RFI Candidates', rfiCandidatesAudit())">RFI Candidates</button><button class="audit" onclick="runRfiRegressionSuite()">RFI Regression x3</button><button class="audit" onclick="runSQLButton('Player Hydration', playerHydrationAudit())">Player Hydration</button><button class="audit" onclick="runSQLButton('Lineup Freshness', lineupFreshness())">Lineup Freshness</button><button class="audit" onclick="runSQLButton('Player Cleanliness', playerCleanliness())">Player Cleanliness</button>
 <button class="check" onclick="runSQLButton('Tasks', latestTasks())">Tasks</button><button class="audit" onclick="runSQLButton('Scheduler Log', schedulerLog())">Scheduler Log</button><button class="audit" onclick="runSQLButton('Failed Runs', failedRuns())">Failed Runs</button><button class="check" onclick="runSQLButton('Player Job Log', playerJobLog())">Player Job Log</button>
 </div></div>
 
@@ -323,6 +323,93 @@ ORDER BY candidate_tier, game_id, team_id, lineup_slot
 LIMIT 100;
 `}
 
+
+async function runRfiRegressionSuite(){
+  const cycles = 3;
+  const d = resolveSlateDate();
+  const suite = {
+    ok: true,
+    suite: "rfi_regression_x3",
+    version: "v1.2.23 — RFI Regression Cannon",
+    slate_date: d,
+    cycle_count: cycles,
+    cycles: [],
+    regression: null,
+    pass_notes: [
+      "Each cycle rebuilds RFI candidates and immediately runs the RFI audit.",
+      "Final regression checks confirm RBI/Hits/feed baselines after repeated RFI rebuilds."
+    ]
+  };
+  loading("RFI Regression x3", "Running 3 deterministic RFI build/audit cycles.\nSlate: " + d);
+  for(let i=1;i<=cycles;i++){
+    setStatus("RFI REGRESSION CYCLE " + i + " / " + cycles);
+    const build = await rawRequest("RFI Regression Build " + i, JOB_URL, {job:"build_edge_candidates_rfi",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});
+    const audit = await rawRequest("RFI Regression Audit " + i, SQL_URL, {sql:rfiCandidatesAudit()});
+    const body = build && build.body ? build.body : {};
+    const inserted = body.inserted && body.inserted.edge_candidates_rfi != null ? body.inserted.edge_candidates_rfi : null;
+    suite.cycles.push({
+      cycle:i,
+      build_http_status:build.http_status || null,
+      build_ok:!!body.ok,
+      raw_games:body.raw_games ?? null,
+      fetched_rows:body.fetched_rows ?? null,
+      inserted_edge_candidates_rfi:inserted,
+      yes_rfi:body.yes_rfi ?? null,
+      lean_yes:body.lean_yes ?? null,
+      watchlist_or_no:body.watchlist_or_no ?? null,
+      warning_rows:Array.isArray(body.warnings) ? body.warnings.length : null,
+      audit_http_status:audit.http_status || null,
+      audit_ok:!!(audit.body && audit.body.ok),
+      build_response:body,
+      audit_response:audit.body || audit
+    });
+    setOutput("RFI Regression x3", suite);
+  }
+  const regressionSql = `
+SELECT 'RFI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 15 THEN 'PASS_EXPECTED_15' WHEN COUNT(*) > 0 THEN 'WARN_COUNT_REVIEW' ELSE 'FAIL_EMPTY' END AS status
+FROM edge_candidates_rfi WHERE slate_date='${D()}';
+
+SELECT 'RFI_WARNINGS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 3 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_MORE_THAN_BASELINE' END AS status
+FROM edge_candidates_rfi WHERE slate_date='${D()}' AND candidate_reason LIKE '%warn_%';
+
+SELECT candidate_tier, COUNT(*) AS count_value
+FROM edge_candidates_rfi
+WHERE slate_date='${D()}'
+GROUP BY candidate_tier
+ORDER BY candidate_tier;
+
+SELECT 'RBI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 119 THEN 'PASS_BASELINE_119' ELSE 'WARN_BASELINE_CHANGED' END AS status
+FROM edge_candidates_rbi;
+
+SELECT candidate_tier, COUNT(*) AS count_value
+FROM edge_candidates_rbi
+GROUP BY candidate_tier
+ORDER BY candidate_tier;
+
+SELECT 'RBI_WEAK_A_POOL_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status
+FROM edge_candidates_rbi
+WHERE candidate_tier = 'A_POOL'
+AND rbi_opportunity_score <= 2;
+
+SELECT 'HITS_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) > 0 THEN 'PASS_NON_EMPTY' ELSE 'FAIL_EMPTY' END AS status
+FROM edge_candidates_hits;
+
+SELECT 'PLAYERS_CURRENT' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 760 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status
+FROM players_current;
+
+SELECT 'STARTERS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 30 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status
+FROM starters_current WHERE game_id LIKE '${D()}_%';
+
+SELECT 'LINEUPS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 200 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status
+FROM lineups_current WHERE game_id LIKE '${D()}_%';
+`;
+  const regression = await rawRequest("RFI Regression Baseline", SQL_URL, {sql:regressionSql});
+  suite.regression = regression;
+  suite.ok = suite.cycles.every(c => c.build_ok && c.audit_ok && c.inserted_edge_candidates_rfi === 15) && !!(regression.body && regression.body.ok);
+  suite.final = suite.ok ? "pass" : "review";
+  setStatus((suite.ok ? "DONE: " : "REVIEW: ") + "RFI Regression x3");
+  setOutput("RFI Regression x3", suite);
+}
 
 function rfiCandidatesAudit(){return `
 SELECT 'RFI_CANDIDATES_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) > 0 THEN 'PASS' ELSE 'WARN_EMPTY' END AS status
