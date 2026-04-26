@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1K MLB API Factor Bridge';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1L MLB Cleanup Pass';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',

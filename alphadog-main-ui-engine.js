@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1K MLB API Factor Bridge';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1L MLB Cleanup Pass';
 
   function el(id) {
     return document.getElementById(id);
@@ -329,12 +329,12 @@ window.PickCalcUI = (() => {
       renderMatrixSection('Candidate Context', factorRows(packet, 'candidate_context')),
       renderMatrixSection('Full DB Inventory', [
         ...rawCountRows(packet),
-        { label: 'Team Lineup Raw', value: packet?.team_lineup ? compactJson(packet.team_lineup, 1200) : 'MISSING', status: packet?.team_lineup?.length ? 'ok' : 'missing' },
-        { label: 'Opponent Lineup Raw', value: packet?.opponent_lineup ? compactJson(packet.opponent_lineup, 1200) : 'MISSING', status: packet?.opponent_lineup?.length ? 'ok' : 'missing' },
+        { label: 'Team Lineup Raw', value: packet?.team_lineup ? compactJson(packet.team_lineup, 800) : 'MISSING', status: packet?.team_lineup?.length ? 'ok' : 'missing' },
+        { label: 'Opponent Lineup Raw', value: packet?.opponent_lineup ? compactJson(packet.opponent_lineup, 800) : 'MISSING', status: packet?.opponent_lineup?.length ? 'ok' : 'missing' },
         { label: 'Game Starters Raw', value: packet?.game_starters ? compactJson(packet.game_starters, 1200) : 'MISSING', status: packet?.game_starters?.length ? 'ok' : 'missing' },
         { label: 'Game Bullpens Raw', value: packet?.game_bullpens ? compactJson(packet.game_bullpens, 1200) : 'MISSING', status: packet?.game_bullpens?.length ? 'ok' : 'missing' },
-        { label: 'Related Candidates Raw', value: packet?.related_candidates ? compactJson(packet.related_candidates, 1500) : 'MISSING', status: packet?.related_candidates ? 'ok' : 'missing' },
-        { label: 'MLB API Raw', value: packet?.mlb_api ? compactJson(packet.mlb_api, 1800) : 'MISSING', status: packet?.mlb_api?.ok ? 'ok' : 'missing' }
+        { label: 'Related Candidates Raw', value: packet?.related_candidates ? compactJson(packet.related_candidates, 900) : 'MISSING', status: packet?.related_candidates ? 'ok' : 'missing' },
+        { label: 'MLB API Raw', value: packet?.mlb_api ? compactJson(packet.mlb_api, 900) : 'MISSING', status: packet?.mlb_api?.ok ? 'ok' : 'missing' }
       ]),
       renderMatrixSection('Risk', [
         { label: 'Daily Health', value: backendHealth ? (backendHealth.ok ? 'PASS — 100/100 🟢 STRONG' : 'FAIL — 0/100 🔴 RISK') : 'NOT CHECKED — 0/100 🔴 RISK', status: backendHealth?.ok ? 'ok' : 'missing' },
@@ -357,8 +357,8 @@ window.PickCalcUI = (() => {
         { label: 'Score Status', value: scoreStatus, status: scoreStatus === 'ok' ? 'ok' : (scoreStatus === 'error' ? 'missing' : 'pending') }
       ]),
       renderMatrixSection('Raw Packet Preview', [
-        { label: 'Raw Packet', value: packet ? compactJson(packet, 900) : 'PENDING /main/packet/leg RESPONSE', status: packet ? 'ok' : 'pending' },
-        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 900) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' }
+        { label: 'Raw Packet', value: packet ? compactJson(packet, 650) : 'PENDING /main/packet/leg RESPONSE', status: packet ? 'ok' : 'pending' },
+        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 650) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' }
       ])
     ].join('');
   }
@@ -443,12 +443,77 @@ window.PickCalcUI = (() => {
     const health = state.backendHealth || null;
     const logRows = Array.isArray(state.systemLog) ? state.systemLog : [];
 
+    function resultSummary(req) {
+      const result = req?.result || {};
+      return {
+        ok: req?.ok ?? result?.ok ?? false,
+        source: req?.source || null,
+        family: req?.family || null,
+        http_status: result?.http_status || null,
+        url: result?.url || null,
+        started_at: result?.started_at || null,
+        finished_at: result?.finished_at || null,
+        error: req?.error || result?.error || null
+      };
+    }
+
+    function briefPacket(packet = {}) {
+      const mlb = packet?.mlb_api || {};
+      return {
+        ok: packet.ok || false,
+        mode: packet.mode || null,
+        slate_date: packet.slate_date || null,
+        leg: packet.leg || null,
+        game: packet.game || null,
+        market: packet.market || null,
+        player: packet.player || null,
+        lineup: packet.lineup || null,
+        opposing_starter: packet.opposing_starter || null,
+        bullpen: packet.bullpen || null,
+        recent_usage: Array.isArray(packet.recent_usage) ? packet.recent_usage.slice(0, 5) : [],
+        candidate: packet.candidate || null,
+        matrix_factor_summary: packet.matrix_factor_summary || null,
+        incremental_cache: packet.incremental_cache || null,
+        db_counts: {
+          team_lineup: packet.team_lineup?.length || 0,
+          opponent_lineup: packet.opponent_lineup?.length || 0,
+          game_starters: packet.game_starters?.length || 0,
+          game_bullpens: packet.game_bullpens?.length || 0,
+          team_players: packet.team_players?.length || 0,
+          opponent_players: packet.opponent_players?.length || 0,
+          related_hits: packet.related_candidates?.hits?.length || 0,
+          related_rbi: packet.related_candidates?.rbi?.length || 0,
+          related_rfi: packet.related_candidates?.rfi?.length || 0
+        },
+        mlb_api: {
+          ok: mlb.ok || false,
+          game_pk: mlb.game_pk || null,
+          live_status: mlb.live_status || null,
+          player_recent_summary: mlb.player_recent_summary || null,
+          team_recent_games: Array.isArray(mlb.team_recent_games) ? mlb.team_recent_games.slice(0, 5) : [],
+          opponent_bullpen_recent: Array.isArray(mlb.opponent_bullpen_recent) ? mlb.opponent_bullpen_recent.slice(0, 3) : [],
+          boxscore_starting_lineup_count: mlb.boxscore_lineup?.length || 0,
+          opponent_starting_lineup_count: mlb.opponent_boxscore_lineup?.length || 0,
+          substitutions_count: mlb.boxscore_substitutions?.length || 0,
+          opponent_substitutions_count: mlb.opponent_boxscore_substitutions?.length || 0,
+          participant_count: mlb.boxscore_participants?.length || 0,
+          opponent_participant_count: mlb.opponent_boxscore_participants?.length || 0,
+          cache_summary: mlb.cache_summary || null,
+          api_requests: Array.isArray(mlb.api_requests) ? mlb.api_requests.map(r => ({ ok: r.ok, from_cache: r.from_cache, error: r.error || null })) : [],
+          warnings: mlb.warnings || []
+        },
+        missing: packet.missing || [],
+        warnings: packet.warnings || []
+      };
+    }
+
     lines.push('OXYGEN-COBALT MAIN SYSTEM DEBUG REPORT');
     lines.push(`Generated: ${now}`);
     lines.push(`Frontend Version: ${report.version || SYSTEM_VERSION}`);
     lines.push(`Worker URL: ${report.backendUrl || 'UNKNOWN'}`);
     lines.push(`Slate Date: ${state.slateDate || 'AUTO / BLANK'}`);
     lines.push(`Active Screen: ${state.activeScreen || 'UNKNOWN'}`);
+    lines.push('Report Mode: COMPACT CLEANUP — full raw arrays are summarized to prevent clipboard overload.');
     lines.push('');
 
     lines.push('=== SCREEN 1 / INGEST SUMMARY ===');
@@ -469,10 +534,8 @@ window.PickCalcUI = (() => {
       lines.push(`slate_date: ${health.slate_date || 'UNKNOWN'}`);
       lines.push(`error: ${health.error || 'NONE'}`);
       lines.push('table_checks:');
-      (health.table_checks || []).forEach((check) => {
-        lines.push(`- ${check.check}: ${check.value} / ${check.status} / ok=${check.ok}`);
-      });
-      lines.push(`summary: ${compactJson(health.summary || {}, 3000)}`);
+      (health.table_checks || []).forEach((check) => lines.push(`- ${check.check}: ${check.value} / ${check.status} / ok=${check.ok}`));
+      lines.push(`summary: ${compactJson(health.summary || {}, 1000)}`);
     }
     lines.push('');
 
@@ -480,6 +543,7 @@ window.PickCalcUI = (() => {
     rows.forEach((row, index) => {
       const key = String(row?.LEG_ID || row?.id || row?.idx || index + 1);
       const item = vault[key] || {};
+      const packet = item.packet || item.packet_request?.packet || item.packet_request?.result?.body || null;
       lines.push(`--- LEG ${index + 1} ---`);
       lines.push(`Player: ${row.parsedPlayer || 'UNKNOWN'}`);
       lines.push(`Team/Opponent: ${row.team || ''} vs/@ ${row.opponent || ''}`);
@@ -490,33 +554,49 @@ window.PickCalcUI = (() => {
       lines.push(`Packet Status: ${item.packet_status || 'NOT STARTED'}`);
       lines.push(`Score Status: ${item.score_status || 'NOT STARTED'}`);
       lines.push(`Warnings: ${Array.isArray(item.warnings) && item.warnings.length ? item.warnings.join(' | ') : 'NONE'}`);
-      lines.push(`Payload: ${compactJson(item.payload || {}, 3000)}`);
-      lines.push(`Packet Request: ${compactJson(item.packet_request || {}, 8000)}`);
-      lines.push(`Score Request: ${compactJson(item.score_request || {}, 8000)}`);
-      lines.push(`Packet: ${compactJson(item.packet || {}, 12000)}`);
-      lines.push(`Score: ${compactJson(item.score || {}, 8000)}`);
+      lines.push(`Payload: ${compactJson(item.payload || {}, 1400)}`);
+      lines.push(`Packet Request Summary: ${compactJson(resultSummary(item.packet_request), 1400)}`);
+      lines.push(`Score Request Summary: ${compactJson(resultSummary(item.score_request), 1400)}`);
+      lines.push(`Packet Summary: ${compactJson(briefPacket(packet || {}), 12000)}`);
+      lines.push(`Score: ${compactJson(item.score || {}, 3000)}`);
     });
     lines.push('');
 
     lines.push('=== SYSTEM LOG ===');
     if (!logRows.length) lines.push('No log rows captured.');
     logRows.forEach((item) => {
-      lines.push(`[${item.time || ''}] ${String(item.level || 'info').toUpperCase()} ${item.message || ''}${item.detail ? ` | ${item.detail}` : ''}`);
+      const detail = item.detail ? String(item.detail) : '';
+      const briefDetail = detail.length > 1200 ? `${detail.slice(0, 1200)} …[truncated]` : detail;
+      lines.push(`[${item.time || ''}] ${String(item.level || 'info').toUpperCase()} ${item.message || ''}${briefDetail ? ` | ${briefDetail}` : ''}`);
     });
     lines.push('');
 
-    lines.push('=== RAW STATE SNAPSHOT ===');
+    lines.push('=== RAW STATE SNAPSHOT / COMPACT ===');
+    const compactVault = {};
+    Object.entries(vault || {}).forEach(([key, item]) => {
+      const packet = item?.packet || item?.packet_request?.packet || item?.packet_request?.result?.body || null;
+      compactVault[key] = {
+        status: item?.status || null,
+        family: item?.family || null,
+        packet_status: item?.packet_status || null,
+        score_status: item?.score_status || null,
+        warnings: item?.warnings || [],
+        matrix_factor_summary: packet?.matrix_factor_summary || item?.score?.matrix_factor_summary || null,
+        incremental_cache: packet?.incremental_cache || null,
+        score: item?.score || null,
+        packet_summary: briefPacket(packet || {})
+      };
+    });
     lines.push(compactJson({
       cleanPool: rows,
       auditRows: state.auditRows,
-      miningVault: state.miningVault,
+      miningVault: compactVault,
       backendHealth: state.backendHealth,
-      systemLog: state.systemLog
-    }, 60000));
+      systemLog: (state.systemLog || []).map(item => ({ ...item, detail: item.detail && String(item.detail).length > 1200 ? `${String(item.detail).slice(0, 1200)} …[truncated]` : item.detail }))
+    }, 25000));
 
     return lines.join('\n');
   }
-
   async function copyTextToClipboard(text) {
     const value = String(text || '');
     if (!value.trim()) return false;

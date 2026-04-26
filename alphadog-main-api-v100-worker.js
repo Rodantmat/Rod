@@ -1,4 +1,4 @@
-const WORKER_VERSION = "alphadog-main-api-v100.4 - MLB API Factor Bridge";
+const WORKER_VERSION = "alphadog-main-api-v100.5 - MLB Cleanup Pass";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
 const MLB_API_CACHE_TABLE = "main_supplemental_mlb_api_cache";
@@ -471,12 +471,20 @@ function extractBoxscoreLineup(boxscore, teamId) {
   const rows = ids.map((id) => {
     const row = players[`ID${id}`] || {};
     const batting = row.stats?.batting || {};
-    const orderRaw = row.battingOrder ? Number(String(row.battingOrder).slice(0, -2) || row.battingOrder) : null;
+    const battingOrderRaw = row.battingOrder ? Number(row.battingOrder) : null;
+    const slot = battingOrderRaw ? Math.floor(battingOrderRaw / 100) : null;
+    const orderSeq = battingOrderRaw ? battingOrderRaw % 100 : null;
+    const isLineupBatter = slot !== null && slot >= 1 && slot <= 9;
+    const isStarter = isLineupBatter && orderSeq === 0;
     return {
       player_id: id,
       player_name: row.person?.fullName || null,
       team_id: teamId,
-      slot: orderRaw,
+      slot,
+      batting_order_raw: battingOrderRaw,
+      order_sequence: orderSeq,
+      is_starter: !!isStarter,
+      is_substitution: !!(isLineupBatter && !isStarter),
       position: row.position?.abbreviation || row.position?.code || null,
       status: row.status?.code || null,
       ab: n(batting.atBats, null),
@@ -491,7 +499,25 @@ function extractBoxscoreLineup(boxscore, teamId) {
       total_bases: n(batting.totalBases, null)
     };
   }).filter(r => r.player_name);
-  return rows.sort((a,b) => (a.slot || 99) - (b.slot || 99));
+  return rows.sort((a,b) => (a.slot || 99) - (b.slot || 99) || (a.order_sequence ?? 99) - (b.order_sequence ?? 99));
+}
+
+function getStartingLineupFromBoxscoreRows(rows = []) {
+  const starters = rows.filter(r => r.is_starter && r.slot >= 1 && r.slot <= 9);
+  if (starters.length >= 9) return starters.slice(0, 9);
+  const bySlot = new Map();
+  rows.filter(r => r.slot >= 1 && r.slot <= 9).forEach((row) => {
+    if (!bySlot.has(row.slot)) bySlot.set(row.slot, row);
+  });
+  return Array.from(bySlot.values()).sort((a,b) => a.slot - b.slot).slice(0, 9);
+}
+
+function getSubstitutionsFromBoxscoreRows(rows = []) {
+  return rows.filter(r => r.is_substitution && r.slot >= 1 && r.slot <= 9);
+}
+
+function getPitchersFromBoxscoreRows(rows = []) {
+  return rows.filter(r => !r.slot || String(r.position || '').toUpperCase() === 'P');
 }
 
 function findPlayerBoxscoreRow(boxscore, teamId, playerName) {
@@ -660,8 +686,14 @@ async function enrichFromMlbApi(env, packetSeed) {
   const boxscore = boxRes.data || null;
   const live = liveRes.data || null;
 
-  const currentTeamLineup = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.team_id) : [];
-  const currentOpponentLineup = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.opponent_team) : [];
+  const currentTeamParticipants = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.team_id) : [];
+  const currentOpponentParticipants = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.opponent_team) : [];
+  const currentTeamLineup = getStartingLineupFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentLineup = getStartingLineupFromBoxscoreRows(currentOpponentParticipants);
+  const currentTeamSubstitutions = getSubstitutionsFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentSubstitutions = getSubstitutionsFromBoxscoreRows(currentOpponentParticipants);
+  const currentTeamPitchers = getPitchersFromBoxscoreRows(currentTeamParticipants);
+  const currentOpponentPitchers = getPitchersFromBoxscoreRows(currentOpponentParticipants);
   const recent = await buildRecentMlbLogs(env, allGames, packetSeed.leg.player_name, packetSeed.leg.team_id, packetSeed.leg.opponent_team, gamePk);
   const oppBullpenRecent = await buildRecentBullpenLogs(env, allGames, packetSeed.leg.opponent_team, gamePk);
 
@@ -688,6 +720,12 @@ async function enrichFromMlbApi(env, packetSeed) {
     },
     boxscore_lineup: currentTeamLineup,
     opponent_boxscore_lineup: currentOpponentLineup,
+    boxscore_participants: currentTeamParticipants,
+    opponent_boxscore_participants: currentOpponentParticipants,
+    boxscore_substitutions: currentTeamSubstitutions,
+    opponent_boxscore_substitutions: currentOpponentSubstitutions,
+    boxscore_pitchers: currentTeamPitchers,
+    opponent_boxscore_pitchers: currentOpponentPitchers,
     player_recent_logs: recent.player_logs,
     player_recent_summary: summarizeRecentPlayerLogs(recent.player_logs),
     team_recent_games: recent.team_logs,
@@ -696,6 +734,9 @@ async function enrichFromMlbApi(env, packetSeed) {
       schedule_cached: !!scheduleRes.from_cache,
       boxscore_cached: !!boxRes.from_cache,
       live_cached: !!liveRes.from_cache,
+      cache_hits: [scheduleRes, boxRes, liveRes].filter(r => !!r.from_cache).length,
+      total_requests: [scheduleRes, boxRes, liveRes].length,
+      all_from_cache: [scheduleRes, boxRes, liveRes].every(r => !!r.from_cache),
       cache_table: MLB_API_CACHE_TABLE
     },
     api_requests: apiRequests,
