@@ -1,6 +1,7 @@
-const WORKER_VERSION = "alphadog-main-api-v100.3 - Full DB Matrix Expansion =)";
+const WORKER_VERSION = "alphadog-main-api-v100.4 - MLB API Factor Bridge";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
+const MLB_API_CACHE_TABLE = "main_supplemental_mlb_api_cache";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body, null, 2), {
@@ -75,14 +76,14 @@ async function handleDebugRoutes() {
     ok: true,
     worker: "alphadog-main-api-v100",
     version: WORKER_VERSION,
-    purpose: "isolated_main_app_api_matrix_fill_controlled_cache",
+    purpose: "isolated_main_app_api_matrix_fill_mlb_api_bridge_controlled_cache",
     no_cron: true,
     no_scheduled_handler: true,
     no_task_runner: true,
     no_candidate_builders: true,
     no_bulk_scraping: true,
     controlled_d1_writes: true,
-    writes_only_to: [SUPPLEMENTAL_TABLE],
+    writes_only_to: [SUPPLEMENTAL_TABLE, MLB_API_CACHE_TABLE],
     routes: [
       "GET /main/debug/routes",
       "GET /main/health?slate_date=YYYY-MM-DD",
@@ -127,6 +128,17 @@ async function handleMainHealth(request, env) {
     supplemental = { ok: false, table: SUPPLEMENTAL_TABLE, rows: null, error: err?.message || String(err) };
   }
 
+  let mlbApiCache = { ok: true, table: MLB_API_CACHE_TABLE, mode: "not_checked_until_first_mlb_api_run" };
+  try {
+    await ensureMlbCacheTable(env);
+    const count = await countTable(env.DB, MLB_API_CACHE_TABLE, "", []);
+    mlbApiCache = typeof count === "object" && count.error
+      ? { ok: false, table: MLB_API_CACHE_TABLE, rows: null, error: count.error }
+      : { ok: true, table: MLB_API_CACHE_TABLE, rows: count, error: null };
+  } catch (err) {
+    mlbApiCache = { ok: false, table: MLB_API_CACHE_TABLE, rows: null, error: err?.message || String(err) };
+  }
+
   const pass = checks.filter(c => c.ok).length;
   const error = checks.filter(c => c.status === "ERROR").length;
   const review = checks.filter(c => c.status === "REVIEW").length;
@@ -141,8 +153,9 @@ async function handleMainHealth(request, env) {
     status: ok ? "pass" : "review",
     table_checks: checks,
     supplemental_cache: supplemental,
+    mlb_api_cache: mlbApiCache,
     summary: { pass, review, error, total: checks.length },
-    note: "Main API health. No cron, no task runner, no candidate builders. Controlled writes only to supplemental cache table."
+    note: "Main API health. No cron, no task runner, no candidate builders. Controlled writes only to supplemental leg cache and MLB API cache tables."
   });
 }
 
@@ -306,6 +319,390 @@ function scoreAverage(value, strong, review, risk = null) {
   return 56;
 }
 
+function addDays(dateText, delta) {
+  const d = new Date(`${dateText}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateText;
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
+function parseIp(ip) {
+  if (ip === null || ip === undefined || ip === '') return 0;
+  const text = String(ip);
+  const [whole, frac] = text.split('.');
+  const outs = Number(whole || 0) * 3 + Number(frac || 0);
+  return outs / 3;
+}
+
+function ipToBaseball(value) {
+  const outs = Math.round(Number(value || 0) * 3);
+  return `${Math.floor(outs / 3)}.${outs % 3}`;
+}
+
+function lowerName(value) {
+  return safeText(value).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function teamAbbrevFromScheduleTeam(team) {
+  return safeText(team?.abbreviation || team?.teamCode || team?.fileCode || team?.name).toUpperCase();
+}
+
+async function ensureMlbCacheTable(env) {
+  try {
+    await run(env.DB, `
+      CREATE TABLE IF NOT EXISTS ${MLB_API_CACHE_TABLE} (
+        cache_key TEXT PRIMARY KEY,
+        source_url TEXT,
+        payload_json TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT
+      )
+    `);
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+async function readMlbApiCache(env, cacheKey, ttlMinutes = 360) {
+  try {
+    await ensureMlbCacheTable(env);
+    const row = await one(env.DB, `SELECT payload_json, updated_at FROM ${MLB_API_CACHE_TABLE} WHERE cache_key = ? LIMIT 1`, [cacheKey]);
+    if (!row?.payload_json) return null;
+    const updated = Date.parse(row.updated_at || '');
+    if (Number.isFinite(updated)) {
+      const ageMs = Date.now() - updated;
+      if (ageMs > ttlMinutes * 60 * 1000) return null;
+    }
+    return JSON.parse(row.payload_json);
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function writeMlbApiCache(env, cacheKey, sourceUrl, payload) {
+  try {
+    await ensureMlbCacheTable(env);
+    await run(env.DB, `
+      INSERT INTO ${MLB_API_CACHE_TABLE} (cache_key, source_url, payload_json, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        source_url = excluded.source_url,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `, [cacheKey, sourceUrl, JSON.stringify(payload), nowSql()]);
+    return { ok: true, table: MLB_API_CACHE_TABLE, cache_key: cacheKey };
+  } catch (err) {
+    return { ok: false, table: MLB_API_CACHE_TABLE, cache_key: cacheKey, error: err?.message || String(err) };
+  }
+}
+
+async function fetchMlbJson(env, cacheKey, url, ttlMinutes = 360) {
+  const cached = await readMlbApiCache(env, cacheKey, ttlMinutes);
+  if (cached) return { ok: true, from_cache: true, url, data: cached, error: null };
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort('timeout'), 6500);
+    const res = await fetch(url, { signal: controller.signal, headers: { accept: 'application/json' } });
+    clearTimeout(timeout);
+    const data = await res.json();
+    if (!res.ok) return { ok: false, from_cache: false, url, data: null, error: `HTTP ${res.status}` };
+    await writeMlbApiCache(env, cacheKey, url, data);
+    return { ok: true, from_cache: false, url, data, error: null };
+  } catch (err) {
+    return { ok: false, from_cache: false, url, data: null, error: err?.message || String(err) };
+  }
+}
+
+async function getMlbSchedule(env, startDate, endDate) {
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}&hydrate=probablePitcher,team,linescore`;
+  return await fetchMlbJson(env, `schedule|${startDate}|${endDate}`, url, 240);
+}
+
+function flattenScheduleGames(schedule) {
+  const dates = Array.isArray(schedule?.dates) ? schedule.dates : [];
+  return dates.flatMap(d => (Array.isArray(d.games) ? d.games : []).map(g => ({ ...g, game_date: d.date })));
+}
+
+function scheduleTeamAbbrevs(game) {
+  return {
+    away: teamAbbrevFromScheduleTeam(game?.teams?.away?.team),
+    home: teamAbbrevFromScheduleTeam(game?.teams?.home?.team)
+  };
+}
+
+function findScheduleGame(games, teamId, opponentTeam) {
+  const t = safeText(teamId).toUpperCase();
+  const o = safeText(opponentTeam).toUpperCase();
+  return games.find(g => {
+    const a = scheduleTeamAbbrevs(g);
+    return (a.away === t && a.home === o) || (a.away === o && a.home === t);
+  }) || null;
+}
+
+async function getMlbBoxscore(env, gamePk) {
+  if (!gamePk) return { ok: false, data: null, error: 'missing_game_pk' };
+  const url = `https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`;
+  return await fetchMlbJson(env, `boxscore|${gamePk}`, url, 240);
+}
+
+async function getMlbLiveFeed(env, gamePk) {
+  if (!gamePk) return { ok: false, data: null, error: 'missing_game_pk' };
+  const url = `https://statsapi.mlb.com/api/v1.1/game/${gamePk}/feed/live`;
+  return await fetchMlbJson(env, `live|${gamePk}`, url, 60);
+}
+
+function boxscoreSideForTeam(boxscore, teamId) {
+  const t = safeText(teamId).toUpperCase();
+  const teams = boxscore?.teams || {};
+  const homeAbbr = teamAbbrevFromScheduleTeam(teams.home?.team);
+  const awayAbbr = teamAbbrevFromScheduleTeam(teams.away?.team);
+  if (homeAbbr === t) return 'home';
+  if (awayAbbr === t) return 'away';
+  return null;
+}
+
+function extractBoxscoreLineup(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return [];
+  const team = boxscore.teams?.[side] || {};
+  const players = team.players || {};
+  const ids = Array.isArray(team.batters) ? team.batters : Object.keys(players).map(k => Number(k.replace('ID', ''))).filter(Boolean);
+  const rows = ids.map((id) => {
+    const row = players[`ID${id}`] || {};
+    const batting = row.stats?.batting || {};
+    const orderRaw = row.battingOrder ? Number(String(row.battingOrder).slice(0, -2) || row.battingOrder) : null;
+    return {
+      player_id: id,
+      player_name: row.person?.fullName || null,
+      team_id: teamId,
+      slot: orderRaw,
+      position: row.position?.abbreviation || row.position?.code || null,
+      status: row.status?.code || null,
+      ab: n(batting.atBats, null),
+      hits: n(batting.hits, null),
+      runs: n(batting.runs, null),
+      rbi: n(batting.rbi, null),
+      bb: n(batting.baseOnBalls, null),
+      so: n(batting.strikeOuts, null),
+      hr: n(batting.homeRuns, null),
+      doubles: n(batting.doubles, null),
+      triples: n(batting.triples, null),
+      total_bases: n(batting.totalBases, null)
+    };
+  }).filter(r => r.player_name);
+  return rows.sort((a,b) => (a.slot || 99) - (b.slot || 99));
+}
+
+function findPlayerBoxscoreRow(boxscore, teamId, playerName) {
+  const target = lowerName(playerName);
+  return extractBoxscoreLineup(boxscore, teamId).find(r => lowerName(r.player_name) === target || lowerName(r.player_name).includes(target) || target.includes(lowerName(r.player_name))) || null;
+}
+
+function extractTeamBoxStats(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return null;
+  const team = boxscore.teams?.[side] || {};
+  const batting = team.teamStats?.batting || {};
+  const pitching = team.teamStats?.pitching || {};
+  return {
+    runs: n(batting.runs, null),
+    hits: n(batting.hits, null),
+    ab: n(batting.atBats, null),
+    rbi: n(batting.rbi, null),
+    bb: n(batting.baseOnBalls, null),
+    so: n(batting.strikeOuts, null),
+    hr: n(batting.homeRuns, null),
+    pitching_ip: pitching.inningsPitched || null,
+    pitching_hits_allowed: n(pitching.hits, null),
+    pitching_runs_allowed: n(pitching.runs, null),
+    pitching_so: n(pitching.strikeOuts, null),
+    pitching_bb: n(pitching.baseOnBalls, null)
+  };
+}
+
+function bullpenIpFromBoxscore(boxscore, teamId) {
+  const side = boxscoreSideForTeam(boxscore, teamId);
+  if (!side) return null;
+  const team = boxscore.teams?.[side] || {};
+  const players = team.players || {};
+  const pitcherIds = Array.isArray(team.pitchers) ? team.pitchers : [];
+  if (!pitcherIds.length) return null;
+  const reliefIds = pitcherIds.slice(1);
+  const ip = reliefIds.reduce((sum, id) => {
+    const row = players[`ID${id}`] || {};
+    return sum + parseIp(row.stats?.pitching?.inningsPitched);
+  }, 0);
+  return Number(ip.toFixed(3));
+}
+
+async function buildRecentMlbLogs(env, scheduleGames, playerName, teamId, opponentTeam, currentGamePk) {
+  const t = safeText(teamId).toUpperCase();
+  const games = scheduleGames
+    .filter(g => String(g.gamePk) !== String(currentGamePk || ''))
+    .filter(g => {
+      const ab = scheduleTeamAbbrevs(g);
+      return ab.away === t || ab.home === t;
+    })
+    .sort((a,b) => String(b.gameDate || b.game_date).localeCompare(String(a.gameDate || a.game_date)))
+    .slice(0, 5);
+
+  const playerLogs = [];
+  const teamLogs = [];
+  for (const g of games) {
+    const box = await getMlbBoxscore(env, g.gamePk);
+    if (!box.ok || !box.data) continue;
+    const abbr = scheduleTeamAbbrevs(g);
+    const isHome = abbr.home === t;
+    const opp = isHome ? abbr.away : abbr.home;
+    const playerRow = findPlayerBoxscoreRow(box.data, t, playerName);
+    if (playerRow) {
+      playerLogs.push({
+        game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+        game_pk: g.gamePk,
+        opponent: opp,
+        is_home: isHome,
+        ab: playerRow.ab,
+        h: playerRow.hits,
+        r: playerRow.runs,
+        rbi: playerRow.rbi,
+        bb: playerRow.bb,
+        so: playerRow.so,
+        hr: playerRow.hr,
+        doubles: playerRow.doubles,
+        total_bases: playerRow.total_bases,
+        source: 'mlb_statsapi_boxscore_recent_player'
+      });
+    }
+    const teamStats = extractTeamBoxStats(box.data, t);
+    const oppStats = extractTeamBoxStats(box.data, opp);
+    if (teamStats) {
+      teamLogs.push({
+        game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+        game_pk: g.gamePk,
+        opponent: opp,
+        is_home: isHome,
+        runs_for: teamStats.runs,
+        hits_for: teamStats.hits,
+        strikeouts: teamStats.so,
+        walks: teamStats.bb,
+        runs_against: oppStats?.runs ?? null,
+        hits_against: oppStats?.hits ?? null,
+        source: 'mlb_statsapi_boxscore_recent_team'
+      });
+    }
+  }
+  return { player_logs: playerLogs, team_logs: teamLogs };
+}
+
+async function buildRecentBullpenLogs(env, scheduleGames, teamId, currentGamePk) {
+  const t = safeText(teamId).toUpperCase();
+  const games = scheduleGames
+    .filter(g => String(g.gamePk) !== String(currentGamePk || ''))
+    .filter(g => {
+      const ab = scheduleTeamAbbrevs(g);
+      return ab.away === t || ab.home === t;
+    })
+    .sort((a,b) => String(b.gameDate || b.game_date).localeCompare(String(a.gameDate || a.game_date)))
+    .slice(0, 3);
+  const rows = [];
+  for (const g of games) {
+    const box = await getMlbBoxscore(env, g.gamePk);
+    if (!box.ok || !box.data) continue;
+    const abbr = scheduleTeamAbbrevs(g);
+    const opp = abbr.home === t ? abbr.away : abbr.home;
+    const ip = bullpenIpFromBoxscore(box.data, t);
+    rows.push({
+      game_date: g.game_date || String(g.gameDate || '').slice(0,10),
+      game_pk: g.gamePk,
+      opponent: opp,
+      bullpen_ip: ip,
+      bullpen_ip_text: ip === null ? null : ipToBaseball(ip),
+      source: 'mlb_statsapi_boxscore_recent_bullpen'
+    });
+  }
+  return rows;
+}
+
+function summarizeRecentPlayerLogs(rows = []) {
+  const logs = Array.isArray(rows) ? rows : [];
+  const last5 = logs.slice(0, 5);
+  const sum = (key, size = 5) => last5.slice(0, size).reduce((acc, r) => acc + n(r[key], 0), 0);
+  const ab = sum('ab');
+  const h = sum('h');
+  return {
+    games: last5.length,
+    last5_hits: last5.map(r => r.h ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_ab: last5.map(r => r.ab ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_runs: last5.map(r => r.r ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_rbi: last5.map(r => r.rbi ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_so: last5.map(r => r.so ?? null).filter(v => v !== null).join(' / ') || null,
+    last5_total_hits: h,
+    last5_total_ab: ab,
+    last5_avg: ab ? Number((h / ab).toFixed(3)) : null,
+    last3_hits_total: sum('h', 3),
+    last3_ab_total: sum('ab', 3),
+    source: 'mlb_statsapi_recent_boxscores'
+  };
+}
+
+async function enrichFromMlbApi(env, packetSeed) {
+  const slateDate = packetSeed.slate_date || DEFAULT_SLATE_DATE;
+  const startDate = addDays(slateDate, -14);
+  const endDate = slateDate;
+  const scheduleRes = await getMlbSchedule(env, startDate, endDate);
+  const allGames = flattenScheduleGames(scheduleRes.data || {});
+  const scheduleGame = findScheduleGame(allGames.filter(g => (g.game_date || String(g.gameDate || '').slice(0,10)) === slateDate), packetSeed.leg.team_id, packetSeed.leg.opponent_team)
+    || findScheduleGame(allGames, packetSeed.leg.team_id, packetSeed.leg.opponent_team);
+  const gamePk = scheduleGame?.gamePk || null;
+  const boxRes = await getMlbBoxscore(env, gamePk);
+  const liveRes = await getMlbLiveFeed(env, gamePk);
+  const boxscore = boxRes.data || null;
+  const live = liveRes.data || null;
+
+  const currentTeamLineup = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.team_id) : [];
+  const currentOpponentLineup = boxscore ? extractBoxscoreLineup(boxscore, packetSeed.leg.opponent_team) : [];
+  const recent = await buildRecentMlbLogs(env, allGames, packetSeed.leg.player_name, packetSeed.leg.team_id, packetSeed.leg.opponent_team, gamePk);
+  const oppBullpenRecent = await buildRecentBullpenLogs(env, allGames, packetSeed.leg.opponent_team, gamePk);
+
+  const status = scheduleGame?.status || live?.gameData?.status || {};
+  const lineScore = live?.liveData?.linescore || scheduleGame?.linescore || {};
+  const apiRequests = [scheduleRes, boxRes, liveRes].map(r => ({ ok: r.ok, from_cache: !!r.from_cache, url: r.url, error: r.error || null }));
+
+  return {
+    ok: !!scheduleRes.ok,
+    source: 'mlb_statsapi_official_safe_enrichment',
+    mode: 'main_api_read_through_cache',
+    game_pk: gamePk,
+    schedule_game_found: !!scheduleGame,
+    live_status: {
+      abstract_game_state: status.abstractGameState || null,
+      detailed_state: status.detailedState || null,
+      coded_game_state: status.codedGameState || null,
+      status_code: status.statusCode || null,
+      start_time_utc: scheduleGame?.gameDate || live?.gameData?.datetime?.dateTime || null,
+      current_inning: lineScore.currentInning || null,
+      inning_state: lineScore.inningState || null,
+      away_score: lineScore.teams?.away?.runs ?? scheduleGame?.teams?.away?.score ?? null,
+      home_score: lineScore.teams?.home?.runs ?? scheduleGame?.teams?.home?.score ?? null
+    },
+    boxscore_lineup: currentTeamLineup,
+    opponent_boxscore_lineup: currentOpponentLineup,
+    player_recent_logs: recent.player_logs,
+    player_recent_summary: summarizeRecentPlayerLogs(recent.player_logs),
+    team_recent_games: recent.team_logs,
+    opponent_bullpen_recent: oppBullpenRecent,
+    cache_summary: {
+      schedule_cached: !!scheduleRes.from_cache,
+      boxscore_cached: !!boxRes.from_cache,
+      live_cached: !!liveRes.from_cache,
+      cache_table: MLB_API_CACHE_TABLE
+    },
+    api_requests: apiRequests,
+    warnings: [scheduleRes, boxRes, liveRes].filter(r => !r.ok).map(r => r.error).filter(Boolean)
+  };
+}
+
 async function findRecentUsage(env, playerName, teamId) {
   const name = safeText(playerName).trim();
   if (!name) return [];
@@ -435,8 +832,40 @@ function scoreTier(tier) {
 
 function last5HitsString(recentUsage) {
   const rows = Array.isArray(recentUsage) ? recentUsage : [];
-  const values = rows.map(r => n(r.hits ?? r.H ?? r.hit ?? r.last_game_hits, null)).filter(v => v !== null).slice(0, 5);
+  const values = rows.map(r => n(r.hits ?? r.H ?? r.hit ?? r.last_game_hits ?? r.h, null)).filter(v => v !== null).slice(0, 5);
   return values.length ? values.join(" / ") : null;
+}
+
+function last5StatString(rows, key) {
+  const values = (Array.isArray(rows) ? rows : []).map(r => n(r[key], null)).filter(v => v !== null).slice(0, 5);
+  return values.length ? values.join(" / ") : null;
+}
+
+function scoreRecentHits(summary = {}) {
+  const avg = n(summary.last5_avg, null);
+  if (avg === null) return 0;
+  if (avg >= 0.330) return 90;
+  if (avg >= 0.280) return 82;
+  if (avg >= 0.230) return 70;
+  return 56;
+}
+
+function scoreRecentVolume(summary = {}) {
+  const ab = n(summary.last5_total_ab, null);
+  if (ab === null) return 0;
+  if (ab >= 20) return 88;
+  if (ab >= 15) return 78;
+  if (ab >= 10) return 68;
+  return 55;
+}
+
+function scoreBullpenRecentIp(rows = []) {
+  const total = (Array.isArray(rows) ? rows : []).slice(0, 3).reduce((sum, r) => sum + n(r.bullpen_ip, 0), 0);
+  if (!total) return 0;
+  if (total >= 10) return 88;
+  if (total >= 7) return 78;
+  if (total >= 4) return 66;
+  return 56;
 }
 
 function buildMatrixFactors(packet) {
@@ -455,7 +884,17 @@ function buildMatrixFactors(packet) {
   const gameStarters = Array.isArray(packet.game_starters) ? packet.game_starters : [];
   const gameBullpens = Array.isArray(packet.game_bullpens) ? packet.game_bullpens : [];
   const related = packet.related_candidates || { hits: [], rbi: [], rfi: [] };
-  const last5 = last5HitsString(recent);
+  const mlb = packet.mlb_api || {};
+  const mlbSummary = mlb.player_recent_summary || {};
+  const mlbPlayerLogs = Array.isArray(mlb.player_recent_logs) ? mlb.player_recent_logs : [];
+  const mlbTeamRecent = Array.isArray(mlb.team_recent_games) ? mlb.team_recent_games : [];
+  const mlbOppBullpen = Array.isArray(mlb.opponent_bullpen_recent) ? mlb.opponent_bullpen_recent : [];
+  const mlbLast5Hits = mlbSummary.last5_hits || last5StatString(mlbPlayerLogs, 'h');
+  const mlbLast5Ab = mlbSummary.last5_ab || last5StatString(mlbPlayerLogs, 'ab');
+  const mlbLast5Runs = mlbSummary.last5_runs || last5StatString(mlbPlayerLogs, 'r');
+  const mlbLast5Rbi = mlbSummary.last5_rbi || last5StatString(mlbPlayerLogs, 'rbi');
+  const mlbLast5So = mlbSummary.last5_so || last5StatString(mlbPlayerLogs, 'so');
+  const last5 = last5HitsString(recent) || mlbLast5Hits;
   const completeness = 100 - Math.min((packet.missing || []).length * 14, 70);
   const starterHitsPerIp = st.innings_pitched ? n(st.hits_allowed, 0) / Math.max(n(st.innings_pitched, 1), 1) : null;
   const starterHitsPerIpScore = starterHitsPerIp === null ? 0 : (starterHitsPerIp >= 1.10 ? 86 : starterHitsPerIp >= 0.90 ? 76 : starterHitsPerIp >= 0.75 ? 66 : 56);
@@ -550,6 +989,23 @@ function buildMatrixFactors(packet) {
       factor("related_rfi_candidates", "Related RFI Candidates", related.rfi?.length || 0, related.rfi?.length ? 82 : 0, "edge_candidates_rfi"),
       factor("lineup_context", "Lineup Context", c.lineup_context_status || "MISSING", c.lineup_context_status === "complete" ? 86 : c.lineup_context_status === "partial" ? 70 : 0, c.source)
     ],
+    mlb_api: [
+      factor("mlb_game_pk", "MLB GamePk", mlb.game_pk || "MISSING", mlb.game_pk ? 100 : 0, "mlb_statsapi_schedule"),
+      factor("mlb_live_status", "MLB Live Status", mlb.live_status?.detailed_state || mlb.live_status?.abstract_game_state || "MISSING", mlb.live_status?.detailed_state ? 86 : 0, "mlb_statsapi_live_feed"),
+      factor("mlb_score_state", "MLB Score State", `Away ${mlb.live_status?.away_score ?? "?"} / Home ${mlb.live_status?.home_score ?? "?"}`, (mlb.live_status?.away_score !== null && mlb.live_status?.away_score !== undefined) ? 76 : 0, "mlb_statsapi_live_feed"),
+      factor("mlb_boxscore_lineup", "MLB Boxscore Team Lineup", mlb.boxscore_lineup?.length || 0, mlb.boxscore_lineup?.length >= 9 ? 90 : mlb.boxscore_lineup?.length ? 70 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_opponent_boxscore_lineup", "MLB Boxscore Opponent Lineup", mlb.opponent_boxscore_lineup?.length || 0, mlb.opponent_boxscore_lineup?.length >= 9 ? 90 : mlb.opponent_boxscore_lineup?.length ? 70 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_last5_hits", "MLB Last 5 Hits", mlbLast5Hits || "MISSING", scoreRecentHits(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_ab", "MLB Last 5 AB", mlbLast5Ab || "MISSING", scoreRecentVolume(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_runs", "MLB Last 5 Runs", mlbLast5Runs || "MISSING", mlbLast5Runs ? 74 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_rbi", "MLB Last 5 RBI", mlbLast5Rbi || "MISSING", mlbLast5Rbi ? 74 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_last5_so", "MLB Last 5 Strikeouts", mlbLast5So || "MISSING", mlbLast5So ? 70 : 0, "mlb_statsapi_recent_boxscores"),
+      factor("mlb_recent_avg", "MLB Last 5 AVG", mlbSummary.last5_avg ?? "MISSING", scoreRecentHits(mlbSummary), "mlb_statsapi_recent_boxscores"),
+      factor("mlb_team_recent_games", "MLB Team Recent Games", mlbTeamRecent.length, mlbTeamRecent.length >= 3 ? 84 : mlbTeamRecent.length ? 66 : 0, "mlb_statsapi_boxscore"),
+      factor("mlb_opponent_bullpen_recent", "MLB Opponent Bullpen Last 3", mlbOppBullpen.map(r => r.bullpen_ip_text || r.bullpen_ip).filter(Boolean).join(" / ") || "MISSING", scoreBullpenRecentIp(mlbOppBullpen), "mlb_statsapi_boxscore"),
+      factor("mlb_api_cache", "MLB API Cache", mlb.cache_summary ? JSON.stringify(mlb.cache_summary) : "MISSING", mlb.cache_summary ? 82 : 0, MLB_API_CACHE_TABLE),
+      factor("mlb_api_warnings", "MLB API Warnings", mlb.warnings?.length ? mlb.warnings.join(" | ") : "NONE", mlb.warnings?.length ? 45 : 92, "mlb_api_bridge")
+    ],
     risk: [
       factor("packet_completeness", "Packet Completeness", (packet.missing || []).length ? `Missing: ${(packet.missing || []).join(", ")}` : "Complete", completeness, "packet"),
       factor("db_inventory", "DB Inventory", packet.db_inventory ? JSON.stringify(packet.db_inventory) : "MISSING", packet.db_inventory ? 86 : 0, "packet"),
@@ -582,6 +1038,7 @@ async function writeSupplementalCache(env, packet) {
     team_players: packet.team_players,
     opponent_players: packet.opponent_players,
     related_candidates: packet.related_candidates,
+    mlb_api: packet.mlb_api,
     db_inventory: packet.db_inventory,
     matrix_factors: packet.matrix_factors,
     missing: packet.missing,
@@ -659,24 +1116,35 @@ async function buildLegPacket(payload, env, options = {}) {
   const teamPlayers = await findTeamPlayers(env, teamId);
   const opponentPlayers = await findTeamPlayers(env, opponentTeam);
   const relatedCandidates = await findRelatedCandidates(env, family, playerName, teamId, gameId, slateDate);
+  const leg = {
+    leg_id: payload.leg_id || null,
+    row_index: payload.row_index || null,
+    player_name: playerName,
+    team_id: teamId,
+    opponent_team: opponentTeam,
+    prop_type: propType,
+    prop_family: family,
+    line: payload.line ?? null,
+    side: payload.side || payload.direction || null,
+    game_time_text: payload.game_time_text || null
+  };
+  let mlbApi = { ok: false, source: "mlb_statsapi_official_safe_enrichment", error: "not_started" };
+  try {
+    mlbApi = await enrichFromMlbApi(env, { slate_date: slateDate, leg, game_id: gameId });
+  } catch (err) {
+    mlbApi = { ok: false, source: "mlb_statsapi_official_safe_enrichment", error: err?.message || String(err), warnings: [err?.message || String(err)] };
+  }
+
+  const finalTeamLineup = teamLineup.length ? teamLineup : (mlbApi.boxscore_lineup || []);
+  const finalOpponentLineup = opponentLineup.length ? opponentLineup : (mlbApi.opponent_boxscore_lineup || []);
+  const finalRecentUsage = recentUsage.length ? recentUsage : (mlbApi.player_recent_logs || []);
 
   const packet = {
     ok: true,
     source: "alphadog-main-api-v100",
-    mode: "d1_packet_plus_matrix_fill_controlled_cache",
+    mode: "d1_packet_plus_matrix_fill_controlled_cache_mlb_api_bridge",
     slate_date: slateDate,
-    leg: {
-      leg_id: payload.leg_id || null,
-      row_index: payload.row_index || null,
-      player_name: playerName,
-      team_id: teamId,
-      opponent_team: opponentTeam,
-      prop_type: propType,
-      prop_family: family,
-      line: payload.line ?? null,
-      side: payload.side || payload.direction || null,
-      game_time_text: payload.game_time_text || null
-    },
+    leg,
     game,
     game_id: gameId,
     market,
@@ -684,18 +1152,22 @@ async function buildLegPacket(payload, env, options = {}) {
     lineup,
     opposing_starter: opposingStarter,
     bullpen,
-    recent_usage: recentUsage,
+    recent_usage: finalRecentUsage,
     candidate,
-    team_lineup: teamLineup,
-    opponent_lineup: opponentLineup,
+    team_lineup: finalTeamLineup,
+    opponent_lineup: finalOpponentLineup,
+    mlb_api: mlbApi,
     game_starters: gameStarters,
     game_bullpens: gameBullpens,
     team_players: teamPlayers,
     opponent_players: opponentPlayers,
     related_candidates: relatedCandidates,
     db_inventory: {
-      team_lineup_rows: teamLineup.length,
-      opponent_lineup_rows: opponentLineup.length,
+      team_lineup_rows: finalTeamLineup.length,
+      opponent_lineup_rows: finalOpponentLineup.length,
+      mlb_api_player_recent_logs: (mlbApi.player_recent_logs || []).length,
+      mlb_api_team_recent_games: (mlbApi.team_recent_games || []).length,
+      mlb_api_opponent_bullpen_recent: (mlbApi.opponent_bullpen_recent || []).length,
       game_starter_rows: gameStarters.length,
       game_bullpen_rows: gameBullpens.length,
       team_player_rows: teamPlayers.length,
@@ -711,6 +1183,7 @@ async function buildLegPacket(payload, env, options = {}) {
 
   packet.missing = buildMissing(packet);
   if (packet.missing.length) packet.warnings.push(`Missing packet sections: ${packet.missing.join(", ")}`);
+  if (mlbApi?.warnings?.length) packet.warnings.push(`MLB API enrichment warnings: ${mlbApi.warnings.join(" | ")}`);
   if (family === "UNKNOWN") packet.warnings.push("Unsupported or unknown prop family");
   packet.matrix_factors = buildMatrixFactors(packet);
   packet.matrix_factor_summary = summarizeFactors(packet.matrix_factors);

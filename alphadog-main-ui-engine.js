@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1F New API Worker Lock';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1K MLB API Factor Bridge';
 
   function el(id) {
     return document.getElementById(id);
@@ -39,12 +39,9 @@ window.PickCalcUI = (() => {
 
   function hydrateBackendControls(Connectors) {
     if (!Connectors) return;
-    const backendUrlInput = el('backendUrlInput');
-    const tokenInput = el('backendTokenInput');
-    const slateDateInput = el('slateDateInput');
-    if (backendUrlInput) backendUrlInput.value = Connectors.forceBackendUrlInputToMainApi ? Connectors.forceBackendUrlInputToMainApi() : Connectors.getBackendUrl();
-    if (tokenInput && !tokenInput.value) tokenInput.value = Connectors.getToken();
-    if (slateDateInput && !slateDateInput.value) slateDateInput.value = Connectors.getSlateDate();
+    if (Connectors.forceBackendUrlInputToMainApi) Connectors.forceBackendUrlInputToMainApi();
+    if (Connectors.setToken) Connectors.setToken('');
+    if (Connectors.setSlateDate) Connectors.setSlateDate('');
   }
 
   function renderFeedStatus(rows = [], auditRows = []) {
@@ -193,6 +190,50 @@ window.PickCalcUI = (() => {
     `;
   }
 
+  function lightForScore(score) {
+    const n = Number(score);
+    if (!Number.isFinite(n)) return '0/100 🔴 RISK';
+    if (n >= 80) return `${Math.round(n)}/100 🟢 STRONG`;
+    if (n >= 65) return `${Math.round(n)}/100 🟡 REVIEW`;
+    return `${Math.round(n)}/100 🔴 RISK`;
+  }
+
+  function formatFactorValue(factor) {
+    if (!factor) return `MISSING — ${lightForScore(0)}`;
+    const value = factor.value === undefined || factor.value === null || factor.value === '' ? 'MISSING' : factor.value;
+    return `${value} — ${lightForScore(factor.score)}${factor.source ? ` • ${factor.source}` : ''}`;
+  }
+
+  function getPacket(vault = null) {
+    if (!vault) return null;
+    if (vault.packet?.packet) return vault.packet.packet;
+    if (vault.packet) return vault.packet;
+    if (vault.score_request?.score?.packet) return vault.score_request.score.packet;
+    return null;
+  }
+
+  function getFactor(packet, section, key) {
+    const rows = packet?.matrix_factors?.[section] || [];
+    return rows.find((row) => row.key === key) || null;
+  }
+
+  function factorRows(packet, section) {
+    return (packet?.matrix_factors?.[section] || []).map((factor) => ({
+      label: factor.label,
+      value: formatFactorValue(factor),
+      status: factor.score >= 80 ? 'ok' : (factor.score >= 65 ? 'pending' : 'missing')
+    }));
+  }
+
+  function rawCountRows(packet) {
+    const inv = packet?.db_inventory || {};
+    return Object.keys(inv).map((key) => ({
+      label: key,
+      value: String(inv[key]) + ' row(s)',
+      status: Number(inv[key]) > 0 ? 'ok' : 'missing'
+    }));
+  }
+
   function renderMatrixSection(title, rows = [], open = false) {
     const body = rows.length
       ? rows.map((item) => `
@@ -211,73 +252,113 @@ window.PickCalcUI = (() => {
     `;
   }
 
+  function packetValue(packet, path, fallback = 'MISSING') {
+    if (!packet) return fallback;
+    let cur = packet;
+    for (const part of path.split('.')) {
+      if (cur && Object.prototype.hasOwnProperty.call(cur, part)) cur = cur[part];
+      else return fallback;
+    }
+    return cur === undefined || cur === null || cur === '' ? fallback : cur;
+  }
+
   function buildMatrixSections(row = {}, vault = null, backendHealth = null) {
     const support = getSupportStatus(row);
+    const packet = getPacket(vault);
     const packetStatus = vault?.packet_status || 'not_started';
     const scoreStatus = vault?.score_status || 'not_started';
-    const healthOk = backendHealth?.ok === true;
     const warningList = Array.isArray(vault?.warnings) ? vault.warnings : [];
     const score = vault?.score || {};
+    const factorSummary = packet?.matrix_factor_summary || score?.matrix_factor_summary || null;
+    const cache = packet?.incremental_cache || null;
 
     return [
       renderMatrixSection('Identity', [
-        { label: 'Player', value: row.parsedPlayer || 'MISSING', status: row.parsedPlayer ? 'ok' : 'missing' },
-        { label: 'Team', value: row.team || 'MISSING', status: row.team ? 'ok' : 'missing' },
-        { label: 'Opponent', value: row.opponent || 'MISSING', status: row.opponent ? 'ok' : 'missing' },
-        { label: 'Prop Family', value: support.family },
+        { label: 'Player Identity', value: formatFactorValue(getFactor(packet, 'identity', 'player_identity')), status: getFactor(packet, 'identity', 'player_identity') ? 'ok' : 'missing' },
+        { label: 'Team / Opponent', value: formatFactorValue(getFactor(packet, 'identity', 'team_match')), status: getFactor(packet, 'identity', 'team_match') ? 'ok' : 'missing' },
+        { label: 'Prop Family', value: formatFactorValue(getFactor(packet, 'identity', 'prop_family')), status: getFactor(packet, 'identity', 'prop_family') ? 'ok' : 'pending' },
         { label: 'Backend Payload', value: vault?.payload ? compactJson(vault.payload, 700) : 'QUEUED AFTER BACKEND PASS', status: vault?.payload ? 'ok' : 'pending' }
       ], true),
       renderMatrixSection('Trend', [
-        { label: 'Recent Usage Source', value: healthOk ? 'D1 player_recent_usage foundation available' : 'WAITING DAILY HEALTH', status: healthOk ? 'ok' : 'pending' },
-        checkValue(backendHealth, 'PLAYERS_CURRENT'),
-        { label: 'Packet Status', value: packetStatus, status: packetStatus === 'ok' ? 'ok' : (packetStatus === 'error' ? 'missing' : 'pending') }
+        { label: 'Last 5 / Recent Hits', value: formatFactorValue(getFactor(packet, 'trend', 'last5_hits')), status: getFactor(packet, 'trend', 'last5_hits') ? 'ok' : 'missing' },
+        { label: 'Season AVG', value: formatFactorValue(getFactor(packet, 'trend', 'season_avg')), status: getFactor(packet, 'trend', 'season_avg') ? 'ok' : 'missing' },
+        { label: 'Season OBP', value: formatFactorValue(getFactor(packet, 'trend', 'season_obp')), status: getFactor(packet, 'trend', 'season_obp') ? 'ok' : 'missing' },
+        { label: 'Season SLG', value: formatFactorValue(getFactor(packet, 'trend', 'season_slg')), status: getFactor(packet, 'trend', 'season_slg') ? 'ok' : 'missing' },
+        checkValue(backendHealth, 'PLAYERS_CURRENT')
       ]),
       renderMatrixSection('Matchup', [
-        { label: 'Game / Matchup', value: `${row.team || 'MISSING'} ${row.opponent ? 'vs/@' : ''} ${row.opponent || 'MISSING'}`.trim(), status: row.team && row.opponent ? 'ok' : 'missing' },
-        checkValue(backendHealth, 'GAMES_TODAY'),
-        checkValue(backendHealth, 'STARTERS_TODAY'),
-        { label: 'Opposing Starter Detail', value: vault?.packet?.opposing_starter?.starter_name || vault?.packet?.candidate?.opposing_starter || 'PENDING PACKET ENDPOINT', status: (vault?.packet?.opposing_starter?.starter_name || vault?.packet?.candidate?.opposing_starter) ? 'ok' : 'pending' }
+        { label: 'Game / Matchup', value: `${packetValue(packet, 'game.away_team', row.opponent || 'MISSING')} @ ${packetValue(packet, 'game.home_team', row.team || 'MISSING')}`, status: packet?.game ? 'ok' : 'missing' },
+        { label: 'Opposing Starter', value: formatFactorValue(getFactor(packet, 'matchup', 'opposing_starter')), status: getFactor(packet, 'matchup', 'opposing_starter') ? 'ok' : 'missing' },
+        { label: 'Starter Hand', value: formatFactorValue(getFactor(packet, 'matchup', 'starter_throws')), status: getFactor(packet, 'matchup', 'starter_throws') ? 'ok' : 'missing' },
+        { label: 'Starter WHIP', value: formatFactorValue(getFactor(packet, 'matchup', 'starter_whip')), status: getFactor(packet, 'matchup', 'starter_whip') ? 'ok' : 'missing' },
+        { label: 'Starter ERA', value: formatFactorValue(getFactor(packet, 'matchup', 'starter_era')), status: getFactor(packet, 'matchup', 'starter_era') ? 'ok' : 'missing' },
+        { label: 'Starter H/IP', value: formatFactorValue(getFactor(packet, 'matchup', 'starter_hits_per_ip')), status: getFactor(packet, 'matchup', 'starter_hits_per_ip') ? 'ok' : 'missing' },
+        checkValue(backendHealth, 'STARTERS_TODAY')
       ]),
       renderMatrixSection('Role / Usage', [
-        { label: 'Role Type', value: row.type || 'MISSING', status: row.type ? 'ok' : 'missing' },
-        checkValue(backendHealth, 'LINEUPS_TODAY'),
-        { label: 'Lineup Slot', value: vault?.packet?.lineup_slot || 'PENDING PACKET ENDPOINT', status: vault?.packet?.lineup_slot ? 'ok' : 'pending' }
+        { label: 'Lineup Slot', value: formatFactorValue(getFactor(packet, 'role_usage', 'lineup_slot')), status: getFactor(packet, 'role_usage', 'lineup_slot') ? 'ok' : 'missing' },
+        { label: 'Lineup Confirmed', value: formatFactorValue(getFactor(packet, 'role_usage', 'lineup_confirmed')), status: getFactor(packet, 'role_usage', 'lineup_confirmed') ? 'ok' : 'missing' },
+        { label: 'Role Type', value: formatFactorValue(getFactor(packet, 'role_usage', 'role_type')), status: getFactor(packet, 'role_usage', 'role_type') ? 'ok' : 'missing' },
+        { label: 'Recent AB Volume', value: formatFactorValue(getFactor(packet, 'role_usage', 'recent_ab_volume')), status: getFactor(packet, 'role_usage', 'recent_ab_volume') ? 'ok' : 'missing' },
+        checkValue(backendHealth, 'LINEUPS_TODAY')
       ]),
       renderMatrixSection('Market', [
         { label: 'Prop', value: row.prop || 'MISSING', status: row.prop ? 'ok' : 'missing' },
         { label: 'Line', value: row.line || 'MISSING', status: row.line ? 'ok' : 'missing' },
-        { label: 'Direction', value: row.direction || row.side || row.type || 'PENDING', status: row.direction || row.side || row.type ? 'ok' : 'pending' },
+        { label: 'Direction', value: row.direction || row.side || 'PENDING', status: row.direction || row.side ? 'ok' : 'pending' },
+        { label: 'Game Total', value: formatFactorValue(getFactor(packet, 'market', 'game_total')), status: getFactor(packet, 'market', 'game_total') ? 'ok' : 'missing' },
+        { label: 'Team Implied Runs', value: formatFactorValue(getFactor(packet, 'market', 'team_implied_runs')), status: getFactor(packet, 'market', 'team_implied_runs') ? 'ok' : 'missing' },
+        { label: 'Market Source', value: formatFactorValue(getFactor(packet, 'market', 'market_source')), status: getFactor(packet, 'market', 'market_source') ? 'ok' : 'missing' },
         checkValue(backendHealth, 'MARKETS_TODAY')
       ]),
       renderMatrixSection('Environment', [
-        checkValue(backendHealth, 'BULLPENS_TODAY'),
-        { label: 'Venue / Park', value: vault?.packet?.venue || vault?.packet?.game?.venue || vault?.packet?.park || 'PENDING PACKET ENDPOINT', status: (vault?.packet?.venue || vault?.packet?.game?.venue || vault?.packet?.park) ? 'ok' : 'pending' },
-        { label: 'Weather', value: 'FUTURE MINER', status: 'pending' }
+        { label: 'Venue / Park', value: formatFactorValue(getFactor(packet, 'environment', 'venue')), status: getFactor(packet, 'environment', 'venue') ? 'ok' : 'missing' },
+        { label: 'Park Run Factor', value: formatFactorValue(getFactor(packet, 'environment', 'park_run_factor')), status: getFactor(packet, 'environment', 'park_run_factor') ? 'ok' : 'missing' },
+        { label: 'Park HR Factor', value: formatFactorValue(getFactor(packet, 'environment', 'park_hr_factor')), status: getFactor(packet, 'environment', 'park_hr_factor') ? 'ok' : 'missing' },
+        { label: 'Opponent Bullpen Fatigue', value: formatFactorValue(getFactor(packet, 'environment', 'bullpen_fatigue')), status: getFactor(packet, 'environment', 'bullpen_fatigue') ? 'ok' : 'missing' },
+        { label: 'Weather', value: 'FUTURE MINER — 0/100 🔴 RISK', status: 'missing' },
+        checkValue(backendHealth, 'BULLPENS_TODAY')
+      ]),
+      renderMatrixSection('Team Context', factorRows(packet, 'team_context')),
+      renderMatrixSection('MLB API Enrichment', [
+        ...factorRows(packet, 'mlb_api'),
+        { label: 'MLB Recent Player Logs Raw', value: packet?.mlb_api?.player_recent_logs ? compactJson(packet.mlb_api.player_recent_logs, 1600) : 'MISSING', status: packet?.mlb_api?.player_recent_logs?.length ? 'ok' : 'missing' },
+        { label: 'MLB Team Recent Games Raw', value: packet?.mlb_api?.team_recent_games ? compactJson(packet.mlb_api.team_recent_games, 1600) : 'MISSING', status: packet?.mlb_api?.team_recent_games?.length ? 'ok' : 'missing' },
+        { label: 'MLB Opponent Bullpen Recent Raw', value: packet?.mlb_api?.opponent_bullpen_recent ? compactJson(packet.mlb_api.opponent_bullpen_recent, 1400) : 'MISSING', status: packet?.mlb_api?.opponent_bullpen_recent?.length ? 'ok' : 'missing' }
+      ]),
+      renderMatrixSection('Candidate Context', factorRows(packet, 'candidate_context')),
+      renderMatrixSection('Full DB Inventory', [
+        ...rawCountRows(packet),
+        { label: 'Team Lineup Raw', value: packet?.team_lineup ? compactJson(packet.team_lineup, 1200) : 'MISSING', status: packet?.team_lineup?.length ? 'ok' : 'missing' },
+        { label: 'Opponent Lineup Raw', value: packet?.opponent_lineup ? compactJson(packet.opponent_lineup, 1200) : 'MISSING', status: packet?.opponent_lineup?.length ? 'ok' : 'missing' },
+        { label: 'Game Starters Raw', value: packet?.game_starters ? compactJson(packet.game_starters, 1200) : 'MISSING', status: packet?.game_starters?.length ? 'ok' : 'missing' },
+        { label: 'Game Bullpens Raw', value: packet?.game_bullpens ? compactJson(packet.game_bullpens, 1200) : 'MISSING', status: packet?.game_bullpens?.length ? 'ok' : 'missing' },
+        { label: 'Related Candidates Raw', value: packet?.related_candidates ? compactJson(packet.related_candidates, 1500) : 'MISSING', status: packet?.related_candidates ? 'ok' : 'missing' },
+        { label: 'MLB API Raw', value: packet?.mlb_api ? compactJson(packet.mlb_api, 1800) : 'MISSING', status: packet?.mlb_api?.ok ? 'ok' : 'missing' }
       ]),
       renderMatrixSection('Risk', [
-        { label: 'Daily Health', value: backendHealth ? (backendHealth.ok ? 'PASS' : 'FAIL') : 'NOT CHECKED', status: backendHealth?.ok ? 'ok' : 'pending' },
-        { label: 'Unsupported Family', value: support.family === 'UNWIRED' ? 'YES' : 'NO', status: support.family === 'UNWIRED' ? 'missing' : 'ok' },
-        { label: 'Packet Error', value: vault?.packet_request?.error || 'NONE / NOT RUN', status: vault?.packet_request?.error ? 'missing' : 'pending' },
-        { label: 'Score Error', value: vault?.score_request?.error || 'NONE / NOT RUN', status: vault?.score_request?.error ? 'missing' : 'pending' }
+        { label: 'Daily Health', value: backendHealth ? (backendHealth.ok ? 'PASS — 100/100 🟢 STRONG' : 'FAIL — 0/100 🔴 RISK') : 'NOT CHECKED — 0/100 🔴 RISK', status: backendHealth?.ok ? 'ok' : 'missing' },
+        { label: 'Packet Completeness', value: formatFactorValue(getFactor(packet, 'risk', 'packet_completeness')), status: getFactor(packet, 'risk', 'packet_completeness') ? 'ok' : 'missing' },
+        { label: 'Candidate Tier', value: formatFactorValue(getFactor(packet, 'candidate_context', 'candidate_tier')), status: getFactor(packet, 'candidate_context', 'candidate_tier') ? 'ok' : 'missing' },
+        { label: 'Lineup Context', value: formatFactorValue(getFactor(packet, 'candidate_context', 'lineup_context')), status: getFactor(packet, 'candidate_context', 'lineup_context') ? 'ok' : 'missing' },
+        { label: 'Warnings', value: formatFactorValue(getFactor(packet, 'risk', 'warnings')), status: warningList.length ? 'missing' : 'ok' },
+        { label: 'Packet Error', value: vault?.packet_request?.error || 'NONE', status: vault?.packet_request?.error ? 'missing' : 'ok' },
+        { label: 'Score Error', value: vault?.score_request?.error || 'NONE', status: vault?.score_request?.error ? 'missing' : 'ok' }
+      ]),
+      renderMatrixSection('Matrix Summary / Cache', [
+        { label: 'Factor Summary', value: factorSummary ? `${factorSummary.strong} strong / ${factorSummary.review} review / ${factorSummary.risk} risk / avg ${factorSummary.average_factor_score}` : 'PENDING MATRIX FACTORS', status: factorSummary ? 'ok' : 'pending' },
+        { label: 'Incremental Cache', value: cache ? `${cache.ok ? 'UPSERT OK' : 'CACHE REVIEW'} • ${cache.table || ''} • ${cache.cache_key || cache.mode || ''}` : 'PENDING CACHE RESULT', status: cache?.ok ? 'ok' : (cache ? 'missing' : 'pending') },
+        { label: 'Cache Mode', value: cache?.mode || 'PENDING', status: cache ? 'ok' : 'pending' }
       ]),
       renderMatrixSection('Final Score', [
-        { label: 'Score', value: score.final_score ?? score.finalScore ?? 'NOT SCORED YET', status: score.final_score || score.finalScore ? 'ok' : 'pending' },
-        { label: 'Verdict', value: score.verdict || 'WAITING FOR SCORING ADAPTER', status: score.verdict ? 'ok' : 'pending' },
-        { label: 'Confidence', value: score.confidence || 'NOT ASSIGNED', status: score.confidence ? 'ok' : 'pending' },
+        { label: 'Score', value: score.final_score ?? score.finalScore ?? 'NOT FINAL — MATRIX ONLY', status: score.final_score || score.finalScore ? 'ok' : 'pending' },
+        { label: 'Verdict', value: score.verdict || 'WAITING FOR FINAL SCORING ADAPTER', status: score.verdict ? 'ok' : 'pending' },
+        { label: 'Confidence', value: score.confidence || 'NOT FINAL', status: score.confidence ? 'ok' : 'pending' },
         { label: 'Score Status', value: scoreStatus, status: scoreStatus === 'ok' ? 'ok' : (scoreStatus === 'error' ? 'missing' : 'pending') }
       ]),
-      renderMatrixSection('Hit Probability', [
-        { label: 'Probability', value: score.hit_probability ?? score.hitProbability ?? 'NOT CALCULATED YET', status: score.hit_probability || score.hitProbability ? 'ok' : 'pending' },
-        { label: 'Formula Source', value: 'PENDING PROP FAMILY ADAPTER', status: 'pending' }
-      ]),
-      renderMatrixSection('Warnings', [
-        { label: 'Current Warning State', value: warningList.length ? warningList.join(' | ') : support.label, status: warningList.length ? 'missing' : (support.tone === 'ready' ? 'ok' : 'pending') },
-        { label: 'Backend Freshness Gate', value: backendHealth?.summary?.freshness_gate_ok === false ? 'REVIEW' : (backendHealth?.ok ? 'PASS/OK' : 'NOT CHECKED'), status: backendHealth?.ok ? 'ok' : 'pending' }
-      ]),
-      renderMatrixSection('Derived Flags / Raw Packet Preview', [
-        { label: 'Derived Fields', value: Array.isArray(vault?.derived_flags) && vault.derived_flags.length ? vault.derived_flags.join(' | ') : 'NONE FLAGGED YET', status: 'pending' },
-        { label: 'Raw Packet', value: vault?.packet ? compactJson(vault.packet, 900) : 'PENDING /packet/leg RESPONSE', status: vault?.packet ? 'ok' : 'pending' },
-        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 900) : 'PENDING /score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' }
+      renderMatrixSection('Raw Packet Preview', [
+        { label: 'Raw Packet', value: packet ? compactJson(packet, 900) : 'PENDING /main/packet/leg RESPONSE', status: packet ? 'ok' : 'pending' },
+        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 900) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' }
       ])
     ].join('');
   }
@@ -410,10 +491,10 @@ window.PickCalcUI = (() => {
       lines.push(`Score Status: ${item.score_status || 'NOT STARTED'}`);
       lines.push(`Warnings: ${Array.isArray(item.warnings) && item.warnings.length ? item.warnings.join(' | ') : 'NONE'}`);
       lines.push(`Payload: ${compactJson(item.payload || {}, 3000)}`);
-      lines.push(`Packet Request: ${compactJson(item.packet_request || {}, 3000)}`);
-      lines.push(`Score Request: ${compactJson(item.score_request || {}, 3000)}`);
-      lines.push(`Packet: ${compactJson(item.packet || {}, 3000)}`);
-      lines.push(`Score: ${compactJson(item.score || {}, 3000)}`);
+      lines.push(`Packet Request: ${compactJson(item.packet_request || {}, 8000)}`);
+      lines.push(`Score Request: ${compactJson(item.score_request || {}, 8000)}`);
+      lines.push(`Packet: ${compactJson(item.packet || {}, 12000)}`);
+      lines.push(`Score: ${compactJson(item.score || {}, 8000)}`);
     });
     lines.push('');
 
@@ -431,7 +512,7 @@ window.PickCalcUI = (() => {
       miningVault: state.miningVault,
       backendHealth: state.backendHealth,
       systemLog: state.systemLog
-    }, 20000));
+    }, 60000));
 
     return lines.join('\n');
   }

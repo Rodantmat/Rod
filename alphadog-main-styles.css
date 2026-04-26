@@ -317,3 +317,24 @@ button:disabled:hover{transform:none;}
   .system-log-row{grid-template-columns:1fr;}
   .system-log-detail{grid-column:1;}
 }
+
+
+.backend-auto-lock-box {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 12px 0;
+  background: rgba(15, 23, 42, 0.42);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.auto-lock-title {
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+.auto-lock-line {
+  color: rgba(226, 232, 240, 0.9);
+  overflow-wrap: anywhere;
+}

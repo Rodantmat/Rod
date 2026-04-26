@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1G API URL Hard Lock';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1K MLB API Factor Bridge';
 
   const state = {
     version: SYSTEM_VERSION,
@@ -97,16 +97,9 @@ window.PickCalcCore = (() => {
   }
 
   function syncBackendControls() {
-    const slateInput = UI.el('slateDateInput');
-    const backendUrlInput = UI.el('backendUrlInput');
-    const tokenInput = UI.el('backendTokenInput');
-
-    if (backendUrlInput && Connectors) {
-      const lockedUrl = Connectors.setBackendUrl(backendUrlInput.value);
-      backendUrlInput.value = lockedUrl;
-    }
-    if (tokenInput && Connectors) Connectors.setToken(tokenInput.value);
-    state.slateDate = slateInput && Connectors ? Connectors.setSlateDate(slateInput.value) : (Connectors?.getSlateDate() || '');
+    if (Connectors?.setBackendUrl) Connectors.setBackendUrl();
+    if (Connectors?.setToken) Connectors.setToken('');
+    state.slateDate = Connectors?.setSlateDate ? Connectors.setSlateDate('') : '';
   }
 
   async function refreshBackendHealth(options = {}) {
@@ -163,66 +156,78 @@ window.PickCalcCore = (() => {
 
     state.backendBusy = true;
     setButtonBusy('rerunBackendBtn', true, 'Running DB Wiring…');
-    logEvent('info', `${auto ? 'Auto ' : ''}DB wiring pass started for ${state.cleanPool.length} leg(s)`);
+    logEvent('info', `${auto ? 'Auto ' : ''}DB wiring pass started for ${state.cleanPool.length} leg(s) in batches of 4`);
 
     UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
     UI.renderSystemLog(state.systemLog);
 
-    for (let i = 0; i < state.cleanPool.length; i++) {
-      const row = state.cleanPool[i];
-      const key = getRowKey(row, i);
-      const family = Connectors.normalizePropFamily(row);
-      const payload = Connectors.buildLegPayload(row, state.slateDate);
+    const batchSize = 4;
+    for (let start = 0; start < state.cleanPool.length; start += batchSize) {
+      const batch = state.cleanPool.slice(start, start + batchSize);
+      const batchNumber = Math.floor(start / batchSize) + 1;
+      logEvent('info', `Backend batch ${batchNumber} started`, `Rows ${start + 1}-${start + batch.length}`);
 
-      state.miningVault[key] = Connectors.stampVault({
-        status: 'checking_backend',
-        family,
-        packet_status: 'queued',
-        score_status: 'queued',
-        warnings: [],
-        payload
-      });
-
-      logEvent('info', `Leg ${i + 1} queued for backend probe`, payload);
-      UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
-
-      try {
-        const result = await Connectors.analyzeLeg(row, state.slateDate);
-        state.miningVault[key] = result;
-
-        const packetOk = result?.packet_status === 'ok';
-        const scoreOk = result?.score_status === 'ok';
-        if (packetOk || scoreOk) {
-          logEvent('success', `Leg ${i + 1} backend probe completed`, {
-            family: result.family,
-            status: result.status,
-            packet_status: result.packet_status,
-            score_status: result.score_status,
-            warnings: result.warnings || []
-          });
-        } else {
-          logEvent('warn', `Leg ${i + 1} backend probe completed with endpoint issue`, {
-            family: result.family,
-            status: result.status,
-            packet_status: result.packet_status,
-            score_status: result.score_status,
-            warnings: result.warnings || []
-          });
-        }
-      } catch (err) {
+      batch.forEach((row, offset) => {
+        const i = start + offset;
+        const key = getRowKey(row, i);
+        const family = Connectors.normalizePropFamily(row);
+        const payload = Connectors.buildLegPayload(row, state.slateDate);
         state.miningVault[key] = Connectors.stampVault({
-          status: 'frontend_adapter_error',
+          status: 'checking_backend',
           family,
-          packet_status: 'error',
-          score_status: 'error',
-          warnings: [String(err?.message || err)],
-          error: String(err?.message || err),
+          packet_status: 'queued',
+          score_status: 'queued',
+          warnings: [],
           payload
         });
-        logEvent('error', `Leg ${i + 1} frontend adapter error`, String(err?.message || err));
-      }
+        logEvent('info', `Leg ${i + 1} queued for backend probe`, payload);
+      });
+      UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
+
+      const results = await Promise.all(batch.map(async (row, offset) => {
+        const i = start + offset;
+        const key = getRowKey(row, i);
+        const family = Connectors.normalizePropFamily(row);
+        try {
+          const result = await Connectors.analyzeLeg(row, state.slateDate);
+          return { i, key, family, result, error: null };
+        } catch (err) {
+          return { i, key, family, result: null, error: String(err?.message || err) };
+        }
+      }));
+
+      results.forEach(({ i, key, family, result, error }) => {
+        if (error) {
+          state.miningVault[key] = Connectors.stampVault({
+            status: 'frontend_adapter_error',
+            family,
+            packet_status: 'error',
+            score_status: 'error',
+            warnings: [error],
+            error
+          });
+          logEvent('error', `Leg ${i + 1} frontend adapter error`, error);
+          return;
+        }
+
+        state.miningVault[key] = result;
+        const packetOk = result?.packet_status === 'ok';
+        const scoreOk = result?.score_status === 'ok';
+        const logPayload = {
+          family: result.family,
+          status: result.status,
+          packet_status: result.packet_status,
+          score_status: result.score_status,
+          matrix_summary: result.packet?.matrix_factor_summary || result.score?.matrix_factor_summary || null,
+          incremental_cache: result.packet?.incremental_cache || null,
+          warnings: result.warnings || []
+        };
+        if (packetOk || scoreOk) logEvent('success', `Leg ${i + 1} backend probe completed`, logPayload);
+        else logEvent('warn', `Leg ${i + 1} backend probe completed with endpoint issue`, logPayload);
+      });
 
       UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
+      logEvent('success', `Backend batch ${batchNumber} finished`, `Processed ${batch.length} leg(s)`);
     }
 
     state.backendBusy = false;
@@ -263,18 +268,18 @@ window.PickCalcCore = (() => {
     logEvent('info', 'Ingest started', `Raw characters: ${raw.length}`);
     const parsed = Parser.parseBoard(raw);
     let rows = Array.isArray(parsed.rows) ? parsed.rows.slice() : [];
-    const availableSlots = Math.max(0, 16 - state.cleanPool.length);
+    const availableSlots = Math.max(0, 24 - state.cleanPool.length);
 
     if (availableSlots <= 0) {
-      UI.showToast('You reached the 16 legs limit per run');
-      if (messageMount) messageMount.textContent = '16-leg limit reached.';
-      logEvent('warn', 'Ingest blocked: 16-leg limit reached');
+      UI.showToast('You reached the 24 legs limit per run');
+      if (messageMount) messageMount.textContent = '24-leg limit reached.';
+      logEvent('warn', 'Ingest blocked: 24-leg limit reached');
       return;
     }
 
     if (rows.length > availableSlots) {
       rows = rows.slice(0, availableSlots);
-      UI.showToast('You reached the 16 legs limit per run');
+      UI.showToast('You reached the 24 legs limit per run');
       logEvent('warn', 'Ingest trimmed to available slots', `Accepted only ${availableSlots} remaining slot(s).`);
     }
 

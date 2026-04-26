@@ -1,62 +1,66 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1G API URL Hard Lock';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1K MLB API Factor Bridge';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',
     ingestToken: 'pickcalc.ingestToken',
-    slateDate: 'pickcalc.slateDate'
+    slateDate: 'pickcalc.slateDate',
+    legacyBackendUrl: 'pickcalc.legacyBackendUrl'
   };
+
+  function purgeLegacyBackendStorage() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.backendUrl);
+      if (stored && stored !== DEFAULT_BACKEND_URL) {
+        localStorage.setItem(STORAGE_KEYS.legacyBackendUrl, stored);
+      }
+      localStorage.setItem(STORAGE_KEYS.backendUrl, DEFAULT_BACKEND_URL);
+      localStorage.removeItem(STORAGE_KEYS.ingestToken);
+    } catch {}
+  }
 
   function isLegacyScheduledWorkerUrl(value) {
     return String(value || '').includes('prop-ingestion-git.rodolfoaamattos.workers.dev');
   }
 
-  function cleanBaseUrl(value) {
-    const raw = String(value || '').trim().replace(/\/+$/, '');
-    if (!raw || isLegacyScheduledWorkerUrl(raw)) return DEFAULT_BACKEND_URL;
-    return raw;
+  function cleanBaseUrl() {
+    purgeLegacyBackendStorage();
+    return DEFAULT_BACKEND_URL;
   }
 
   function getBackendUrl() {
-    const stored = localStorage.getItem(STORAGE_KEYS.backendUrl);
-    const cleaned = cleanBaseUrl(stored || DEFAULT_BACKEND_URL);
-    if (stored !== cleaned) localStorage.setItem(STORAGE_KEYS.backendUrl, cleaned);
-    return cleaned;
+    purgeLegacyBackendStorage();
+    return DEFAULT_BACKEND_URL;
   }
 
-  function setBackendUrl(value) {
-    const cleaned = cleanBaseUrl(value);
-    localStorage.setItem(STORAGE_KEYS.backendUrl, cleaned);
-    return cleaned;
+  function setBackendUrl() {
+    purgeLegacyBackendStorage();
+    return DEFAULT_BACKEND_URL;
   }
 
   function forceBackendUrlInputToMainApi() {
+    purgeLegacyBackendStorage();
     const input = document.getElementById('backendUrlInput');
-    const cleaned = setBackendUrl(input?.value || DEFAULT_BACKEND_URL);
-    if (input && input.value !== cleaned) input.value = cleaned;
-    return cleaned;
+    if (input) input.value = DEFAULT_BACKEND_URL;
+    return DEFAULT_BACKEND_URL;
   }
 
   function getToken() {
-    return String(localStorage.getItem(STORAGE_KEYS.ingestToken) || '').trim();
+    return '';
   }
 
-  function setToken(value) {
-    const cleaned = String(value || '').trim();
-    if (cleaned) localStorage.setItem(STORAGE_KEYS.ingestToken, cleaned);
-    else localStorage.removeItem(STORAGE_KEYS.ingestToken);
-    return cleaned;
+  function setToken() {
+    try { localStorage.removeItem(STORAGE_KEYS.ingestToken); } catch {}
+    return '';
   }
 
   function getSlateDate() {
-    return String(localStorage.getItem(STORAGE_KEYS.slateDate) || '').trim();
+    return '';
   }
 
-  function setSlateDate(value) {
-    const cleaned = String(value || '').trim();
-    if (cleaned) localStorage.setItem(STORAGE_KEYS.slateDate, cleaned);
-    else localStorage.removeItem(STORAGE_KEYS.slateDate);
-    return cleaned;
+  function setSlateDate() {
+    try { localStorage.removeItem(STORAGE_KEYS.slateDate); } catch {}
+    return '';
   }
 
   function stampVault(vault = {}) {
@@ -238,6 +242,8 @@ window.PickCalcConnectors = (() => {
     vault.finished_at = new Date().toISOString();
     return vault;
   }
+
+  purgeLegacyBackendStorage();
 
   return {
     SYSTEM_VERSION,
