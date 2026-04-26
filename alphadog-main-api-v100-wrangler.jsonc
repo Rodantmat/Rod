@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "alphadog-main-api-v100",
+  "main": "alphadog-main-api-v100-worker.js",
+  "compatibility_date": "2026-04-24",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prop-engine-db",
+      "database_id": "ec21a626-1b31-45fd-816c-5baf5609a6c3"
+    }
+  ]
+}
