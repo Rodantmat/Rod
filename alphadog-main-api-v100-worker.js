@@ -1,4 +1,4 @@
-const WORKER_VERSION = "alphadog-main-api-v100.2 - Matrix Fill Cache Layer";
+const WORKER_VERSION = "alphadog-main-api-v100.3 - Full DB Matrix Expansion";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
 
@@ -211,6 +211,101 @@ async function findBullpen(env, gameId, opponentTeam) {
   return await one(env.DB, `SELECT * FROM bullpens_current WHERE game_id = ? AND team_id = ? LIMIT 1`, [gameId, opponentTeam]);
 }
 
+async function findTeamLineup(env, gameId, teamId) {
+  if (!gameId || !teamId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT * FROM lineups_current
+      WHERE game_id = ? AND team_id = ?
+      ORDER BY slot ASC, player_name ASC
+      LIMIT 14
+    `, [gameId, teamId]);
+  } catch (_err) { return []; }
+}
+
+async function findGameStarters(env, gameId) {
+  if (!gameId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT * FROM starters_current
+      WHERE game_id = ?
+      ORDER BY team_id ASC
+      LIMIT 4
+    `, [gameId]);
+  } catch (_err) { return []; }
+}
+
+async function findGameBullpens(env, gameId) {
+  if (!gameId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT * FROM bullpens_current
+      WHERE game_id = ?
+      ORDER BY team_id ASC
+      LIMIT 4
+    `, [gameId]);
+  } catch (_err) { return []; }
+}
+
+async function findTeamPlayers(env, teamId) {
+  if (!teamId) return [];
+  try {
+    return await all(env.DB, `
+      SELECT player_name, team_id, role, position, bats, throws, games, ab, hits, avg, obp, slg, innings_pitched, strikeouts, era, whip, source, confidence, updated_at
+      FROM players_current
+      WHERE team_id = ?
+      ORDER BY CASE WHEN role = 'BAT' THEN 0 ELSE 1 END, ab DESC, games DESC, player_name ASC
+      LIMIT 40
+    `, [teamId]);
+  } catch (_err) { return []; }
+}
+
+async function findRelatedCandidates(env, family, playerName, teamId, gameId, slateDate) {
+  const out = { hits: [], rbi: [], rfi: [] };
+  try {
+    out.hits = await all(env.DB, `
+      SELECT * FROM edge_candidates_hits
+      WHERE LOWER(player_name) = LOWER(?) OR team_id = ? OR game_id = ?
+      ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, candidate_tier ASC, lineup_slot ASC
+      LIMIT 12
+    `, [playerName, teamId, gameId, playerName]);
+  } catch (_err) {}
+  try {
+    out.rbi = await all(env.DB, `
+      SELECT * FROM edge_candidates_rbi
+      WHERE LOWER(player_name) = LOWER(?) OR team_id = ? OR game_id = ?
+      ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, candidate_tier ASC, lineup_slot ASC
+      LIMIT 12
+    `, [playerName, teamId, gameId, playerName]);
+  } catch (_err) {}
+  try {
+    out.rfi = await all(env.DB, `
+      SELECT * FROM edge_candidates_rfi
+      WHERE slate_date = ? AND game_id = ?
+      LIMIT 4
+    `, [slateDate, gameId]);
+  } catch (_err) {}
+  return out;
+}
+
+function summarizeLineup(rows = []) {
+  return rows.map(r => '#' + (r.slot || '?') + ' ' + (r.player_name || 'UNKNOWN')).join(' / ') || null;
+}
+
+function average(values) {
+  const nums = values.map(v => n(v, null)).filter(v => v !== null);
+  return nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : null;
+}
+
+function scoreAverage(value, strong, review, risk = null) {
+  const v = n(value, null);
+  if (v === null) return 0;
+  if (v >= strong) return 88;
+  if (v >= review) return 74;
+  if (risk !== null && v >= risk) return 65;
+  return 56;
+}
+
 async function findRecentUsage(env, playerName, teamId) {
   const name = safeText(playerName).trim();
   if (!name) return [];
@@ -351,7 +446,15 @@ function buildMatrixFactors(packet) {
   const st = packet.opposing_starter || {};
   const bp = packet.bullpen || {};
   const m = packet.market || {};
+  const game = packet.game || {};
   const recent = Array.isArray(packet.recent_usage) ? packet.recent_usage : [];
+  const teamLineup = Array.isArray(packet.team_lineup) ? packet.team_lineup : [];
+  const oppLineup = Array.isArray(packet.opponent_lineup) ? packet.opponent_lineup : [];
+  const teamPlayers = Array.isArray(packet.team_players) ? packet.team_players : [];
+  const oppPlayers = Array.isArray(packet.opponent_players) ? packet.opponent_players : [];
+  const gameStarters = Array.isArray(packet.game_starters) ? packet.game_starters : [];
+  const gameBullpens = Array.isArray(packet.game_bullpens) ? packet.game_bullpens : [];
+  const related = packet.related_candidates || { hits: [], rbi: [], rfi: [] };
   const last5 = last5HitsString(recent);
   const completeness = 100 - Math.min((packet.missing || []).length * 14, 70);
   const starterHitsPerIp = st.innings_pitched ? n(st.hits_allowed, 0) / Math.max(n(st.innings_pitched, 1), 1) : null;
@@ -360,52 +463,101 @@ function buildMatrixFactors(packet) {
   const bullpenScore = bullpenFatigue === "high" ? 78 : bullpenFatigue === "medium" ? 68 : bullpenFatigue === "low" ? 58 : 0;
   const lastGameHits = n(c.last_game_hits, null);
   const lastGameScore = lastGameHits === null ? 0 : lastGameHits >= 2 ? 86 : lastGameHits === 1 ? 74 : 58;
+  const top3 = teamLineup.filter(r => n(r.slot, 99) <= 3);
+  const top5 = teamLineup.filter(r => n(r.slot, 99) <= 5);
+  const teamAvg = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.avg));
+  const teamObp = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.obp));
+  const teamSlg = average(teamPlayers.filter(r => r.role === 'BAT').map(r => r.slg));
+  const oppAvg = average(oppPlayers.filter(r => r.role === 'BAT').map(r => r.avg));
+  const oppObp = average(oppPlayers.filter(r => r.role === 'BAT').map(r => r.obp));
+  const scoreLineText = packet.leg?.side ? `${packet.leg.side} ${packet.leg.line}` : packet.leg?.line;
 
   return {
     identity: [
       factor("player_identity", "Player Identity", p.player_name || packet.leg.player_name, p.player_name ? 100 : 70, p.source || "payload"),
       factor("team_match", "Team / Opponent", `${packet.leg.team_id || "MISSING"} vs/@ ${packet.leg.opponent_team || "MISSING"}`, packet.game ? 100 : 65, "games"),
-      factor("prop_family", "Prop Family", packet.leg.prop_family, packet.leg.prop_family !== "UNKNOWN" ? 92 : 0, "parser")
+      factor("game_id", "Resolved Game ID", packet.game_id, packet.game_id ? 100 : 0, "games"),
+      factor("prop_family", "Prop Family", packet.leg.prop_family, packet.leg.prop_family !== "UNKNOWN" ? 92 : 0, "parser"),
+      factor("player_role_position", "Role / Position", `${p.role || "MISSING"} / ${p.position || "MISSING"}`, p.role ? 86 : 0, p.source),
+      factor("handedness", "Bats / Throws", `${p.bats || "MISSING"} / ${p.throws || "MISSING"}`, (p.bats || p.throws) ? 82 : 0, p.source)
     ],
     trend: [
       factor("last5_hits", "Last 5 Hits", last5 || (lastGameHits !== null ? `Last game: ${lastGameHits}` : "MISSING"), last5 ? 81 : lastGameScore, last5 ? "player_recent_usage" : "candidate"),
+      factor("last_game_hits", "Last Game Hits", lastGameHits, lastGameScore, c.source),
+      factor("last_game_ab", "Last Game AB", c.last_game_ab, c.last_game_ab >= 4 ? 84 : c.last_game_ab >= 3 ? 74 : c.last_game_ab >= 1 ? 62 : 0, c.source),
       factor("season_avg", "Season AVG", p.avg ?? c.player_avg, scoreAvg(p.avg ?? c.player_avg), p.source || c.source),
       factor("season_obp", "Season OBP", p.obp ?? c.player_obp, scoreObp(p.obp ?? c.player_obp), p.source || c.source),
-      factor("season_slg", "Season SLG", p.slg ?? c.player_slg, scoreSlg(p.slg ?? c.player_slg), p.source || c.source)
+      factor("season_slg", "Season SLG", p.slg ?? c.player_slg, scoreSlg(p.slg ?? c.player_slg), p.source || c.source),
+      factor("season_hits_ab", "Season Hits / AB", (p.hits !== undefined && p.ab !== undefined) ? `${p.hits}/${p.ab}` : "MISSING", p.ab >= 80 ? 82 : p.ab >= 40 ? 72 : p.ab ? 62 : 0, p.source),
+      factor("games_played", "Games Played", p.games, p.games >= 20 ? 82 : p.games >= 10 ? 70 : p.games ? 58 : 0, p.source)
     ],
     matchup: [
       factor("opposing_starter", "Opposing Starter", st.starter_name || c.opposing_starter, (st.starter_name || c.opposing_starter) ? 90 : 0, st.source || c.source),
       factor("starter_throws", "Starter Hand", st.throws || c.opposing_throws, (st.throws || c.opposing_throws) ? 84 : 0, st.source || c.source),
       factor("starter_whip", "Starter WHIP", st.whip, scoreStarterWhip(st.whip), st.source),
       factor("starter_era", "Starter ERA", st.era, scoreStarterEra(st.era), st.source),
-      factor("starter_hits_per_ip", "Starter H/IP", starterHitsPerIp === null ? "MISSING" : starterHitsPerIp.toFixed(2), starterHitsPerIpScore, st.source)
+      factor("starter_hits_per_ip", "Starter H/IP", starterHitsPerIp === null ? "MISSING" : starterHitsPerIp.toFixed(2), starterHitsPerIpScore, st.source),
+      factor("starter_hits_allowed", "Starter Hits Allowed", st.hits_allowed, scoreAverage(st.hits_allowed, 35, 20, 10), st.source),
+      factor("starter_walks", "Starter Walks", st.walks, scoreAverage(st.walks, 15, 8, 4), st.source),
+      factor("starter_hr_allowed", "Starter HR Allowed", st.hr_allowed, scoreAverage(st.hr_allowed, 5, 3, 1), st.source),
+      factor("game_starters_rows", "Both Starters Loaded", gameStarters.length, gameStarters.length >= 2 ? 100 : gameStarters.length ? 65 : 0, "starters_current")
     ],
     role_usage: [
       factor("lineup_slot", "Lineup Slot", l.slot || c.lineup_slot, scoreLineupSlot(l.slot || c.lineup_slot), l.source || c.source),
       factor("lineup_confirmed", "Lineup Confirmed", l.is_confirmed ? "YES" : "NO / MISSING", l.is_confirmed ? 88 : 45, l.source),
+      factor("team_lineup_rows", "Team Lineup Rows", teamLineup.length, teamLineup.length >= 9 ? 90 : teamLineup.length >= 5 ? 72 : teamLineup.length ? 58 : 0, "lineups_current"),
+      factor("opponent_lineup_rows", "Opponent Lineup Rows", oppLineup.length, oppLineup.length >= 9 ? 90 : oppLineup.length >= 5 ? 72 : oppLineup.length ? 58 : 0, "lineups_current"),
+      factor("top3_lineup", "Team Top 3", summarizeLineup(top3) || "MISSING", top3.length >= 3 ? 86 : top3.length ? 65 : 0, "lineups_current"),
+      factor("top5_lineup", "Team Top 5", summarizeLineup(top5) || "MISSING", top5.length >= 5 ? 86 : top5.length ? 68 : 0, "lineups_current"),
       factor("role_type", "Role Type", p.role || "MISSING", p.role ? 86 : 0, p.source),
       factor("recent_ab_volume", "Recent AB Volume", c.last_game_ab !== undefined ? `Last game AB: ${c.last_game_ab}` : "MISSING", c.last_game_ab >= 4 ? 84 : c.last_game_ab >= 3 ? 74 : c.last_game_ab >= 1 ? 62 : 0, c.source)
     ],
     market: [
+      factor("prop_line", "Prop / Line / Direction", `${packet.leg.prop_type || "MISSING"} ${scoreLineText || ""}`, packet.leg.line !== null ? 82 : 0, "screen1_payload"),
       factor("game_total", "Game Total", m.current_total ?? m.game_total, (m.current_total ?? m.game_total) ? 76 : 0, m.source),
-      factor("implied_runs", "Team Implied Runs", packet.leg.team_id === packet.game?.home_team ? m.home_implied_runs : m.away_implied_runs, (m.home_implied_runs || m.away_implied_runs) ? 76 : 0, m.source),
+      factor("open_total", "Open Total", m.open_total, m.open_total ? 70 : 0, m.source),
+      factor("team_implied_runs", "Team Implied Runs", packet.leg.team_id === game.home_team ? m.home_implied_runs : m.away_implied_runs, (m.home_implied_runs || m.away_implied_runs) ? 76 : 0, m.source),
+      factor("opponent_implied_runs", "Opponent Implied Runs", packet.leg.team_id === game.home_team ? m.away_implied_runs : m.home_implied_runs, (m.home_implied_runs || m.away_implied_runs) ? 68 : 0, m.source),
+      factor("moneyline", "Moneyline", `Away ${m.away_moneyline ?? "MISSING"} / Home ${m.home_moneyline ?? "MISSING"}`, (m.away_moneyline || m.home_moneyline) ? 70 : 0, m.source),
+      factor("runline", "Runline", m.runline, m.runline ? 70 : 0, m.source),
       factor("market_source", "Market Source", m.source || "MISSING", m.source ? 66 : 0, m.confidence || "markets_current")
     ],
     environment: [
-      factor("venue", "Venue / Park", packet.game?.venue || "MISSING", packet.game?.venue ? 84 : 0, "games"),
+      factor("venue", "Venue / Park", game.venue || "MISSING", game.venue ? 84 : 0, "games"),
       factor("park_run_factor", "Park Run Factor", c.park_factor_run, c.park_factor_run ? 72 : 0, c.source),
       factor("park_hr_factor", "Park HR Factor", c.park_factor_hr, c.park_factor_hr ? 72 : 0, c.source),
-      factor("bullpen_fatigue", "Opponent Bullpen Fatigue", bullpenFatigue || "MISSING", bullpenScore, bp.source || c.source)
+      factor("bullpen_fatigue", "Opponent Bullpen Fatigue", bullpenFatigue || "MISSING", bullpenScore, bp.source || c.source),
+      factor("bullpen_last_game_ip", "Opponent Bullpen Last Game IP", bp.last_game_ip, bp.last_game_ip >= 4 ? 82 : bp.last_game_ip >= 2 ? 70 : bp.last_game_ip !== null && bp.last_game_ip !== undefined ? 60 : 0, bp.source),
+      factor("bullpen_last3_ip", "Opponent Bullpen Last 3 IP", bp.last3_ip, bp.last3_ip >= 10 ? 82 : bp.last3_ip >= 6 ? 70 : bp.last3_ip ? 60 : 0, bp.source),
+      factor("game_bullpen_rows", "Both Bullpens Loaded", gameBullpens.length, gameBullpens.length >= 2 ? 100 : gameBullpens.length ? 65 : 0, "bullpens_current"),
+      factor("start_time", "Start Time UTC", game.start_time_utc, game.start_time_utc ? 80 : 0, "games"),
+      factor("weather", "Weather", "FUTURE MINER", 0, "future_miner")
+    ],
+    team_context: [
+      factor("team_avg", "Team Batter AVG Avg", teamAvg === null ? "MISSING" : teamAvg.toFixed(3), scoreAvg(teamAvg), "players_current"),
+      factor("team_obp", "Team Batter OBP Avg", teamObp === null ? "MISSING" : teamObp.toFixed(3), scoreObp(teamObp), "players_current"),
+      factor("team_slg", "Team Batter SLG Avg", teamSlg === null ? "MISSING" : teamSlg.toFixed(3), scoreSlg(teamSlg), "players_current"),
+      factor("opponent_avg", "Opponent Batter AVG Avg", oppAvg === null ? "MISSING" : oppAvg.toFixed(3), scoreAvg(oppAvg), "players_current"),
+      factor("opponent_obp", "Opponent Batter OBP Avg", oppObp === null ? "MISSING" : oppObp.toFixed(3), scoreObp(oppObp), "players_current"),
+      factor("team_players_loaded", "Team Players Loaded", teamPlayers.length, teamPlayers.length >= 20 ? 88 : teamPlayers.length >= 10 ? 74 : teamPlayers.length ? 60 : 0, "players_current"),
+      factor("opponent_players_loaded", "Opponent Players Loaded", oppPlayers.length, oppPlayers.length >= 20 ? 88 : oppPlayers.length >= 10 ? 74 : oppPlayers.length ? 60 : 0, "players_current")
+    ],
+    candidate_context: [
+      factor("candidate_tier", "Primary Candidate Tier", c.candidate_tier || "MISSING", scoreTier(c.candidate_tier), c.source),
+      factor("candidate_reason", "Primary Candidate Reason", c.candidate_reason || "MISSING", c.candidate_reason ? 80 : 0, c.source),
+      factor("related_hits_candidates", "Related Hits Candidates", related.hits?.length || 0, related.hits?.length ? 82 : 0, "edge_candidates_hits"),
+      factor("related_rbi_candidates", "Related RBI Candidates", related.rbi?.length || 0, related.rbi?.length ? 82 : 0, "edge_candidates_rbi"),
+      factor("related_rfi_candidates", "Related RFI Candidates", related.rfi?.length || 0, related.rfi?.length ? 82 : 0, "edge_candidates_rfi"),
+      factor("lineup_context", "Lineup Context", c.lineup_context_status || "MISSING", c.lineup_context_status === "complete" ? 86 : c.lineup_context_status === "partial" ? 70 : 0, c.source)
     ],
     risk: [
       factor("packet_completeness", "Packet Completeness", (packet.missing || []).length ? `Missing: ${(packet.missing || []).join(", ")}` : "Complete", completeness, "packet"),
-      factor("candidate_tier", "Candidate Tier", c.candidate_tier || "MISSING", scoreTier(c.candidate_tier), c.source),
-      factor("lineup_context", "Lineup Context", c.lineup_context_status || "MISSING", c.lineup_context_status === "complete" ? 86 : c.lineup_context_status === "partial" ? 70 : 0, c.source),
-      factor("warnings", "Warnings", (packet.warnings || []).length ? packet.warnings.join(" | ") : "NONE", (packet.warnings || []).length ? 45 : 96, "packet")
+      factor("db_inventory", "DB Inventory", packet.db_inventory ? JSON.stringify(packet.db_inventory) : "MISSING", packet.db_inventory ? 86 : 0, "packet"),
+      factor("warnings", "Warnings", (packet.warnings || []).length ? packet.warnings.join(" | ") : "NONE", (packet.warnings || []).length ? 45 : 96, "packet"),
+      factor("source_staleness", "Source Staleness", `game ${game.updated_at || "?"} / player ${p.updated_at || "?"} / candidate ${c.updated_at || "?"}`, (game.updated_at && p.updated_at && c.updated_at) ? 76 : 58, "updated_at_fields")
     ]
   };
 }
-
 function flattenFactors(matrixFactors) {
   return Object.values(matrixFactors || {}).flat();
 }
@@ -423,6 +575,14 @@ async function writeSupplementalCache(env, packet) {
     opposing_starter: packet.opposing_starter,
     bullpen: packet.bullpen,
     candidate: packet.candidate,
+    team_lineup: packet.team_lineup,
+    opponent_lineup: packet.opponent_lineup,
+    game_starters: packet.game_starters,
+    game_bullpens: packet.game_bullpens,
+    team_players: packet.team_players,
+    opponent_players: packet.opponent_players,
+    related_candidates: packet.related_candidates,
+    db_inventory: packet.db_inventory,
     matrix_factors: packet.matrix_factors,
     missing: packet.missing,
     warnings: packet.warnings
@@ -492,6 +652,13 @@ async function buildLegPacket(payload, env, options = {}) {
   const bullpen = await findBullpen(env, gameId, opponentTeam);
   const recentUsage = await findRecentUsage(env, playerName, teamId);
   const candidate = await findCandidate(env, family, playerName, teamId, gameId, slateDate);
+  const teamLineup = await findTeamLineup(env, gameId, teamId);
+  const opponentLineup = await findTeamLineup(env, gameId, opponentTeam);
+  const gameStarters = await findGameStarters(env, gameId);
+  const gameBullpens = await findGameBullpens(env, gameId);
+  const teamPlayers = await findTeamPlayers(env, teamId);
+  const opponentPlayers = await findTeamPlayers(env, opponentTeam);
+  const relatedCandidates = await findRelatedCandidates(env, family, playerName, teamId, gameId, slateDate);
 
   const packet = {
     ok: true,
@@ -519,6 +686,24 @@ async function buildLegPacket(payload, env, options = {}) {
     bullpen,
     recent_usage: recentUsage,
     candidate,
+    team_lineup: teamLineup,
+    opponent_lineup: opponentLineup,
+    game_starters: gameStarters,
+    game_bullpens: gameBullpens,
+    team_players: teamPlayers,
+    opponent_players: opponentPlayers,
+    related_candidates: relatedCandidates,
+    db_inventory: {
+      team_lineup_rows: teamLineup.length,
+      opponent_lineup_rows: opponentLineup.length,
+      game_starter_rows: gameStarters.length,
+      game_bullpen_rows: gameBullpens.length,
+      team_player_rows: teamPlayers.length,
+      opponent_player_rows: opponentPlayers.length,
+      related_hits_candidates: relatedCandidates.hits.length,
+      related_rbi_candidates: relatedCandidates.rbi.length,
+      related_rfi_candidates: relatedCandidates.rfi.length
+    },
     derived_flags: [],
     warnings: [],
     raw_payload: payload
