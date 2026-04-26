@@ -1,7 +1,7 @@
-// AlphaDog v1.2.33 - Daily Health Layer compatible worker
+// AlphaDog v1.2.34 - Stale Task Reaper compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.33 - Daily Health Layer";
-const SYSTEM_CODENAME = "Daily Health Layer";
+const SYSTEM_VERSION = "v1.2.34 - Stale Task Reaper";
+const SYSTEM_CODENAME = "Stale Task Reaper";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -355,6 +355,57 @@ async function dailyHealthRows(env, sql, bindValues = []) {
   }
 }
 
+async function reapStaleTaskRuns(env) {
+  try {
+    const before = await dailyHealthRows(env, `
+      SELECT task_id, job_name, status, started_at
+      FROM task_runs
+      WHERE status = 'running'
+        AND started_at <= datetime('now', '-30 minutes')
+      ORDER BY started_at ASC
+      LIMIT 50
+    `);
+
+    if (!before.ok || !before.rows.length) {
+      return {
+        ok: before.ok,
+        reaped_count: 0,
+        reaped_rows: [],
+        error: before.error || null
+      };
+    }
+
+    const ids = before.rows.map(row => row.task_id).filter(Boolean);
+    if (!ids.length) {
+      return { ok: true, reaped_count: 0, reaped_rows: [], error: null };
+    }
+
+    const marks = ids.map(() => '?').join(',');
+    await env.DB.prepare(`
+      UPDATE task_runs
+      SET status = 'stale',
+          finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP),
+          error = COALESCE(error, 'Daily Health stale-task reaper marked this old running task as stale after 30 minutes.')
+      WHERE status = 'running'
+        AND task_id IN (${marks})
+    `).bind(...ids).run();
+
+    return {
+      ok: true,
+      reaped_count: ids.length,
+      reaped_rows: before.rows,
+      error: null
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      reaped_count: 0,
+      reaped_rows: [],
+      error: String(err?.message || err)
+    };
+  }
+}
+
 async function handleDailyHealth(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
 
@@ -363,6 +414,7 @@ async function handleDailyHealth(request, env) {
   const slate = resolveSlateDate(requestedDate ? { slate_mode: "MANUAL", manual_slate_date: requestedDate } : {});
   const slateDate = slate.slate_date;
   const likeSlate = `${slateDate}_%`;
+  const stale_reaper = await reapStaleTaskRuns(env);
 
   const checks = [];
   async function addCheck(name, sql, bindValues, passFn, warnFn) {
@@ -422,6 +474,7 @@ async function handleDailyHealth(request, env) {
   `);
 
   const scheduled = {
+    stale_reaper,
     latest_success_rows: staleRows.ok ? staleRows.rows : [],
     stuck_running_rows: stuckRows.ok ? stuckRows.rows : [],
     latest_full_run_rows: latestFullRun.ok ? latestFullRun.rows : [],
@@ -436,7 +489,8 @@ async function handleDailyHealth(request, env) {
   const failedChecks = checks.filter(c => c.status === "FAIL");
   const warnChecks = checks.filter(c => c.status === "WARN");
   const stuckCount = scheduled.stuck_running_rows.length;
-  const status = errorChecks.length || failedChecks.length || stuckCount ? "review" : (warnChecks.length ? "warn" : "pass");
+  const reaperError = stale_reaper && stale_reaper.ok === false;
+  const status = errorChecks.length || failedChecks.length || stuckCount || reaperError ? "review" : (warnChecks.length ? "warn" : "pass");
 
   return json({
     ok: status === "pass" || status === "warn",
@@ -452,9 +506,11 @@ async function handleDailyHealth(request, env) {
       warn: warnChecks.length,
       fail: failedChecks.length,
       error: errorChecks.length,
-      stuck_running: stuckCount
+      stuck_running: stuckCount,
+      stale_reaped: stale_reaper?.reaped_count || 0,
+      stale_reaper_ok: stale_reaper?.ok === true
     },
-    note: "Daily health only. No scoring logic, candidate logic, or database writes changed."
+    note: "Daily health plus stale task cleanup only. No scoring logic or candidate logic changed."
   });
 }
 
