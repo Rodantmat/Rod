@@ -1,75 +1,58 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OXYGEN-COBALT • Main-1L MLB Cleanup Pass</title>
-  <link rel="stylesheet" href="./alphadog-main-styles.css?v=main1k" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>OXYGEN-COBALT Main System</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="app-shell">
+  <main class="app-shell">
     <header class="hero">
-      <h1>OXYGEN-COBALT <span class="version-pill">Main-1L MLB Cleanup Pass</span></h1>
-      <p>Paste MLB board text, ingest the clean pool, and validate the current session.</p>
+      <div>
+        <h1>OXYGEN-COBALT</h1>
+        <p id="versionLabel">v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 Matrix Bridge</p>
+      </div>
+      <button id="debugCopyBtn" class="ghost">Copy Debug</button>
     </header>
 
-    <main id="screenOne" class="screen screen-active" data-screen="ingest">
-      <section class="card">
-        <h2>Paste Board Text</h2>
-        <textarea id="boardInput" rows="12" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
-        <div id="feedStatus"></div>
-        <div class="btn-row">
-          <button id="ingestBtn">Ingest &amp; Validate Board</button>
-          <button id="analyzeBtn" class="primary-strong" disabled>Go to Screen 2 / Analyze</button>
-          <button id="resetBtn" class="secondary">Reset All</button>
+    <section id="ingestScreen" class="screen active">
+      <div class="card">
+        <h2>Screen 1 / Ingest</h2>
+        <textarea id="boardInput" placeholder="Paste MLB prop legs here..."></textarea>
+        <div class="actions">
+          <button id="ingestBtn">Ingest & Validate Board</button>
+          <button id="resetBtn" class="ghost">Reset</button>
         </div>
-        <div id="ingestMessage" class="message"></div>
-      </section>
-
-      <div id="poolMount"></div>
-    </main>
-
-    <main id="screenTwo" class="screen" data-screen="analysis" hidden>
-      <section class="card analysis-toolbar">
-        <div>
-          <h2>Screen 2 • Data Matrix</h2>
-          <p class="muted tight">MLB API factor bridge with DB-first packets, safe official MLB enrichment, and per-factor data/score lights.</p>
-        </div>
-        <div class="btn-row toolbar-actions">
-          <button id="copyReportBtn" class="report-button">Copy Debug Report</button>
-          <button id="refreshBackendBtn" class="secondary">Refresh Daily Health</button>
-          <button id="rerunBackendBtn" class="primary-strong">Re-run DB Wiring</button>
-          <button id="backToIngestBtn" class="secondary">Back to Screen 1</button>
-          <button id="analysisResetBtn" class="secondary">Reset All</button>
-        </div>
-      </section>
-
-      <div class="backend-auto-lock-box">
-        <div class="auto-lock-title">Backend Auto Lock</div>
-        <div class="auto-lock-line"><strong>Main API:</strong> https://alphadog-main-api-v100.rodolfoaamattos.workers.dev</div>
-        <div class="auto-lock-line"><strong>Slate Date:</strong> auto-detected by backend unless supplied by code</div>
-        <div class="auto-lock-line"><strong>Cache:</strong> controlled supplemental DB upsert only; scheduled worker untouched</div>
       </div>
-      <div id="backendStatusMount"></div>
+      <div id="feedStatus" class="card"></div>
+      <div id="poolMount" class="card"></div>
+    </section>
 
-      <div id="analysisMount"></div>
-
-      <section class="card system-log-card">
-        <div class="system-log-head">
-          <div>
-            <h2>System Log</h2>
-            <p class="muted tight">Mining / backend wiring status. This is included in Copy Debug Report.</p>
-          </div>
-          <button id="copyReportBottomBtn" class="secondary">Copy Debug Report</button>
+    <section id="analysisScreen" class="screen">
+      <div class="card split-head">
+        <div>
+          <h2>Screen 2 / Analysis</h2>
+          <p>Runs in batches of 4. Max input pool: 24 legs.</p>
         </div>
-        <div id="systemLogMount" class="system-log-mount"></div>
-      </section>
-    </main>
-  </div>
+        <div class="actions">
+          <button id="backBtn" class="ghost">Back</button>
+          <button id="runBtn">Run Analysis</button>
+        </div>
+      </div>
+      <div id="healthMount" class="card"></div>
+      <div id="analysisMount"></div>
+    </section>
 
-  <script src="./alphadog-main-parser.js?v=main1k"></script>
-  <script src="./alphadog-main-connectors.js?v=main1k"></script>
-  <script src="./alphadog-main-ui-engine.js?v=main1k"></script>
-  <script src="./alphadog-main-core.js?v=main1k"></script>
+    <section class="card log-card">
+      <h2>System Log</h2>
+      <pre id="systemLog"></pre>
+    </section>
+  </main>
+
+  <script src="parser.js"></script>
+  <script src="connectors.js"></script>
+  <script src="ui-engine.js"></script>
+  <script src="core.js"></script>
 </body>
 </html>

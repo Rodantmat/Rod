@@ -1,93 +1,13 @@
-window.PickCalcCore = (() => {
-  const Parser = window.PickCalcParser;
-  const UI = window.PickCalcUI;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
-
-  const state = {
-    version: SYSTEM_VERSION,
-    rows: [],
-    cleanPool: [],
-    auditRows: [],
-    selectedLeagues: ['MLB'],
-    miningVault: {}
-  };
-
-  function ingestBoard() {
-    const input = UI.el('boardInput');
-    const messageMount = UI.el('ingestMessage');
-    const raw = input?.value || '';
-
-    if (!raw.trim()) {
-      if (messageMount) messageMount.textContent = 'Paste board text to ingest.';
-      return;
-    }
-
-    const parsed = Parser.parseBoard(raw);
-    let rows = Array.isArray(parsed.rows) ? parsed.rows.slice() : [];
-    const availableSlots = Math.max(0, 16 - state.cleanPool.length);
-
-    if (availableSlots <= 0) {
-      UI.showToast('You reached the 16 legs limit per run');
-      if (messageMount) messageMount.textContent = '16-leg limit reached.';
-      return;
-    }
-
-    if (rows.length > availableSlots) {
-      rows = rows.slice(0, availableSlots);
-      UI.showToast('You reached the 16 legs limit per run');
-    }
-
-    if (rows.length > 0 && input) {
-      input.value = '';
-    }
-
-    state.auditRows = parsed.audit || [];
-    state.rows = state.cleanPool.concat(rows);
-    state.cleanPool = state.rows.slice();
-
-    UI.renderFeedStatus(state.cleanPool, state.auditRows);
-    UI.renderPoolTable(state.cleanPool);
-
-    if (messageMount) {
-      messageMount.textContent = rows.length
-        ? `Accepted ${rows.length} line(s). Pool now has ${state.cleanPool.length} leg(s).`
-        : 'No valid MLB legs found.';
-    }
-  }
-
-  function handleResetAll() {
-    state.rows = [];
-    state.cleanPool = [];
-    state.auditRows = [];
-    state.miningVault = {};
-    localStorage.clear();
-
-    const input = UI.el('boardInput');
-    const messageMount = UI.el('ingestMessage');
-    if (input) input.value = '';
-    if (messageMount) messageMount.textContent = '';
-
-    UI.renderFeedStatus([]);
-    UI.renderPoolTable([]);
-    UI.showToast('System reset');
-  }
-
-  function bindEvents() {
-    const ingestBtn = UI.el('ingestBtn');
-    const resetBtn = UI.el('resetBtn');
-    if (ingestBtn) ingestBtn.addEventListener('click', ingestBoard);
-    if (resetBtn) resetBtn.addEventListener('click', handleResetAll);
-  }
-
-  window.addEventListener('DOMContentLoaded', () => {
-    bindEvents();
-    UI.renderFeedStatus([]);
-    UI.renderPoolTable([]);
-  });
-
-  return {
-    state,
-    ingestBoard,
-    handleResetAll
-  };
+(function(){
+  window.SYSTEM_VERSION='v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 Matrix Bridge';
+  const state={cleanPool:[],auditRows:[],rejectedLines:[],miningVault:{},backendHealth:null,systemLog:[],activeScreen:'ingest'};
+  function log(level,message,detail=''){state.systemLog.push({time:new Date().toLocaleTimeString(),iso:new Date().toISOString(),level,message,detail});renderLog()}
+  function renderLog(){document.getElementById('systemLog').textContent=state.systemLog.map(x=>`[${x.time}] ${x.level.toUpperCase()} ${x.message}${x.detail?' | '+(typeof x.detail==='string'?x.detail:JSON.stringify(x.detail,null,2)):''}`).join('\n')}
+  function setScreen(s){state.activeScreen=s;document.getElementById('ingestScreen').classList.toggle('active',s==='ingest');document.getElementById('analysisScreen').classList.toggle('active',s==='analysis');log('info',`Screen changed to ${s}`)}
+  function render(){UI.renderFeedStatus(state.cleanPool,state.auditRows,state.rejectedLines);UI.renderPoolTable(state.cleanPool);UI.renderHealth(state.backendHealth);UI.renderAnalysis(state.miningVault)}
+  function ingest(){const raw=document.getElementById('boardInput').value;log('info','Ingest started',`Raw characters: ${raw.length}`);const parsed=Parser.parseBoard(raw);state.cleanPool=parsed.rows;state.auditRows=parsed.audit;state.rejectedLines=parsed.rejectedLines;state.miningVault={};log('success','Ingest completed',{accepted:state.cleanPool.length,pool:state.cleanPool.length,rejected:state.rejectedLines.length,props:state.cleanPool.map(r=>({player:r.parsedPlayer,team:r.team,opponent:r.opponent,prop:r.prop,line:r.line}))});render(); if(state.cleanPool.length)setScreen('analysis')}
+  async function run(){if(!state.cleanPool.length){log('warn','No legs to run');return}setScreen('analysis');log('info','Auto Daily Health started');state.backendHealth=await Connectors.getHealth();log(state.backendHealth.ok?'success':'warn','Daily Health returned '+(state.backendHealth.ok?'OK':'issue'),{version:state.backendHealth.version,status:state.backendHealth.status,table_checks:(state.backendHealth.table_checks||[]).length});render();log('info',`Auto DB wiring pass started for ${state.cleanPool.length} leg(s) in batches of 4`);for(let i=0;i<state.cleanPool.length;i+=4){const batch=state.cleanPool.slice(i,i+4);log('info',`Backend batch ${(i/4)+1} started`,`Rows ${i+1}-${i+batch.length}`);const results=await Promise.all(batch.map(async row=>{log('info',`Leg ${row.idx} queued for backend probe`,Connectors.payloadFromRow(row));const v=await Connectors.probeLeg(row);state.miningVault[row.LEG_ID]=v;log(v.packet_status==='ok'&&v.score_status==='ok'?'success':'warn',`Leg ${row.idx} backend probe completed`,{family:v.family,status:v.status,packet_status:v.packet_status,score_status:v.score_status,matrix_summary:v.matrix_summary,incremental_cache:v.incremental_cache,warnings:v.warnings});render();return v;}));log('success',`Backend batch ${(i/4)+1} finished`,`Processed ${results.length} leg(s)`)}log('success','DB wiring pass finished');render()}
+  function reset(){state.cleanPool=[];state.auditRows=[];state.rejectedLines=[];state.miningVault={};state.backendHealth=null;document.getElementById('boardInput').value='';log('info','Reset completed');setScreen('ingest');render()}
+  function debugText(){return `OXYGEN-COBALT MAIN SYSTEM DEBUG REPORT\nGenerated: ${new Date().toISOString()}\nFrontend Version: ${window.SYSTEM_VERSION}\nWorker URL: ${Connectors.API_BASE}\nSlate Date: AUTO / BLANK\nActive Screen: ${state.activeScreen}\n\n=== RAW STATE SNAPSHOT ===\n${JSON.stringify(state,null,2)}`}
+  document.addEventListener('DOMContentLoaded',()=>{document.getElementById('versionLabel').textContent=window.SYSTEM_VERSION;document.getElementById('ingestBtn').onclick=ingest;document.getElementById('runBtn').onclick=run;document.getElementById('resetBtn').onclick=reset;document.getElementById('backBtn').onclick=()=>setScreen('ingest');document.getElementById('debugCopyBtn').onclick=async()=>{await navigator.clipboard.writeText(debugText());log('success','Debug report copied to clipboard',{characters:debugText().length})};log('info','Main system booted',window.SYSTEM_VERSION);render()});
 })();

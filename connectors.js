@@ -1,16 +1,12 @@
-window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT)';
-  const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
-
-  function stampVault(vault = {}) {
-    vault.isReal = true;
-    vault.source = 'real';
-    return vault;
+(function(){
+  const API_BASE = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
+  async function postJson(path,payload){
+    const started_at=new Date().toISOString();
+    try{const res=await fetch(`${API_BASE}${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}); const body=await res.json(); return {ok:res.ok&&body&&body.ok!==false,http_status:res.status,url:`${API_BASE}${path}`,body,started_at,finished_at:new Date().toISOString(),error:res.ok?null:(body&&body.error)||`HTTP ${res.status}`};}
+    catch(e){return {ok:false,http_status:0,url:`${API_BASE}${path}`,body:null,started_at,finished_at:new Date().toISOString(),error:String(e&&e.message||e)}}
   }
-
-  return {
-    SYSTEM_VERSION,
-    GEMINI_MODEL,
-    stampVault
-  };
+  async function getHealth(){const started_at=new Date().toISOString();try{const res=await fetch(`${API_BASE}/main/health`);const body=await res.json();return{ok:res.ok&&body.ok!==false,source:'health/daily',...body,raw:{ok:res.ok,http_status:res.status,url:`${API_BASE}/main/health`,body,started_at,finished_at:new Date().toISOString(),error:null}}}catch(e){return{ok:false,error:String(e&&e.message||e),raw:{started_at,finished_at:new Date().toISOString()}}}}
+  function payloadFromRow(row){return{source:'main_system_screen2',source_version:window.SYSTEM_VERSION,leg_id:row.LEG_ID,row_index:row.idx,player_name:row.parsedPlayer,team_id:row.team,opponent_team:row.opponent,prop_type:row.prop,prop_family:window.Parser.familyFromProp(row.prop),line:row.line,side:row.direction,game_time_text:row.gameTimeText,raw_row:row}}
+  async function probeLeg(row){const payload=payloadFromRow(row);const packetReq=await postJson('/main/packet/leg',payload);const scoreReq=await postJson('/main/score/leg',payload);return{status:packetReq.ok&&scoreReq.ok?'backend_response_received':'backend_adapter_needs_worker_endpoint_fix',family:payload.prop_family,supported_now:true,row,payload,daily_health_dependency:'required',packet_status:packetReq.ok?'ok':'error',score_status:scoreReq.ok?'ok':'error',warnings:[...(packetReq.ok?[]:[`Packet endpoint failed: ${packetReq.error}`]),...(scoreReq.ok?[]:[`Score endpoint failed: ${scoreReq.error}`])],missing:(packetReq.body&&packetReq.body.missing)||[],derived_flags:[],isReal:true,source:'main_system_db_adapter',version:window.SYSTEM_VERSION,packet_request:{ok:packetReq.ok,source:'packet/leg',family:payload.prop_family,payload,result:packetReq,packet:packetReq.body,error:packetReq.error},packet:packetReq.body,score_request:{ok:scoreReq.ok,source:'score/leg',family:payload.prop_family,payload,result:scoreReq,score:scoreReq.body,error:scoreReq.error},score:scoreReq.body,finished_at:new Date().toISOString(),matrix_summary:scoreReq.body&&scoreReq.body.matrix_factor_summary,incremental_cache:packetReq.body&&packetReq.body.incremental_cache}}
+  window.Connectors={API_BASE,getHealth,probeLeg,payloadFromRow};
 })();
