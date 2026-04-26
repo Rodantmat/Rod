@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1F New API Worker Lock';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1G API URL Hard Lock';
 
   const state = {
     version: SYSTEM_VERSION,
@@ -101,7 +101,10 @@ window.PickCalcCore = (() => {
     const backendUrlInput = UI.el('backendUrlInput');
     const tokenInput = UI.el('backendTokenInput');
 
-    if (backendUrlInput && Connectors) Connectors.setBackendUrl(backendUrlInput.value);
+    if (backendUrlInput && Connectors) {
+      const lockedUrl = Connectors.setBackendUrl(backendUrlInput.value);
+      backendUrlInput.value = lockedUrl;
+    }
     if (tokenInput && Connectors) Connectors.setToken(tokenInput.value);
     state.slateDate = slateInput && Connectors ? Connectors.setSlateDate(slateInput.value) : (Connectors?.getSlateDate() || '');
   }

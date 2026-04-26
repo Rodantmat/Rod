@@ -42,7 +42,7 @@ window.PickCalcUI = (() => {
     const backendUrlInput = el('backendUrlInput');
     const tokenInput = el('backendTokenInput');
     const slateDateInput = el('slateDateInput');
-    if (backendUrlInput && !backendUrlInput.value) backendUrlInput.value = Connectors.getBackendUrl();
+    if (backendUrlInput) backendUrlInput.value = Connectors.forceBackendUrlInputToMainApi ? Connectors.forceBackendUrlInputToMainApi() : Connectors.getBackendUrl();
     if (tokenInput && !tokenInput.value) tokenInput.value = Connectors.getToken();
     if (slateDateInput && !slateDateInput.value) slateDateInput.value = Connectors.getSlateDate();
   }

@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1F New API Worker Lock';
+  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1G API URL Hard Lock';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',
@@ -7,18 +7,33 @@ window.PickCalcConnectors = (() => {
     slateDate: 'pickcalc.slateDate'
   };
 
+  function isLegacyScheduledWorkerUrl(value) {
+    return String(value || '').includes('prop-ingestion-git.rodolfoaamattos.workers.dev');
+  }
+
   function cleanBaseUrl(value) {
     const raw = String(value || '').trim().replace(/\/+$/, '');
-    return raw || DEFAULT_BACKEND_URL;
+    if (!raw || isLegacyScheduledWorkerUrl(raw)) return DEFAULT_BACKEND_URL;
+    return raw;
   }
 
   function getBackendUrl() {
-    return cleanBaseUrl(localStorage.getItem(STORAGE_KEYS.backendUrl) || DEFAULT_BACKEND_URL);
+    const stored = localStorage.getItem(STORAGE_KEYS.backendUrl);
+    const cleaned = cleanBaseUrl(stored || DEFAULT_BACKEND_URL);
+    if (stored !== cleaned) localStorage.setItem(STORAGE_KEYS.backendUrl, cleaned);
+    return cleaned;
   }
 
   function setBackendUrl(value) {
     const cleaned = cleanBaseUrl(value);
     localStorage.setItem(STORAGE_KEYS.backendUrl, cleaned);
+    return cleaned;
+  }
+
+  function forceBackendUrlInputToMainApi() {
+    const input = document.getElementById('backendUrlInput');
+    const cleaned = setBackendUrl(input?.value || DEFAULT_BACKEND_URL);
+    if (input && input.value !== cleaned) input.value = cleaned;
     return cleaned;
   }
 
@@ -84,7 +99,7 @@ window.PickCalcConnectors = (() => {
   }
 
   async function requestJson(path, options = {}) {
-    const baseUrl = cleanBaseUrl(options.backendUrl || getBackendUrl());
+    const baseUrl = cleanBaseUrl(options.backendUrl || forceBackendUrlInputToMainApi());
     const url = new URL(path, baseUrl + '/');
     if (options.query) {
       Object.entries(options.query).forEach(([key, value]) => {
@@ -229,6 +244,7 @@ window.PickCalcConnectors = (() => {
     DEFAULT_BACKEND_URL,
     getBackendUrl,
     setBackendUrl,
+    forceBackendUrlInputToMainApi,
     getToken,
     setToken,
     getSlateDate,
