@@ -37,14 +37,13 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.15 — RBI Forced Inject</div>
+<div id="versionTag">v1.2.17 — RBI Blade</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
 
 <div class="section"><h3>SLATE</h3><div class="grid">
 <button class="slate" onclick="setSlateMode('AUTO')">Auto</button>
-<button class="btn blue" onclick="runTask(\'build_edge_candidates_rbi\')">Build RBI Candidates</button>
 <button class="slate" onclick="setSlateMode('TODAY')">Today</button>
 <button class="slate" onclick="setSlateMode('TOMORROW')">Tomorrow</button>
 <button class="slate" onclick="setSlateMode('MANUAL')">Manual</button>
@@ -67,6 +66,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('MLB Usage','scrape_recent_usage_mlb_api')">MLB Usage</button>
 <button onclick="runJobButton('Run Derived Metrics','scrape_derived_metrics')">Run Derived Metrics</button>
 <button onclick="runJobButton('Build Hits Candidates','build_edge_candidates_hits')">Build Hits Candidates</button>
+<button class="btn blue" onclick="runJobButton('Build RBI Candidates','build_edge_candidates_rbi')">Build RBI Candidates</button>
 <button onclick="runJobButton('Missing','scrape_starters_missing')">Missing</button>
 <button onclick="runJobButton('Teams','scrape_teams')">Teams</button>
 <button onclick="runJobButton('Bullpen','scrape_bullpens')">Bullpen</button>
