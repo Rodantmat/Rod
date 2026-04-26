@@ -9,8 +9,49 @@ window.PickCalcCore = (() => {
     cleanPool: [],
     auditRows: [],
     selectedLeagues: ['MLB'],
-    miningVault: {}
+    miningVault: {},
+    activeScreen: 'ingest'
   };
+
+  function setAnalyzeButtonState() {
+    const analyzeBtn = UI.el('analyzeBtn');
+    if (analyzeBtn) analyzeBtn.disabled = state.cleanPool.length === 0;
+  }
+
+  function showScreen(screenName) {
+    const screenOne = UI.el('screenOne');
+    const screenTwo = UI.el('screenTwo');
+    state.activeScreen = screenName;
+
+    if (screenOne) {
+      const isIngest = screenName === 'ingest';
+      screenOne.hidden = !isIngest;
+      screenOne.classList.toggle('screen-active', isIngest);
+    }
+
+    if (screenTwo) {
+      const isAnalysis = screenName === 'analysis';
+      screenTwo.hidden = !isAnalysis;
+      screenTwo.classList.toggle('screen-active', isAnalysis);
+    }
+  }
+
+  function openAnalysisScreen() {
+    if (!state.cleanPool.length) {
+      UI.showToast('Ingest at least one leg before opening Screen 2');
+      return;
+    }
+
+    UI.renderAnalysisScreen(state.cleanPool, state.miningVault);
+    showScreen('analysis');
+  }
+
+  function openIngestScreen() {
+    showScreen('ingest');
+    UI.renderFeedStatus(state.cleanPool, state.auditRows);
+    UI.renderPoolTable(state.cleanPool);
+    setAnalyzeButtonState();
+  }
 
   function ingestBoard() {
     const input = UI.el('boardInput');
@@ -47,6 +88,7 @@ window.PickCalcCore = (() => {
 
     UI.renderFeedStatus(state.cleanPool, state.auditRows);
     UI.renderPoolTable(state.cleanPool);
+    setAnalyzeButtonState();
 
     if (messageMount) {
       messageMount.textContent = rows.length
@@ -69,25 +111,39 @@ window.PickCalcCore = (() => {
 
     UI.renderFeedStatus([]);
     UI.renderPoolTable([]);
+    UI.renderAnalysisScreen([], {});
+    setAnalyzeButtonState();
+    showScreen('ingest');
     UI.showToast('System reset');
   }
 
   function bindEvents() {
     const ingestBtn = UI.el('ingestBtn');
+    const analyzeBtn = UI.el('analyzeBtn');
     const resetBtn = UI.el('resetBtn');
+    const backToIngestBtn = UI.el('backToIngestBtn');
+    const analysisResetBtn = UI.el('analysisResetBtn');
     if (ingestBtn) ingestBtn.addEventListener('click', ingestBoard);
+    if (analyzeBtn) analyzeBtn.addEventListener('click', openAnalysisScreen);
     if (resetBtn) resetBtn.addEventListener('click', handleResetAll);
+    if (backToIngestBtn) backToIngestBtn.addEventListener('click', openIngestScreen);
+    if (analysisResetBtn) analysisResetBtn.addEventListener('click', handleResetAll);
   }
 
   window.addEventListener('DOMContentLoaded', () => {
     bindEvents();
+    showScreen('ingest');
     UI.renderFeedStatus([]);
     UI.renderPoolTable([]);
+    UI.renderAnalysisScreen([], {});
+    setAnalyzeButtonState();
   });
 
   return {
     state,
     ingestBoard,
-    handleResetAll
+    handleResetAll,
+    openAnalysisScreen,
+    openIngestScreen
   };
 })();
