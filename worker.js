@@ -1,5 +1,7 @@
-// AlphaDog v1.2.32 - Regression No-Interrupt Loop compatible worker
+// AlphaDog v1.2.33 - Daily Health Layer compatible worker
 // RFI GUARDED TIER CAP ACTIVE
+const SYSTEM_VERSION = "v1.2.33 - Daily Health Layer";
+const SYSTEM_CODENAME = "Daily Health Layer";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -256,6 +258,7 @@ export default {
       }
 
       if (url.pathname === "/health") return json(health(env));
+      if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
@@ -314,6 +317,7 @@ function hydratePromptTemplate(prompt, slateDate) {
 function health(env) {
   return {
     ok: true,
+    version: SYSTEM_VERSION,
     worker: "alphadog-phase3-starter-groups",
     db_bound: !!env.DB,
     ingest_token_bound: !!env.INGEST_TOKEN,
@@ -322,6 +326,136 @@ function health(env) {
     jobs: Object.keys(JOBS),
     time: new Date().toISOString()
   };
+}
+
+function dailyHealthStatus(pass, warn) {
+  if (!pass) return "FAIL";
+  if (warn) return "WARN";
+  return "PASS";
+}
+
+async function dailyHealthScalar(env, sql, bindValues = []) {
+  try {
+    const stmt = bindValues.length ? env.DB.prepare(sql).bind(...bindValues) : env.DB.prepare(sql);
+    const row = await stmt.first();
+    const values = Object.values(row || {});
+    return { ok: true, value: Number(values[0] || 0), row: row || null };
+  } catch (err) {
+    return { ok: false, value: null, error: String(err?.message || err) };
+  }
+}
+
+async function dailyHealthRows(env, sql, bindValues = []) {
+  try {
+    const stmt = bindValues.length ? env.DB.prepare(sql).bind(...bindValues) : env.DB.prepare(sql);
+    const res = await stmt.all();
+    return { ok: true, rows: Array.isArray(res?.results) ? res.results : [] };
+  } catch (err) {
+    return { ok: false, rows: [], error: String(err?.message || err) };
+  }
+}
+
+async function handleDailyHealth(request, env) {
+  if (!isAuthorized(request, env)) return unauthorized();
+
+  const url = new URL(request.url);
+  const requestedDate = String(url.searchParams.get("slate_date") || "").trim();
+  const slate = resolveSlateDate(requestedDate ? { slate_mode: "MANUAL", manual_slate_date: requestedDate } : {});
+  const slateDate = slate.slate_date;
+  const likeSlate = `${slateDate}_%`;
+
+  const checks = [];
+  async function addCheck(name, sql, bindValues, passFn, warnFn) {
+    const q = await dailyHealthScalar(env, sql, bindValues);
+    const pass = q.ok && passFn(q.value);
+    const warn = q.ok && warnFn ? warnFn(q.value) : false;
+    checks.push({
+      check: name,
+      value: q.value,
+      status: q.ok ? dailyHealthStatus(pass, warn) : "ERROR",
+      ok: q.ok && pass,
+      error: q.error || null
+    });
+  }
+
+  await addCheck("GAMES_TODAY", "SELECT COUNT(*) FROM games WHERE game_date = ?", [slateDate], v => v === 15, v => v > 0 && v !== 15);
+  await addCheck("STARTERS_TODAY", "SELECT COUNT(*) FROM starters_current WHERE game_id LIKE ?", [likeSlate], v => v === 30, v => v > 0 && v !== 30);
+  await addCheck("LINEUPS_TODAY", "SELECT COUNT(*) FROM lineups_current WHERE game_id LIKE ?", [likeSlate], v => v >= 200, v => v > 0 && v < 200);
+  await addCheck("BULLPENS_TODAY", "SELECT COUNT(*) FROM bullpens_current WHERE game_id LIKE ?", [likeSlate], v => v >= 20, v => v > 0 && v < 20);
+  await addCheck("MARKETS_TODAY", "SELECT COUNT(*) FROM markets_current WHERE game_id LIKE ?", [likeSlate], v => v >= 15, v => v > 0 && v < 15);
+  await addCheck("PLAYERS_CURRENT", "SELECT COUNT(*) FROM players_current", [], v => v >= 760, v => v > 0 && v < 760);
+  await addCheck("RFI_CANDIDATES", "SELECT COUNT(*) FROM edge_candidates_rfi WHERE slate_date = ?", [slateDate], v => v === 15, v => v > 0 && v !== 15);
+  await addCheck("RBI_CANDIDATES", "SELECT COUNT(*) FROM edge_candidates_rbi WHERE slate_date = ?", [slateDate], v => v === 119, v => v > 0 && v !== 119);
+  await addCheck("HITS_CANDIDATES", "SELECT COUNT(*) FROM edge_candidates_hits WHERE slate_date = ?", [slateDate], v => v > 0, () => false);
+
+  const staleRows = await dailyHealthRows(env, `
+    SELECT job_name, status, started_at, finished_at
+    FROM task_runs
+    WHERE status = 'success'
+    ORDER BY finished_at DESC, started_at DESC
+    LIMIT 8
+  `);
+
+  const stuckRows = await dailyHealthRows(env, `
+    SELECT task_id, job_name, status, started_at
+    FROM task_runs
+    WHERE status = 'running'
+      AND started_at <= datetime('now', '-30 minutes')
+    ORDER BY started_at ASC
+    LIMIT 8
+  `);
+
+  const latestFullRun = await dailyHealthRows(env, `
+    SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
+    FROM task_runs
+    WHERE job_name = 'run_full_pipeline'
+    ORDER BY started_at DESC
+    LIMIT 3
+  `);
+
+  const failedRecent = await dailyHealthRows(env, `
+    SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
+    FROM task_runs
+    WHERE status != 'success'
+    ORDER BY started_at DESC
+    LIMIT 8
+  `);
+
+  const scheduled = {
+    latest_success_rows: staleRows.ok ? staleRows.rows : [],
+    stuck_running_rows: stuckRows.ok ? stuckRows.rows : [],
+    latest_full_run_rows: latestFullRun.ok ? latestFullRun.rows : [],
+    failed_recent_rows: failedRecent.ok ? failedRecent.rows : [],
+    stale_query_ok: staleRows.ok,
+    stuck_query_ok: stuckRows.ok,
+    full_run_query_ok: latestFullRun.ok,
+    failed_query_ok: failedRecent.ok
+  };
+
+  const errorChecks = checks.filter(c => c.status === "ERROR");
+  const failedChecks = checks.filter(c => c.status === "FAIL");
+  const warnChecks = checks.filter(c => c.status === "WARN");
+  const stuckCount = scheduled.stuck_running_rows.length;
+  const status = errorChecks.length || failedChecks.length || stuckCount ? "review" : (warnChecks.length ? "warn" : "pass");
+
+  return json({
+    ok: status === "pass" || status === "warn",
+    version: SYSTEM_VERSION,
+    job: "daily_health",
+    slate_date: slateDate,
+    slate_mode: slate.slate_mode,
+    status,
+    table_checks: checks,
+    scheduled,
+    summary: {
+      pass: checks.filter(c => c.status === "PASS").length,
+      warn: warnChecks.length,
+      fail: failedChecks.length,
+      error: errorChecks.length,
+      stuck_running: stuckCount
+    },
+    note: "Daily health only. No scoring logic, candidate logic, or database writes changed."
+  });
 }
 
 async function runScheduled(event, env) {

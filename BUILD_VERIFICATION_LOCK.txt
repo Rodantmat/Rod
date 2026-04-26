@@ -1,11 +1,15 @@
-AlphaDog v1.2.32 - Regression No-Interrupt Loop
+BUILD VERIFICATION LOCK
 
-Pre-output verification checklist:
-1. control_room.html visible versionTag is v1.2.32 - Regression No-Interrupt Loop.
-2. runRfiRegressionSuite JSON version is v1.2.32 - Regression No-Interrupt Loop.
-3. debugConfig reports control_room_v1_2_32_regression_no_interrupt_loop.
-4. worker.js header is AlphaDog v1.2.32 - Regression No-Interrupt Loop compatible worker.
-5. No runtime file contains v1.2.31 or v1.2.30.
-6. RBI_TIER_SPLIT expects PASS_BASELINE_55_64.
-7. Regression cycle loop does not call setOutput inside the loop.
-8. Regression has outer try/catch and cycle-level try/catch.
+Release: v1.2.33 - Daily Health Layer
+Base: locked prior Regression No-Interrupt Loop
+
+Hard checks performed before zip:
+- worker.js header contains v1.2.33 - Daily Health Layer.
+- worker.js SYSTEM_VERSION contains v1.2.33 - Daily Health Layer.
+- worker.js route contains /health/daily.
+- control_room.html visible version tag contains v1.2.33 - Daily Health Layer.
+- control_room.html debugConfig version contains control_room_v1_2_33_daily_health_layer.
+- control_room.html includes Daily Health button.
+- no subdirectories in zip.
+
+Do not deploy if the visible version tag does not say v1.2.33 - Daily Health Layer.
