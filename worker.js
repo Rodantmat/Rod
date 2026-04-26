@@ -1,7 +1,7 @@
-// AlphaDog v1.2.35 - Job Registry Alignment Lock compatible worker
+// AlphaDog v1.2.36 - Historical Failure Filter compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.35 - Job Registry Alignment Lock";
-const SYSTEM_CODENAME = "Job Registry Alignment Lock";
+const SYSTEM_VERSION = "v1.2.36 - Historical Failure Filter";
+const SYSTEM_CODENAME = "Historical Failure Filter";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -512,10 +512,32 @@ async function handleDailyHealth(request, env) {
     LIMIT 3
   `);
 
-  const failedRecent = await dailyHealthRows(env, `
+  const currentActiveFailures = await dailyHealthRows(env, `
     SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
-    FROM task_runs
-    WHERE status != 'success'
+    FROM task_runs tr
+    WHERE tr.status IN ('failed','stale')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM task_runs newer_success
+        WHERE newer_success.job_name = tr.job_name
+          AND newer_success.status = 'success'
+          AND datetime(newer_success.started_at) > datetime(tr.started_at)
+      )
+    ORDER BY started_at DESC
+    LIMIT 8
+  `);
+
+  const historicalResolvedFailures = await dailyHealthRows(env, `
+    SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(error, output_json, ''), 1, 240) AS preview
+    FROM task_runs tr
+    WHERE tr.status IN ('failed','stale')
+      AND EXISTS (
+        SELECT 1
+        FROM task_runs newer_success
+        WHERE newer_success.job_name = tr.job_name
+          AND newer_success.status = 'success'
+          AND datetime(newer_success.started_at) > datetime(tr.started_at)
+      )
     ORDER BY started_at DESC
     LIMIT 8
   `);
@@ -545,12 +567,16 @@ async function handleDailyHealth(request, env) {
     latest_success_rows: staleRows.ok ? staleRows.rows : [],
     stuck_running_rows: stuckRows.ok ? stuckRows.rows : [],
     latest_full_run_rows: latestFullRun.ok ? latestFullRun.rows : [],
-    failed_recent_rows: failedRecent.ok ? failedRecent.rows : [],
+    current_active_failure_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
+    historical_resolved_failure_rows: historicalResolvedFailures.ok ? historicalResolvedFailures.rows : [],
+    failed_recent_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
     registry_audit: registryAudit,
     stale_query_ok: staleRows.ok,
     stuck_query_ok: stuckRows.ok,
     full_run_query_ok: latestFullRun.ok,
-    failed_query_ok: failedRecent.ok
+    active_failure_query_ok: currentActiveFailures.ok,
+    historical_failure_query_ok: historicalResolvedFailures.ok,
+    failed_query_ok: currentActiveFailures.ok
   };
 
   const errorChecks = checks.filter(c => c.status === "ERROR");
@@ -559,7 +585,8 @@ async function handleDailyHealth(request, env) {
   const stuckCount = scheduled.stuck_running_rows.length;
   const reaperError = stale_reaper && stale_reaper.ok === false;
   const registryError = registryAudit && registryAudit.ok === false;
-  const status = errorChecks.length || failedChecks.length || stuckCount || reaperError || registryError ? "review" : (warnChecks.length ? "warn" : "pass");
+  const activeFailureCount = scheduled.current_active_failure_rows.length;
+  const status = errorChecks.length || failedChecks.length || stuckCount || activeFailureCount || reaperError || registryError ? "review" : (warnChecks.length ? "warn" : "pass");
 
   return json({
     ok: status === "pass" || status === "warn",
@@ -578,9 +605,11 @@ async function handleDailyHealth(request, env) {
       stuck_running: stuckCount,
       stale_reaped: stale_reaper?.reaped_count || 0,
       stale_reaper_ok: stale_reaper?.ok === true,
-      registry_audit_ok: registryAudit?.ok === true
+      registry_audit_ok: registryAudit?.ok === true,
+      active_failures: activeFailureCount,
+      historical_resolved_failures: scheduled.historical_resolved_failure_rows.length
     },
-    note: "Daily health plus stale task cleanup plus job registry audit only. No scoring logic or candidate logic changed."
+    note: "Daily health plus stale task cleanup plus job registry audit plus historical failure filtering only. No scoring logic or candidate logic changed."
   });
 }
 

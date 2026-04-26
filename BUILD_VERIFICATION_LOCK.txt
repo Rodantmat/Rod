@@ -1,14 +1,13 @@
 AlphaDog Build Verification Lock
+Release: v1.2.36 - Historical Failure Filter
 
-Release: v1.2.35 - Job Registry Alignment Lock
+Verified before zip creation:
+- worker.js header contains v1.2.36 - Historical Failure Filter.
+- worker.js SYSTEM_VERSION contains v1.2.36 - Historical Failure Filter.
+- worker.js SYSTEM_CODENAME contains Historical Failure Filter.
+- control_room.html visible version tag contains v1.2.36 - Historical Failure Filter.
+- control_room.html debugConfig version contains control_room_v1_2_36_historical_failure_filter.
+- Daily Health uses output_json-derived preview only.
+- Zip was created from /mnt/data/v136 after patching.
 
-Mandatory version checks before deployment:
-- worker.js header contains v1.2.35 - Job Registry Alignment Lock.
-- worker.js SYSTEM_VERSION contains v1.2.35 - Job Registry Alignment Lock.
-- control_room.html visible version tag contains v1.2.35 - Job Registry Alignment Lock.
-- control_room.html debugConfig version contains control_room_v1_2_35_job_registry_alignment_lock.
-- /health returns v1.2.35 - Job Registry Alignment Lock.
-- /health/daily returns registry_audit_ok=true.
-- build_edge_candidates_rbi is listed as an executable valid job and routes to buildEdgeCandidatesRbi.
-
-Do not deploy if any visible or internal version does not match v1.2.35.
+Do not deploy if /health or RFI Regression x3 reports any version other than v1.2.36 - Historical Failure Filter.
