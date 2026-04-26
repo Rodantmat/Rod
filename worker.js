@@ -1,7 +1,7 @@
-// AlphaDog v1.2.37 - Slate-Scoped Failure Filter compatible worker
+// AlphaDog v1.2.38 - Scheduled Run Freshness Gate compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.37 - Slate-Scoped Failure Filter";
-const SYSTEM_CODENAME = "Slate-Scoped Failure Filter";
+const SYSTEM_VERSION = "v1.2.38 - Scheduled Run Freshness Gate";
+const SYSTEM_CODENAME = "Scheduled Run Freshness Gate";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -402,6 +402,122 @@ async function dailyHealthRows(env, sql, bindValues = []) {
   }
 }
 
+function slateStartTimestamp(slateDate) {
+  return `${slateDate} 00:00:00`;
+}
+
+async function latestSuccessfulTaskForSlate(env, checkName, jobNames, slateDate, options = {}) {
+  const jobs = Array.isArray(jobNames) ? jobNames.filter(Boolean) : [jobNames].filter(Boolean);
+  const required = options.required !== false;
+  const minFinishedAt = slateStartTimestamp(slateDate);
+
+  if (!jobs.length) {
+    return {
+      check: checkName,
+      ok: false,
+      status: "ERROR",
+      required,
+      job_names: [],
+      latest_success: null,
+      error: "No job names supplied"
+    };
+  }
+
+  const marks = jobs.map(() => "?").join(",");
+  const slatePattern = `%${slateDate}%`;
+
+  try {
+    const fresh = await dailyHealthRows(env, `
+      SELECT task_id, job_name, status, started_at, finished_at,
+             substr(COALESCE(output_json, error, ''), 1, 240) AS preview
+      FROM task_runs
+      WHERE status = 'success'
+        AND job_name IN (${marks})
+        AND (
+          COALESCE(input_json, '') LIKE ?
+          OR COALESCE(output_json, '') LIKE ?
+          OR COALESCE(error, '') LIKE ?
+        )
+        AND datetime(COALESCE(finished_at, started_at)) >= datetime(?)
+      ORDER BY datetime(COALESCE(finished_at, started_at)) DESC, datetime(started_at) DESC
+      LIMIT 1
+    `, [...jobs, slatePattern, slatePattern, slatePattern, minFinishedAt]);
+
+    if (fresh.ok && fresh.rows.length) {
+      return {
+        check: checkName,
+        ok: true,
+        status: "PASS_FRESH",
+        required,
+        job_names: jobs,
+        slate_date: slateDate,
+        min_finished_at: minFinishedAt,
+        latest_success: fresh.rows[0],
+        error: null
+      };
+    }
+
+    const latest = await dailyHealthRows(env, `
+      SELECT task_id, job_name, status, started_at, finished_at,
+             substr(COALESCE(output_json, error, ''), 1, 240) AS preview
+      FROM task_runs
+      WHERE status = 'success'
+        AND job_name IN (${marks})
+      ORDER BY datetime(COALESCE(finished_at, started_at)) DESC, datetime(started_at) DESC
+      LIMIT 1
+    `, jobs);
+
+    const hasLatest = latest.ok && latest.rows.length > 0;
+    const missingStatus = required ? "FAIL_NOT_FRESH" : "WARN_NOT_FRESH";
+    return {
+      check: checkName,
+      ok: required ? false : true,
+      status: hasLatest ? missingStatus : (required ? "FAIL_NO_SUCCESS" : "WARN_NO_SUCCESS"),
+      required,
+      job_names: jobs,
+      slate_date: slateDate,
+      min_finished_at: minFinishedAt,
+      latest_success: hasLatest ? latest.rows[0] : null,
+      error: fresh.error || latest.error || null
+    };
+  } catch (err) {
+    return {
+      check: checkName,
+      ok: false,
+      status: "ERROR",
+      required,
+      job_names: jobs,
+      slate_date: slateDate,
+      min_finished_at: minFinishedAt,
+      latest_success: null,
+      error: String(err?.message || err)
+    };
+  }
+}
+
+async function buildScheduledFreshnessGate(env, slateDate) {
+  const checks = [
+    await latestSuccessfulTaskForSlate(env, "RFI_BUILD_FRESH", ["build_edge_candidates_rfi"], slateDate),
+    await latestSuccessfulTaskForSlate(env, "RBI_BUILD_FRESH", ["build_edge_candidates_rbi"], slateDate),
+    await latestSuccessfulTaskForSlate(env, "HITS_BUILD_FRESH", ["build_edge_candidates_hits"], slateDate),
+    await latestSuccessfulTaskForSlate(env, "FULL_PIPELINE_OR_SLATE_PREP_FRESH", ["run_full_pipeline", "scrape_games_markets", "daily_mlb_slate"], slateDate)
+  ];
+
+  const blockingFailures = checks.filter(row => row.required && row.ok !== true);
+  const warnings = checks.filter(row => !row.required && row.status && row.status.startsWith("WARN"));
+  return {
+    ok: blockingFailures.length === 0,
+    mode: "slate_success_since_slate_start",
+    slate_date: slateDate,
+    min_finished_at: slateStartTimestamp(slateDate),
+    expected_checks: checks.length,
+    returned_checks: checks.length,
+    checks,
+    blocking_failures: blockingFailures.length,
+    warnings: warnings.length
+  };
+}
+
 async function reapStaleTaskRuns(env) {
   try {
     const before = await dailyHealthRows(env, `
@@ -462,6 +578,7 @@ async function handleDailyHealth(request, env) {
   const slateDate = slate.slate_date;
   const likeSlate = `${slateDate}_%`;
   const stale_reaper = await reapStaleTaskRuns(env);
+  const freshness_gate = await buildScheduledFreshnessGate(env, slateDate);
 
   const checks = [];
   async function addCheck(name, sql, bindValues, passFn, warnFn) {
@@ -584,6 +701,7 @@ async function handleDailyHealth(request, env) {
     historical_resolved_failure_rows: historicalResolvedFailures.ok ? historicalResolvedFailures.rows : [],
     failed_recent_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
     registry_audit: registryAudit,
+    freshness_gate,
     stale_query_ok: staleRows.ok,
     stuck_query_ok: stuckRows.ok,
     full_run_query_ok: latestFullRun.ok,
@@ -598,8 +716,9 @@ async function handleDailyHealth(request, env) {
   const stuckCount = scheduled.stuck_running_rows.length;
   const reaperError = stale_reaper && stale_reaper.ok === false;
   const registryError = registryAudit && registryAudit.ok === false;
+  const freshnessError = freshness_gate && freshness_gate.ok === false;
   const activeFailureCount = scheduled.current_active_failure_rows.length;
-  const status = errorChecks.length || failedChecks.length || stuckCount || activeFailureCount || reaperError || registryError ? "review" : (warnChecks.length ? "warn" : "pass");
+  const status = errorChecks.length || failedChecks.length || stuckCount || activeFailureCount || reaperError || registryError || freshnessError ? "review" : (warnChecks.length ? "warn" : "pass");
 
   return json({
     ok: status === "pass" || status === "warn",
@@ -619,10 +738,12 @@ async function handleDailyHealth(request, env) {
       stale_reaped: stale_reaper?.reaped_count || 0,
       stale_reaper_ok: stale_reaper?.ok === true,
       registry_audit_ok: registryAudit?.ok === true,
+      freshness_gate_ok: freshness_gate?.ok === true,
+      freshness_blocking_failures: freshness_gate?.blocking_failures || 0,
       active_failures: activeFailureCount,
       historical_resolved_failures: scheduled.historical_resolved_failure_rows.length
     },
-    note: "Daily health plus stale task cleanup plus job registry audit plus slate-scoped failure filtering only. No scoring logic or candidate logic changed."
+    note: "Daily health plus stale task cleanup plus job registry audit plus slate-scoped failure filtering plus scheduled run freshness gate only. No scoring logic or candidate logic changed."
   });
 }
 

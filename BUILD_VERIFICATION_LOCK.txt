@@ -1,17 +1,21 @@
 AlphaDog Build Verification Lock
-Release: v1.2.37 - Slate-Scoped Failure Filter
+Release: v1.2.38 - Scheduled Run Freshness Gate
 
-Verified before zip creation:
-- worker.js header contains v1.2.37 - Slate-Scoped Failure Filter.
-- worker.js SYSTEM_VERSION contains v1.2.37 - Slate-Scoped Failure Filter.
-- worker.js SYSTEM_CODENAME contains Slate-Scoped Failure Filter.
-- control_room.html visible version tag contains v1.2.37 - Slate-Scoped Failure Filter.
-- control_room.html debugConfig version contains control_room_v1_2_37_slate_scoped_failure_filter.
-- Daily Health uses output_json-derived preview only.
-- Zip was created from /mnt/data/v136 after patching.
+Mandatory package checks completed before zip:
+- worker.js header contains v1.2.38 - Scheduled Run Freshness Gate.
+- worker.js SYSTEM_VERSION contains v1.2.38 - Scheduled Run Freshness Gate.
+- worker.js SYSTEM_CODENAME contains Scheduled Run Freshness Gate.
+- control_room.html visible version tag contains v1.2.38 - Scheduled Run Freshness Gate.
+- control_room.html debugConfig version contains control_room_v1_2_38_scheduled_run_freshness_gate.
+- worker.js syntax checked with node --check.
+- Flat-folder zip only. No subdirectories.
 
-Do not deploy if /health or RFI Regression x3 reports any version other than v1.2.37 - Slate-Scoped Failure Filter.
+Do not deploy if /health, Daily Health, or RFI Regression x3 reports any version other than v1.2.38 - Scheduled Run Freshness Gate.
 
-Release audit addendum:
-- Verified worker.js, control_room.html, README, and BUILD_VERIFICATION_LOCK all reference v1.2.37.
-- Verified no stale prior-version labels remain in deployable files.
+Surgical change in this build:
+- Added Daily Health scheduled run freshness gate.
+- Daily Health now verifies fresh slate-scoped success rows for RFI, RBI, Hits, and full pipeline/slate prep.
+- Freshness gate uses task_runs.input_json/output_json/error slate-date matching plus finished_at/started_at >= slate start.
+- No scoring logic changed.
+- No candidate scoring logic changed.
+- No D1 schema changed.
