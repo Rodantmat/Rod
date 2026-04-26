@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS edge_candidates_rbi (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slate_date TEXT,
+  game_id TEXT,
+  team_id TEXT,
+  opponent_team TEXT,
+  player_name TEXT,
+  lineup_slot INTEGER,
+  bats TEXT,
+  opposing_starter TEXT,
+  opposing_throws TEXT,
+  player_avg REAL,
+  player_obp REAL,
+  player_slg REAL,
+  rbi_opportunity_score REAL,
+  lineup_rbi_spot_score REAL,
+  behind_runner_onbase_score REAL,
+  bullpen_fatigue_tier TEXT,
+  run_environment_flag TEXT,
+  candidate_tier TEXT,
+  candidate_reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);

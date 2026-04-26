@@ -34,6 +34,11 @@ const JOBS = {
     tables: ["edge_candidates_hits"],
     note: "scheduled-task edge prep candidate pool for hits"
   },
+  build_edge_candidates_rbi: {
+    prompt: null,
+    tables: ["edge_candidates_rbi"],
+    note: "scheduled-task edge prep candidate pool for RBI"
+  },
   scrape_teams: {
     prompt: "scrape_teams_v1.txt",
     tables: ["teams_current"],
@@ -796,6 +801,219 @@ async function buildEdgeCandidatesHits(input, env) {
 }
 
 
+function rbiCandidateTier(row) {
+  const slot = Number(row.lineup_slot || 99);
+  const avg = edgeNum(row.player_avg);
+  const obp = edgeNum(row.player_obp);
+  const slg = edgeNum(row.player_slg);
+  const prev1Obp = edgeNum(row.prev1_obp);
+  const prev2Obp = edgeNum(row.prev2_obp);
+  const prev3Obp = edgeNum(row.prev3_obp);
+  const parkRun = edgeNum(row.park_factor_run) || 1;
+  const bullpenScore = edgeNum(row.bullpen_fatigue_score);
+
+  let opportunity = 0;
+  let lineupSpot = 0;
+  let behindRunner = 0;
+  const reasons = [];
+
+  if (slot >= 3 && slot <= 5) { lineupSpot += 5; reasons.push("core_rbi_lineup_slot"); }
+  else if (slot === 2 || slot === 6) { lineupSpot += 3; reasons.push("playable_rbi_lineup_slot"); }
+  else if (slot === 7) { lineupSpot += 1; reasons.push("thin_but_possible_rbi_slot"); }
+
+  if (avg !== null && avg >= 0.270) { opportunity += 3; reasons.push("strong_avg_contact"); }
+  else if (avg !== null && avg >= 0.240) { opportunity += 2; reasons.push("playable_avg_contact"); }
+  else if (avg !== null && avg >= 0.220) { opportunity += 1; reasons.push("thin_avg_contact"); }
+  else if (avg === null) { reasons.push("avg_unavailable_no_penalty"); }
+
+  if (slg !== null && slg >= 0.460) { opportunity += 4; reasons.push("strong_slg_rbi_damage"); }
+  else if (slg !== null && slg >= 0.400) { opportunity += 2; reasons.push("playable_slg_rbi_damage"); }
+  else if (slg === null) { reasons.push("slg_unavailable_no_penalty"); }
+
+  if (obp !== null && obp >= 0.340) { opportunity += 1; reasons.push("strong_self_onbase_floor"); }
+
+  const tableSetters = [prev1Obp, prev2Obp, prev3Obp].filter(v => v !== null);
+  if (tableSetters.length) {
+    const tableSetterAvg = tableSetters.reduce((a, b) => a + b, 0) / tableSetters.length;
+    if (tableSetterAvg >= 0.340) { behindRunner += 5; reasons.push("strong_runner_onbase_ahead"); }
+    else if (tableSetterAvg >= 0.315) { behindRunner += 3; reasons.push("playable_runner_onbase_ahead"); }
+    else if (tableSetterAvg >= 0.290) { behindRunner += 1; reasons.push("thin_runner_onbase_ahead"); }
+  } else {
+    reasons.push("runner_onbase_context_unavailable");
+  }
+
+  if (parkRun >= 1.02) { opportunity += 1; reasons.push("positive_run_environment"); }
+  if (bullpenScore !== null && bullpenScore >= 65) { opportunity += 1; reasons.push("opponent_bullpen_pressure"); }
+
+  const total = opportunity + lineupSpot + behindRunner;
+  const runFlag = parkRun >= 1.02 ? "positive" : (parkRun <= 0.97 ? "suppressive" : "neutral");
+
+  if (total >= 12) return { tier: "A_POOL", reason: reasons.join("|"), opportunity, lineupSpot, behindRunner, runFlag };
+  if (total >= 8) return { tier: "B_POOL", reason: reasons.join("|"), opportunity, lineupSpot, behindRunner, runFlag };
+  return { tier: "WATCHLIST", reason: reasons.join("|") || "passed_base_filters", opportunity, lineupSpot, behindRunner, runFlag };
+}
+
+async function ensureEdgeCandidatesRbiTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS edge_candidates_rbi (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slate_date TEXT,
+      game_id TEXT,
+      team_id TEXT,
+      opponent_team TEXT,
+      player_name TEXT,
+      lineup_slot INTEGER,
+      bats TEXT,
+      opposing_starter TEXT,
+      opposing_throws TEXT,
+      player_avg REAL,
+      player_obp REAL,
+      player_slg REAL,
+      rbi_opportunity_score REAL,
+      lineup_rbi_spot_score REAL,
+      behind_runner_onbase_score REAL,
+      bullpen_fatigue_tier TEXT,
+      run_environment_flag TEXT,
+      candidate_tier TEXT,
+      candidate_reason TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+}
+
+async function insertEdgeCandidatesRbiBatch(env, rows) {
+  if (!rows.length) return 0;
+  const insertCols = [
+    "slate_date", "game_id", "team_id", "opponent_team", "player_name",
+    "lineup_slot", "bats", "opposing_starter", "opposing_throws",
+    "player_avg", "player_obp", "player_slg",
+    "rbi_opportunity_score", "lineup_rbi_spot_score", "behind_runner_onbase_score",
+    "bullpen_fatigue_tier", "run_environment_flag", "candidate_tier", "candidate_reason"
+  ];
+  const placeholders = insertCols.map(() => "?").join(", ");
+  const sql = `INSERT INTO edge_candidates_rbi (${insertCols.join(", ")}) VALUES (${placeholders})`;
+
+  let written = 0;
+  const chunkSize = 75;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const statements = chunk.map(r => env.DB.prepare(sql).bind(...insertCols.map(c => r[c] ?? null)));
+    await env.DB.batch(statements);
+    written += chunk.length;
+  }
+  return written;
+}
+
+async function buildEdgeCandidatesRbi(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+
+  await ensureEdgeCandidatesRbiTable(env);
+
+  const rowsRes = await env.DB.prepare(`
+    WITH lineup_base AS (
+      SELECT
+        l.game_id,
+        g.game_date,
+        l.team_id,
+        CASE WHEN l.team_id = g.away_team THEN g.home_team ELSE g.away_team END AS opponent_team,
+        l.player_name,
+        l.slot AS lineup_slot,
+        COALESCE(NULLIF(l.bats,''), NULLIF(p.bats,'')) AS bats,
+        s.starter_name AS opposing_starter,
+        s.throws AS opposing_throws,
+        p.avg AS player_avg,
+        p.obp AS player_obp,
+        p.slg AS player_slg,
+        prev1.obp AS prev1_obp,
+        prev2.obp AS prev2_obp,
+        prev3.obp AS prev3_obp,
+        gc.park_factor_run,
+        CASE WHEN l.team_id = g.away_team THEN gc.home_bullpen_fatigue_score ELSE gc.away_bullpen_fatigue_score END AS bullpen_fatigue_score,
+        CASE WHEN l.team_id = g.away_team THEN gc.home_bullpen_fatigue_tier ELSE gc.away_bullpen_fatigue_tier END AS bullpen_fatigue_tier
+      FROM lineups_current l
+      JOIN games g ON g.game_id = l.game_id
+      LEFT JOIN players_current p ON p.player_name = l.player_name AND p.team_id = l.team_id
+      LEFT JOIN lineups_current l1 ON l1.game_id = l.game_id AND l1.team_id = l.team_id AND l1.slot = l.slot - 1
+      LEFT JOIN players_current prev1 ON prev1.player_name = l1.player_name AND prev1.team_id = l.team_id
+      LEFT JOIN lineups_current l2 ON l2.game_id = l.game_id AND l2.team_id = l.team_id AND l2.slot = l.slot - 2
+      LEFT JOIN players_current prev2 ON prev2.player_name = l2.player_name AND prev2.team_id = l.team_id
+      LEFT JOIN lineups_current l3 ON l3.game_id = l.game_id AND l3.team_id = l.team_id AND l3.slot = l.slot - 3
+      LEFT JOIN players_current prev3 ON prev3.player_name = l3.player_name AND prev3.team_id = l.team_id
+      LEFT JOIN game_context_current gc ON gc.game_id = l.game_id
+      LEFT JOIN starters_current s
+        ON s.game_id = l.game_id
+        AND s.team_id = CASE WHEN l.team_id = g.away_team THEN g.home_team ELSE g.away_team END
+      WHERE g.game_date = ?
+        AND l.slot BETWEEN 2 AND 7
+        AND l.player_name IS NOT NULL
+        AND l.player_name != ''
+    )
+    SELECT * FROM lineup_base
+    ORDER BY game_id, team_id, lineup_slot
+  `).bind(slateDate).all();
+
+  const rawRows = rowsRes.results || [];
+  const seen = new Set();
+  const rows = [];
+
+  for (const r of rawRows) {
+    const key = `${slateDate}_${edgeSafeIdPart(r.game_id)}_${edgeSafeIdPart(r.team_id)}_${edgeSafeIdPart(r.player_name)}_RBI`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const tier = rbiCandidateTier(r);
+    if (tier.tier === "WATCHLIST") continue;
+
+    rows.push({
+      slate_date: slateDate,
+      game_id: r.game_id,
+      team_id: r.team_id,
+      opponent_team: r.opponent_team,
+      player_name: r.player_name,
+      lineup_slot: edgeNum(r.lineup_slot),
+      bats: r.bats || null,
+      opposing_starter: r.opposing_starter || null,
+      opposing_throws: r.opposing_throws || null,
+      player_avg: edgeNum(r.player_avg),
+      player_obp: edgeNum(r.player_obp),
+      player_slg: edgeNum(r.player_slg),
+      rbi_opportunity_score: edgeNum(tier.opportunity),
+      lineup_rbi_spot_score: edgeNum(tier.lineupSpot),
+      behind_runner_onbase_score: edgeNum(tier.behindRunner),
+      bullpen_fatigue_tier: r.bullpen_fatigue_tier || "unknown",
+      run_environment_flag: tier.runFlag,
+      candidate_tier: tier.tier,
+      candidate_reason: tier.reason
+    });
+  }
+
+  await env.DB.prepare(`DELETE FROM edge_candidates_rbi WHERE slate_date = ?`).bind(slateDate).run();
+  const inserted = await insertEdgeCandidatesRbiBatch(env, rows);
+
+  const aPool = rows.filter(r => r.candidate_tier === "A_POOL").length;
+  const bPool = rows.filter(r => r.candidate_tier === "B_POOL").length;
+
+  return {
+    ok: true,
+    job: input.job || "build_edge_candidates_rbi",
+    slate_date: slateDate,
+    source: "scheduled_edge_prep_rbi_b_aggressive",
+    mode: "zero_api_subrequest_deterministic",
+    filter_mode: "RBI_B_AGGRESSIVE",
+    raw_rows: rawRows.length,
+    fetched_rows: rows.length,
+    inserted: { edge_candidates_rbi: inserted },
+    a_pool: aPool,
+    b_pool: bPool,
+    skipped_count: 0,
+    skipped: [],
+    complete: true,
+    note: "RBI candidate pool only. No probabilities, scores, or betting decisions."
+  };
+}
+
+
 
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
@@ -818,6 +1036,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "build_edge_candidates_hits") {
     return await buildEdgeCandidatesHits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "build_edge_candidates_rbi") {
+    return await buildEdgeCandidatesRbi({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
     return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
