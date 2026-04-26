@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.31 - RBI Tier Baseline Sync</div>
+<div id="versionTag">v1.2.32 - Regression No-Interrupt Loop</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -111,7 +111,7 @@ function setOutput(l,o){document.getElementById("output").textContent="ACTION: "
 function loading(l,e){setStatus("RUNNING: "+l);setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_31_rbi_tier_baseline_sync"})}
+function debugConfig(){setOutput("Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_32_regression_no_interrupt_loop"})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing")return false;return true}}return false}
@@ -330,106 +330,144 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.31 - RBI Tier Baseline Sync",
+    version: "v1.2.32 - Regression No-Interrupt Loop",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
     regression: {status:"not_started",mode:"anchored_single_sql_payload",complete:false,outputs:[]},
     pass_notes: [
-      "Cycles store compact summaries only to prevent browser/output payload interruption.",
-      "Final regression checks execute as one anchored SQL payload so the suite cannot stop after a partial check list.",
-      "ok=true requires all RFI, RBI, Hits, players, starters, and lineups baseline checks to pass."
+      "No intermediate JSON rendering during the cycle loop; this prevents browser/output interruption before cycle 3.",
+      "Cycle errors are captured into the suite instead of aborting the regression function.",
+      "Final regression checks execute after the cycle loop in one anchored SQL payload.",
+      "ok=true requires all 3 RFI cycles plus all 12 baseline checks to pass."
     ]
   };
 
-  loading("RFI Regression x3", "Running compact deterministic RFI build/audit cycles.\nSlate: " + d);
-
-  for(let i=1;i<=cycles;i++){
-    setStatus("RFI REGRESSION CYCLE " + i + " / " + cycles);
-    const build = await rawRequest("RFI Regression Build " + i, JOB_URL, {job:"build_edge_candidates_rfi",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});
-    const audit = await rawRequest("RFI Regression Audit " + i, SQL_URL, {sql:rfiCandidatesAudit()});
-    const body = build && build.body ? build.body : {};
-    const inserted = body.inserted && body.inserted.edge_candidates_rfi != null ? Number(body.inserted.edge_candidates_rfi) : null;
-    const auditOutputs = audit && audit.body && Array.isArray(audit.body.outputs) ? audit.body.outputs : [];
-    const tierRows = auditOutputs[1] && Array.isArray(auditOutputs[1].rows) ? auditOutputs[1].rows : [];
-    const warningRow = auditOutputs[3] && Array.isArray(auditOutputs[3].rows) && auditOutputs[3].rows[0] ? auditOutputs[3].rows[0] : null;
-    const missingStarterRow = auditOutputs[2] && Array.isArray(auditOutputs[2].rows) && auditOutputs[2].rows[0] ? auditOutputs[2].rows[0] : null;
-    const yesLeakRow = auditOutputs[6] && Array.isArray(auditOutputs[6].rows) && auditOutputs[6].rows[0] ? auditOutputs[6].rows[0] : null;
-    const tierCounts = {};
-    tierRows.forEach(r => { tierCounts[r.candidate_tier] = Number(r.count_value); });
-    suite.cycles.push({
-      cycle:i,
-      build_http_status:build.http_status||null,
-      build_ok:!!body.ok,
-      raw_games:Number(body.raw_games??0),
-      fetched_rows:Number(body.fetched_rows??0),
-      inserted_edge_candidates_rfi:inserted,
-      yes_rfi:Number(body.yes_rfi??0),
-      lean_yes:Number(body.lean_yes??0),
-      watchlist_or_no:Number(body.watchlist_or_no??0),
-      warning_rows:Array.isArray(body.warnings)?body.warnings.length:null,
-      audit_http_status:audit.http_status||null,
-      audit_ok:!!(audit.body&&audit.body.ok),
-      audit_tier_counts:tierCounts,
-      audit_warning_rows:warningRow ? Number(warningRow.count_value) : null,
-      audit_missing_starters:missingStarterRow ? Number(missingStarterRow.count_value) : null,
-      audit_incomplete_yes_leak:yesLeakRow ? Number(yesLeakRow.count_value) : null
-    });
-    setOutput("RFI Regression x3", suite);
-  }
-
-  const checks = [
-    {check:"RFI_TOTAL", sql:`SELECT 'RFI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 15 THEN 'PASS_EXPECTED_15' WHEN COUNT(*) > 0 THEN 'WARN_COUNT_REVIEW' ELSE 'FAIL_EMPTY' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}'`, expect:"PASS_EXPECTED_15"},
-    {check:"RFI_WARNINGS", sql:`SELECT 'RFI_WARNINGS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 3 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_MORE_THAN_BASELINE' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%warn_%'`, expect:"PASS_EXPECTED_OR_BETTER"},
-    {check:"RFI_CAP_CRITICAL_ROWS", sql:`SELECT 'RFI_CAP_CRITICAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 1 THEN 'PASS_BASELINE_1' ELSE 'WARN_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%cap_critical_data_missing%'`, expect:"PASS_BASELINE_1"},
-    {check:"RFI_CAP_PARTIAL_ROWS", sql:`SELECT 'RFI_CAP_PARTIAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 2 THEN 'PASS_BASELINE_2' ELSE 'WARN_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%cap_partial_data_missing%'`, expect:"PASS_BASELINE_2"},
-    {check:"RFI_INCOMPLETE_YES_LEAK", sql:`SELECT 'RFI_INCOMPLETE_YES_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_tier = 'YES_RFI' AND (candidate_reason LIKE '%warn_away_top3_lineup_incomplete%' OR candidate_reason LIKE '%warn_home_top3_lineup_incomplete%')`, expect:"PASS_NO_LEAK"},
-    {check:"RBI_TOTAL", sql:`SELECT 'RBI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 119 THEN 'PASS_BASELINE_119' ELSE 'FAIL_BASELINE_DRIFT' END AS status FROM edge_candidates_rbi`, expect:"PASS_BASELINE_119"},
-    {check:"RBI_TIER_SPLIT", sql:`SELECT GROUP_CONCAT(candidate_tier || ' ' || count_value, ' / ') AS tier_split, CASE WHEN SUM(CASE WHEN candidate_tier = 'A_POOL' THEN count_value ELSE 0 END) = 55 AND SUM(CASE WHEN candidate_tier = 'B_POOL' THEN count_value ELSE 0 END) = 64 THEN 'PASS_BASELINE_55_64' ELSE 'FAIL_TIER_DRIFT' END AS status FROM (SELECT candidate_tier, COUNT(*) AS count_value FROM edge_candidates_rbi GROUP BY candidate_tier)`, expect:"PASS_BASELINE_55_64"},
-    {check:"RBI_WEAK_A_POOL_LEAK", sql:`SELECT 'RBI_WEAK_A_POOL_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status FROM edge_candidates_rbi WHERE candidate_tier = 'A_POOL' AND rbi_opportunity_score <= 2`, expect:"PASS_NO_LEAK"},
-    {check:"HITS_TOTAL", sql:`SELECT 'HITS_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) > 0 THEN 'PASS_NON_EMPTY' ELSE 'FAIL_EMPTY' END AS status FROM edge_candidates_hits`, expect:"PASS_NON_EMPTY"},
-    {check:"PLAYERS_CURRENT", sql:`SELECT 'PLAYERS_CURRENT' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 760 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM players_current`, expect:"PASS"},
-    {check:"STARTERS_TODAY", sql:`SELECT 'STARTERS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 30 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM starters_current WHERE game_id LIKE '${d}_%'`, expect:"PASS"},
-    {check:"LINEUPS_TODAY", sql:`SELECT 'LINEUPS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 200 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM lineups_current WHERE game_id LIKE '${d}_%'`, expect:"PASS"}
-  ];
-
-  setStatus("RFI REGRESSION FINAL CHECKS: anchored single SQL payload");
-  suite.regression = {status:"running",mode:"anchored_single_sql_payload",complete:false,outputs:[]};
-  setOutput("RFI Regression x3", suite);
-
-  const regressionSql = checks.map(c => c.sql.trim().replace(/;+$/g, "") + ";").join("\n");
-  const regressionResponse = await rawRequest("RFI Regression Final Baselines", SQL_URL, {sql:regressionSql});
-  const rawOutputs = regressionResponse && regressionResponse.body && Array.isArray(regressionResponse.body.outputs) ? regressionResponse.body.outputs : [];
-  const outputs = checks.map((item, idx) => {
-    const raw = rawOutputs[idx] || null;
-    const rows = raw && Array.isArray(raw.rows) ? raw.rows : [];
-    const result = rows.length === 1 ? rows[0] : rows;
-    const status = rows.length === 1 ? String(rows[0].status || "") : "";
-    return {
-      check:item.check,
-      sql:item.sql,
-      result,
-      status,
-      expected_status:item.expect,
-      pass:status===item.expect,
-      http_status:regressionResponse?regressionResponse.http_status:null,
-      ok:!!(regressionResponse&&regressionResponse.http_status===200&&regressionResponse.body&&regressionResponse.body.ok&&raw)
-    };
+  const compactFailure = (label, err) => ({
+    label,
+    error:String(err && err.message ? err.message : err),
+    stack:String(err && err.stack ? err.stack : "").split("\n").slice(0,3).join(" | ")
   });
 
-  const cycleOk = suite.cycles.length === cycles && suite.cycles.every(c => c.build_ok && c.audit_ok && c.raw_games === 15 && c.fetched_rows === 15 && c.inserted_edge_candidates_rfi === 15 && c.yes_rfi === 7 && c.lean_yes === 4 && c.watchlist_or_no === 4 && c.warning_rows === 3 && c.audit_tier_counts.YES_RFI === 7 && c.audit_tier_counts.LEAN_YES === 4 && c.audit_tier_counts.WATCHLIST === 4 && c.audit_warning_rows === 3 && c.audit_missing_starters === 0 && c.audit_incomplete_yes_leak === 0);
-  const regressionOk = outputs.length === checks.length && outputs.every(o => o.ok && o.pass);
-  suite.regression = {
-    status:regressionOk ? "pass" : "review",
-    mode:"anchored_single_sql_payload",
-    complete:regressionOk,
-    expected_checks:checks.length,
-    returned_checks:rawOutputs.length,
-    outputs
-  };
-  suite.ok = cycleOk && regressionOk;
-  suite.final = suite.ok ? "pass" : "review";
-  suite.candidate_summary = {YES_RFI:7, LEAN_YES:4, WATCHLIST:4};
+  loading("RFI Regression x3", "Running no-interrupt deterministic RFI build/audit cycles.\nSlate: " + d);
+
+  try{
+    for(let i=1;i<=cycles;i++){
+      setStatus("RFI REGRESSION CYCLE " + i + " / " + cycles + " — running");
+      const cycle = {
+        cycle:i,
+        build_http_status:null,
+        build_ok:false,
+        raw_games:null,
+        fetched_rows:null,
+        inserted_edge_candidates_rfi:null,
+        yes_rfi:null,
+        lean_yes:null,
+        watchlist_or_no:null,
+        warning_rows:null,
+        audit_http_status:null,
+        audit_ok:false,
+        audit_tier_counts:{},
+        audit_warning_rows:null,
+        audit_missing_starters:null,
+        audit_incomplete_yes_leak:null,
+        cycle_error:null
+      };
+
+      try{
+        const build = await rawRequest("RFI Regression Build " + i, JOB_URL, {job:"build_edge_candidates_rfi",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});
+        const body = build && build.body ? build.body : {};
+        const inserted = body.inserted && body.inserted.edge_candidates_rfi != null ? Number(body.inserted.edge_candidates_rfi) : null;
+        cycle.build_http_status = build && build.http_status ? build.http_status : null;
+        cycle.build_ok = !!body.ok;
+        cycle.raw_games = Number(body.raw_games??0);
+        cycle.fetched_rows = Number(body.fetched_rows??0);
+        cycle.inserted_edge_candidates_rfi = inserted;
+        cycle.yes_rfi = Number(body.yes_rfi??0);
+        cycle.lean_yes = Number(body.lean_yes??0);
+        cycle.watchlist_or_no = Number(body.watchlist_or_no??0);
+        cycle.warning_rows = Array.isArray(body.warnings)?body.warnings.length:null;
+
+        const audit = await rawRequest("RFI Regression Audit " + i, SQL_URL, {sql:rfiCandidatesAudit()});
+        const auditOutputs = audit && audit.body && Array.isArray(audit.body.outputs) ? audit.body.outputs : [];
+        const tierRows = auditOutputs[1] && Array.isArray(auditOutputs[1].rows) ? auditOutputs[1].rows : [];
+        const warningRow = auditOutputs[3] && Array.isArray(auditOutputs[3].rows) && auditOutputs[3].rows[0] ? auditOutputs[3].rows[0] : null;
+        const missingStarterRow = auditOutputs[2] && Array.isArray(auditOutputs[2].rows) && auditOutputs[2].rows[0] ? auditOutputs[2].rows[0] : null;
+        const yesLeakRow = auditOutputs[6] && Array.isArray(auditOutputs[6].rows) && auditOutputs[6].rows[0] ? auditOutputs[6].rows[0] : null;
+        const tierCounts = {};
+        tierRows.forEach(r => { tierCounts[r.candidate_tier] = Number(r.count_value); });
+        cycle.audit_http_status = audit && audit.http_status ? audit.http_status : null;
+        cycle.audit_ok = !!(audit && audit.body && audit.body.ok);
+        cycle.audit_tier_counts = tierCounts;
+        cycle.audit_warning_rows = warningRow ? Number(warningRow.count_value) : null;
+        cycle.audit_missing_starters = missingStarterRow ? Number(missingStarterRow.count_value) : null;
+        cycle.audit_incomplete_yes_leak = yesLeakRow ? Number(yesLeakRow.count_value) : null;
+      }catch(cycleErr){
+        cycle.cycle_error = compactFailure("cycle_" + i, cycleErr);
+      }
+
+      suite.cycles.push(cycle);
+      setStatus("RFI REGRESSION CYCLE " + i + " / " + cycles + " — captured");
+    }
+
+    const checks = [
+      {check:"RFI_TOTAL", sql:`SELECT 'RFI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 15 THEN 'PASS_EXPECTED_15' WHEN COUNT(*) > 0 THEN 'WARN_COUNT_REVIEW' ELSE 'FAIL_EMPTY' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}'`, expect:"PASS_EXPECTED_15"},
+      {check:"RFI_WARNINGS", sql:`SELECT 'RFI_WARNINGS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) <= 3 THEN 'PASS_EXPECTED_OR_BETTER' ELSE 'WARN_MORE_THAN_BASELINE' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%warn_%'`, expect:"PASS_EXPECTED_OR_BETTER"},
+      {check:"RFI_CAP_CRITICAL_ROWS", sql:`SELECT 'RFI_CAP_CRITICAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 1 THEN 'PASS_BASELINE_1' ELSE 'WARN_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%cap_critical_data_missing%'`, expect:"PASS_BASELINE_1"},
+      {check:"RFI_CAP_PARTIAL_ROWS", sql:`SELECT 'RFI_CAP_PARTIAL_ROWS' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 2 THEN 'PASS_BASELINE_2' ELSE 'WARN_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_reason LIKE '%cap_partial_data_missing%'`, expect:"PASS_BASELINE_2"},
+      {check:"RFI_INCOMPLETE_YES_LEAK", sql:`SELECT 'RFI_INCOMPLETE_YES_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status FROM edge_candidates_rfi WHERE slate_date = '${d}' AND candidate_tier = 'YES_RFI' AND (candidate_reason LIKE '%warn_away_top3_lineup_incomplete%' OR candidate_reason LIKE '%warn_home_top3_lineup_incomplete%')`, expect:"PASS_NO_LEAK"},
+      {check:"RBI_TOTAL", sql:`SELECT 'RBI_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 119 THEN 'PASS_BASELINE_119' ELSE 'FAIL_BASELINE_DRIFT' END AS status FROM edge_candidates_rbi`, expect:"PASS_BASELINE_119"},
+      {check:"RBI_TIER_SPLIT", sql:`SELECT GROUP_CONCAT(candidate_tier || ' ' || count_value, ' / ') AS tier_split, CASE WHEN SUM(CASE WHEN candidate_tier = 'A_POOL' THEN count_value ELSE 0 END) = 55 AND SUM(CASE WHEN candidate_tier = 'B_POOL' THEN count_value ELSE 0 END) = 64 THEN 'PASS_BASELINE_55_64' ELSE 'FAIL_TIER_DRIFT' END AS status FROM (SELECT candidate_tier, COUNT(*) AS count_value FROM edge_candidates_rbi GROUP BY candidate_tier)`, expect:"PASS_BASELINE_55_64"},
+      {check:"RBI_WEAK_A_POOL_LEAK", sql:`SELECT 'RBI_WEAK_A_POOL_LEAK' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 0 THEN 'PASS_NO_LEAK' ELSE 'FAIL_REVIEW' END AS status FROM edge_candidates_rbi WHERE candidate_tier = 'A_POOL' AND rbi_opportunity_score <= 2`, expect:"PASS_NO_LEAK"},
+      {check:"HITS_TOTAL", sql:`SELECT 'HITS_TOTAL' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) > 0 THEN 'PASS_NON_EMPTY' ELSE 'FAIL_EMPTY' END AS status FROM edge_candidates_hits`, expect:"PASS_NON_EMPTY"},
+      {check:"PLAYERS_CURRENT", sql:`SELECT 'PLAYERS_CURRENT' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 760 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM players_current`, expect:"PASS"},
+      {check:"STARTERS_TODAY", sql:`SELECT 'STARTERS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) = 30 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM starters_current WHERE game_id LIKE '${d}_%'`, expect:"PASS"},
+      {check:"LINEUPS_TODAY", sql:`SELECT 'LINEUPS_TODAY' AS audit_type, COUNT(*) AS count_value, CASE WHEN COUNT(*) >= 200 THEN 'PASS' ELSE 'WARN_REVIEW' END AS status FROM lineups_current WHERE game_id LIKE '${d}_%'`, expect:"PASS"}
+    ];
+
+    setStatus("RFI REGRESSION FINAL CHECKS — running anchored payload");
+    suite.regression = {status:"running",mode:"anchored_single_sql_payload",complete:false,outputs:[]};
+
+    const regressionSql = checks.map(c => c.sql.trim().replace(/;+$/g, "") + ";").join("\n");
+    const regressionResponse = await rawRequest("RFI Regression Final Baselines", SQL_URL, {sql:regressionSql});
+    const rawOutputs = regressionResponse && regressionResponse.body && Array.isArray(regressionResponse.body.outputs) ? regressionResponse.body.outputs : [];
+    const outputs = checks.map((item, idx) => {
+      const raw = rawOutputs[idx] || null;
+      const rows = raw && Array.isArray(raw.rows) ? raw.rows : [];
+      const result = rows.length === 1 ? rows[0] : rows;
+      const status = rows.length === 1 ? String(rows[0].status || "") : "";
+      return {
+        check:item.check,
+        sql:item.sql,
+        result,
+        status,
+        expected_status:item.expect,
+        pass:status===item.expect,
+        http_status:regressionResponse?regressionResponse.http_status:null,
+        ok:!!(regressionResponse&&regressionResponse.http_status===200&&regressionResponse.body&&regressionResponse.body.ok&&raw)
+      };
+    });
+
+    const cycleOk = suite.cycles.length === cycles && suite.cycles.every(c => c.build_ok && c.audit_ok && c.raw_games === 15 && c.fetched_rows === 15 && c.inserted_edge_candidates_rfi === 15 && c.yes_rfi === 7 && c.lean_yes === 4 && c.watchlist_or_no === 4 && c.warning_rows === 3 && c.audit_tier_counts.YES_RFI === 7 && c.audit_tier_counts.LEAN_YES === 4 && c.audit_tier_counts.WATCHLIST === 4 && c.audit_warning_rows === 3 && c.audit_missing_starters === 0 && c.audit_incomplete_yes_leak === 0);
+    const regressionOk = outputs.length === checks.length && rawOutputs.length === checks.length && outputs.every(o => o.ok && o.pass);
+    suite.regression = {
+      status:regressionOk ? "pass" : "review",
+      mode:"anchored_single_sql_payload",
+      complete:regressionOk,
+      expected_checks:checks.length,
+      returned_checks:rawOutputs.length,
+      outputs
+    };
+    suite.ok = cycleOk && regressionOk;
+    suite.final = suite.ok ? "pass" : "review";
+    suite.candidate_summary = {YES_RFI:7, LEAN_YES:4, WATCHLIST:4};
+  }catch(err){
+    suite.ok = false;
+    suite.final = "error";
+    suite.regression = suite.regression || {status:"not_started",mode:"anchored_single_sql_payload",complete:false,outputs:[]};
+    suite.fatal_error = compactFailure("runRfiRegressionSuite", err);
+  }
+
   setStatus((suite.ok ? "DONE: " : "REVIEW: ") + "RFI Regression x3");
   setOutput("RFI Regression x3", suite);
 }

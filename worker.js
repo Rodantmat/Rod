@@ -1,4 +1,4 @@
-// AlphaDog v1.2.31 - RBI Tier Baseline Sync compatible worker
+// AlphaDog v1.2.32 - Regression No-Interrupt Loop compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";

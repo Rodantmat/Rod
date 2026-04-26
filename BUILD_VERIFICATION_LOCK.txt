@@ -1,12 +1,11 @@
-AlphaDog v1.2.31 - RBI Tier Baseline Sync
+AlphaDog v1.2.32 - Regression No-Interrupt Loop
 
-PRE-ZIP AND POST-ZIP AUDIT LOCKS:
-1. control_room.html versionTag = v1.2.31 - RBI Tier Baseline Sync.
-2. runRfiRegressionSuite JSON version = v1.2.31 - RBI Tier Baseline Sync.
-3. worker.js header = AlphaDog v1.2.31 - RBI Tier Baseline Sync compatible worker.
-4. RBI_TIER_SPLIT baseline = A_POOL 55 / B_POOL 64.
-5. RBI_TIER_SPLIT expected status = PASS_BASELINE_55_64.
-6. Runtime files control_room.html and worker.js contain no v1.2.30 label.
-
-EXPECTED TEST:
-RFI Regression x3 returns ok=true, regression.complete=true, expected_checks=12, returned_checks=12, RBI_TIER_SPLIT PASS_BASELINE_55_64.
+Pre-output verification checklist:
+1. control_room.html visible versionTag is v1.2.32 - Regression No-Interrupt Loop.
+2. runRfiRegressionSuite JSON version is v1.2.32 - Regression No-Interrupt Loop.
+3. debugConfig reports control_room_v1_2_32_regression_no_interrupt_loop.
+4. worker.js header is AlphaDog v1.2.32 - Regression No-Interrupt Loop compatible worker.
+5. No runtime file contains v1.2.31 or v1.2.30.
+6. RBI_TIER_SPLIT expects PASS_BASELINE_55_64.
+7. Regression cycle loop does not call setOutput inside the loop.
+8. Regression has outer try/catch and cycle-level try/catch.
