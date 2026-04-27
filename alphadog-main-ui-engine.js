@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
+  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
 
   function el(id) {
     return document.getElementById(id);
@@ -264,7 +264,7 @@ window.PickCalcUI = (() => {
 
   function geminiStatusRows(gemini = null) {
     if (!gemini) {
-      return [{ label: 'Gemini A-E Status', value: 'PENDING /main/gemini/matrix/leg RESPONSE', status: 'pending' }];
+      return [{ label: 'Gemini A-E Status', value: 'PENDING /main/gemini/matrix/prompt RESPONSE', status: 'pending' }];
     }
     const prompts = Array.isArray(gemini.prompts) ? gemini.prompts : [];
     const rows = [
@@ -410,7 +410,7 @@ window.PickCalcUI = (() => {
       renderMatrixSection('Raw Packet Preview', [
         { label: 'Raw Packet', value: packet ? compactJson(packet, 650) : 'PENDING /main/packet/leg RESPONSE', status: packet ? 'ok' : 'pending' },
         { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 650) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' },
-        { label: 'Raw Gemini A-E', value: vault?.gemini ? compactJson(vault.gemini, 900) : 'PENDING /main/gemini/matrix/leg RESPONSE', status: vault?.gemini ? 'ok' : 'pending' }
+        { label: 'Raw Gemini A-E', value: vault?.gemini ? compactJson(vault.gemini, 900) : 'PENDING /main/gemini/matrix/prompt RESPONSE', status: vault?.gemini ? 'ok' : 'pending' }
       ])
     ].join('');
   }
@@ -475,9 +475,10 @@ window.PickCalcUI = (() => {
     mount.innerHTML = `
       <div class="global-progress-top">
         <span class="global-progress-task">${escapeHtml(task)}</span>
-        <span class="global-progress-result ${resultClass}">${escapeHtml(detail)}</span>
+        <span class="global-progress-percent">${percent}%</span>
       </div>
       <div class="global-progress-track"><div class="global-progress-fill" style="width:${percent}%"></div></div>
+      <div class="global-progress-result ${resultClass}">${escapeHtml(detail)}</div>
     `;
   }
 

@@ -348,3 +348,5 @@ button:disabled:hover{transform:none;}
 .global-progress-result.progress-running{color:#76a9ff;}
 .global-progress-track{height:8px;border-radius:999px;overflow:hidden;background:rgba(255,255,255,.08);box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);}
 .global-progress-fill{height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,#2f78ff,#2ee59d);transition:width .28s ease;}
+.global-progress-percent{font-weight:900;color:#aebbd9;font-variant-numeric:tabular-nums;}
+.global-progress-panel .global-progress-result{display:block;margin-top:8px;font-size:12px;letter-spacing:.02em;line-height:1.3;}

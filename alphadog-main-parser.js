@@ -1,5 +1,5 @@
 window.PickCalcParser = (() => {
-  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
+  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
   const STANDALONE_NUMBER_RX = /^\d+(?:\.\d+)?$/;
   const GLUED_NOISE_RX = /(Demon|Goblin|Trending|Popular|Popularity|Hot|Boost|Promo|Specials?|Insurance)\b/g;
   const BADGE_RX = /\b\d+(?:\.\d+)?K\b/gi;

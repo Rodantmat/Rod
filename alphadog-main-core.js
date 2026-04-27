@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
+  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
 
   const state = {
     version: SYSTEM_VERSION,
@@ -205,17 +205,27 @@ window.PickCalcCore = (() => {
       });
       UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
 
-      const results = await Promise.all(batch.map(async (row, offset) => {
+      const results = [];
+      for (let offset = 0; offset < batch.length; offset += 1) {
+        const row = batch[offset];
         const i = start + offset;
         const key = getRowKey(row, i);
         const family = Connectors.normalizePropFamily(row);
+        const progressBase = 35 + Math.round((i / Math.max(1, state.cleanPool.length)) * 55);
         try {
-          const result = await Connectors.analyzeLeg(row, state.slateDate);
-          return { i, key, family, result, error: null };
+          const result = await Connectors.analyzeLeg(row, state.slateDate, {
+            onProgress: async (progressEvent = {}) => {
+              const task = progressEvent.task || `Leg ${i + 1} retrieval`;
+              const pct = Math.max(progressBase, Math.min(98, Number(progressEvent.percent || progressBase)));
+              setProgress(`Leg ${i + 1}: ${task}`, pct, progressEvent.status || 'running', progressEvent.detail || 'running');
+              if (progressEvent.status === 'success' || progressEvent.status === 'error') await sleep(500);
+            }
+          });
+          results.push({ i, key, family, result, error: null });
         } catch (err) {
-          return { i, key, family, result: null, error: String(err?.message || err) };
+          results.push({ i, key, family, result: null, error: String(err?.message || err) });
         }
-      }));
+      }
 
       for (const { i, key, family, result, error } of results) {
         if (error) {
@@ -224,6 +234,7 @@ window.PickCalcCore = (() => {
             family,
             packet_status: 'error',
             score_status: 'error',
+            gemini_status: 'error',
             warnings: [error],
             error
           });
@@ -235,6 +246,7 @@ window.PickCalcCore = (() => {
         state.miningVault[key] = result;
         const packetOk = result?.packet_status === 'ok';
         const scoreOk = result?.score_status === 'ok';
+        const geminiOk = result?.gemini_status === 'ok' || result?.gemini_status === 'partial_success';
         const logPayload = {
           family: result.family,
           status: result.status,
@@ -242,13 +254,17 @@ window.PickCalcCore = (() => {
           score_status: result.score_status,
           gemini_status: result.gemini_status,
           gemini_summary: result.gemini?.summary || null,
+          gemini_error: result.gemini?.error_context?.message || result.gemini_request?.error || null,
           matrix_summary: result.packet?.matrix_factor_summary || result.score?.matrix_factor_summary || null,
           incremental_cache: result.packet?.incremental_cache || null,
           warnings: result.warnings || []
         };
-        if (packetOk || scoreOk) logEvent('success', `Leg ${i + 1} backend probe completed`, logPayload);
+        if (packetOk || scoreOk || geminiOk) logEvent('success', `Leg ${i + 1} backend probe completed`, logPayload);
         else logEvent('warn', `Leg ${i + 1} backend probe completed with endpoint issue`, logPayload);
-        await settleProgress(`Leg ${i + 1} retrieval`, 40 + Math.round(((i + 1) / Math.max(1, state.cleanPool.length)) * 45), (packetOk || scoreOk) && result?.gemini_status !== 'error', result?.gemini_status === 'error' ? 'Gemini review' : (packetOk || scoreOk ? 'packet received' : 'endpoint issue'));
+        const legDetail = result?.gemini_status === 'error'
+          ? (result.gemini?.error_context?.message || result.gemini_request?.error || 'Gemini review')
+          : (geminiOk ? 'Gemini matrix received' : (packetOk || scoreOk ? 'packet received' : 'endpoint issue'));
+        await settleProgress(`Leg ${i + 1} retrieval`, 40 + Math.round(((i + 1) / Math.max(1, state.cleanPool.length)) * 45), (packetOk || scoreOk) && result?.gemini_status !== 'error', legDetail);
       }
 
       UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
