@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
+  const SYSTEM_VERSION = 'v13.78.10 (OXYGEN-COBALT) • Main-1N.4 Goblin Triple Tap';
 
   function el(id) {
     return document.getElementById(id);

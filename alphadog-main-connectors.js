@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
+  const SYSTEM_VERSION = 'v13.78.10 (OXYGEN-COBALT) • Main-1N.4 Goblin Triple Tap';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',

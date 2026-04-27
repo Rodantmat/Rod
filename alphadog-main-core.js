@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.09 (OXYGEN-COBALT) • Main-1N.3 Goblin Throttle Valve';
+  const SYSTEM_VERSION = 'v13.78.10 (OXYGEN-COBALT) • Main-1N.4 Goblin Triple Tap';
 
   const state = {
     version: SYSTEM_VERSION,
