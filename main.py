@@ -18,10 +18,11 @@ def start():
     except Exception as e:
         return print(f"❌ Connection Failed: {e}")
 
-    # 1. Map Team IDs to Abbreviations (e.g., ID '10' -> 'NYY')
+    # 1. Map Team IDs to Abbreviations
     teams = {}
     for obj in data.get('included', []):
         if obj['type'] == 'team':
+            # Priority: Abbreviation -> Name
             teams[obj['id']] = obj['attributes'].get('abbreviation') or obj['attributes'].get('name')
 
     # 2. Map Player IDs to their Names and Team Names
@@ -29,7 +30,10 @@ def start():
     for obj in data.get('included', []):
         if obj['type'] == 'new_player':
             p_id = obj['id']
-            t_id = obj.get('relationships', {}).get('team', {}).get('data', {}).get('id')
+            # ADJUSTED: PrizePicks uses 'team_data' in the relationships block
+            t_rel = obj.get('relationships', {}).get('team_data', {}).get('data')
+            t_id = t_rel.get('id') if t_rel else None
+            
             player_data[p_id] = {
                 "name": obj['attributes']['name'].replace("'", "''"),
                 "team": teams.get(t_id, "Unknown")
@@ -69,6 +73,8 @@ def start():
         cf_res = requests.post(cf_url, headers=headers, json={"sql": sql})
         if cf_res.status_code == 200:
             print(f"✅ Chunk {i//chunk_size + 1} complete.")
+        else:
+            print(f"❌ Error in chunk {i//chunk_size + 1}: {cf_res.text}")
 
 if __name__ == "__main__":
     start()
