@@ -8,18 +8,25 @@ DB_ID = os.getenv("CF_DATABASE_ID")
 PROXY = os.getenv("PROXY_URL")
 
 def run():
-    print("🛰️ Connecting via California Proxy...")
+    print(f"🛰️ Attempting connection via Proxy...")
+    
+    # Try League ID 2 (MLB)
     url = "https://partner-api.prizepicks.com/projections?league_id=2&per_page=500"
     
     try:
         res = requests.get(url, impersonate="chrome", proxies={"http": PROXY, "https": PROXY}, timeout=30)
-        res.raise_for_status()
+        print(f"📡 PrizePicks Response Code: {res.status_code}")
+        
+        if res.status_code != 200:
+            print("❌ Access Denied by PrizePicks. Proxy might be flagged.")
+            return
+
         data = res.json()
     except Exception as e:
-        print(f"❌ Proxy/API Failed: {e}")
+        print(f"❌ Connection Failed: {e}")
         return
 
-    # Map names and fix apostrophes
+    # Map names
     players = {obj['id']: obj['attributes']['name'].replace("'", "''") for obj in data.get('included', []) if obj['type'] == 'new_player'}
 
     rows = []
@@ -29,25 +36,19 @@ def run():
         rows.append(f"('{item['id']}', '{players.get(p_id, 'Unknown')}', '{attr.get('stat_type')}', {attr.get('line_score')}, '{attr.get('odds_type', 'standard')}', {1 if attr.get('is_promo') else 0})")
 
     if not rows:
-        print("⚠️ No MLB lines found.")
+        print("⚠️ Board is empty. No MLB lines found for ID 2.")
         return
 
-    print(f"📦 Syncing {len(rows)} lines to D1...")
+    print(f"📦 Found {len(rows)} lines. Sending to Cloudflare...")
     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{ACC_ID}/d1/database/{DB_ID}/query"
-    
-    # IMPORTANT: Ensure table name is exactly 'mlb_stats'
     sql = f"INSERT OR REPLACE INTO mlb_stats (line_id, player_name, stat_type, line_score, odds_type, is_promo) VALUES {', '.join(rows)};"
     
     cf_res = requests.post(cf_url, headers={"Authorization": f"Bearer {TOKEN}"}, json={"sql": sql})
     
     if cf_res.status_code == 200:
-        result = cf_res.json()
-        if result.get('success'):
-            print("✅ DATA SYNCED SUCCESSFULLY!")
-        else:
-            print(f"❌ Cloudflare Logic Error: {result.get('errors')}")
+        print(f"✅ DONE! {len(rows)} rows synced.")
     else:
-        print(f"❌ HTTP Error {cf_res.status_code}: {cf_res.text}")
+        print(f"❌ Cloudflare Error: {cf_res.text}")
 
 if __name__ == "__main__":
     run()
