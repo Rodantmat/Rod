@@ -1,6 +1,7 @@
 import os
 from curl_cffi import requests
 
+# Secrets
 TOKEN = os.getenv("CF_API_TOKEN")
 ACC_ID = os.getenv("CF_ACCOUNT_ID")
 DB_ID = os.getenv("CF_DATABASE_ID")
@@ -17,18 +18,21 @@ def start():
     except Exception as e:
         return print(f"❌ Connection Failed: {e}")
 
-    # 1. Map Teams (ID -> Name)
-    teams = {obj['id']: obj['attributes']['name'] for obj in data.get('included', []) if obj['type'] == 'team'}
-    
-    # 2. Map Players to their Team IDs
-    player_team_map = {}
+    # 1. Map Team IDs to Abbreviations (e.g., ID '10' -> 'NYY')
+    teams = {}
+    for obj in data.get('included', []):
+        if obj['type'] == 'team':
+            teams[obj['id']] = obj['attributes'].get('abbreviation') or obj['attributes'].get('name')
+
+    # 2. Map Player IDs to their Names and Team Names
+    player_data = {}
     for obj in data.get('included', []):
         if obj['type'] == 'new_player':
             p_id = obj['id']
             t_id = obj.get('relationships', {}).get('team', {}).get('data', {}).get('id')
-            player_team_map[p_id] = {
+            player_data[p_id] = {
                 "name": obj['attributes']['name'].replace("'", "''"),
-                "team_id": t_id
+                "team": teams.get(t_id, "Unknown")
             }
 
     rows = []
@@ -37,19 +41,13 @@ def start():
         rel = item.get('relationships', {})
         
         p_id = rel.get('new_player', {}).get('data', {}).get('id')
-        player_info = player_team_map.get(p_id, {"name": "Unknown", "team_id": None})
+        p_info = player_data.get(p_id, {"name": "Unknown", "team": "Unknown"})
         
-        # Get Team and Opponent
-        my_team_id = player_info["team_id"]
-        my_team_name = teams.get(my_team_id, "Unknown")
-        
-        # PrizePicks often puts the opponent in the 'description' field (e.g. "vs NYY" or "@ LAD")
-        opponent = attr.get('description', 'Unknown').replace("'", "''")
-        
-        # Start Time
+        # Opponent and Start Time
+        opp = attr.get('description', 'Unknown').replace("'", "''")
         start_time = attr.get('start_time', 'Unknown')
 
-        rows.append(f"('{item['id']}', '{player_info['name']}', '{my_team_name}', '{opponent}', '{attr.get('stat_type')}', {attr.get('line_score')}, '{attr.get('odds_type', 'standard')}', {1 if attr.get('is_promo') else 0}, '{start_time}')")
+        rows.append(f"('{item['id']}', '{p_info['name']}', '{p_info['team']}', '{opp}', '{attr.get('stat_type')}', {attr.get('line_score')}, '{attr.get('odds_type', 'standard')}', {1 if attr.get('is_promo') else 0}, '{start_time}')")
 
     if not rows:
         return print("⚠️ No MLB lines found.")
@@ -58,19 +56,19 @@ def start():
     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{ACC_ID}/d1/database/{DB_ID}/query"
     headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    # FIRST: Erase the table
-    print("🧹 Erasing old data...")
+    # Step A: Wipe old data for a fresh batch
+    print("🧹 Wiping table for fresh start...")
     requests.post(cf_url, headers=headers, json={"sql": "DELETE FROM mlb_stats;"})
 
-    # SECOND: Insert in chunks
-    print(f"📦 Syncing {len(rows)} fresh lines...")
+    # Step B: Insert new data in chunks
+    print(f"📦 Syncing {len(rows)} lines with Team Names...")
     chunk_size = 100
     for i in range(0, len(rows), chunk_size):
         chunk = rows[i:i + chunk_size]
         sql = f"INSERT INTO mlb_stats (line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time) VALUES {', '.join(chunk)};"
         cf_res = requests.post(cf_url, headers=headers, json={"sql": sql})
         if cf_res.status_code == 200:
-            print(f"✅ Chunk {i//chunk_size + 1} synced.")
+            print(f"✅ Chunk {i//chunk_size + 1} complete.")
 
 if __name__ == "__main__":
     start()
