@@ -1,11 +1,63 @@
-// AlphaDog v1.2.44 - Board Label Stitch compatible worker
+// AlphaDog v1.2.45 - Label Mirror compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.44 - Board Label Stitch";
-const SYSTEM_CODENAME = "Board Label Stitch";
+const SYSTEM_VERSION = "v1.2.45 - Label Mirror";
+const SYSTEM_CODENAME = "Label Mirror";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
 const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
+const JOB_DISPLAY_LABELS = {
+  run_full_pipeline: "SCRAPE > FULL RUN",
+  scheduled_full_pipeline_plus_board_queue: "SCRAPE > FULL RUN + Board Queue Pipeline",
+  daily_mlb_slate: "SCRAPE > Markets",
+  scrape_games_markets: "SCRAPE > Markets",
+  board_sifter_preview: "SCRAPE > Board Sifter Preview",
+  board_queue_preview: "SCRAPE > Board Queue Preview",
+  board_queue_build: "SCRAPE > Board Queue Build",
+  run_board_queue_pipeline: "SCRAPE > Board Queue Pipeline",
+  build_edge_candidates_hits: "SCRAPE > Build Hits Candidates",
+  build_edge_candidates_rbi: "SCRAPE > Build RBI Candidates",
+  build_edge_candidates_rfi: "SCRAPE > Build RFI Candidates",
+  scrape_teams: "SCRAPE > Teams",
+  scrape_starters: "SCRAPE > Starters",
+  scrape_starters_group_1: "SCRAPE > G1",
+  scrape_starters_group_2: "SCRAPE > G2",
+  scrape_starters_group_3: "SCRAPE > G3",
+  scrape_starters_missing: "SCRAPE > Missing",
+  scrape_starters_mlb_api: "SCRAPE > MLB API",
+  repair_starters_mlb_api: "SCRAPE > MLB API",
+  scrape_bullpens_mlb_api: "SCRAPE > MLB Bullpen",
+  scrape_lineups_mlb_api: "SCRAPE > MLB Lineups",
+  scrape_recent_usage_mlb_api: "SCRAPE > MLB Usage",
+  scrape_derived_metrics: "SCRAPE > Run Derived Metrics",
+  scrape_bullpens: "SCRAPE > Bullpen",
+  scrape_lineups: "SCRAPE > Lineups",
+  scrape_players: "SCRAPE > Players",
+  scrape_players_mlb_api: "SCRAPE > MLB Players",
+  scrape_players_mlb_api_g1: "SCRAPE > MLB Players G1",
+  scrape_players_mlb_api_g2: "SCRAPE > MLB Players G2",
+  scrape_players_mlb_api_g3: "SCRAPE > MLB Players G3",
+  scrape_players_mlb_api_g4: "SCRAPE > MLB Players G4",
+  scrape_players_mlb_api_g5: "SCRAPE > MLB Players G5",
+  scrape_players_mlb_api_g6: "SCRAPE > MLB Players G6",
+  scrape_recent_usage: "SCRAPE > Usage"
+};
+
+function displayLabelForJob(jobName) {
+  const key = String(jobName || "").trim();
+  return JOB_DISPLAY_LABELS[key] || (key ? `JOB > ${key}` : null);
+}
+
+function withDisplayLabel(row) {
+  if (!row || typeof row !== "object") return row;
+  if (!Object.prototype.hasOwnProperty.call(row, "job_name")) return row;
+  return { display_label: displayLabelForJob(row.job_name), ...row };
+}
+
+function withDisplayLabels(rows) {
+  return Array.isArray(rows) ? rows.map(withDisplayLabel) : [];
+}
+
 
 const PROMPT_FILES = {
   ks: "score_ks_v1.txt",
@@ -472,7 +524,7 @@ async function latestSuccessfulTaskForSlate(env, checkName, jobNames, slateDate,
         job_names: jobs,
         slate_date: slateDate,
         min_finished_at: minFinishedAt,
-        latest_success: fresh.rows[0],
+        latest_success: withDisplayLabel(fresh.rows[0]),
         error: null
       };
     }
@@ -497,7 +549,7 @@ async function latestSuccessfulTaskForSlate(env, checkName, jobNames, slateDate,
       job_names: jobs,
       slate_date: slateDate,
       min_finished_at: minFinishedAt,
-      latest_success: hasLatest ? latest.rows[0] : null,
+      latest_success: hasLatest ? withDisplayLabel(latest.rows[0]) : null,
       error: fresh.error || latest.error || null
     };
   } catch (err) {
@@ -745,19 +797,19 @@ async function handleDailyHealth(request, env) {
     ok: requiredJobAudit.every(row => row.registered) && invalidJobRows.ok,
     executable_jobs_count: executableJobs.length,
     required_jobs: requiredJobAudit,
-    invalid_job_rows: invalidJobRows.ok ? invalidJobRows.rows : [],
+    invalid_job_rows: invalidJobRows.ok ? withDisplayLabels(invalidJobRows.rows) : [],
     invalid_job_query_ok: invalidJobRows.ok,
     error: invalidJobRows.error || null
   };
 
   const scheduled = {
     stale_reaper,
-    latest_success_rows: staleRows.ok ? staleRows.rows : [],
-    stuck_running_rows: stuckRows.ok ? stuckRows.rows : [],
-    latest_full_run_rows: latestFullRun.ok ? latestFullRun.rows : [],
-    current_active_failure_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
-    historical_resolved_failure_rows: historicalResolvedFailures.ok ? historicalResolvedFailures.rows : [],
-    failed_recent_rows: currentActiveFailures.ok ? currentActiveFailures.rows : [],
+    latest_success_rows: staleRows.ok ? withDisplayLabels(staleRows.rows) : [],
+    stuck_running_rows: stuckRows.ok ? withDisplayLabels(stuckRows.rows) : [],
+    latest_full_run_rows: latestFullRun.ok ? withDisplayLabels(latestFullRun.rows) : [],
+    current_active_failure_rows: currentActiveFailures.ok ? withDisplayLabels(currentActiveFailures.rows) : [],
+    historical_resolved_failure_rows: historicalResolvedFailures.ok ? withDisplayLabels(historicalResolvedFailures.rows) : [],
+    failed_recent_rows: currentActiveFailures.ok ? withDisplayLabels(currentActiveFailures.rows) : [],
     registry_audit: registryAudit,
     freshness_gate,
     latest_required_jobs,
