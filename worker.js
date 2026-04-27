@@ -1,7 +1,7 @@
-// AlphaDog v1.2.42 - Board Harvester compatible worker
+// AlphaDog v1.2.43 - Board Queue Forge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.42 - Board Harvester";
-const SYSTEM_CODENAME = "Board Harvester";
+const SYSTEM_VERSION = "v1.2.43 - Board Queue Forge";
+const SYSTEM_CODENAME = "Board Queue Forge";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -26,6 +26,16 @@ const JOBS = {
     prompt: null,
     tables: ["mlb_stats"],
     note: "PrizePicks board dry-run reader, single-player/game classifier, and prompt queue preview; no writes and no Gemini"
+  },
+  board_queue_preview: {
+    prompt: null,
+    tables: ["mlb_stats", "board_factor_queue"],
+    note: "read-only preview of board-derived player/game factor queue; no Gemini and no writes"
+  },
+  board_queue_build: {
+    prompt: null,
+    tables: ["mlb_stats", "board_factor_queue"],
+    note: "materializes board-derived factor queue rows for supported single-player lines; no Gemini calls"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -1975,9 +1985,278 @@ async function runBoardSifterPreview(input, env) {
   };
 }
 
+async function ensureBoardFactorQueueTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS board_factor_queue (
+      queue_id TEXT PRIMARY KEY,
+      slate_date TEXT NOT NULL,
+      queue_type TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      batch_index INTEGER DEFAULT 0,
+      player_count INTEGER DEFAULT 0,
+      game_count INTEGER DEFAULT 0,
+      source_rows INTEGER DEFAULT 0,
+      player_names TEXT,
+      team_id TEXT,
+      game_key TEXT,
+      team_a TEXT,
+      team_b TEXT,
+      start_time TEXT,
+      status TEXT DEFAULT 'PENDING',
+      attempt_count INTEGER DEFAULT 0,
+      last_error TEXT,
+      payload_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_queue_slate_type_status ON board_factor_queue (slate_date, queue_type, status)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_queue_scope ON board_factor_queue (scope_type, scope_key)`).run();
+  return { ok: true, table: "board_factor_queue" };
+}
+
+function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
+  return `${slateDate}|${queueType}|${String(batchIndex).padStart(4, "0")}|${boardSlug(scopeKey)}`;
+}
+
+function boardChunkRows(rows, size) {
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += size) chunks.push(rows.slice(i, i + size));
+  return chunks;
+}
+
+async function buildBoardQueueRows(input, env) {
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+  const exists = await boardTableExists(env);
+  if (!exists) {
+    return {
+      ok: false,
+      job: input.job || "board_queue_preview",
+      version: SYSTEM_VERSION,
+      status: "failed",
+      slate_date: slateDate,
+      error: "Missing mlb_stats table. Board queue cannot be prepared."
+    };
+  }
+
+  const slateRows = await boardScalar(env, "SELECT COUNT(*) FROM mlb_stats WHERE substr(start_time, 1, 10) = ?", [slateDate]);
+  const activeWhere = Number(slateRows.value || 0) > 0 ? "substr(start_time, 1, 10) = ?" : "1=1";
+  const activeBinds = Number(slateRows.value || 0) > 0 ? [slateDate] : [];
+  const activeMode = Number(slateRows.value || 0) > 0 ? "slate_date_start_time_match" : "fallback_all_rows_no_slate_match";
+  const singleWhere = boardSingleRowWhere();
+  const gameKeySql = boardNormalizedGameKeySql();
+
+  const players = await boardRows(env, `
+    SELECT player_name, team, MIN(start_time) AS first_start_time, COUNT(*) AS leg_rows
+    FROM mlb_stats
+    WHERE ${activeWhere} AND ${singleWhere}
+    GROUP BY player_name, team
+    ORDER BY team ASC, player_name ASC
+  `, activeBinds);
+
+  const games = await boardRows(env, `
+    SELECT ${gameKeySql} AS game_key,
+           MIN(CASE WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(team)) ELSE UPPER(TRIM(opponent)) END) AS team_a,
+           MIN(CASE WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(opponent)) ELSE UPPER(TRIM(team)) END) AS team_b,
+           MIN(start_time) AS start_time,
+           COUNT(*) AS leg_rows
+    FROM mlb_stats
+    WHERE ${activeWhere} AND ${singleWhere}
+    GROUP BY game_key, start_time
+    ORDER BY start_time ASC, game_key ASC
+  `, activeBinds);
+
+  const queueRows = [];
+  const playerBatchSize = 4;
+  const playerChunks = boardChunkRows(players.rows, playerBatchSize);
+  const playerQueueTypes = [
+    "PLAYER_A_ROLE_RECENT_MATCHUP",
+    "PLAYER_D_ADVANCED_FORM_CONTACT"
+  ];
+  for (const queueType of playerQueueTypes) {
+    playerChunks.forEach((chunk, index) => {
+      const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
+      queueRows.push({
+        queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
+        slate_date: slateDate,
+        queue_type: queueType,
+        scope_type: "PLAYER_BATCH_4",
+        scope_key: scopeKey,
+        batch_index: index + 1,
+        player_count: chunk.length,
+        game_count: 0,
+        source_rows: chunk.reduce((sum, r) => sum + Number(r.leg_rows || 0), 0),
+        player_names: chunk.map(r => r.player_name).join(" | "),
+        team_id: chunk.map(r => r.team).join(" | "),
+        game_key: null,
+        team_a: null,
+        team_b: null,
+        start_time: chunk.map(r => r.first_start_time).filter(Boolean).sort()[0] || null,
+        payload_json: JSON.stringify({ slate_date: slateDate, queue_type: queueType, batch_size: playerBatchSize, players: chunk })
+      });
+    });
+  }
+
+  const gameQueueTypes = [
+    "GAME_B_TEAM_BULLPEN_ENVIRONMENT",
+    "GAME_WEATHER_CONTEXT",
+    "GAME_NEWS_INJURY_CONTEXT"
+  ];
+  for (const queueType of gameQueueTypes) {
+    games.rows.forEach((row, index) => {
+      const scopeKey = `${row.game_key}|${row.start_time}`;
+      queueRows.push({
+        queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
+        slate_date: slateDate,
+        queue_type: queueType,
+        scope_type: "GAME",
+        scope_key: scopeKey,
+        batch_index: index + 1,
+        player_count: 0,
+        game_count: 1,
+        source_rows: Number(row.leg_rows || 0),
+        player_names: null,
+        team_id: null,
+        game_key: row.game_key,
+        team_a: row.team_a,
+        team_b: row.team_b,
+        start_time: row.start_time,
+        payload_json: JSON.stringify({ slate_date: slateDate, queue_type: queueType, game: row })
+      });
+    });
+  }
+
+  const estimate = {};
+  for (const r of queueRows) {
+    if (!estimate[r.queue_type]) estimate[r.queue_type] = { queue_type: r.queue_type, requests: 0, source_rows: 0, units: 0 };
+    estimate[r.queue_type].requests += 1;
+    estimate[r.queue_type].source_rows += Number(r.source_rows || 0);
+    estimate[r.queue_type].units += r.scope_type === "GAME" ? 1 : Number(r.player_count || 0);
+  }
+
+  return {
+    ok: true,
+    version: SYSTEM_VERSION,
+    slate_date: slateDate,
+    active_mode: activeMode,
+    player_batch_size: playerBatchSize,
+    supported_unique_players: players.rows.length,
+    normalized_supported_games: games.rows.length,
+    queue_rows: queueRows,
+    queue_estimate: Object.values(estimate),
+    warnings: activeMode === "fallback_all_rows_no_slate_match" ? [`No mlb_stats rows matched slate_date ${slateDate}; queue used all board rows.`] : []
+  };
+}
+
+async function runBoardQueuePreview(input, env) {
+  const built = await buildBoardQueueRows(input, env);
+  if (!built.ok) return built;
+  return {
+    ok: true,
+    job: "board_queue_preview",
+    version: SYSTEM_VERSION,
+    status: built.warnings.length ? "review" : "pass",
+    slate_date: built.slate_date,
+    active_mode: built.active_mode,
+    counts: {
+      supported_unique_players: built.supported_unique_players,
+      normalized_supported_games: built.normalized_supported_games,
+      total_queue_rows_preview: built.queue_rows.length,
+      player_batch_size: built.player_batch_size
+    },
+    queue_estimate: built.queue_estimate,
+    sample_queue_rows: built.queue_rows.slice(0, 20).map(r => ({
+      queue_id: r.queue_id,
+      queue_type: r.queue_type,
+      scope_type: r.scope_type,
+      batch_index: r.batch_index,
+      player_count: r.player_count,
+      game_count: r.game_count,
+      source_rows: r.source_rows,
+      player_names: r.player_names,
+      game_key: r.game_key,
+      team_a: r.team_a,
+      team_b: r.team_b,
+      start_time: r.start_time
+    })),
+    warnings: built.warnings,
+    note: "Read-only queue preview. No Gemini calls. No writes. Combo lines remain deferred."
+  };
+}
+
+async function runBoardQueueBuild(input, env) {
+  await ensureBoardFactorQueueTable(env);
+  const built = await buildBoardQueueRows(input, env);
+  if (!built.ok) return built;
+  const slateDate = built.slate_date;
+  const allowedTypes = [
+    "PLAYER_A_ROLE_RECENT_MATCHUP",
+    "PLAYER_D_ADVANCED_FORM_CONTACT",
+    "GAME_B_TEAM_BULLPEN_ENVIRONMENT",
+    "GAME_WEATHER_CONTEXT",
+    "GAME_NEWS_INJURY_CONTEXT"
+  ];
+  await env.DB.prepare(`DELETE FROM board_factor_queue WHERE slate_date = ? AND queue_type IN (${allowedTypes.map(() => "?").join(",")})`).bind(slateDate, ...allowedTypes).run();
+
+  const stmt = env.DB.prepare(`
+    INSERT INTO board_factor_queue (
+      queue_id, slate_date, queue_type, scope_type, scope_key, batch_index,
+      player_count, game_count, source_rows, player_names, team_id, game_key,
+      team_a, team_b, start_time, status, attempt_count, last_error, payload_json,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `);
+
+  let inserted = 0;
+  for (const r of built.queue_rows) {
+    await stmt.bind(
+      r.queue_id, r.slate_date, r.queue_type, r.scope_type, r.scope_key, r.batch_index,
+      r.player_count, r.game_count, r.source_rows, r.player_names, r.team_id, r.game_key,
+      r.team_a, r.team_b, r.start_time, r.payload_json
+    ).run();
+    inserted += 1;
+  }
+
+  const queueHealth = await boardRows(env, `
+    SELECT queue_type, status, COUNT(*) AS rows_count, SUM(source_rows) AS source_rows
+    FROM board_factor_queue
+    WHERE slate_date = ?
+    GROUP BY queue_type, status
+    ORDER BY queue_type, status
+  `, [slateDate]);
+
+  return {
+    ok: true,
+    job: "board_queue_build",
+    version: SYSTEM_VERSION,
+    status: built.warnings.length ? "review" : "pass",
+    slate_date: slateDate,
+    table: "board_factor_queue",
+    mode: "materialize_supported_board_factor_queue_no_gemini_no_scoring",
+    deleted_previous_types: allowedTypes,
+    inserted_queue_rows: inserted,
+    counts: {
+      supported_unique_players: built.supported_unique_players,
+      normalized_supported_games: built.normalized_supported_games,
+      player_batch_size: built.player_batch_size
+    },
+    queue_estimate: built.queue_estimate,
+    queue_health: queueHealth.rows,
+    warnings: built.warnings,
+    note: "Queue rows only. No Gemini calls, no factor scoring, no prop ranking, no UI changes. Combo lines remain deferred."
+  };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_preview") {
+    return await runBoardQueuePreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_build") {
+    return await runBoardQueueBuild({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
