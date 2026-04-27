@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT) • Main-1N.1 Goblin Model Swap';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
 
   const state = {
     version: SYSTEM_VERSION,
@@ -15,6 +15,7 @@ window.PickCalcCore = (() => {
     backendHealth: null,
     backendBusy: false,
     slateDate: '',
+    progress: { percent: 0, task: 'System ready', status: 'idle', detail: 'idle' },
     systemLog: []
   };
 
@@ -33,6 +34,21 @@ window.PickCalcCore = (() => {
     }
   }
 
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function setProgress(task, percent, status = 'running', detail = '') {
+    state.progress = { task, percent, status, detail: detail || status };
+    UI.renderProgressPanel(state.progress);
+  }
+
+  async function settleProgress(task, percent, ok, detail = '') {
+    setProgress(task, percent, ok ? 'success' : 'error', `${ok ? 'success' : 'error'}${detail ? ` — ${detail}` : ''}`);
+    await sleep(500);
+  }
+
   function logEvent(level, message, detail = '') {
     state.systemLog.push({
       time: nowStamp(),
@@ -49,6 +65,7 @@ window.PickCalcCore = (() => {
     UI.renderFeedStatus(state.cleanPool, state.auditRows);
     UI.renderPoolTable(state.cleanPool);
     UI.renderBackendStatus(state.backendHealth);
+    UI.renderProgressPanel(state.progress);
     UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
     UI.renderSystemLog(state.systemLog);
     setAnalyzeButtonState();
@@ -156,6 +173,7 @@ window.PickCalcCore = (() => {
 
     state.backendBusy = true;
     setButtonBusy('rerunBackendBtn', true, 'Running DB Wiring…');
+    setProgress('Matrix retrieval', 30, 'running', 'starting batches');
     logEvent('info', `${auto ? 'Auto ' : ''}DB wiring pass started for ${state.cleanPool.length} leg(s) in batches of 4`);
 
     UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
@@ -165,6 +183,8 @@ window.PickCalcCore = (() => {
     for (let start = 0; start < state.cleanPool.length; start += batchSize) {
       const batch = state.cleanPool.slice(start, start + batchSize);
       const batchNumber = Math.floor(start / batchSize) + 1;
+      const batchStartPct = 30 + Math.round((start / Math.max(1, state.cleanPool.length)) * 55);
+      setProgress(`Backend batch ${batchNumber}`, batchStartPct, 'running', `rows ${start + 1}-${start + batch.length}`);
       logEvent('info', `Backend batch ${batchNumber} started`, `Rows ${start + 1}-${start + batch.length}`);
 
       batch.forEach((row, offset) => {
@@ -197,7 +217,7 @@ window.PickCalcCore = (() => {
         }
       }));
 
-      results.forEach(({ i, key, family, result, error }) => {
+      for (const { i, key, family, result, error } of results) {
         if (error) {
           state.miningVault[key] = Connectors.stampVault({
             status: 'frontend_adapter_error',
@@ -208,7 +228,8 @@ window.PickCalcCore = (() => {
             error
           });
           logEvent('error', `Leg ${i + 1} frontend adapter error`, error);
-          return;
+          await settleProgress(`Leg ${i + 1} retrieval`, 40 + Math.round(((i + 1) / Math.max(1, state.cleanPool.length)) * 45), false, error);
+          continue;
         }
 
         state.miningVault[key] = result;
@@ -227,9 +248,11 @@ window.PickCalcCore = (() => {
         };
         if (packetOk || scoreOk) logEvent('success', `Leg ${i + 1} backend probe completed`, logPayload);
         else logEvent('warn', `Leg ${i + 1} backend probe completed with endpoint issue`, logPayload);
-      });
+        await settleProgress(`Leg ${i + 1} retrieval`, 40 + Math.round(((i + 1) / Math.max(1, state.cleanPool.length)) * 45), (packetOk || scoreOk) && result?.gemini_status !== 'error', result?.gemini_status === 'error' ? 'Gemini review' : (packetOk || scoreOk ? 'packet received' : 'endpoint issue'));
+      }
 
       UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
+      await settleProgress(`Backend batch ${batchNumber}`, Math.min(95, 40 + Math.round(((start + batch.length) / Math.max(1, state.cleanPool.length)) * 55)), true, `processed ${batch.length} leg(s)`);
       logEvent('success', `Backend batch ${batchNumber} finished`, `Processed ${batch.length} leg(s)`);
     }
 
@@ -245,15 +268,26 @@ window.PickCalcCore = (() => {
       return;
     }
 
+    setProgress('Opening Screen 2', 5, 'running', 'starting');
     UI.renderAnalysisScreen(state.cleanPool, state.miningVault, state.backendHealth);
     showScreen('analysis');
     UI.hydrateBackendControls(Connectors);
-    await refreshBackendHealth({ auto: true, attempts: 3 });
+
+    setProgress('Daily Health', 12, 'running', 'checking backend');
+    const health = await refreshBackendHealth({ auto: true, attempts: 3 });
+    await settleProgress('Daily Health', 24, !!health?.ok, health?.ok ? 'backend pass' : (health?.error || 'health failed'));
+
+    setProgress('Matrix retrieval', 30, 'running', 'DB + MLB + Gemini');
     await runDatabaseWiringPass({ auto: true });
+
+    const vaults = Object.values(state.miningVault || {});
+    const anyError = vaults.some((vault) => String(vault?.packet_status || '').includes('error') || String(vault?.score_status || '').includes('error') || String(vault?.gemini_status || '').includes('error') || String(vault?.status || '').includes('unsupported'));
+    await settleProgress('Screen 2 retrieval complete', 100, !anyError, anyError ? 'review debug report' : 'all queued tasks complete');
   }
 
   function openIngestScreen() {
     showScreen('ingest');
+    setProgress('System ready', 0, 'idle', 'idle');
     renderAll();
   }
 
@@ -268,6 +302,7 @@ window.PickCalcCore = (() => {
       return;
     }
 
+    setProgress('Ingest parser', 5, 'running', 'reading board');
     logEvent('info', 'Ingest started', `Raw characters: ${raw.length}`);
     const parsed = Parser.parseBoard(raw);
     let rows = Array.isArray(parsed.rows) ? parsed.rows.slice() : [];
@@ -294,6 +329,7 @@ window.PickCalcCore = (() => {
     state.miningVault = {};
 
     renderAll();
+    setProgress('Ingest parser', rows.length ? 100 : 0, rows.length ? 'success' : 'error', rows.length ? `success — ${rows.length} accepted` : 'error — no valid legs');
 
     if (messageMount) {
       messageMount.textContent = rows.length
@@ -317,6 +353,7 @@ window.PickCalcCore = (() => {
     state.backendHealth = null;
     state.backendBusy = false;
     state.systemLog = [];
+    state.progress = { percent: 0, task: 'System ready', status: 'idle', detail: 'idle' };
     localStorage.removeItem('pickcalc.slateDate');
 
     const input = UI.el('boardInput');

@@ -1,4 +1,4 @@
-const WORKER_VERSION = "alphadog-main-api-v100.8 - Main-1N.1 Goblin Model Swap";
+const WORKER_VERSION = "alphadog-main-api-v100.9 - Main-1N.2 Parser Pixie Progress";
 const DEFAULT_SLATE_DATE = "2026-04-25";
 const SUPPLEMENTAL_TABLE = "main_supplemental_leg_cache";
 const MLB_API_CACHE_TABLE = "main_supplemental_mlb_api_cache";

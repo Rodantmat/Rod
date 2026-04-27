@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT) • Main-1N.1 Goblin Model Swap';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
 
   function el(id) {
     return document.getElementById(id);
@@ -463,6 +463,24 @@ window.PickCalcUI = (() => {
     `;
   }
 
+
+  function renderProgressPanel(progress = {}) {
+    const mount = el('globalProgressMount');
+    if (!mount) return;
+    const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+    const status = String(progress.status || 'idle').toLowerCase();
+    const task = progress.task || 'System ready';
+    const detail = progress.detail || (status === 'idle' ? 'idle' : status);
+    const resultClass = status === 'success' ? 'progress-success' : (status === 'error' ? 'progress-error' : (status === 'running' ? 'progress-running' : ''));
+    mount.innerHTML = `
+      <div class="global-progress-top">
+        <span class="global-progress-task">${escapeHtml(task)}</span>
+        <span class="global-progress-result ${resultClass}">${escapeHtml(detail)}</span>
+      </div>
+      <div class="global-progress-track"><div class="global-progress-fill" style="width:${percent}%"></div></div>
+    `;
+  }
+
   function renderSystemLog(logRows = []) {
     const mount = el('systemLogMount');
     if (!mount) return;
@@ -687,6 +705,7 @@ window.PickCalcUI = (() => {
     renderFeedStatus,
     renderPoolTable,
     renderBackendStatus,
+    renderProgressPanel,
     renderAnalysisScreen,
     renderSystemLog,
     buildDebugReport,

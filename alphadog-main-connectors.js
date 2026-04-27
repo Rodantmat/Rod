@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT) • Main-1N.1 Goblin Model Swap';
+  const SYSTEM_VERSION = 'v13.78.08 (OXYGEN-COBALT) • Main-1N.2 Parser Pixie Progress';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',
