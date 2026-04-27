@@ -1,7 +1,7 @@
-// AlphaDog v1.2.41 - Board Sifter compatible worker
+// AlphaDog v1.2.42 - Board Harvester compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.41 - Board Sifter";
-const SYSTEM_CODENAME = "Board Sifter";
+const SYSTEM_VERSION = "v1.2.42 - Board Harvester";
+const SYSTEM_CODENAME = "Board Harvester";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -25,7 +25,7 @@ const JOBS = {
   board_sifter_preview: {
     prompt: null,
     tables: ["mlb_stats"],
-    note: "PrizePicks board dry-run reader and needed-player/game extractor; no writes and no Gemini"
+    note: "PrizePicks board dry-run reader, single-player/game classifier, and prompt queue preview; no writes and no Gemini"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -1835,6 +1835,34 @@ function boardGameKey(row) {
   return `${start}_${team}_${opp}`;
 }
 
+
+function boardSingleRowWhere(alias = "") {
+  const p = alias ? `${alias}.` : "";
+  return `COALESCE(${p}player_name,'') NOT LIKE '%+%'
+    AND COALESCE(${p}team,'') NOT LIKE '%/%'
+    AND COALESCE(${p}opponent,'') NOT LIKE '%/%'
+    AND TRIM(COALESCE(${p}team,'')) <> ''
+    AND TRIM(COALESCE(${p}opponent,'')) <> ''
+    AND UPPER(TRIM(${p}team)) <> UPPER(TRIM(${p}opponent))`;
+}
+
+function boardComboRowWhere(alias = "") {
+  const p = alias ? `${alias}.` : "";
+  return `(COALESCE(${p}player_name,'') LIKE '%+%'
+    OR COALESCE(${p}team,'') LIKE '%/%'
+    OR COALESCE(${p}opponent,'') LIKE '%/%'
+    OR TRIM(COALESCE(${p}team,'')) = ''
+    OR TRIM(COALESCE(${p}opponent,'')) = ''
+    OR UPPER(TRIM(${p}team)) = UPPER(TRIM(${p}opponent)))`;
+}
+
+function boardNormalizedGameKeySql() {
+  return `CASE
+    WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(team)) || '_' || UPPER(TRIM(opponent))
+    ELSE UPPER(TRIM(opponent)) || '_' || UPPER(TRIM(team))
+  END`;
+}
+
 async function runBoardSifterPreview(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
@@ -1859,15 +1887,32 @@ async function runBoardSifterPreview(input, env) {
   const activeBinds = slateRows.value > 0 ? [slateDate] : [];
   const activeMode = slateRows.value > 0 ? "slate_date_start_time_match" : "fallback_all_rows_no_slate_match";
 
+  const singleWhere = boardSingleRowWhere();
+  const comboWhere = boardComboRowWhere();
+  const gameKeySql = boardNormalizedGameKeySql();
   const activeRows = await boardScalar(env, `SELECT COUNT(*) FROM mlb_stats WHERE ${activeWhere}`, activeBinds);
-  const uniquePlayers = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT player_name, team FROM mlb_stats WHERE ${activeWhere} GROUP BY player_name, team)`, activeBinds);
-  const uniqueGames = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team, opponent, start_time FROM mlb_stats WHERE ${activeWhere} GROUP BY team, opponent, start_time)`, activeBinds);
-  const uniqueTeams = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team FROM mlb_stats WHERE ${activeWhere} GROUP BY team)`, activeBinds);
+  const singleRows = await boardScalar(env, `SELECT COUNT(*) FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere}`, activeBinds);
+  const comboRows = await boardScalar(env, `SELECT COUNT(*) FROM mlb_stats WHERE ${activeWhere} AND ${comboWhere}`, activeBinds);
+  const uniquePlayers = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT player_name, team FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY player_name, team)`, activeBinds);
+  const rawUniqueGames = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team, opponent, start_time FROM mlb_stats WHERE ${activeWhere} GROUP BY team, opponent, start_time)`, activeBinds);
+  const normalizedUniqueGames = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT ${gameKeySql} AS game_key, start_time FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time)`, activeBinds);
+  const uniqueTeams = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY team)`, activeBinds);
   const statTypeDistribution = await boardRows(env, `SELECT stat_type, COUNT(*) AS rows_count FROM mlb_stats WHERE ${activeWhere} GROUP BY stat_type ORDER BY rows_count DESC, stat_type LIMIT 30`, activeBinds);
   const oddsTypeDistribution = await boardRows(env, `SELECT odds_type, COUNT(*) AS rows_count FROM mlb_stats WHERE ${activeWhere} GROUP BY odds_type ORDER BY rows_count DESC, odds_type LIMIT 20`, activeBinds);
-  const sampleRows = await boardRows(env, `SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at FROM mlb_stats WHERE ${activeWhere} ORDER BY updated_at DESC, start_time ASC, player_name ASC LIMIT ?`, [...activeBinds, sampleLimit]);
-  const neededPlayersRows = await boardRows(env, `SELECT player_name, team, MIN(start_time) AS first_start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} GROUP BY player_name, team ORDER BY leg_rows DESC, player_name LIMIT 25`, activeBinds);
-  const neededGamesRows = await boardRows(env, `SELECT team, opponent, start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} GROUP BY team, opponent, start_time ORDER BY start_time ASC, leg_rows DESC LIMIT 25`, activeBinds);
+  const rowClassification = await boardRows(env, `SELECT classification, COUNT(*) AS rows_count FROM (
+    SELECT CASE WHEN ${singleWhere} THEN 'single_player_supported' ELSE 'combo_or_unsupported_deferred' END AS classification
+    FROM mlb_stats WHERE ${activeWhere}
+  ) GROUP BY classification ORDER BY rows_count DESC`, activeBinds);
+  const promptQueueEstimate = await boardRows(env, `SELECT 'A_PLAYER_ROLE_RECENT_MATCHUP' AS prompt_group, CAST((COUNT(*) + 3) / 4 AS INTEGER) AS estimated_requests, COUNT(*) AS unique_units FROM (SELECT player_name, team FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY player_name, team)
+    UNION ALL SELECT 'D_ADVANCED_PLAYER_FORM_CONTACT', CAST((COUNT(*) + 3) / 4 AS INTEGER), COUNT(*) FROM (SELECT player_name, team FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY player_name, team)
+    UNION ALL SELECT 'B_GAME_TEAM_BULLPEN_ENVIRONMENT', COUNT(*), COUNT(*) FROM (SELECT ${gameKeySql} AS game_key, start_time FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time)
+    UNION ALL SELECT 'WEATHER_GAME_LEVEL', COUNT(*), COUNT(*) FROM (SELECT ${gameKeySql} AS game_key, start_time FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time)
+    UNION ALL SELECT 'NEWS_INJURY_GAME_LEVEL', COUNT(*), COUNT(*) FROM (SELECT ${gameKeySql} AS game_key, start_time FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time)
+    UNION ALL SELECT 'MARKET_GAME_PROP_FAMILY_LEVEL', COUNT(*), COUNT(*) FROM (SELECT ${gameKeySql} AS game_key, start_time, stat_type FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time, stat_type)`, activeBinds);
+  const sampleRows = await boardRows(env, `SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at, CASE WHEN ${singleWhere} THEN 'single_player_supported' ELSE 'combo_or_unsupported_deferred' END AS classification FROM mlb_stats WHERE ${activeWhere} ORDER BY updated_at DESC, start_time ASC, player_name ASC LIMIT ?`, [...activeBinds, sampleLimit]);
+  const neededPlayersRows = await boardRows(env, `SELECT player_name, team, MIN(start_time) AS first_start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY player_name, team ORDER BY leg_rows DESC, player_name LIMIT 25`, activeBinds);
+  const neededGamesRows = await boardRows(env, `SELECT ${gameKeySql} AS game_key, MIN(CASE WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(team)) ELSE UPPER(TRIM(opponent)) END) AS team_a, MIN(CASE WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(opponent)) ELSE UPPER(TRIM(team)) END) AS team_b, MIN(start_time) AS start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} AND ${singleWhere} GROUP BY game_key, start_time ORDER BY start_time ASC, leg_rows DESC LIMIT 25`, activeBinds);
+  const deferredComboRows = await boardRows(env, `SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, start_time, CASE WHEN COALESCE(player_name,'') LIKE '%+%' THEN 'combo_player_line' WHEN COALESCE(team,'') LIKE '%/%' OR COALESCE(opponent,'') LIKE '%/%' THEN 'combo_team_game_line' WHEN UPPER(TRIM(team)) = UPPER(TRIM(opponent)) THEN 'team_equals_opponent_review' ELSE 'unsupported_or_incomplete' END AS deferred_reason FROM mlb_stats WHERE ${activeWhere} AND ${comboWhere} ORDER BY start_time ASC, player_name ASC LIMIT 25`, activeBinds);
 
   const dryRunJobs = [];
   for (const row of neededPlayersRows.rows.slice(0, sampleLimit)) {
@@ -1883,11 +1928,12 @@ async function runBoardSifterPreview(input, env) {
   for (const row of neededGamesRows.rows.slice(0, sampleLimit)) {
     dryRunJobs.push({
       job_type: "game_factor_B_weather_news_market_preview",
-      team: row.team,
-      opponent: row.opponent,
+      game_key: row.game_key,
+      team_a: row.team_a,
+      team_b: row.team_b,
       start_time: row.start_time,
       leg_rows: row.leg_rows,
-      game_key_preview: boardGameKey(row)
+      game_key_preview: `${String(row.start_time || "").slice(0, 10)}_${row.game_key}`
     });
   }
 
@@ -1907,19 +1953,25 @@ async function runBoardSifterPreview(input, env) {
       total_rows: totalRows.value,
       slate_rows_by_start_time: slateRows.value,
       active_rows_used: activeRows.value,
-      unique_players: uniquePlayers.value,
-      unique_games: uniqueGames.value,
-      unique_teams: uniqueTeams.value
+      single_player_supported_rows: singleRows.value,
+      combo_or_unsupported_deferred_rows: comboRows.value,
+      unique_supported_players: uniquePlayers.value,
+      raw_unique_team_game_rows: rawUniqueGames.value,
+      normalized_unique_supported_games: normalizedUniqueGames.value,
+      unique_supported_teams: uniqueTeams.value
     },
     latest_sync: latestRow.rows[0] || null,
     stat_type_distribution: statTypeDistribution.rows,
     odds_type_distribution: oddsTypeDistribution.rows,
+    row_classification: rowClassification.rows,
+    prompt_queue_estimate: promptQueueEstimate.rows,
     sample_legs: sampleRows.rows,
     needed_players_preview: neededPlayersRows.rows,
     needed_games_preview: neededGamesRows.rows,
+    deferred_combo_or_unsupported_preview: deferredComboRows.rows,
     dry_run_jobs_preview: dryRunJobs,
     warnings,
-    note: "Read-only PrizePicks board sifter preview. No Gemini calls. No new tables. No writes. Use this to verify board coverage before queue/factor-table build."
+    note: "Read-only Board Harvester preview. Combo lines and combo game rows are intentionally deferred. No Gemini calls. No new tables. No writes."
   };
 }
 
