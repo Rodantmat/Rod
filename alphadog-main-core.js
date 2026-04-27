@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT) • Main-1N Gemini Goblin Matrix';
+  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT) • Main-1N.1 Goblin Model Swap';
 
   const state = {
     version: SYSTEM_VERSION,

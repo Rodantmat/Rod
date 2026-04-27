@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT) • Main-1N Gemini Goblin Matrix';
+  const SYSTEM_VERSION = 'v13.78.07 (OXYGEN-COBALT) • Main-1N.1 Goblin Model Swap';
 
   function el(id) {
     return document.getElementById(id);
