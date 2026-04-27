@@ -1,7 +1,7 @@
-// AlphaDog v1.2.43 - Board Queue Forge compatible worker
+// AlphaDog v1.2.44 - Board Label Stitch compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.43 - Board Queue Forge";
-const SYSTEM_CODENAME = "Board Queue Forge";
+const SYSTEM_VERSION = "v1.2.44 - Board Label Stitch";
+const SYSTEM_CODENAME = "Board Label Stitch";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -36,6 +36,11 @@ const JOBS = {
     prompt: null,
     tables: ["mlb_stats", "board_factor_queue"],
     note: "materializes board-derived factor queue rows for supported single-player lines; no Gemini calls"
+  },
+  run_board_queue_pipeline: {
+    prompt: null,
+    tables: ["mlb_stats", "board_factor_queue"],
+    note: "scheduled board flow: materializes board-derived queue rows after the board table refresh; no Gemini calls"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -814,7 +819,22 @@ async function runScheduled(event, env) {
   `).bind(taskId, "run_full_pipeline", "running", JSON.stringify(input)).run();
 
   try {
-    const result = await runFullPipeline(input, env);
+    const fullPipeline = await runFullPipeline(input, env);
+    let boardQueue = null;
+    try {
+      boardQueue = await runBoardQueuePipeline({ ...input, job: "run_board_queue_pipeline" }, env);
+    } catch (boardErr) {
+      boardQueue = { ok: false, job: "run_board_queue_pipeline", error: String(boardErr?.message || boardErr) };
+    }
+    const result = {
+      ok: Boolean(fullPipeline?.ok) && Boolean(boardQueue?.ok),
+      version: SYSTEM_VERSION,
+      job: "scheduled_full_pipeline_plus_board_queue",
+      cron: event?.cron || null,
+      full_pipeline: fullPipeline,
+      board_queue_pipeline: boardQueue,
+      note: "Scheduled handler now also materializes the board_factor_queue after the regular full pipeline. No Gemini calls are made by the board queue step."
+    };
     await env.DB.prepare(`
       UPDATE task_runs
       SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
@@ -2248,6 +2268,19 @@ async function runBoardQueueBuild(input, env) {
   };
 }
 
+async function runBoardQueuePipeline(input, env) {
+  const result = await runBoardQueueBuild({ ...input, job: "run_board_queue_pipeline" }, env);
+  return {
+    ok: Boolean(result && result.ok),
+    job: "run_board_queue_pipeline",
+    version: SYSTEM_VERSION,
+    status: result && result.ok ? "pass" : "review",
+    slate_date: result?.slate_date || resolveSlateDate(input).slate_date,
+    board_queue_build: result,
+    note: "Scheduled board queue pipeline prepared the queue only. No Gemini calls, no factor scoring, no prop ranking."
+  };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -2257,6 +2290,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "board_queue_build") {
     return await runBoardQueueBuild({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "run_board_queue_pipeline") {
+    return await runBoardQueuePipeline({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);

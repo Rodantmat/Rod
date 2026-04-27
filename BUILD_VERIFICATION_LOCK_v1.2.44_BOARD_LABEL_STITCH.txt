@@ -1,0 +1,12 @@
+BUILD VERIFICATION LOCK - v1.2.44 Board Label Stitch
+
+Expected checks after deploy:
+1. DEBUG > Health returns v1.2.44 - Board Label Stitch.
+2. CHECK > Board Queue Estimate returns 5 separate output blocks and no D1 compound SELECT error.
+3. SCRAPE > Board Queue Preview still returns 110 queue rows for the known 2026-04-27 sample board: 43 A + 43 D + 8 B + 8 Weather + 8 News.
+4. SCRAPE > Board Queue Build still writes 110 PENDING rows to board_factor_queue.
+5. CHECK > Board Queue Health shows board_factor_queue exists and 110 PENDING rows.
+6. Control Room action output labels use BLOCK > BUTTON format.
+
+No Gemini calls are expected in this build.
+No factor scoring is expected in this build.
