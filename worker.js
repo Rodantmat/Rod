@@ -1,7 +1,7 @@
-// AlphaDog v1.2.40 - Manual SQL Output Guard compatible worker
+// AlphaDog v1.2.41 - Board Sifter compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.40 - Manual SQL Output Guard";
-const SYSTEM_CODENAME = "Manual SQL Output Guard";
+const SYSTEM_VERSION = "v1.2.41 - Board Sifter";
+const SYSTEM_CODENAME = "Board Sifter";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -21,6 +21,11 @@ const JOBS = {
     prompt: null,
     tables: [],
     note: "full slate pipeline orchestrator"
+  },
+  board_sifter_preview: {
+    prompt: null,
+    tables: ["mlb_stats"],
+    note: "PrizePicks board dry-run reader and needed-player/game extractor; no writes and no Gemini"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -1794,7 +1799,134 @@ async function buildEdgeCandidatesRfi(input, env) {
 }
 
 
+
+async function boardTableExists(env) {
+  const row = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mlb_stats' LIMIT 1").first();
+  return !!row;
+}
+
+async function boardScalar(env, sql, binds = []) {
+  try {
+    const row = binds.length ? await env.DB.prepare(sql).bind(...binds).first() : await env.DB.prepare(sql).first();
+    const values = Object.values(row || {});
+    return { ok: true, value: Number(values[0] || 0), row: row || null };
+  } catch (err) {
+    return { ok: false, value: 0, error: String(err?.message || err) };
+  }
+}
+
+async function boardRows(env, sql, binds = []) {
+  try {
+    const res = binds.length ? await env.DB.prepare(sql).bind(...binds).all() : await env.DB.prepare(sql).all();
+    return { ok: true, rows: res.results || [] };
+  } catch (err) {
+    return { ok: false, rows: [], error: String(err?.message || err) };
+  }
+}
+
+function boardSlug(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown";
+}
+
+function boardGameKey(row) {
+  const start = String(row.start_time || "").slice(0, 10) || "unknown_date";
+  const team = String(row.team || "").trim().toUpperCase() || "UNK";
+  const opp = String(row.opponent || "").replace(/^@|^vs\.?/i, "").trim().toUpperCase() || "UNK";
+  return `${start}_${team}_${opp}`;
+}
+
+async function runBoardSifterPreview(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const sampleLimit = Math.max(1, Math.min(Number(input.sample_limit || 2), 10));
+  const exists = await boardTableExists(env);
+  if (!exists) {
+    return {
+      ok: false,
+      job: "board_sifter_preview",
+      version: SYSTEM_VERSION,
+      status: "MISSING_TABLE",
+      table: "mlb_stats",
+      error: "mlb_stats table not found in this D1 binding",
+      note: "Dry-run only. No writes, no Gemini, no existing pipeline changes."
+    };
+  }
+
+  const totalRows = await boardScalar(env, "SELECT COUNT(*) FROM mlb_stats");
+  const latestRow = await boardRows(env, "SELECT MAX(updated_at) AS latest_updated_at, MIN(updated_at) AS oldest_updated_at FROM mlb_stats");
+  const slateRows = await boardScalar(env, "SELECT COUNT(*) FROM mlb_stats WHERE substr(start_time, 1, 10) = ?", [slateDate]);
+  const activeWhere = slateRows.value > 0 ? "substr(start_time, 1, 10) = ?" : "1=1";
+  const activeBinds = slateRows.value > 0 ? [slateDate] : [];
+  const activeMode = slateRows.value > 0 ? "slate_date_start_time_match" : "fallback_all_rows_no_slate_match";
+
+  const activeRows = await boardScalar(env, `SELECT COUNT(*) FROM mlb_stats WHERE ${activeWhere}`, activeBinds);
+  const uniquePlayers = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT player_name, team FROM mlb_stats WHERE ${activeWhere} GROUP BY player_name, team)`, activeBinds);
+  const uniqueGames = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team, opponent, start_time FROM mlb_stats WHERE ${activeWhere} GROUP BY team, opponent, start_time)`, activeBinds);
+  const uniqueTeams = await boardScalar(env, `SELECT COUNT(*) FROM (SELECT team FROM mlb_stats WHERE ${activeWhere} GROUP BY team)`, activeBinds);
+  const statTypeDistribution = await boardRows(env, `SELECT stat_type, COUNT(*) AS rows_count FROM mlb_stats WHERE ${activeWhere} GROUP BY stat_type ORDER BY rows_count DESC, stat_type LIMIT 30`, activeBinds);
+  const oddsTypeDistribution = await boardRows(env, `SELECT odds_type, COUNT(*) AS rows_count FROM mlb_stats WHERE ${activeWhere} GROUP BY odds_type ORDER BY rows_count DESC, odds_type LIMIT 20`, activeBinds);
+  const sampleRows = await boardRows(env, `SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at FROM mlb_stats WHERE ${activeWhere} ORDER BY updated_at DESC, start_time ASC, player_name ASC LIMIT ?`, [...activeBinds, sampleLimit]);
+  const neededPlayersRows = await boardRows(env, `SELECT player_name, team, MIN(start_time) AS first_start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} GROUP BY player_name, team ORDER BY leg_rows DESC, player_name LIMIT 25`, activeBinds);
+  const neededGamesRows = await boardRows(env, `SELECT team, opponent, start_time, COUNT(*) AS leg_rows FROM mlb_stats WHERE ${activeWhere} GROUP BY team, opponent, start_time ORDER BY start_time ASC, leg_rows DESC LIMIT 25`, activeBinds);
+
+  const dryRunJobs = [];
+  for (const row of neededPlayersRows.rows.slice(0, sampleLimit)) {
+    dryRunJobs.push({
+      job_type: "player_factor_A_D_preview",
+      player_name: row.player_name,
+      team: row.team,
+      first_start_time: row.first_start_time,
+      leg_rows: row.leg_rows,
+      cache_key_preview: `${slateDate}|${boardSlug(row.team)}|${boardSlug(row.player_name)}|A_D`
+    });
+  }
+  for (const row of neededGamesRows.rows.slice(0, sampleLimit)) {
+    dryRunJobs.push({
+      job_type: "game_factor_B_weather_news_market_preview",
+      team: row.team,
+      opponent: row.opponent,
+      start_time: row.start_time,
+      leg_rows: row.leg_rows,
+      game_key_preview: boardGameKey(row)
+    });
+  }
+
+  const warnings = [];
+  if (activeMode === "fallback_all_rows_no_slate_match") warnings.push(`No mlb_stats rows matched slate_date ${slateDate} by start_time prefix; preview used all rows.`);
+  if (Number(totalRows.value || 0) === 0) warnings.push("mlb_stats table is empty.");
+
+  return {
+    ok: true,
+    job: "board_sifter_preview",
+    version: SYSTEM_VERSION,
+    status: warnings.length ? "review" : "pass",
+    slate_date: slateDate,
+    active_mode: activeMode,
+    table: "mlb_stats",
+    counts: {
+      total_rows: totalRows.value,
+      slate_rows_by_start_time: slateRows.value,
+      active_rows_used: activeRows.value,
+      unique_players: uniquePlayers.value,
+      unique_games: uniqueGames.value,
+      unique_teams: uniqueTeams.value
+    },
+    latest_sync: latestRow.rows[0] || null,
+    stat_type_distribution: statTypeDistribution.rows,
+    odds_type_distribution: oddsTypeDistribution.rows,
+    sample_legs: sampleRows.rows,
+    needed_players_preview: neededPlayersRows.rows,
+    needed_games_preview: neededGamesRows.rows,
+    dry_run_jobs_preview: dryRunJobs,
+    warnings,
+    note: "Read-only PrizePicks board sifter preview. No Gemini calls. No new tables. No writes. Use this to verify board coverage before queue/factor-table build."
+  };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
+  if (jobName === "board_sifter_preview") {
+    return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }

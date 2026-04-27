@@ -1,0 +1,21 @@
+AlphaDog Build Verification Lock
+Release: v1.2.41 - Board Sifter
+Base: v1.2.40 - Manual SQL Output Guard
+
+Verification performed before ZIP creation:
+- worker.js header contains v1.2.41 - Board Sifter.
+- worker.js SYSTEM_VERSION contains v1.2.41 - Board Sifter.
+- worker.js SYSTEM_CODENAME contains Board Sifter.
+- worker.js registers board_sifter_preview as a valid task job.
+- worker.js executes board_sifter_preview with read-only mlb_stats queries only.
+- control_room.html visible version tag contains v1.2.41 - Board Sifter.
+- control_room.html debugConfig version contains control_room_v1_2_41_board_sifter.
+- Control Room includes Board Sifter Preview, Board Health, Board Sample, and Board Needed Players buttons.
+- No scoring logic changed.
+- No candidate logic changed.
+- No schema changed.
+- No Gemini calls added.
+- No D1 writes added by board_sifter_preview.
+- node --check worker.js passed locally.
+
+Do not deploy if /health, Daily Health, or RFI Regression x3 reports unexpected drift unrelated to board_sifter_preview.
