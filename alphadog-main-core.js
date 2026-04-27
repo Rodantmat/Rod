@@ -2,7 +2,7 @@ window.PickCalcCore = (() => {
   const Parser = window.PickCalcParser;
   const UI = window.PickCalcUI;
   const Connectors = window.PickCalcConnectors;
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 MLB Wiring';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT) • Main-1N Gemini Goblin Matrix';
 
   const state = {
     version: SYSTEM_VERSION,
@@ -177,6 +177,7 @@ window.PickCalcCore = (() => {
           family,
           packet_status: 'queued',
           score_status: 'queued',
+          gemini_status: 'queued',
           warnings: [],
           payload
         });
@@ -218,6 +219,8 @@ window.PickCalcCore = (() => {
           status: result.status,
           packet_status: result.packet_status,
           score_status: result.score_status,
+          gemini_status: result.gemini_status,
+          gemini_summary: result.gemini?.summary || null,
           matrix_summary: result.packet?.matrix_factor_summary || result.score?.matrix_factor_summary || null,
           incremental_cache: result.packet?.incremental_cache || null,
           warnings: result.warnings || []

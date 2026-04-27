@@ -1,5 +1,5 @@
 window.PickCalcConnectors = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 MLB Wiring';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT) • Main-1N Gemini Goblin Matrix';
   const DEFAULT_BACKEND_URL = 'https://alphadog-main-api-v100.rodolfoaamattos.workers.dev';
   const STORAGE_KEYS = {
     backendUrl: 'pickcalc.backendUrl',
@@ -200,6 +200,22 @@ window.PickCalcConnectors = (() => {
     };
   }
 
+
+  async function getGeminiMatrix(row = {}, slateDate = '') {
+    const payload = buildLegPayload(row, slateDate);
+    const result = await requestJson('/main/gemini/matrix/leg', { method: 'POST', body: payload });
+    const body = result.body?.body || result.body || {};
+    return {
+      ok: result.ok,
+      source: 'gemini/matrix/leg',
+      family: payload.prop_family,
+      payload,
+      result,
+      gemini: body,
+      error: result.error || body.error || null
+    };
+  }
+
   async function analyzeLeg(row = {}, slateDate = '') {
     const family = normalizePropFamily(row);
     const vault = stampVault({
@@ -211,6 +227,7 @@ window.PickCalcConnectors = (() => {
       daily_health_dependency: 'required',
       packet_status: 'not_started',
       score_status: 'not_started',
+      gemini_status: 'not_started',
       started_at: new Date().toISOString(),
       warnings: [],
       missing: [],
@@ -221,6 +238,7 @@ window.PickCalcConnectors = (() => {
       vault.status = 'unsupported_family_pending_adapter';
       vault.packet_status = 'skipped';
       vault.score_status = 'skipped';
+      vault.gemini_status = 'skipped';
       vault.warnings.push('Prop family is not wired to backend scoring yet.');
       vault.finished_at = new Date().toISOString();
       return vault;
@@ -238,7 +256,13 @@ window.PickCalcConnectors = (() => {
     vault.score = score.score;
     if (!score.ok) vault.warnings.push(`Score endpoint failed: ${score.error || 'unknown error'}`);
 
-    vault.status = packet.ok || score.ok ? 'backend_response_received' : 'backend_adapter_needs_worker_endpoint_fix';
+    const gemini = await getGeminiMatrix(row, slateDate);
+    vault.gemini_request = gemini;
+    vault.gemini_status = gemini.ok ? (gemini.gemini?.status || 'ok') : 'error';
+    vault.gemini = gemini.gemini;
+    if (!gemini.ok) vault.warnings.push(`Gemini A-E endpoint failed: ${gemini.error || 'unknown error'}`);
+
+    vault.status = packet.ok || score.ok || gemini.ok ? 'backend_response_received' : 'backend_adapter_needs_worker_endpoint_fix';
     vault.finished_at = new Date().toISOString();
     return vault;
   }
@@ -262,6 +286,7 @@ window.PickCalcConnectors = (() => {
     getDailyHealth,
     getLegPacket,
     scoreLeg,
+    getGeminiMatrix,
     analyzeLeg
   };
 })();

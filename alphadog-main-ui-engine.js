@@ -1,5 +1,5 @@
 window.PickCalcUI = (() => {
-  const SYSTEM_VERSION = 'v13.78.05 (OXYGEN-COBALT) • Main-1M Priority 1 MLB Wiring';
+  const SYSTEM_VERSION = 'v13.78.06 (OXYGEN-COBALT) • Main-1N Gemini Goblin Matrix';
 
   function el(id) {
     return document.getElementById(id);
@@ -252,6 +252,49 @@ window.PickCalcUI = (() => {
     `;
   }
 
+
+  function formatGeminiFactor(factor) {
+    if (!factor) return 'MISSING — 0/100 🔴 RISK';
+    const score = factor.score_0_100 ?? factor.score ?? 0;
+    const signal = factor.signal || (Number(score) >= 80 ? 'GREEN' : (Number(score) >= 65 ? 'YELLOW' : 'RED'));
+    const raw = factor.raw_data ? ` • ${factor.raw_data}` : '';
+    const note = factor.note ? ` • ${factor.note}` : '';
+    return `${Math.round(Number(score) || 0)}/100 ${signal}${raw}${note}`;
+  }
+
+  function geminiStatusRows(gemini = null) {
+    if (!gemini) {
+      return [{ label: 'Gemini A-E Status', value: 'PENDING /main/gemini/matrix/leg RESPONSE', status: 'pending' }];
+    }
+    const prompts = Array.isArray(gemini.prompts) ? gemini.prompts : [];
+    const rows = [
+      { label: 'Gemini Route Status', value: `${gemini.status || 'UNKNOWN'} • ${gemini.summary ? compactJson(gemini.summary, 800) : 'NO SUMMARY'}`, status: gemini.ok ? 'ok' : (gemini.status === 'partial_success' ? 'pending' : 'missing') },
+      { label: 'Retry Policy', value: gemini.policy ? compactJson(gemini.policy, 900) : 'MISSING POLICY', status: gemini.policy ? 'ok' : 'missing' }
+    ];
+    prompts.forEach((prompt) => {
+      rows.push({
+        label: `Prompt ${prompt.prompt_key || '?'} Status`,
+        value: `${prompt.status || (prompt.ok ? 'ok' : 'failed')} • attempts ${prompt.attempts || 0} • avg ${prompt.summary?.average_score ?? 'n/a'} • ${prompt.title || prompt.prompt_id || ''}`,
+        status: prompt.ok ? 'ok' : 'missing'
+      });
+    });
+    return rows;
+  }
+
+  function geminiFactorRows(gemini = null, promptKey = '') {
+    const prompt = (Array.isArray(gemini?.prompts) ? gemini.prompts : []).find((item) => item.prompt_key === promptKey);
+    if (!prompt) return [{ label: `Prompt ${promptKey}`, value: 'PENDING / MISSING', status: 'pending' }];
+    const factors = Array.isArray(prompt.factors) ? prompt.factors : [];
+    if (!factors.length) {
+      return [{ label: `Prompt ${promptKey}`, value: prompt.error || 'FAILED / NO FACTORS', status: 'missing' }];
+    }
+    return factors.map((factor) => ({
+      label: `${factor.factor_id} ${factor.factor_name}`,
+      value: formatGeminiFactor(factor),
+      status: factor.signal === 'GREEN' ? 'ok' : (factor.signal === 'YELLOW' ? 'pending' : 'missing')
+    }));
+  }
+
   function packetValue(packet, path, fallback = 'MISSING') {
     if (!packet) return fallback;
     let cur = packet;
@@ -269,6 +312,7 @@ window.PickCalcUI = (() => {
     const scoreStatus = vault?.score_status || 'not_started';
     const warningList = Array.isArray(vault?.warnings) ? vault.warnings : [];
     const score = vault?.score || {};
+    const gemini = vault?.gemini || null;
     const factorSummary = packet?.matrix_factor_summary || score?.matrix_factor_summary || null;
     const cache = packet?.incremental_cache || null;
 
@@ -327,6 +371,12 @@ window.PickCalcUI = (() => {
         { label: 'MLB Opponent Bullpen Recent Raw', value: packet?.mlb_api?.opponent_bullpen_recent ? compactJson(packet.mlb_api.opponent_bullpen_recent, 1400) : 'MISSING', status: packet?.mlb_api?.opponent_bullpen_recent?.length ? 'ok' : 'missing' }
       ]),
       renderMatrixSection('Candidate Context', factorRows(packet, 'candidate_context')),
+      renderMatrixSection('Gemini A-E Status', geminiStatusRows(gemini)),
+      renderMatrixSection('Gemini A — Player / Role / Matchup', geminiFactorRows(gemini, 'A')),
+      renderMatrixSection('Gemini B — Game / Team / Bullpen', geminiFactorRows(gemini, 'B')),
+      renderMatrixSection('Gemini C — Prop / Market / Candidate', geminiFactorRows(gemini, 'C')),
+      renderMatrixSection('Gemini D — Player Form / Contact', geminiFactorRows(gemini, 'D')),
+      renderMatrixSection('Gemini E — Injury / News / Weather', geminiFactorRows(gemini, 'E')),
       renderMatrixSection('Full DB Inventory', [
         ...rawCountRows(packet),
         { label: 'Team Lineup Raw', value: packet?.team_lineup ? compactJson(packet.team_lineup, 800) : 'MISSING', status: packet?.team_lineup?.length ? 'ok' : 'missing' },
@@ -354,11 +404,13 @@ window.PickCalcUI = (() => {
         { label: 'Score', value: score.final_score ?? score.finalScore ?? 'NOT FINAL — MATRIX ONLY', status: score.final_score || score.finalScore ? 'ok' : 'pending' },
         { label: 'Verdict', value: score.verdict || 'WAITING FOR FINAL SCORING ADAPTER', status: score.verdict ? 'ok' : 'pending' },
         { label: 'Confidence', value: score.confidence || 'NOT FINAL', status: score.confidence ? 'ok' : 'pending' },
-        { label: 'Score Status', value: scoreStatus, status: scoreStatus === 'ok' ? 'ok' : (scoreStatus === 'error' ? 'missing' : 'pending') }
+        { label: 'Score Status', value: scoreStatus, status: scoreStatus === 'ok' ? 'ok' : (scoreStatus === 'error' ? 'missing' : 'pending') },
+        { label: 'Gemini Status', value: vault?.gemini_status || 'not_started', status: vault?.gemini_status === 'ok' ? 'ok' : (vault?.gemini_status === 'error' || vault?.gemini_status === 'failed' ? 'missing' : 'pending') }
       ]),
       renderMatrixSection('Raw Packet Preview', [
         { label: 'Raw Packet', value: packet ? compactJson(packet, 650) : 'PENDING /main/packet/leg RESPONSE', status: packet ? 'ok' : 'pending' },
-        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 650) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' }
+        { label: 'Raw Score', value: vault?.score ? compactJson(vault.score, 650) : 'PENDING /main/score/leg RESPONSE', status: vault?.score ? 'ok' : 'pending' },
+        { label: 'Raw Gemini A-E', value: vault?.gemini ? compactJson(vault.gemini, 900) : 'PENDING /main/gemini/matrix/leg RESPONSE', status: vault?.gemini ? 'ok' : 'pending' }
       ])
     ].join('');
   }
@@ -553,12 +605,15 @@ window.PickCalcUI = (() => {
       lines.push(`Status: ${item.status || 'NOT STARTED'}`);
       lines.push(`Packet Status: ${item.packet_status || 'NOT STARTED'}`);
       lines.push(`Score Status: ${item.score_status || 'NOT STARTED'}`);
+      lines.push(`Gemini Status: ${item.gemini_status || 'NOT STARTED'}`);
       lines.push(`Warnings: ${Array.isArray(item.warnings) && item.warnings.length ? item.warnings.join(' | ') : 'NONE'}`);
       lines.push(`Payload: ${compactJson(item.payload || {}, 1400)}`);
       lines.push(`Packet Request Summary: ${compactJson(resultSummary(item.packet_request), 1400)}`);
       lines.push(`Score Request Summary: ${compactJson(resultSummary(item.score_request), 1400)}`);
+      lines.push(`Gemini Request Summary: ${compactJson(resultSummary(item.gemini_request), 1400)}`);
       lines.push(`Packet Summary: ${compactJson(briefPacket(packet || {}), 12000)}`);
       lines.push(`Score: ${compactJson(item.score || {}, 3000)}`);
+      lines.push(`Gemini A-E: ${compactJson(item.gemini || {}, 6000)}`);
     });
     lines.push('');
 
@@ -580,10 +635,13 @@ window.PickCalcUI = (() => {
         family: item?.family || null,
         packet_status: item?.packet_status || null,
         score_status: item?.score_status || null,
+        gemini_status: item?.gemini_status || null,
         warnings: item?.warnings || [],
         matrix_factor_summary: packet?.matrix_factor_summary || item?.score?.matrix_factor_summary || null,
         incremental_cache: packet?.incremental_cache || null,
         score: item?.score || null,
+        gemini_summary: item?.gemini?.summary || null,
+        gemini_prompts: Array.isArray(item?.gemini?.prompts) ? item.gemini.prompts.map(p => ({ prompt_key: p.prompt_key, status: p.status, ok: p.ok, attempts: p.attempts, summary: p.summary, error: p.error || null })) : [],
         packet_summary: briefPacket(packet || {})
       };
     });
