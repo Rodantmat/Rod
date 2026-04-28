@@ -1,7 +1,7 @@
-// AlphaDog v1.2.62 - Auto Mine Spine compatible worker
+// AlphaDog v1.2.63 - Auto Miner Lock compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.62 - Auto Mine Spine";
-const SYSTEM_CODENAME = "Auto Mine Spine";
+const SYSTEM_VERSION = "v1.2.63 - Auto Miner Lock";
+const SYSTEM_CODENAME = "Auto Miner Lock";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const PRIMARY_MODEL = "gemini-2.5-pro";
@@ -2913,8 +2913,8 @@ async function runBoardQueueAutoMine(input, env) {
   await ensureBoardFactorResultsTable(env);
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const preferredType = String(input.queue_type || "").trim();
-  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 5);
-  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 5, 8));
+  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 8);
+  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 8, 8));
   const steps = [];
   let minedCount = 0;
   let completedByExisting = 0;

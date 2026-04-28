@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.62 - Auto Mine Spine</div>
+<div id="versionTag">v1.2.63 - Auto Miner Lock</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -62,6 +62,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="btn blue" onclick="runJobButton('SCRAPE > Board Queue Auto Build','board_queue_auto_build')">Board Queue Auto Build</button>
 <button class="btn blue" onclick="runJobButton('SCRAPE > Board Queue Pipeline','run_board_queue_pipeline')">Board Queue Pipeline</button>
 <button class="btn blue" onclick="runJobButton('SCRAPE > Board Queue Mine One Raw','board_queue_mine_one')">Board Queue Mine One Raw</button>
+<button class="btn blue" onclick="runJobButton('SCRAPE > Board Queue Auto Mine Raw','board_queue_auto_mine')">Board Queue Auto Mine Raw</button>
 <button class="btn amber" onclick="runJobButton('REPAIR > Board Queue Raw State','board_queue_repair')">Repair Queue Raw State</button>
 <button onclick="runJobButton('SCRAPE > Daily MLB Slate','daily_mlb_slate')">Daily MLB Slate</button>
 <button onclick="runJobButton('SCRAPE > Markets','scrape_games_markets')">Markets</button>
