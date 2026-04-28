@@ -1,11 +1,11 @@
-// AlphaDog v1.2.69 - Lockjaw Dispatcher compatible worker
+// AlphaDog v1.2.70 - Persistent Miner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.69.3 - One-Shot Background Full Run";
-const SYSTEM_CODENAME = "One-Shot Background Full Run";
+const SYSTEM_VERSION = "v1.2.70 - Persistent Miner";
+const SYSTEM_CODENAME = "Persistent Miner";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
-const BOARD_QUEUE_RETRY_LIMIT = 3;
+const BOARD_QUEUE_RETRY_LIMIT = 5;
 const BOARD_QUEUE_RUNTIME_CUTOFF_MS = 20000;
 const WORKER_DEPLOY_TARGET = "alphadog-phase3-starter-groups";
 const PRIMARY_MODEL = "gemini-2.5-pro";
@@ -188,7 +188,7 @@ async function chooseFairBoardQueueType(env, slateDate) {
   const row = await env.DB.prepare(`
     WITH q AS (
       SELECT queue_type,
-        SUM(CASE WHEN status IN ('PENDING','RETRY_LATER') AND COALESCE(attempt_count,0) < ? THEN 1 ELSE 0 END) AS available_rows,
+        SUM(CASE WHEN ((status='PENDING') OR (status='RETRY_LATER' AND updated_at < datetime('now', '-' || ((CASE WHEN COALESCE(retry_count,0) < 1 THEN 1 ELSE COALESCE(retry_count,0) END) * 5) || ' minutes'))) AND COALESCE(attempt_count,0) < ? THEN 1 ELSE 0 END) AS available_rows,
         SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
         SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
         SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_queue_rows,
@@ -275,7 +275,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
-      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.69 stale running task reset before lock acquisition'
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.70 stale running task reset before lock acquisition'
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue','board_queue_auto_mine','run_board_queue_pipeline')
@@ -285,7 +285,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const lockRes = await env.DB.prepare(`
       UPDATE pipeline_locks
-      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.69 stale lock reset'
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.70 stale lock reset'
       WHERE status='RUNNING'
         AND updated_at < datetime('now','-15 minutes')
     `).run();
@@ -295,12 +295,12 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
     const queueRes = slateDate
       ? await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.70 stale RUNNING queue reset')
           WHERE slate_date=? AND status='RUNNING'
         `).bind(slateDate).run()
       : await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.70 stale RUNNING queue reset')
           WHERE status='RUNNING'
         `).run();
     audit.queue_rows_reset = Number(queueRes?.meta?.changes || 0);
@@ -1189,13 +1189,14 @@ async function runScheduled(event, env) {
       routed_job: "deferred_full_run_once_poller",
       cron,
       result: due,
-      scheduler_alignment: "v1.2.69.3 one-minute cron is temporary and only executes queued one-shot Full Run requests. It does nothing when no deferred request is pending.",
-      note: "Temporary one-shot background Full Run poller. Remove this temporary cron/route in the next build after testing."
+      scheduler_alignment: "v1.2.70 keeps the temporary one-minute one-shot Full Run poller only for deferred Full Run requests. Persistent mining is handled by the separate */2 cron.",
+      note: "Temporary one-shot background Full Run poller. Keep for now; remove after scheduler/miner reliability is fully proven."
     };
   }
 
   let routedJob = "board_queue_auto_mine";
   if (cronText === "0 12 * * *") routedJob = "run_full_pipeline";
+  else if (cronText === "*/2 * * * *") routedJob = "board_queue_auto_mine";
   else if (cronText === "0 15 * * *") routedJob = "board_queue_auto_mine";
   else if (cronText === "30 18 * * *") routedJob = "board_queue_auto_mine";
 
@@ -1213,7 +1214,7 @@ async function runScheduled(event, env) {
     if (routedJob === "run_full_pipeline") {
       result = await runFullPipeline({ ...input, job: "run_full_pipeline", slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
     } else if (routedJob === "board_queue_auto_mine") {
-      result = await runBoardQueueAutoMine({ ...input, job: "board_queue_auto_mine", slate_date: slate.slate_date, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+      result = await runBoardQueueAutoMine({ ...input, job: "board_queue_auto_mine", slate_date: slate.slate_date, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: false, persistent_miner: true }, env);
     } else {
       result = await executeTaskJob(routedJob, input, slate, env);
     }
@@ -1224,8 +1225,8 @@ async function runScheduled(event, env) {
       routed_job: routedJob,
       cron,
       result,
-      scheduler_alignment: "v1.2.69 routes each cron to one bounded job only. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together.",
-      note: "Scheduler split/lightening active. Full dispatcher and raw miner use independent locks; scoring remains disabled."
+      scheduler_alignment: "v1.2.70 routes the */2 cron to one bounded persistent miner invocation. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together.",
+      note: "Persistent miner active: every 2 minutes it mines one family in a 20-second time box, uses independent locks, retries with backoff, and leaves scoring disabled."
     };
     await env.DB.prepare(`
       UPDATE task_runs
@@ -1290,7 +1291,7 @@ async function handleDeferredFullRunRequest(request, env) {
     LIMIT 1
   `).bind(slate.slate_date).first();
   if (existing) {
-    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.69.3 test mode." });
+    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.70 one-shot Full Run mode." });
   }
   const requestId = `deferred_full_run|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
   const runAfter = new Date(Date.now() + 60 * 1000).toISOString().replace('T',' ').replace(/\.\d{3}Z$/, '');
@@ -1299,7 +1300,7 @@ async function handleDeferredFullRunRequest(request, env) {
     VALUES (?, 'run_full_pipeline', ?, ?, 'PENDING', ?, 'control_room_full_run_button')
   `).bind(requestId, slate.slate_date, slate.slate_mode, runAfter).run();
   await logSystemEvent(env, { trigger_source: "control_room_button", action_label: "SCRAPE > FULL RUN scheduled one-shot", job_name: "deferred_full_run_once", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "scheduled", http_status: 200, task_id: requestId, input_json: { request_id: requestId, run_after: runAfter } });
-  return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "SCHEDULED_ONE_SHOT", request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, message: "Full Run scheduled for the backend in about 1 minute. Do not keep Safari open for this run. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.", temporary_test_mode: true, removal_note: "This one-shot scheduling mode is temporary for testing and should be removed in the next build after validation." });
+  return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "SCHEDULED_ONE_SHOT", request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, message: "Full Run scheduled for the backend in about 1 minute. Do not keep Safari open for this run. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.", temporary_test_mode: true, removal_note: "This one-shot scheduling mode is temporary and should be removed after scheduler/miner reliability is fully proven." });
 }
 
 async function runDueDeferredFullRun(env) {
@@ -3183,7 +3184,7 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
 
   const staleRunning = await env.DB.prepare(`
     UPDATE board_factor_queue
-    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
+    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.70 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
     WHERE slate_date = ? AND status = 'RUNNING' AND updated_at < datetime('now', '-10 minutes')
   `).bind(slateDate).run();
 
@@ -3246,7 +3247,13 @@ async function runBoardQueueMineOne(input, env) {
   const next = await env.DB.prepare(`
     SELECT q.* FROM board_factor_queue q
     WHERE q.slate_date = ? ${typeWhere}
-      AND q.status IN ('PENDING','RETRY_LATER')
+      AND (
+        q.status = 'PENDING'
+        OR (
+          q.status = 'RETRY_LATER'
+          AND q.updated_at < datetime('now', '-' || ((CASE WHEN COALESCE(q.retry_count,0) < 1 THEN 1 ELSE COALESCE(q.retry_count,0) END) * 5) || ' minutes')
+        )
+      )
       AND COALESCE(q.attempt_count, 0) < ?
       AND NOT EXISTS (
         SELECT 1 FROM board_factor_results r
@@ -3297,7 +3304,7 @@ async function runBoardQueueMineOne(input, env) {
     const resultId = canonicalWrite.result_id;
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.69 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.70 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
@@ -3311,7 +3318,7 @@ async function runBoardQueueMineOne(input, env) {
       }
       await env.DB.prepare(`UPDATE board_factor_queue SET status='RETRY_LATER', retry_count=COALESCE(retry_count,0)+1, last_error=?, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
       const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-      return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed, retry_limit: BOARD_QUEUE_RETRY_LIMIT }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was returned to PENDING until the per-row retry limit is exhausted. No scoring, no ranking." };
+      return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed, retry_limit: BOARD_QUEUE_RETRY_LIMIT }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was moved to RETRY_LATER with backoff until the per-row retry limit is exhausted. No scoring, no ranking." };
     }
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
     return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: Number(next.attempt_count || 0) + 1 }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after backend raw JSON/schema validation and one compact retry, or another non-transient backend failure. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
@@ -3326,7 +3333,7 @@ async function runBoardQueueAutoMineCore(input, env) {
   const preferredType = String(input.queue_type || "").trim();
   const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || BOARD_QUEUE_AUTO_MINE_LIMIT);
   const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : BOARD_QUEUE_AUTO_MINE_LIMIT, BOARD_QUEUE_AUTO_MINE_LIMIT));
-  const retryErrors = input.retry_errors === true || input.reset_errors === true || input.trigger === "scheduled";
+  const retryErrors = input.retry_errors === true || input.reset_errors === true;
   const steps = [];
   const startedMs = Date.now();
   const selectedQueueType = preferredType || await chooseFairBoardQueueType(env, slateDate);
@@ -3402,7 +3409,7 @@ async function runBoardQueueAutoMineCore(input, env) {
     slate_date: slateDate,
     mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
     selected_queue_type: selectedQueueType || null,
-    family_rotation_policy: "v1.2.69 selects the under-mined family with the fewest completed result queues; one family per invocation; no new rotation table.",
+    family_rotation_policy: "v1.2.70 selects the under-mined family with the fewest completed result queues, honors RETRY_LATER backoff, and runs one family per invocation with no new rotation table.",
     mine_limit: mineLimit,
     progress: {
       total_rows: totalRows,
@@ -3431,8 +3438,8 @@ async function runBoardQueueAutoMineCore(input, env) {
     steps,
     queue_health: queueHealth.rows,
     result_health: resultHealth.rows,
-    next_action: (pending + retryLater + running) > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue. Failed rows are flagged after 3 attempts and visible in queue health." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
-    note: "Auto miner runs a smaller safe batch of Mine One Raw calls, reports progress counters, retries transient rows up to 3 attempts, flags exhausted rows, and lets scheduled/full-run repair pick them back up. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
+    next_action: (pending + retryLater + running) > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue. Failed rows are flagged after 5 attempts and visible in queue health." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
+    note: "Auto miner runs a smaller safe batch of Mine One Raw calls, reports progress counters, retries transient rows with backoff up to 5 attempts, flags exhausted rows, and lets scheduled/full-run repair pick them back up. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
   };
 }
 
@@ -4384,7 +4391,7 @@ async function repairMissingStartersLockstep(input, env, slateDate, slate, steps
 async function runBoardQueueAutoMineWaves(input, env, slateDate, slate, maxWaves = 3) {
   const waves = [];
   for (let wave = 1; wave <= maxWaves; wave++) {
-    const result = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+    const result = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: false, persistent_miner: true }, env);
     waves.push({ wave, result });
     if (!result?.needs_continue) break;
     if (result?.mined_rows === 0 && result?.retry_later_count === 0 && result?.failed_count === 0) break;
@@ -4485,7 +4492,7 @@ async function runFullPipelineCore(input, env) {
     job: "run_full_pipeline",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
-    dispatcher_mode: "v1.2.69_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
+    dispatcher_mode: "v1.2.70_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
     games,
     markets: marketsTotal,
     expected_starters: expectedStarters,
@@ -4537,7 +4544,7 @@ async function runFullPipeline(input, env) {
     const result = await runFullPipelineCore(input || {}, env);
     if (result && typeof result === 'object') {
       result.lock_status = 'RELEASED';
-      result.state_machine_policy = 'v1.2.69: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
+      result.state_machine_policy = 'v1.2.70: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
     }
     return result;
   } catch (err) {
@@ -4992,7 +4999,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
     inserted: { players_current: inserted },
     skipped_count: (validated.skipped?.length || 0) + (protectedFilter.skipped?.length || 0),
     skipped: [...(protectedFilter.skipped || []), ...(validated.skipped || [])].slice(0, 20),
-    starter_protection_policy: "v1.2.69 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
+    starter_protection_policy: "v1.2.70 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
     complete: deferred === 0
   };
 }
