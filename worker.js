@@ -1,7 +1,7 @@
-// AlphaDog v1.2.63 - Auto Miner Lock compatible worker
+// AlphaDog v1.2.64 - Miner Pulse compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.63 - Auto Miner Lock";
-const SYSTEM_CODENAME = "Auto Miner Lock";
+const SYSTEM_VERSION = "v1.2.64 - Miner Pulse";
+const SYSTEM_CODENAME = "Miner Pulse";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const PRIMARY_MODEL = "gemini-2.5-pro";
@@ -2913,8 +2913,8 @@ async function runBoardQueueAutoMine(input, env) {
   await ensureBoardFactorResultsTable(env);
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const preferredType = String(input.queue_type || "").trim();
-  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 8);
-  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 8, 8));
+  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 6);
+  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 6, 6));
   const steps = [];
   let minedCount = 0;
   let completedByExisting = 0;
@@ -2922,7 +2922,15 @@ async function runBoardQueueAutoMine(input, env) {
   let failedCount = 0;
   let emptyReached = false;
 
-  await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
+  const repairBefore = await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
+  const beforeTotals = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+      SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
+      SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
+      SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
+    FROM board_factor_queue WHERE slate_date=?
+  `).bind(slateDate).first();
 
   for (let i = 0; i < mineLimit; i++) {
     const result = await runBoardQueueMineOne({ ...(input || {}), slate_date: slateDate, queue_type: preferredType }, env);
@@ -2937,7 +2945,6 @@ async function runBoardQueueAutoMine(input, env) {
       result_id: result.result_id || result.existing_result_id || null,
       error: result.error || null
     });
-
     if (result.status === "pass") minedCount++;
     if (result.status === "skipped_existing_raw_result") completedByExisting++;
     if (result.status === "empty") { emptyReached = true; break; }
@@ -2945,11 +2952,24 @@ async function runBoardQueueAutoMine(input, env) {
     if (!result.ok || result.status === "failed") { failedCount++; break; }
   }
 
+  const repairAfter = await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
   const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
   const resultHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-  const totals = await env.DB.prepare(`SELECT COUNT(*) AS total_rows, SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows, SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows, SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows FROM board_factor_queue WHERE slate_date=?`).bind(slateDate).first();
+  const totals = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+      SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
+      SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
+      SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
+    FROM board_factor_queue WHERE slate_date=?
+  `).bind(slateDate).first();
+  const totalRows = Number(totals?.total_rows || 0);
   const pending = Number(totals?.pending_rows || 0);
+  const completed = Number(totals?.completed_rows || 0);
+  const running = Number(totals?.running_rows || 0);
   const errors = Number(totals?.error_rows || 0);
+  const completedBefore = Number(beforeTotals?.completed_rows || 0);
+  const progressPct = totalRows > 0 ? Math.round((completed / totalRows) * 1000) / 10 : 100;
   const status = emptyReached || pending === 0 ? "pass" : retryLaterCount ? "partial_retry_later" : failedCount ? "partial_error" : "partial";
 
   return {
@@ -2960,19 +2980,33 @@ async function runBoardQueueAutoMine(input, env) {
     slate_date: slateDate,
     mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
     mine_limit: mineLimit,
+    progress: {
+      total_rows: totalRows,
+      completed_before: completedBefore,
+      completed_after: completed,
+      mined_this_run: minedCount,
+      completed_by_existing_raw_result: completedByExisting,
+      pending_after: pending,
+      running_after: running,
+      error_after: errors,
+      percent_complete: progressPct,
+      needs_continue: pending > 0 && retryLaterCount === 0 && failedCount === 0
+    },
+    repair: { before: repairBefore?.changes || null, after: repairAfter?.changes || null },
     mined_rows: minedCount,
     completed_by_existing_raw_result: completedByExisting,
     retry_later_count: retryLaterCount,
     failed_count: failedCount,
     pending_rows_after: pending,
-    completed_rows_after: Number(totals?.completed_rows || 0),
+    completed_rows_after: completed,
+    running_rows_after: running,
     error_rows_after: errors,
     needs_continue: pending > 0 && retryLaterCount === 0 && failedCount === 0,
     steps,
     queue_health: queueHealth.rows,
     result_health: resultHealth.rows,
     next_action: pending > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
-    note: "Auto miner runs a small safe batch of Mine One Raw calls in one Worker invocation. It stops on transient Gemini/API retry_later, hard validation failure, or empty queue. No prop scoring, no ranking, no candidate logic."
+    note: "Auto miner runs a smaller safe batch of Mine One Raw calls and reports progress counters. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
   };
 }
 function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
