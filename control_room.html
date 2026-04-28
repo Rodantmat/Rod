@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.73 - Static GroupSlice Repair</div>
+<div id="versionTag">v1.2.74 - Static Splits Subrequest Repair</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -100,6 +100,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('STATIC > Scrape Players G4','scrape_static_players_g4')">Players G4</button>
 <button onclick="runJobButton('STATIC > Scrape Players G5','scrape_static_players_g5')">Players G5</button>
 <button onclick="runJobButton('STATIC > Scrape Players G6','scrape_static_players_g6')">Players G6</button>
+<button onclick="runJobButton('STATIC > Scrape Splits Test 5','scrape_static_player_splits_test_5')">Splits Test 5</button>
 <button onclick="runJobButton('STATIC > Scrape Splits G1','scrape_static_player_splits_g1')">Splits G1</button>
 <button onclick="runJobButton('STATIC > Scrape Splits G2','scrape_static_player_splits_g2')">Splits G2</button>
 <button onclick="runJobButton('STATIC > Scrape Splits G3','scrape_static_player_splits_g3')">Splits G3</button>
@@ -113,7 +114,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('STATIC > Scrape Game Logs G5','scrape_static_game_logs_g5')">Logs G5</button>
 <button onclick="runJobButton('STATIC > Scrape Game Logs G6','scrape_static_game_logs_g6')">Logs G6</button>
 <button onclick="runJobButton('STATIC > Scrape BvP Current Slate','scrape_static_bvp_current_slate')">BvP Slate</button>
-</div><div class="small">Static jobs are manual. Players G1 wipes ref_players and G2-G6 append. Splits/Logs G1 wipes the target table, then G2-G6 append.</div></div>
+</div><div class="small">Static jobs are manual. Players G1 wipes ref_players and G2-G6 append. Splits are resumable small batches. Run Test 5 first. Then run the same Splits G button until remaining_in_group_after is 0 before moving on. Logs G1 wipes the target table, then G2-G6 append.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -522,7 +523,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.73 - Static GroupSlice Repair",
+    version: "v1.2.74 - Static Splits Subrequest Repair",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

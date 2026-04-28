@@ -1,7 +1,7 @@
-// AlphaDog v1.2.73 - Static GroupSlice Repair compatible worker
+// AlphaDog v1.2.74 - Static Splits Subrequest Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.73 - Static GroupSlice Repair";
-const SYSTEM_CODENAME = "Static Data Foundation";
+const SYSTEM_VERSION = "v1.2.74 - Static Splits Subrequest Repair";
+const SYSTEM_CODENAME = "Static Splits Subrequest Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -60,6 +60,7 @@ const JOB_DISPLAY_LABELS = {
   scrape_static_players_g4: "STATIC > Scrape Players G4",
   scrape_static_players_g5: "STATIC > Scrape Players G5",
   scrape_static_players_g6: "STATIC > Scrape Players G6",
+  scrape_static_player_splits_test_5: "STATIC > Scrape Splits Test 5",
   scrape_static_player_splits_g1: "STATIC > Scrape Splits G1",
   scrape_static_player_splits_g2: "STATIC > Scrape Splits G2",
   scrape_static_player_splits_g3: "STATIC > Scrape Splits G3",
@@ -574,6 +575,7 @@ const JOBS = {
   scrape_static_players_g4: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 4; append only" },
   scrape_static_players_g5: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 5; append only" },
   scrape_static_players_g6: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 6; append only" },
+  scrape_static_player_splits_test_5: { prompt: null, tables: ["ref_player_splits"], note: "safe 5-player static splits smoke test; does not wipe table" },
   scrape_static_player_splits_g1: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 1" },
   scrape_static_player_splits_g2: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 2" },
   scrape_static_player_splits_g3: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 3" },
@@ -820,6 +822,7 @@ function executableJobNames() {
     "scrape_static_players_g4",
     "scrape_static_players_g5",
     "scrape_static_players_g6",
+    "scrape_static_player_splits_test_5",
     "scrape_static_player_splits_g1",
     "scrape_static_player_splits_g2",
     "scrape_static_player_splits_g3",
@@ -4395,6 +4398,20 @@ async function ensureStaticReferenceTables(env) {
     )
   `).run();
   await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS static_scrape_progress (
+      scrape_domain TEXT NOT NULL,
+      season INTEGER NOT NULL,
+      group_no INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      player_name TEXT,
+      status TEXT NOT NULL,
+      detail TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (scrape_domain, season, group_no, player_id)
+    )
+  `).run();
+
+  await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS player_game_logs (
       player_id INTEGER NOT NULL,
       game_pk INTEGER NOT NULL,
@@ -4645,37 +4662,107 @@ function splitRowFromStat(player, season, groupType, split) {
   };
 }
 
+function splitSitCodesForGroup(groupType) {
+  return groupType === 'pitching' ? 'vl,vr' : 'vl,vr';
+}
+
+async function markStaticProgress(env, domain, season, groupNo, player, status, detail) {
+  await env.DB.prepare(`
+    INSERT OR REPLACE INTO static_scrape_progress (scrape_domain, season, group_no, player_id, player_name, status, detail, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `).bind(domain, Number(season), Number(groupNo || 0), Number(player.player_id), player.player_name || null, status, detail ? String(detail).slice(0, 500) : null).run();
+}
+
+async function staticProgressMap(env, domain, season, groupNo) {
+  const rows = await env.DB.prepare("SELECT player_id, status FROM static_scrape_progress WHERE scrape_domain=? AND season=? AND group_no=?").bind(domain, Number(season), Number(groupNo || 0)).all();
+  const m = new Map();
+  for (const r of (rows.results || [])) m.set(Number(r.player_id), String(r.status || ''));
+  return m;
+}
+
+function prioritizedSplitTestPlayers(rows) {
+  const wanted = new Set(['Shohei Ohtani','Aaron Judge','Paul Goldschmidt','Jose Altuve','Chris Sale']);
+  const top = (rows || []).filter(r => wanted.has(String(r.player_name || '')));
+  const seen = new Set(top.map(r => Number(r.player_id)));
+  for (const r of (rows || [])) {
+    if (top.length >= 5) break;
+    const id = Number(r.player_id);
+    if (!seen.has(id)) { top.push(r); seen.add(id); }
+  }
+  return top.slice(0, 5);
+}
+
 async function syncStaticPlayerSplits(input, env) {
   await ensureStaticReferenceTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
-  const group = staticGroupFromJob(input.job, 'scrape_static_player_splits') || 1;
-  if (group === 1) await env.DB.prepare("DELETE FROM ref_player_splits").run();
+  const isTest = String(input?.job || '') === 'scrape_static_player_splits_test_5';
+  const group = isTest ? 0 : (staticGroupFromJob(input.job, 'scrape_static_player_splits') || 1);
+  const hardLimit = isTest ? 5 : Math.max(1, Math.min(Number(input?.limit || 10), 15));
+
+  if (group === 1 && !isTest) {
+    await env.DB.prepare("DELETE FROM ref_player_splits").run();
+    await env.DB.prepare("DELETE FROM static_scrape_progress WHERE scrape_domain='player_splits' AND season=?").bind(season).run();
+  }
+
   const all = await env.DB.prepare("SELECT player_id, player_name, team_id, role FROM ref_players WHERE active=1 ORDER BY player_name").all();
-  const selected = selectStaticGroupRows(all.results || [], group);
+  const baseRows = isTest ? prioritizedSplitTestPlayers(all.results || []) : selectStaticGroupRows(all.results || [], group);
+  const progress = await staticProgressMap(env, 'player_splits', season, group);
+  const eligible = baseRows.filter(p => !['COMPLETED','NO_DATA'].includes(progress.get(Number(p.player_id))));
+  const selected = eligible.slice(0, hardLimit);
+
   const stmt = env.DB.prepare(`
     INSERT OR REPLACE INTO ref_player_splits (player_id, season, group_type, split_code, split_description, pa, ab, hits, doubles, triples, home_runs, strikeouts, walks, avg, obp, slg, ops, babip, source_name, source_confidence, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mlb_statsapi_statSplits', 'MEDIUM_API_STANDARD_SPLITS', CURRENT_TIMESTAMP)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mlb_statsapi_statSplits_sitCodes_vl_vr', 'MEDIUM_API_STANDARD_SPLITS', CURRENT_TIMESTAMP)
   `);
-  let inserted = 0, fetchedPlayers = 0, skipped = 0;
+
+  let inserted = 0, successfulFetches = 0, failedFetches = 0, skippedNoSplits = 0, playersCompleted = 0;
   const errors = [];
+  const noSplitSamples = [];
+
   for (const player of selected) {
-    const groups = player.role === 'PITCHER' ? ['pitching'] : ['hitting'];
-    for (const groupType of groups) {
-      const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(player.player_id)}/stats?stats=statSplits&group=${groupType}&season=${season}`;
-      const fetched = await fetchJsonWithRetry(url, {}, 2, `static_splits_${player.player_id}_${groupType}`);
-      if (!fetched.ok) { errors.push({ player_id: player.player_id, player_name: player.player_name, error: fetched.error }); continue; }
-      fetchedPlayers += 1;
-      const splits = fetched.data?.stats?.[0]?.splits || [];
-      if (!splits.length) { skipped += 1; continue; }
-      for (const split of splits) {
-        const r = splitRowFromStat(player, season, groupType, split);
-        if (r.split_code === 'unknown') continue;
-        const res = await stmt.bind(r.player_id, r.season, r.group_type, r.split_code, r.split_description, r.pa, r.ab, r.hits, r.doubles, r.triples, r.home_runs, r.strikeouts, r.walks, r.avg, r.obp, r.slg, r.ops, r.babip).run();
-        inserted += Number(res?.meta?.changes || 0);
-      }
+    const groupType = player.role === 'PITCHER' ? 'pitching' : 'hitting';
+    const sitCodes = splitSitCodesForGroup(groupType);
+    const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(player.player_id)}/stats?stats=statSplits&group=${groupType}&season=${season}&sitCodes=${encodeURIComponent(sitCodes)}`;
+    const fetched = await fetchJsonWithRetry(url, {}, 1, `static_splits_${player.player_id}_${groupType}`);
+    if (!fetched.ok) {
+      failedFetches += 1;
+      errors.push({ player_id: player.player_id, player_name: player.player_name, group_type: groupType, error: fetched.error });
+      await markStaticProgress(env, 'player_splits', season, group, player, 'ERROR_RETRYABLE', fetched.error);
+      continue;
+    }
+    successfulFetches += 1;
+    const splits = fetched.data?.stats?.[0]?.splits || [];
+    if (!splits.length) {
+      skippedNoSplits += 1;
+      noSplitSamples.push({ player_id: player.player_id, player_name: player.player_name, group_type: groupType });
+      await markStaticProgress(env, 'player_splits', season, group, player, 'NO_DATA', 'StatsAPI returned zero statSplits for explicit sitCodes=vl,vr');
+      continue;
+    }
+    let playerInserted = 0;
+    for (const split of splits) {
+      const r = splitRowFromStat(player, season, groupType, split);
+      if (r.split_code === 'unknown') continue;
+      const res = await stmt.bind(r.player_id, r.season, r.group_type, r.split_code, r.split_description, r.pa, r.ab, r.hits, r.doubles, r.triples, r.home_runs, r.strikeouts, r.walks, r.avg, r.obp, r.slg, r.ops, r.babip).run();
+      const changes = Number(res?.meta?.changes || 0);
+      inserted += changes;
+      playerInserted += changes;
+    }
+    if (playerInserted > 0) {
+      playersCompleted += 1;
+      await markStaticProgress(env, 'player_splits', season, group, player, 'COMPLETED', `${playerInserted} split rows inserted`);
+    } else {
+      skippedNoSplits += 1;
+      await markStaticProgress(env, 'player_splits', season, group, player, 'NO_INSERT', 'StatsAPI returned splits but no recognized split_code rows inserted');
     }
   }
-  return { ok: true, job: input.job || "scrape_static_player_splits_g1", version: SYSTEM_VERSION, status: inserted > 0 ? "pass" : "partial_or_empty", table: "ref_player_splits", season, group, group_count: STATIC_GROUP_COUNT, selected_players: selected.length, fetched_players: fetchedPlayers, inserted_rows: inserted, skipped_players_no_splits: skipped, errors: errors.slice(0,20), estimated_seconds: "45-120 seconds per group", note: "Group 1 wipes ref_player_splits, then groups append. Standard MLB statSplits only; Statcast xwOBA/barrel/hard-hit remains separate CSV-normalized seed later." };
+
+  const afterCount = await staticTableCount(env, "ref_player_splits");
+  const remainingInGroup = Math.max(0, eligible.length - selected.length);
+  const status = failedFetches > 0 ? 'partial_retry_needed' : (remainingInGroup > 0 ? 'partial_continue' : (inserted > 0 || afterCount.rows_count > 0 ? 'pass' : 'empty_no_data'));
+  const dataOk = Number(afterCount.rows_count || 0) > 0 && failedFetches === 0;
+  return {
+    ok: failedFetches === 0, data_ok: dataOk, job: input.job || "scrape_static_player_splits_g1", version: SYSTEM_VERSION, status, table: "ref_player_splits", season, group, group_count: STATIC_GROUP_COUNT, selected_players_total: baseRows.length, eligible_before_this_run: eligible.length, batch_limit: hardLimit, attempted_players: selected.length, successful_fetch_count: successfulFetches, failed_fetch_count: failedFetches, inserted_rows: inserted, total_ref_player_splits_after: afterCount.rows_count, players_completed_this_run: playersCompleted, skipped_players_no_splits: skippedNoSplits, remaining_in_group_after: remainingInGroup, needs_continue: remainingInGroup > 0, api_endpoint_pattern: "/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr", root_cause_fixed: "v1.2.73 used no sitCodes and selected 130 players per group, causing zero-row responses plus Cloudflare subrequest exhaustion. v1.2.74 adds sitCodes and caps each invocation to a small resumable batch.", errors: errors.slice(0, 10), no_split_samples: noSplitSamples.slice(0, 10), estimated_seconds: isTest ? "5-15 seconds" : "10-25 seconds per resumable batch", note: isTest ? "Safe 5-player split smoke test. Does not wipe ref_player_splits." : "Resumable static split scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. G1 wipes only when starting a fresh full split rebuild."
+  };
 }
 
 async function syncStaticPlayerGameLogs(input, env) {
@@ -4849,7 +4936,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_static_team_aliases") return await syncStaticTeamAliases({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_players") return await syncStaticPlayers({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^scrape_static_players_g[1-6]$/.test(jobName)) return await syncStaticPlayers({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (/^scrape_static_player_splits_g[1-6]$/.test(jobName)) return await syncStaticPlayerSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === 'scrape_static_player_splits_test_5' || /^scrape_static_player_splits_g[1-6]$/.test(jobName)) return await syncStaticPlayerSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^scrape_static_game_logs_g[1-6]$/.test(jobName)) return await syncStaticPlayerGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_bvp_current_slate") return await syncStaticBvpCurrentSlate({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_all_fast") return await syncStaticAllFast({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
