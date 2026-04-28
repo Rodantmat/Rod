@@ -1,7 +1,7 @@
-// AlphaDog v1.2.57 - Event Ledger compatible worker
+// AlphaDog v1.2.58 - Recovery Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.57 - Event Ledger";
-const SYSTEM_CODENAME = "Event Ledger";
+const SYSTEM_VERSION = "v1.2.58 - Recovery Spine";
+const SYSTEM_CODENAME = "Recovery Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -887,7 +887,7 @@ async function runScheduled(event, env) {
   await env.DB.prepare(`
     INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-  `).bind(taskId, "run_full_pipeline", "running", JSON.stringify(input)).run();
+  `).bind(taskId, "scheduled_full_pipeline_plus_board_queue", "running", JSON.stringify(input)).run();
 
   try {
     const fullPipeline = await runFullPipeline(input, env);
@@ -3798,6 +3798,27 @@ const MLB_TEAM_ABBR = {
   137: "SFG", 138: "STL", 139: "TB", 140: "TEX", 141: "TOR", 120: "WSN"
 };
 
+
+function sleepMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+async function fetchJsonWithRetry(url, options = {}, retries = 3, label = "fetch_json") {
+  let lastError = null;
+  for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "accept": "application/json", ...(options.headers || {}) }, ...options });
+      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt };
+      lastError = new Error(`${label} HTTP ${res.status}`);
+      if (![408, 425, 429, 500, 502, 503, 504].includes(Number(res.status))) break;
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < retries) await sleepMs(250 * attempt);
+  }
+  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`) };
+}
+
 function decimalInnings(ip) {
   if (ip === undefined || ip === null || ip === "") return null;
   const raw = String(ip);
@@ -3830,10 +3851,10 @@ async function fetchMlbPitcherStatsMap(pitcherIds, season) {
   for (let i = 0; i < uniqueIds.length; i += 40) {
     const batch = uniqueIds.slice(i, i + 40);
     const url = `https://statsapi.mlb.com/api/v1/people?personIds=${batch.join(",")}&hydrate=stats(group=[pitching],type=[season],season=${encodeURIComponent(season)})`;
-    const res = await fetch(url, { headers: { "accept": "application/json" } });
-    if (!res.ok) continue;
+    const fetched = await fetchJsonWithRetry(url, {}, 3, "mlb_people_pitcher_stats");
+    if (!fetched.ok) continue;
 
-    const data = await res.json();
+    const data = fetched.data || {};
     for (const person of (data.people || [])) {
       map.set(Number(person.id), pitcherSeasonStats(person));
     }
@@ -3865,9 +3886,9 @@ function apiStarterRow(gameId, teamId, pitcher, slateDate, statsOverride) {
 
 async function fetchMlbScheduleProbables(slateDate) {
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}&hydrate=probablePitcher(stats(group=[pitching],type=[season]))`;
-  const res = await fetch(url, { headers: { "accept": "application/json" } });
-  if (!res.ok) throw new Error(`MLB schedule fetch failed: ${res.status}`);
-  return await res.json();
+  const fetched = await fetchJsonWithRetry(url, {}, 4, "mlb_schedule_probables");
+  if (!fetched.ok) throw new Error(`MLB schedule fetch failed after retry: ${fetched.error}`);
+  return fetched.data || { dates: [] };
 }
 
 function gameIdFromMlbGame(game, slateDate) {
@@ -3899,18 +3920,18 @@ function outsToIpDecimal(outs) {
 
 async function fetchMlbScheduleForTeam(teamId, startDate, endDate) {
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=${encodeURIComponent(teamId)}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
-  const res = await fetch(url, { headers: { "accept": "application/json" } });
-  if (!res.ok) return [];
-  const data = await res.json();
+  const fetched = await fetchJsonWithRetry(url, {}, 3, "mlb_schedule_team");
+  if (!fetched.ok) return [];
+  const data = fetched.data || {};
   const games = [];
   for (const d of (data.dates || [])) for (const g of (d.games || [])) games.push(g);
   return games;
 }
 
 async function fetchMlbBoxscore(gamePk) {
-  const res = await fetch(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, { headers: { "accept": "application/json" } });
-  if (!res.ok) return null;
-  return await res.json();
+  const fetched = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, {}, 3, "mlb_boxscore");
+  if (!fetched.ok) return null;
+  return fetched.data || null;
 }
 
 function bullpenOutsFromBoxscore(box, teamSide) {
@@ -4130,10 +4151,8 @@ async function syncMlbApiPlayersIdentity(input, env) {
   const games = await env.DB.prepare("SELECT away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
   const teamCodes = [...new Set((games.results || []).flatMap(g => [g.away_team, g.home_team]))].filter(Boolean);
 
-  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}`, {
-    headers: { "accept": "application/json" }
-  });
-  const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
+  const scheduleFetch = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(slateDate)}`, {}, 3, "mlb_players_schedule");
+  const scheduleJson = scheduleFetch.ok ? (scheduleFetch.data || { dates: [] }) : { dates: [] };
 
   const teamMap = new Map();
   for (const d of (scheduleJson.dates || [])) {
@@ -4147,17 +4166,15 @@ async function syncMlbApiPlayersIdentity(input, env) {
   }
 
   const selectedTeams = selectPlayerIdentityTeams([...teamMap.values()], group);
-  if (group === 1) {
-    await env.DB.prepare("DELETE FROM players_current").run();
-  }
   const rows = [];
+  const team_fetch_audit = [];
 
   for (const t of selectedTeams) {
-    const r = await fetch(`https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.mlbId)}/roster?rosterType=active&hydrate=person(stats(group=[hitting,pitching],type=[season],season=${encodeURIComponent(String(slateDate).slice(0,4))}))`, {
-      headers: { "accept": "application/json" }
-    });
-    if (!r.ok) continue;
-    const rosterJson = await r.json();
+    const rosterUrl = `https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.mlbId)}/roster?rosterType=active&hydrate=person(stats(group=[hitting,pitching],type=[season],season=${encodeURIComponent(String(slateDate).slice(0,4))}))`;
+    const fetched = await fetchJsonWithRetry(rosterUrl, {}, 4, `mlb_roster_${t.teamId}`);
+    team_fetch_audit.push({ team_id: t.teamId, ok: fetched.ok, attempt: fetched.attempt || null, error: fetched.error || null });
+    if (!fetched.ok) continue;
+    const rosterJson = fetched.data || {};
     for (const entry of (rosterJson.roster || [])) {
       const row = playerIdentityRowFromRosterEntry(entry, t.teamId);
       if (row) rows.push(row);
@@ -4176,8 +4193,18 @@ async function syncMlbApiPlayersIdentity(input, env) {
   const rowsToWrite = deduped.slice(0, maxWrites);
   const deferred = Math.max(0, deduped.length - rowsToWrite.length);
 
+  if (!selectedTeams.length) {
+    return { ok: false, job: input.job || "scrape_players_mlb_api", slate_date: slateDate, status: "no_slate_teams", group, teams_total: teamMap.size, teams_checked: 0, fetched_rows: 0, inserted: { players_current: 0 }, retry_later: true, note: "No slate teams were available. Run SCRAPE > Daily MLB Slate first, then retry this player group." };
+  }
+  if (!rowsToWrite.length) {
+    return { ok: false, job: input.job || "scrape_players_mlb_api", slate_date: slateDate, status: "zero_player_rows", group, teams_total: teamMap.size, teams_checked: selectedTeams.length, fetched_rows: 0, inserted: { players_current: 0 }, retry_later: true, team_fetch_audit, note: "MLB roster calls produced zero rows after retry. Existing players_current was not cleared." };
+  }
+
   const validated = validateRows("players_current", rowsToWrite);
   if (!validated.ok) throw new Error(`MLB player identity validation failed: ${validated.error}`);
+  if (group === 1) {
+    await env.DB.prepare("DELETE FROM players_current").run();
+  }
   const inserted = await upsertRows(env, "players_current", validated.rows);
 
   return {
@@ -4189,6 +4216,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
     group,
     teams_total: teamMap.size,
     teams_checked: selectedTeams.length,
+    team_fetch_audit,
     fetched_rows: deduped.length,
     written_rows: inserted,
     deferred_rows: deferred,
@@ -4209,8 +4237,8 @@ async function syncMlbApiRecentUsage(input, env) {
   const slateGames = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
   const slateTeams = [...new Set((slateGames.results || []).flatMap(g => [g.away_team, g.home_team]))];
 
-  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, { headers: { "accept": "application/json" } });
-  const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
+  const scheduleFetch = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, {}, 3, "mlb_previous_schedule");
+  const scheduleJson = scheduleFetch.ok ? (scheduleFetch.data || { dates: [] }) : { dates: [] };
 
   const previousGames = [];
   for (const d of (scheduleJson.dates || [])) {
@@ -4354,8 +4382,8 @@ async function syncMlbApiBullpens(input, env) {
   const slateGames = await env.DB.prepare("SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id").bind(slateDate).all();
   const slateTeams = [...new Set((slateGames.results || []).flatMap(g => [g.away_team, g.home_team]))];
 
-  const schedule = await fetch(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, { headers: { "accept": "application/json" } });
-  const scheduleJson = schedule.ok ? await schedule.json() : { dates: [] };
+  const scheduleFetch = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${encodeURIComponent(previousDate)}`, {}, 3, "mlb_previous_schedule");
+  const scheduleJson = scheduleFetch.ok ? (scheduleFetch.data || { dates: [] }) : { dates: [] };
 
   const previousGames = [];
   for (const d of (scheduleJson.dates || [])) {
