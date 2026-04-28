@@ -1103,7 +1103,7 @@ async function handleBoardFactorResultInspect(request, env) {
         batch_index: row.batch_index,
         status: row.status,
         model: row.model,
-        summary_from_table: { raw_factor_count: row.factor_count, legacy_min_score: row.min_score, legacy_max_score: row.max_score, legacy_avg_score: row.avg_score },
+        summary_from_table: { factor_count: row.factor_count, min_score: row.min_score, max_score: row.max_score, avg_score: row.avg_score },
         parsed_ok: parsed.ok,
         parsed_error: parsed.ok ? null : parsed.error,
         parsed_header: parsedHeader,
@@ -2410,29 +2410,72 @@ function boardPromptDefinitionForQueueType(queueType) {
   return { prompt_id: "GEMINI_RAW_FACTOR_CONTEXT_V1", family: "Raw Factor Context", target_type: "UNKNOWN", factor_ids: [] };
 }
 
-function compactObject(obj, keys) {
-  if (!obj || typeof obj !== "object") return null;
-  const out = {};
-  for (const key of keys) {
-    if (obj[key] !== undefined && obj[key] !== null && obj[key] !== "") out[key] = obj[key];
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-function compactBoardProps(props) {
-  const arr = Array.isArray(props) ? props : [];
-  const byType = {};
-  for (const p of arr) {
-    const stat = String(p?.stat_type || "UNKNOWN");
-    if (!byType[stat]) byType[stat] = [];
-    byType[stat].push({ line_score: p?.line_score, odds_type: p?.odds_type, is_promo: p?.is_promo ? 1 : 0 });
-  }
-  return Object.entries(byType).map(([stat_type, lines]) => ({ stat_type, line_count: lines.length, lines: lines.slice(0, 5) })).slice(0, 18);
-}
-
-function compactPayloadForGemini(queueRow, payload) {
-  const queueType = String(queueRow.queue_type || "");
-  const base = {
+function buildCompactBoardPayloadForGemini(queueRow) {
+  const payload = (() => { try { return JSON.parse(queueRow.payload_json || "{}"); } catch (_) { return {}; } })();
+  const players = Array.isArray(payload.enriched_player_contexts) ? payload.enriched_player_contexts : (Array.isArray(payload.players) ? payload.players : []);
+  const compactPlayers = players.slice(0, 4).map(p => {
+    const profile = p.player_profile || {};
+    const usage = p.recent_usage || {};
+    const starter = p.opposing_starter || {};
+    const bullpen = p.opposing_bullpen_context || {};
+    const props = Array.isArray(p.board_props) ? p.board_props : [];
+    return {
+      player_key: p.player_key || `${p.player_name || ""} ${p.team || ""}`.trim(),
+      player_name: p.player_name,
+      team: p.team,
+      opponent: p.opponent,
+      game_id: p.game_id,
+      start_time: p.start_time,
+      role: profile.role || null,
+      bats: profile.bats || null,
+      throws: profile.throws || null,
+      position: profile.position || null,
+      season: {
+        games: profile.games ?? null,
+        ab: profile.ab ?? null,
+        hits: profile.hits ?? null,
+        avg: profile.avg ?? null,
+        obp: profile.obp ?? null,
+        slg: profile.slg ?? null,
+        strikeouts: profile.strikeouts ?? null,
+        walks: profile.walks ?? null,
+        era: profile.era ?? null,
+        whip: profile.whip ?? null,
+        innings_pitched: profile.innings_pitched ?? null,
+        k_per_9: profile.k_per_9 ?? null
+      },
+      recent_usage: usage ? {
+        last_game_ab: usage.last_game_ab ?? null,
+        last_game_hits: usage.last_game_hits ?? null,
+        lineup_slot: usage.lineup_slot ?? null,
+        last_pitch_count: usage.last_pitch_count ?? null,
+        last_innings: usage.last_innings ?? null,
+        days_rest: usage.days_rest ?? null
+      } : null,
+      opposing_starter: starter ? {
+        starter_name: starter.starter_name ?? null,
+        throws: starter.throws ?? null,
+        era: starter.era ?? null,
+        whip: starter.whip ?? null,
+        strikeouts: starter.strikeouts ?? null,
+        innings_pitched: starter.innings_pitched ?? null,
+        walks: starter.walks ?? null,
+        hits_allowed: starter.hits_allowed ?? null,
+        hr_allowed: starter.hr_allowed ?? null
+      } : null,
+      opposing_bullpen_context: bullpen ? {
+        fatigue: bullpen.fatigue ?? null,
+        last_game_ip: bullpen.last_game_ip ?? null,
+        last3_ip: bullpen.last3_ip ?? null,
+        bullpen_era: bullpen.bullpen_era ?? null,
+        bullpen_whip: bullpen.bullpen_whip ?? null
+      } : null,
+      board_stat_type_counts: p.board_stat_type_counts || {},
+      board_props_compact: props.slice(0, 28).map(x => ({ stat_type: x.stat_type, line_score: x.line_score, odds_type: x.odds_type, is_promo: x.is_promo }))
+    };
+  });
+  const gamePayload = payload.enriched_game_context || payload.game || payload.game_context || null;
+  return {
     queue_id: queueRow.queue_id,
     slate_date: queueRow.slate_date,
     queue_type: queueRow.queue_type,
@@ -2441,83 +2484,89 @@ function compactPayloadForGemini(queueRow, payload) {
     batch_index: queueRow.batch_index,
     player_count: queueRow.player_count,
     game_count: queueRow.game_count,
+    player_names: queueRow.player_names,
     game_key: queueRow.game_key,
     team_a: queueRow.team_a,
     team_b: queueRow.team_b,
-    start_time: queueRow.start_time
+    start_time: queueRow.start_time,
+    payload_quality: payload.payload_quality || null,
+    players: compactPlayers,
+    game: gamePayload
   };
-  if (queueType.startsWith("PLAYER_")) {
-    const players = Array.isArray(payload?.enriched_player_contexts) ? payload.enriched_player_contexts : [];
-    return {
-      ...base,
-      batch_size: Number(payload?.batch_size || players.length || 4),
-      players: players.map(p => ({
-        player_key: p.player_key,
-        player_name: p.player_name,
-        team: p.team,
-        opponent: p.opponent,
-        game_id: p.game_id,
-        start_time: p.start_time,
-        board_leg_rows: p.board_leg_rows,
-        board_stat_type_counts: p.board_stat_type_counts || {},
-        board_props_compact: compactBoardProps(p.board_props),
-        game_context: compactObject(p.game_context, ["game_id", "game_date", "away_team", "home_team", "venue", "status", "start_time_utc", "getaway_day"]),
-        player_profile: compactObject(p.player_profile, ["player_name", "team_id", "role", "games", "ab", "hits", "avg", "obp", "slg", "strikeouts", "walks", "innings_pitched", "era", "whip", "k_per_9", "age", "position", "bats", "throws", "source", "confidence"]),
-        lineup_context: compactObject(p.lineup_context, ["lineup_slot", "confirmed", "source", "updated_at"]),
-        recent_usage: compactObject(p.recent_usage, ["last_game_ab", "last_game_hits", "lineup_slot", "last_pitch_count", "last_innings", "days_rest", "updated_at"]),
-        opposing_starter: compactObject(p.opposing_starter, ["starter_name", "team_id", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"]),
-        market_context: compactObject(p.market_context, ["game_total", "open_total", "current_total", "away_moneyline", "home_moneyline", "away_implied_runs", "home_implied_runs", "runline", "source", "confidence"]),
-        opposing_bullpen_context: compactObject(p.opposing_bullpen_context, ["team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"]),
-        payload_quality: p.payload_quality || null
-      }))
-    };
-  }
-  if (queueType.startsWith("GAME_")) {
-    const g = payload?.enriched_game_context || payload?.game || payload || {};
-    return { ...base, game: compactObject(g, ["game_key", "game_id", "game_date", "team_a", "team_b", "away_team", "home_team", "venue", "status", "start_time", "start_time_utc", "source_rows", "game_total", "open_total", "current_total", "weather", "wind", "temperature", "precipitation", "news", "injuries", "bullpen", "market_context", "payload_quality"]) };
-  }
-  return { ...base, payload };
 }
 
-function boardFactorPromptForQueueRow(queueRow, mode = "primary") {
-  const payload = (() => { try { return JSON.parse(queueRow.payload_json || "{}"); } catch (_) { return {}; } })();
+function boardFactorPromptForQueueRow(queueRow, retryMode = false, validationError = "") {
+  const payload = buildCompactBoardPayloadForGemini(queueRow);
   const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
-  const compactPayload = compactPayloadForGemini(queueRow, payload);
-  const retryMode = mode === "retry";
-  return `You are AlphaDog's controlled MLB raw factor miner. Return VALID JSON only. No markdown.
+  const retryText = retryMode ? `\nRETRY REPAIR MODE:\n- Previous output failed validation: ${String(validationError || "unknown").slice(0, 500)}\n- Return smaller valid JSON.\n- Do not use markdown.\n- Do not trail off.\n- Do not include nested board_props arrays.\n- raw_data must be a compact object with no more than 8 primitive fields.\n` : "";
+  return `You are AlphaDog's controlled MLB raw factor miner. Return JSON only. No markdown.${retryText}
 
 ARCHITECTURE LOCK:
-- Raw factor extraction only.
-- No prop scoring, no picks, no rankings, no final score math.
-- Do not invent missing facts.
-- Use only the supplied compact system payload and locked factor family.
-- If available, return short raw evidence. If unavailable, mark MISSING.
-- Do not include score_0_100, signal, confidence_0_100, green/yellow/red, probabilities, recommendations, or pick language.
-
-OUTPUT SIZE LOCK:
-- Keep JSON small and complete. Do not echo full board_props arrays.
-- raw_data max 8 scalar keys per factor.
-- note max 90 characters.
-- missing_data max 5 strings per factor.
-- warnings max 3 strings per item.
-${retryMode ? "- RETRY MODE: previous output failed validation or JSON parsing. Return smaller JSON. No nested raw_data deeper than 1 level." : ""}
+- You do NOT score props.
+- You do NOT rank props.
+- You do NOT make picks.
+- You do NOT calculate final scores.
+- You do NOT invent missing MLB, weather, lineup, injury, or news facts.
+- Your job is raw factor extraction only, correlated to the current PrizePicks board queue row.
+- Keep the locked prompt family and factor IDs.
+- If a factor has usable raw system data, echo compact raw evidence and mark it AVAILABLE.
+- If a factor is unavailable, mark it MISSING and list missing fields.
+- If a factor is partly supported, mark it PARTIAL and include exactly what is present.
+- Never include score_0_100, signal, confidence_0_100, avg_score, min_score, max_score, green/yellow/red, recommendations, pick language, or scoring math.
 
 LOCKED PROMPT FAMILY:
 ${JSON.stringify(def)}
 
-COMPACT SYSTEM PAYLOAD:
-${JSON.stringify(compactPayload)}
+COMPACT QUEUE PAYLOAD:
+${JSON.stringify(payload)}
 
-OUTPUT JSON SCHEMA:
-{"ok":true,"raw_mode":true,"prompt_id":"${def.prompt_id}","queue_id":"${queueRow.queue_id}","queue_type":"${queueRow.queue_type}","scope_type":"${queueRow.scope_type}","slate_date":"${queueRow.slate_date}","factor_family":"${def.family}","items":[{"target_key":"player name + team OR game_key","target_type":"${def.target_type}","raw_factors":[{"factor_id":"A01/B01/D01/E01","factor_name":"locked name","source_type":"SYSTEM_DATA|GEMINI_EXTRACTED|MISSING","availability":"AVAILABLE|PARTIAL|MISSING","raw_data":{},"note":"short raw evidence only","missing_data":[]}],"missing_data":[],"warnings":[]}],"summary":{"raw_mode":true,"item_count":0,"factor_family":"${def.family}","missing_data":[],"warnings":[],"ready_for_system_json":true}}
+OUTPUT JSON SCHEMA, EXACT SHAPE:
+{
+  "ok": true,
+  "raw_mode": true,
+  "prompt_id": "${def.prompt_id}",
+  "queue_id": "${queueRow.queue_id}",
+  "queue_type": "${queueRow.queue_type}",
+  "scope_type": "${queueRow.scope_type}",
+  "slate_date": "${queueRow.slate_date}",
+  "factor_family": "${def.family}",
+  "items": [
+    {
+      "target_key": "player name + team OR game_key",
+      "target_type": "${def.target_type}",
+      "raw_factors": [
+        {
+          "factor_id": "A01/B01/D01/E01 etc",
+          "factor_name": "locked factor name",
+          "source_type": "SYSTEM_DATA|GEMINI_EXTRACTED|MISSING",
+          "availability": "AVAILABLE|PARTIAL|MISSING",
+          "raw_data": {},
+          "note": "short raw evidence note, no pick language",
+          "missing_data": []
+        }
+      ],
+      "missing_data": [],
+      "warnings": []
+    }
+  ],
+  "summary": {
+    "raw_mode": true,
+    "item_count": 0,
+    "factor_family": "${def.family}",
+    "missing_data": [],
+    "warnings": [],
+    "ready_for_system_json": true
+  }
+}
 
 TARGET RULES:
-- PLAYER_BATCH_4: return exactly one item per player in compact payload players.
-- GAME: return exactly one item for game_key.
-- Include the locked factor IDs for this family.
-- Valid complete JSON is mandatory.`;
+- PLAYER_BATCH_4: return exactly one item per player in payload.players.
+- GAME: return exactly one item for payload.game_key.
+- Include locked factor IDs for this family.
+- Use compact raw evidence from supplied payload only.
+- Missing is acceptable. Invalid JSON is not acceptable.`;
 }
-function factorRowsFromRawPayload(parsed) {
+
 function factorRowsFromRawPayload(parsed) {
   if (!parsed || typeof parsed !== "object") return [];
   if (Array.isArray(parsed.results)) return parsed.results;
@@ -2542,79 +2591,86 @@ function summarizeRawFactorPayload(parsed) {
 }
 
 
-function expectedItemCountForQueue(queueRow, parsedPayload) {
-  const qt = String(queueRow.queue_type || "");
-  if (qt.startsWith("PLAYER_")) {
-    const enriched = Array.isArray(parsedPayload?.enriched_player_contexts) ? parsedPayload.enriched_player_contexts.length : 0;
-    const players = Array.isArray(parsedPayload?.players) ? parsedPayload.players.length : 0;
-    return enriched || players || Number(queueRow.player_count || 0) || 1;
+function expectedTargetCountForQueuePayload(queueRow, parsedPayload) {
+  const payload = parsedPayload || buildCompactBoardPayloadForGemini(queueRow);
+  if (String(queueRow.scope_type || "").includes("PLAYER") || String(queueRow.queue_type || "").startsWith("PLAYER_")) {
+    const players = Array.isArray(payload.players) ? payload.players : [];
+    return Math.max(1, players.length || Number(queueRow.player_count || 0) || 1);
   }
-  if (qt.startsWith("GAME_")) return 1;
   return 1;
 }
 
-function validateRawFactorPayload(parsed, queueRow) {
-  const errors = [];
-  if (!parsed || typeof parsed !== "object") errors.push("payload_not_object");
-  if (parsed?.ok !== true) errors.push("missing_ok_true");
-  if (parsed?.raw_mode !== true) errors.push("missing_raw_mode_true");
-  if (String(parsed?.queue_id || "") !== String(queueRow.queue_id || "")) errors.push("queue_id_mismatch");
-  if (String(parsed?.queue_type || "") !== String(queueRow.queue_type || "")) errors.push("queue_type_mismatch");
-  if (!Array.isArray(parsed?.items)) errors.push("items_not_array");
-
-  const items = Array.isArray(parsed?.items) ? parsed.items : [];
-  const storedPayload = parseStoredBoardPayload(queueRow.payload_json);
-  const expectedItems = expectedItemCountForQueue(queueRow, storedPayload);
-  if (items.length !== expectedItems) errors.push(`item_count_${items.length}_expected_${expectedItems}`);
-
-  const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
-  const factorIds = new Set((def.factor_ids || []).map(x => x[0]));
-  const forbiddenKeys = ["score_0_100", "signal", "confidence_0_100", "probability", "final_score", "pick", "recommendation"];
-
-  items.forEach((item, idx) => {
-    if (!item || typeof item !== "object") errors.push(`item_${idx}_not_object`);
-    if (!item?.target_key) errors.push(`item_${idx}_missing_target_key`);
-    if (!Array.isArray(item?.raw_factors)) errors.push(`item_${idx}_raw_factors_not_array`);
-    const rows = Array.isArray(item?.raw_factors) ? item.raw_factors : [];
-    if (!rows.length) errors.push(`item_${idx}_empty_raw_factors`);
-    for (const f of rows) {
-      if (!f?.factor_id) errors.push(`item_${idx}_factor_missing_id`);
-      if (factorIds.size && f?.factor_id && !factorIds.has(String(f.factor_id))) errors.push(`item_${idx}_unexpected_factor_${f.factor_id}`);
-      if (!f?.availability || !["AVAILABLE", "PARTIAL", "MISSING"].includes(String(f.availability))) errors.push(`item_${idx}_${f?.factor_id || "factor"}_bad_availability`);
-      for (const k of forbiddenKeys) if (Object.prototype.hasOwnProperty.call(f || {}, k)) errors.push(`forbidden_key_${k}`);
-    }
-  });
-
-  return { ok: errors.length === 0, errors: errors.slice(0, 20) };
+function findForbiddenScoringKeys(value, path = "root", out = []) {
+  if (!value || typeof value !== "object") return out;
+  const forbidden = new Set(["score_0_100", "signal", "confidence_0_100", "final_score", "hit_probability", "avg_score", "min_score", "max_score", "green_count", "yellow_count", "red_count"]);
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => findForbiddenScoringKeys(v, `${path}[${i}]`, out));
+    return out;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    if (forbidden.has(k)) out.push(`${path}.${k}`);
+    findForbiddenScoringKeys(v, `${path}.${k}`, out);
+  }
+  return out;
 }
 
-async function mineRawPayloadWithValidation(env, queueRow) {
-  const attempts = [];
-  for (const mode of ["primary", "retry"]) {
-    const prompt = boardFactorPromptForQueueRow(queueRow, mode);
-    const raw = await callGeminiWithFallback(env, prompt);
-    const clean = cleanJsonText(raw);
-    let parsed;
-    try {
-      parsed = parseStrictJson(clean);
-    } catch (err) {
-      attempts.push({ mode, ok: false, stage: "parse", error: String(err?.message || err).slice(0, 500), raw_length: String(raw || "").length });
-      continue;
+function validateRawGeminiPayload(parsed, queueRow, compactPayload) {
+  if (!parsed || typeof parsed !== "object") return { ok: false, error: "parsed payload is not an object" };
+  if (parsed.ok !== true) return { ok: false, error: "missing ok=true" };
+  if (parsed.raw_mode !== true) return { ok: false, error: "missing raw_mode=true" };
+  if (String(parsed.queue_id || "") !== String(queueRow.queue_id || "")) return { ok: false, error: "queue_id mismatch" };
+  if (String(parsed.queue_type || "") !== String(queueRow.queue_type || "")) return { ok: false, error: "queue_type mismatch" };
+  if (!Array.isArray(parsed.items)) return { ok: false, error: "items array missing" };
+  const expected = expectedTargetCountForQueuePayload(queueRow, compactPayload);
+  if (parsed.items.length !== expected) return { ok: false, error: `items count mismatch expected ${expected} got ${parsed.items.length}` };
+  const scoringKeys = findForbiddenScoringKeys(parsed);
+  if (scoringKeys.length) return { ok: false, error: `scoring keys are forbidden in raw mode: ${scoringKeys.slice(0, 5).join(", ")}` };
+  const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
+  const lockedIds = new Set((def.factor_ids || []).map(x => x[0]));
+  for (const item of parsed.items) {
+    if (!item || typeof item !== "object") return { ok: false, error: "item is not an object" };
+    if (!item.target_key) return { ok: false, error: "item target_key missing" };
+    if (!Array.isArray(item.raw_factors)) return { ok: false, error: `raw_factors missing for ${item.target_key}` };
+    if (item.raw_factors.length < Math.min(3, lockedIds.size || 3)) return { ok: false, error: `too few raw_factors for ${item.target_key}` };
+    for (const f of item.raw_factors) {
+      if (!f || typeof f !== "object") return { ok: false, error: `raw factor invalid for ${item.target_key}` };
+      if (!f.factor_id) return { ok: false, error: `factor_id missing for ${item.target_key}` };
+      if (lockedIds.size && !lockedIds.has(String(f.factor_id))) return { ok: false, error: `unknown factor_id ${f.factor_id}` };
+      if (!/^(AVAILABLE|PARTIAL|MISSING)$/.test(String(f.availability || ""))) return { ok: false, error: `invalid availability for ${f.factor_id}` };
+      if (!/^(SYSTEM_DATA|GEMINI_EXTRACTED|MISSING)$/.test(String(f.source_type || ""))) return { ok: false, error: `invalid source_type for ${f.factor_id}` };
+      if (f.raw_data === undefined) return { ok: false, error: `raw_data missing for ${f.factor_id}` };
     }
-    parsed.raw_mode = parsed.raw_mode === true;
-    parsed.queue_id = parsed.queue_id || queueRow.queue_id;
-    parsed.queue_type = parsed.queue_type || queueRow.queue_type;
-    parsed.scope_type = parsed.scope_type || queueRow.scope_type;
-    parsed.slate_date = parsed.slate_date || queueRow.slate_date;
-    const validation = validateRawFactorPayload(parsed, queueRow);
-    attempts.push({ mode, ok: validation.ok, stage: "validation", errors: validation.errors, raw_length: String(raw || "").length });
-    if (validation.ok) return { parsed, attempts };
   }
-  const last = attempts[attempts.length - 1] || { error: "unknown" };
-  const err = new Error(`Gemini raw payload failed validation after ${attempts.length} attempt(s): ${JSON.stringify(last).slice(0, 700)}`);
+  return { ok: true, error: null };
+}
+
+async function callGeminiRawWithValidation(env, queueRow) {
+  const compactPayload = buildCompactBoardPayloadForGemini(queueRow);
+  const attempts = [];
+  let lastError = "";
+  for (let i = 0; i < 2; i++) {
+    const prompt = boardFactorPromptForQueueRow(queueRow, i > 0, lastError);
+    let raw = "";
+    try {
+      raw = await callGeminiWithFallback(env, prompt);
+      const parsed = parseStrictJson(cleanJsonText(raw));
+      const validation = validateRawGeminiPayload(parsed, queueRow, compactPayload);
+      attempts.push({ attempt: i + 1, parsed_ok: true, validation_ok: validation.ok, error: validation.error || null, raw_length: String(raw || "").length });
+      if (!validation.ok) {
+        lastError = validation.error || "validation failed";
+        continue;
+      }
+      return { parsed, attempts };
+    } catch (err) {
+      lastError = String(err?.message || err).slice(0, 900);
+      attempts.push({ attempt: i + 1, parsed_ok: false, validation_ok: false, error: lastError, raw_length: String(raw || "").length });
+    }
+  }
+  const err = new Error(`Raw Gemini payload failed validation after retry: ${lastError}`);
   err.validation_attempts = attempts;
   throw err;
 }
+
 async function runBoardQueueMineOne(input, env) {
   await ensureBoardFactorQueueTable(env);
   await ensureBoardFactorResultsTable(env);
@@ -2639,18 +2695,21 @@ async function runBoardQueueMineOne(input, env) {
   try {
     const hydratedNext = await hydrateQueueRowPayloadIfNeeded(env, next);
     const hydratedPayload = parseStoredBoardPayload(hydratedNext.payload_json);
-    const mined = await mineRawPayloadWithValidation(env, hydratedNext);
+    const mined = await callGeminiRawWithValidation(env, hydratedNext);
     const parsed = mined.parsed;
+    parsed.validation = { ok: true, attempts: mined.attempts };
+    parsed.queue_id = next.queue_id; parsed.queue_type = next.queue_type; parsed.scope_type = next.scope_type; parsed.slate_date = next.slate_date;
     const summary = summarizeRawFactorPayload(parsed);
     const resultId = `${next.queue_id}|RESULT|${Date.now()}`;
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, null, null, null, JSON.stringify(parsed)).run();
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation_attempts: mined.attempts, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored after validation. If first Gemini output fails JSON/schema validation, the miner retries once with a stricter compact prompt. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
+    const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
-    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: err?.validation_attempts || null, note: "One queue row failed after validation/retry and was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
+    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after raw JSON/schema validation and one compact retry. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
   }
 }
 
