@@ -1,7 +1,7 @@
-// AlphaDog v1.2.48 - Result Lantern compatible worker
+// AlphaDog v1.2.49 - Payload Forge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.48 - Result Lantern";
-const SYSTEM_CODENAME = "Result Lantern";
+const SYSTEM_VERSION = "v1.2.49 - Payload Forge";
+const SYSTEM_CODENAME = "Payload Forge";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -339,6 +339,7 @@ export default {
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
+      if (url.pathname === "/board/queue-payload/inspect") return withCors(await handleBoardQueuePayloadInspect(request, env));
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
       if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
@@ -960,6 +961,87 @@ function clampInspectRawChars(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 12000;
   return Math.max(1000, Math.min(Math.floor(n), 50000));
+}
+
+
+async function handleBoardQueuePayloadInspect(request, env) {
+  if (!isAuthorized(request, env)) return json({ ok: false, error: "Unauthorized" }, { status: 401 });
+
+  try {
+    await ensureBoardFactorQueueTable(env);
+    const url = new URL(request.url);
+    const body = request.method === "POST" ? await safeJson(request) : {};
+    const slateDate = String(body?.slate_date || url.searchParams.get("slate_date") || resolveSlateDate({}).slate_date);
+    const queueType = String(body?.queue_type || url.searchParams.get("queue_type") || "").trim();
+    const queueId = String(body?.queue_id || url.searchParams.get("queue_id") || "").trim();
+    const status = String(body?.status || url.searchParams.get("status") || "").trim();
+    const limit = clampInspectLimit(body?.limit ?? url.searchParams.get("limit"));
+    const rawMaxChars = clampInspectRawChars(body?.raw_max_chars ?? url.searchParams.get("raw_max_chars"));
+
+    const where = ["slate_date = ?"];
+    const binds = [slateDate];
+    if (queueId) { where.push("queue_id = ?"); binds.push(queueId); }
+    if (queueType) { where.push("queue_type = ?"); binds.push(queueType); }
+    if (status) { where.push("status = ?"); binds.push(status); }
+
+    const res = await env.DB.prepare(`
+      SELECT queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, player_count, game_count, source_rows,
+             player_names, team_id, game_key, team_a, team_b, start_time, status, payload_json, created_at, updated_at
+      FROM board_factor_queue
+      WHERE ${where.join(" AND ")}
+      ORDER BY CASE queue_type
+        WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1
+        WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2
+        WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3
+        WHEN 'GAME_WEATHER_CONTEXT' THEN 4
+        WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5
+        ELSE 99 END, batch_index ASC, queue_id ASC
+      LIMIT ${limit}
+    `).bind(...binds).all();
+
+    const rows = res.results || [];
+    const inspected = rows.map(row => {
+      const rawText = String(row.payload_json || "{}");
+      const parsed = safeParseJsonText(rawText);
+      const payload = parsed.ok ? parsed.value : null;
+      const playerContexts = Array.isArray(payload?.enriched_player_contexts) ? payload.enriched_player_contexts : [];
+      const gameContext = payload?.enriched_game_context || null;
+      return {
+        queue_id: row.queue_id,
+        slate_date: row.slate_date,
+        queue_type: row.queue_type,
+        scope_type: row.scope_type,
+        batch_index: row.batch_index,
+        status: row.status,
+        player_count: row.player_count,
+        game_count: row.game_count,
+        payload_parse_ok: parsed.ok,
+        payload_parse_error: parsed.ok ? null : parsed.error,
+        payload_quality: payload?.payload_quality || null,
+        enriched_player_context_count: playerContexts.length,
+        enriched_game_context_present: !!gameContext,
+        sample_enriched_players: playerContexts.slice(0, 4),
+        enriched_game_context: gameContext,
+        raw_payload_text: rawText.length > rawMaxChars ? rawText.slice(0, rawMaxChars) + `...[truncated ${rawText.length - rawMaxChars} chars]` : rawText,
+        raw_payload_length: rawText.length,
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      };
+    });
+
+    return json({
+      ok: true,
+      version: SYSTEM_VERSION,
+      endpoint: "board_queue_payload_inspect",
+      slate_date: slateDate,
+      filters: { queue_id: queueId || null, queue_type: queueType || null, status: status || null, limit, raw_max_chars: rawMaxChars },
+      row_count: rows.length,
+      results: inspected,
+      note: "Read-only inspection of enriched board queue payloads. No queue changes, no Gemini calls, no scoring."
+    });
+  } catch (err) {
+    return json({ ok: false, version: SYSTEM_VERSION, endpoint: "board_queue_payload_inspect", error: String(err?.message || err) }, { status: 500 });
+  }
 }
 
 async function handleBoardFactorResultInspect(request, env) {
@@ -2251,7 +2333,12 @@ OUTPUT JSON SCHEMA:
 SCORING RULES:
 - score_0_100 is a factor strength score only, not a prop score.
 - GREEN means supportive, YELLOW means mixed/uncertain, RED means negative/risky.
-- Use 50 when neutral or data is insufficient.
+- Use enriched_player_contexts and enriched_game_context first. Do not ignore those fields.
+- For PLAYER_A_ROLE_RECENT_MATCHUP, evaluate role, lineup slot, recent usage, season player profile, handedness matchup, opposing starter contact allowance, strikeout pressure, and on-base support.
+- For PLAYER_D_ADVANCED_FORM_CONTACT, evaluate recent form, recent hit/AB pressure, AVG/OBP/SLG, hit baseline, strikeout drag, total-base/contact context, and form vs season baseline.
+- For GAME_B_TEAM_BULLPEN_ENVIRONMENT, evaluate game context, market total/implied run context if present, starters, bullpens, lineup coverage, and board prop distribution.
+- For GAME_WEATHER_CONTEXT or GAME_NEWS_INJURY_CONTEXT, only score available system fields. If real weather/news/injury fields are missing, return YELLOW/50 or RED only when the system data proves risk.
+- Use 50 when neutral or required data is still insufficient.
 - confidence_0_100 must drop when information is incomplete.
 - missing_data must list key missing fields.
 - If this is a player batch, return one result per player.
@@ -2316,6 +2403,227 @@ function boardChunkRows(rows, size) {
   return chunks;
 }
 
+
+async function boardNamedTableExists(env, tableName) {
+  try {
+    const row = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").bind(tableName).first();
+    return !!row;
+  } catch (_) {
+    return false;
+  }
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function normTeam(value) {
+  return String(value || "").replace(/^@|^vs\.?/i, "").trim().toUpperCase();
+}
+
+function boardPayloadQualityForPlayerContext(ctx) {
+  const available = [];
+  const missing = [];
+  if (ctx.player_profile) available.push("player_profile"); else missing.push("player_profile");
+  if (ctx.lineup_context) available.push("lineup_context"); else missing.push("lineup_context");
+  if (ctx.recent_usage) available.push("recent_usage"); else missing.push("recent_usage");
+  if (ctx.opposing_starter) available.push("opposing_starter"); else missing.push("opposing_starter");
+  if (ctx.market_context) available.push("market_context"); else missing.push("market_context");
+  if (ctx.board_props && ctx.board_props.length) available.push("board_props"); else missing.push("board_props");
+  if (ctx.candidate_context) available.push("candidate_context"); else missing.push("candidate_context");
+  return { available, missing, completeness_score: Math.round((available.length / (available.length + missing.length || 1)) * 100) };
+}
+
+function mergePayloadQuality(items) {
+  const available = new Set();
+  const missing = new Set();
+  let total = 0;
+  let count = 0;
+  for (const item of items || []) {
+    const q = item?.payload_quality || item || {};
+    for (const key of q.available || []) available.add(key);
+    for (const key of q.missing || []) missing.add(key);
+    if (Number.isFinite(Number(q.completeness_score))) { total += Number(q.completeness_score); count += 1; }
+  }
+  for (const key of available) missing.delete(key);
+  return { available: Array.from(available).sort(), missing: Array.from(missing).sort(), avg_completeness_score: count ? Number((total / count).toFixed(2)) : 0 };
+}
+
+async function findBoardGameContext(env, slateDate, team, opponent, startTime) {
+  const t = normTeam(team);
+  const o = normTeam(opponent);
+  const startPrefix = String(startTime || "").slice(0, 10);
+  if (!await boardNamedTableExists(env, "games")) return null;
+  const date = startPrefix || slateDate;
+  const row = await env.DB.prepare(`
+    SELECT * FROM games
+    WHERE game_date = ?
+      AND ((UPPER(away_team)=? AND UPPER(home_team)=?) OR (UPPER(away_team)=? AND UPPER(home_team)=?))
+    ORDER BY game_id ASC
+    LIMIT 1
+  `).bind(date, t, o, o, t).first();
+  return row || null;
+}
+
+async function enrichBoardPlayer(env, slateDate, playerRow) {
+  const playerName = String(playerRow.player_name || "").trim();
+  const team = normTeam(playerRow.team);
+  const startTime = String(playerRow.first_start_time || playerRow.start_time || "").trim();
+  const propRows = await boardRows(env, `
+    SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at
+    FROM mlb_stats
+    WHERE substr(start_time, 1, 10) = ?
+      AND LOWER(TRIM(player_name)) = LOWER(TRIM(?))
+      AND UPPER(TRIM(team)) = ?
+      AND ${boardSingleRowWhere()}
+    ORDER BY updated_at DESC, stat_type ASC, odds_type ASC
+    LIMIT 20
+  `, [slateDate, playerName, team]);
+  const fallbackProps = propRows.rows.length ? propRows : await boardRows(env, `
+    SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at
+    FROM mlb_stats
+    WHERE LOWER(TRIM(player_name)) = LOWER(TRIM(?))
+      AND UPPER(TRIM(team)) = ?
+      AND ${boardSingleRowWhere()}
+    ORDER BY updated_at DESC, stat_type ASC, odds_type ASC
+    LIMIT 20
+  `, [playerName, team]);
+  const boardProps = fallbackProps.rows || [];
+  const opponent = normTeam(firstNonEmpty(boardProps[0]?.opponent, playerRow.opponent_sample));
+  const game = opponent ? await findBoardGameContext(env, slateDate, team, opponent, startTime) : null;
+  const gameId = game?.game_id || null;
+
+  const playerProfile = await boardNamedTableExists(env, "players_current")
+    ? (await env.DB.prepare(`SELECT * FROM players_current WHERE LOWER(TRIM(player_name)) = LOWER(TRIM(?)) AND (UPPER(TRIM(team_id)) = ? OR COALESCE(team_id,'')='') ORDER BY CASE WHEN UPPER(TRIM(team_id)) = ? THEN 0 ELSE 1 END LIMIT 1`).bind(playerName, team, team).first())
+    : null;
+
+  const recentUsage = await boardNamedTableExists(env, "player_recent_usage")
+    ? (await env.DB.prepare(`SELECT * FROM player_recent_usage WHERE LOWER(TRIM(player_name)) = LOWER(TRIM(?)) AND (UPPER(TRIM(team_id)) = ? OR COALESCE(team_id,'')='') ORDER BY CASE WHEN UPPER(TRIM(team_id)) = ? THEN 0 ELSE 1 END LIMIT 1`).bind(playerName, team, team).first())
+    : null;
+
+  const lineupContext = (gameId && await boardNamedTableExists(env, "lineups_current"))
+    ? (await env.DB.prepare(`SELECT * FROM lineups_current WHERE game_id = ? AND UPPER(TRIM(team_id)) = ? AND LOWER(TRIM(player_name)) = LOWER(TRIM(?)) LIMIT 1`).bind(gameId, team, playerName).first())
+    : null;
+
+  const opposingStarter = (gameId && opponent && await boardNamedTableExists(env, "starters_current"))
+    ? (await env.DB.prepare(`SELECT * FROM starters_current WHERE game_id = ? AND UPPER(TRIM(team_id)) = ? LIMIT 1`).bind(gameId, opponent).first())
+    : null;
+
+  const marketContext = (gameId && await boardNamedTableExists(env, "markets_current"))
+    ? (await env.DB.prepare(`SELECT * FROM markets_current WHERE game_id = ? LIMIT 1`).bind(gameId).first())
+    : null;
+
+  const bullpenContext = (gameId && opponent && await boardNamedTableExists(env, "bullpens_current"))
+    ? (await env.DB.prepare(`SELECT * FROM bullpens_current WHERE game_id = ? AND UPPER(TRIM(team_id)) = ? LIMIT 1`).bind(gameId, opponent).first())
+    : null;
+
+  const hitsCandidate = await boardNamedTableExists(env, "edge_candidates_hits")
+    ? (await env.DB.prepare(`SELECT * FROM edge_candidates_hits WHERE slate_date = ? AND LOWER(TRIM(player_name)) = LOWER(TRIM(?)) AND UPPER(TRIM(team_id)) = ? LIMIT 1`).bind(slateDate, playerName, team).first())
+    : null;
+
+  const rbiCandidate = await boardNamedTableExists(env, "edge_candidates_rbi")
+    ? (await env.DB.prepare(`SELECT * FROM edge_candidates_rbi WHERE slate_date = ? AND LOWER(TRIM(player_name)) = LOWER(TRIM(?)) AND UPPER(TRIM(team_id)) = ? LIMIT 1`).bind(slateDate, playerName, team).first())
+    : null;
+
+  const statTypeCounts = {};
+  for (const r of boardProps) statTypeCounts[String(r.stat_type || "UNKNOWN")] = (statTypeCounts[String(r.stat_type || "UNKNOWN")] || 0) + 1;
+
+  const ctx = {
+    player_key: `${playerName} ${team}`.trim(),
+    player_name: playerName,
+    team,
+    opponent,
+    game_id: gameId,
+    start_time: firstNonEmpty(startTime, game?.start_time_utc, boardProps[0]?.start_time),
+    board_leg_rows: Number(playerRow.leg_rows || boardProps.length || 0),
+    board_stat_type_counts: statTypeCounts,
+    board_props: boardProps,
+    game_context: game,
+    player_profile: playerProfile || null,
+    lineup_context: lineupContext || null,
+    recent_usage: recentUsage || null,
+    opposing_starter: opposingStarter || null,
+    market_context: marketContext || null,
+    opposing_bullpen_context: bullpenContext || null,
+    candidate_context: hitsCandidate || rbiCandidate ? { hits: hitsCandidate || null, rbi: rbiCandidate || null } : null
+  };
+  ctx.payload_quality = boardPayloadQualityForPlayerContext(ctx);
+  return ctx;
+}
+
+async function enrichBoardGame(env, slateDate, gameRow) {
+  const teamA = normTeam(gameRow.team_a);
+  const teamB = normTeam(gameRow.team_b);
+  const game = await findBoardGameContext(env, slateDate, teamA, teamB, gameRow.start_time);
+  const gameId = game?.game_id || null;
+  const market = (gameId && await boardNamedTableExists(env, "markets_current")) ? await env.DB.prepare(`SELECT * FROM markets_current WHERE game_id = ? LIMIT 1`).bind(gameId).first() : null;
+  const starters = (gameId && await boardNamedTableExists(env, "starters_current")) ? (await boardRows(env, `SELECT * FROM starters_current WHERE game_id = ? ORDER BY team_id`, [gameId])).rows : [];
+  const bullpens = (gameId && await boardNamedTableExists(env, "bullpens_current")) ? (await boardRows(env, `SELECT * FROM bullpens_current WHERE game_id = ? ORDER BY team_id`, [gameId])).rows : [];
+  const lineups = (gameId && await boardNamedTableExists(env, "lineups_current")) ? (await boardRows(env, `SELECT team_id, COUNT(*) AS lineup_rows, SUM(CASE WHEN is_confirmed THEN 1 ELSE 0 END) AS confirmed_rows FROM lineups_current WHERE game_id = ? GROUP BY team_id ORDER BY team_id`, [gameId])).rows : [];
+  const boardProps = await boardRows(env, `
+    SELECT team, opponent, stat_type, odds_type, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line
+    FROM mlb_stats
+    WHERE substr(start_time, 1, 10) = ?
+      AND ${boardSingleRowWhere()}
+      AND ((UPPER(TRIM(team))=? AND UPPER(TRIM(opponent))=?) OR (UPPER(TRIM(team))=? AND UPPER(TRIM(opponent))=?))
+    GROUP BY team, opponent, stat_type, odds_type
+    ORDER BY stat_type, odds_type
+    LIMIT 80
+  `, [slateDate, teamA, teamB, teamB, teamA]);
+
+  const available = [];
+  const missing = [];
+  if (game) available.push("game_context"); else missing.push("game_context");
+  if (market) available.push("market_context"); else missing.push("market_context");
+  if (starters.length) available.push("starters"); else missing.push("starters");
+  if (bullpens.length) available.push("bullpens"); else missing.push("bullpens");
+  if (lineups.length) available.push("lineups"); else missing.push("lineups");
+  if (boardProps.rows.length) available.push("board_props"); else missing.push("board_props");
+
+  return {
+    game_key: gameRow.game_key,
+    team_a: teamA,
+    team_b: teamB,
+    start_time: gameRow.start_time,
+    source_rows: Number(gameRow.leg_rows || 0),
+    game_context: game,
+    market_context: market || null,
+    starters,
+    bullpens,
+    lineup_coverage: lineups,
+    board_prop_distribution: boardProps.rows,
+    payload_quality: { available, missing, completeness_score: Math.round((available.length / (available.length + missing.length || 1)) * 100) }
+  };
+}
+
+async function enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk) {
+  const contexts = [];
+  for (const player of chunk) contexts.push(await enrichBoardPlayer(env, slateDate, player));
+  return {
+    slate_date: slateDate,
+    queue_type: queueType,
+    batch_size: playerBatchSize,
+    players: chunk,
+    enriched_player_contexts: contexts,
+    payload_quality: mergePayloadQuality(contexts)
+  };
+}
+
+async function enrichBoardQueueGamePayload(env, slateDate, queueType, row) {
+  const context = await enrichBoardGame(env, slateDate, row);
+  return {
+    slate_date: slateDate,
+    queue_type: queueType,
+    game: row,
+    enriched_game_context: context,
+    payload_quality: context.payload_quality
+  };
+}
+
 async function buildBoardQueueRows(input, env) {
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const exists = await boardTableExists(env);
@@ -2365,8 +2673,10 @@ async function buildBoardQueueRows(input, env) {
     "PLAYER_D_ADVANCED_FORM_CONTACT"
   ];
   for (const queueType of playerQueueTypes) {
-    playerChunks.forEach((chunk, index) => {
+    for (let index = 0; index < playerChunks.length; index += 1) {
+      const chunk = playerChunks[index];
       const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
+      const enrichedPayload = await enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk);
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
         slate_date: slateDate,
@@ -2383,9 +2693,9 @@ async function buildBoardQueueRows(input, env) {
         team_a: null,
         team_b: null,
         start_time: chunk.map(r => r.first_start_time).filter(Boolean).sort()[0] || null,
-        payload_json: JSON.stringify({ slate_date: slateDate, queue_type: queueType, batch_size: playerBatchSize, players: chunk })
+        payload_json: JSON.stringify(enrichedPayload)
       });
-    });
+    }
   }
 
   const gameQueueTypes = [
@@ -2394,8 +2704,10 @@ async function buildBoardQueueRows(input, env) {
     "GAME_NEWS_INJURY_CONTEXT"
   ];
   for (const queueType of gameQueueTypes) {
-    games.rows.forEach((row, index) => {
+    for (let index = 0; index < games.rows.length; index += 1) {
+      const row = games.rows[index];
       const scopeKey = `${row.game_key}|${row.start_time}`;
+      const enrichedPayload = await enrichBoardQueueGamePayload(env, slateDate, queueType, row);
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
         slate_date: slateDate,
@@ -2412,9 +2724,9 @@ async function buildBoardQueueRows(input, env) {
         team_a: row.team_a,
         team_b: row.team_b,
         start_time: row.start_time,
-        payload_json: JSON.stringify({ slate_date: slateDate, queue_type: queueType, game: row })
+        payload_json: JSON.stringify(enrichedPayload)
       });
-    });
+    }
   }
 
   const estimate = {};
@@ -2523,7 +2835,7 @@ async function runBoardQueueBuild(input, env) {
     status: built.warnings.length ? "review" : "pass",
     slate_date: slateDate,
     table: "board_factor_queue",
-    mode: "materialize_supported_board_factor_queue_no_gemini_no_scoring",
+    mode: "materialize_supported_board_factor_queue_with_enriched_payload_no_gemini_no_scoring",
     deleted_previous_types: allowedTypes,
     inserted_queue_rows: inserted,
     counts: {
@@ -2534,7 +2846,7 @@ async function runBoardQueueBuild(input, env) {
     queue_estimate: built.queue_estimate,
     queue_health: queueHealth.rows,
     warnings: built.warnings,
-    note: "Queue rows only. No Gemini calls, no factor scoring, no prop ranking, no UI changes. Combo lines remain deferred."
+    note: "Queue rows include enriched payload context. No Gemini calls, no factor scoring, no prop ranking. Combo lines remain deferred."
   };
 }
 
@@ -2547,7 +2859,7 @@ async function runBoardQueuePipeline(input, env) {
     status: result && result.ok ? "pass" : "review",
     slate_date: result?.slate_date || resolveSlateDate(input).slate_date,
     board_queue_build: result,
-    note: "Scheduled board queue pipeline prepared the queue only. No Gemini calls, no factor scoring, no prop ranking."
+    note: "Scheduled board queue pipeline prepared enriched queue payloads only. No Gemini calls, no factor scoring, no prop ranking."
   };
 }
 
