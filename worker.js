@@ -1,6 +1,6 @@
-// AlphaDog v1.2.74 - Static Splits Subrequest Repair compatible worker
+// AlphaDog v1.2.75 - Static Splits Resume Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.74 - Static Splits Subrequest Repair";
+const SYSTEM_VERSION = "v1.2.75 - Static Splits Resume Repair";
 const SYSTEM_CODENAME = "Static Splits Subrequest Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -4699,9 +4699,23 @@ async function syncStaticPlayerSplits(input, env) {
   const group = isTest ? 0 : (staticGroupFromJob(input.job, 'scrape_static_player_splits') || 1);
   const hardLimit = isTest ? 5 : Math.max(1, Math.min(Number(input?.limit || 10), 15));
 
+  let resetPerformed = false;
+  let resetReason = null;
   if (group === 1 && !isTest) {
-    await env.DB.prepare("DELETE FROM ref_player_splits").run();
-    await env.DB.prepare("DELETE FROM static_scrape_progress WHERE scrape_domain='player_splits' AND season=?").bind(season).run();
+    const progressCountRow = await env.DB.prepare("SELECT COUNT(*) AS rows_count FROM static_scrape_progress WHERE scrape_domain='player_splits' AND season=? AND group_no=1").bind(season).first();
+    const progressRowsBefore = Number(progressCountRow?.rows_count || 0);
+    const splitCountBefore = await staticTableCount(env, "ref_player_splits");
+
+    // G1 is both the rebuild starter and the resumable first group.
+    // It must wipe only before the first real G1 batch. Repeated G1 clicks must resume.
+    if (progressRowsBefore === 0 || (progressRowsBefore > 0 && Number(splitCountBefore.rows_count || 0) === 0)) {
+      await env.DB.prepare("DELETE FROM ref_player_splits").run();
+      await env.DB.prepare("DELETE FROM static_scrape_progress WHERE scrape_domain='player_splits' AND season=?").bind(season).run();
+      resetPerformed = true;
+      resetReason = progressRowsBefore === 0
+        ? "fresh_group_1_start_no_existing_group_1_progress"
+        : "progress_existed_but_split_table_was_empty_forced_clean_restart";
+    }
   }
 
   const all = await env.DB.prepare("SELECT player_id, player_name, team_id, role FROM ref_players WHERE active=1 ORDER BY player_name").all();
@@ -4761,7 +4775,7 @@ async function syncStaticPlayerSplits(input, env) {
   const status = failedFetches > 0 ? 'partial_retry_needed' : (remainingInGroup > 0 ? 'partial_continue' : (inserted > 0 || afterCount.rows_count > 0 ? 'pass' : 'empty_no_data'));
   const dataOk = Number(afterCount.rows_count || 0) > 0 && failedFetches === 0;
   return {
-    ok: failedFetches === 0, data_ok: dataOk, job: input.job || "scrape_static_player_splits_g1", version: SYSTEM_VERSION, status, table: "ref_player_splits", season, group, group_count: STATIC_GROUP_COUNT, selected_players_total: baseRows.length, eligible_before_this_run: eligible.length, batch_limit: hardLimit, attempted_players: selected.length, successful_fetch_count: successfulFetches, failed_fetch_count: failedFetches, inserted_rows: inserted, total_ref_player_splits_after: afterCount.rows_count, players_completed_this_run: playersCompleted, skipped_players_no_splits: skippedNoSplits, remaining_in_group_after: remainingInGroup, needs_continue: remainingInGroup > 0, api_endpoint_pattern: "/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr", root_cause_fixed: "v1.2.73 used no sitCodes and selected 130 players per group, causing zero-row responses plus Cloudflare subrequest exhaustion. v1.2.74 adds sitCodes and caps each invocation to a small resumable batch.", errors: errors.slice(0, 10), no_split_samples: noSplitSamples.slice(0, 10), estimated_seconds: isTest ? "5-15 seconds" : "10-25 seconds per resumable batch", note: isTest ? "Safe 5-player split smoke test. Does not wipe ref_player_splits." : "Resumable static split scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. G1 wipes only when starting a fresh full split rebuild."
+    ok: failedFetches === 0, data_ok: dataOk, job: input.job || "scrape_static_player_splits_g1", version: SYSTEM_VERSION, status, table: "ref_player_splits", season, group, group_count: STATIC_GROUP_COUNT, selected_players_total: baseRows.length, eligible_before_this_run: eligible.length, batch_limit: hardLimit, attempted_players: selected.length, successful_fetch_count: successfulFetches, failed_fetch_count: failedFetches, inserted_rows: inserted, total_ref_player_splits_after: afterCount.rows_count, players_completed_this_run: playersCompleted, skipped_players_no_splits: skippedNoSplits, remaining_in_group_after: remainingInGroup, needs_continue: remainingInGroup > 0, api_endpoint_pattern: "/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr", root_cause_fixed: "v1.2.73 used no sitCodes and selected 130 players per group, causing zero-row responses plus Cloudflare subrequest exhaustion. v1.2.74 added sitCodes and small batches. v1.2.75 fixes the G1 resume bug where every G1 click wiped progress before selecting the next batch.", reset_performed: resetPerformed, reset_reason: resetReason, errors: errors.slice(0, 10), no_split_samples: noSplitSamples.slice(0, 10), estimated_seconds: isTest ? "5-15 seconds" : "10-25 seconds per resumable batch", note: isTest ? "Safe 5-player split smoke test. Does not wipe ref_player_splits." : "Resumable static split scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. G1 wipes only on a fresh G1 start with no existing G1 progress, then resumes safely on repeated clicks."
   };
 }
 
