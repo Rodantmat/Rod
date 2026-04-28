@@ -1,7 +1,7 @@
 // AlphaDog v1.2.69 - Lockjaw Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.69.2 - SQL Auth Restore";
-const SYSTEM_CODENAME = "SQL Auth Restore";
+const SYSTEM_VERSION = "v1.2.69.3 - One-Shot Background Full Run";
+const SYSTEM_CODENAME = "One-Shot Background Full Run";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -635,6 +635,7 @@ export default {
       if (url.pathname === "/health") { const h = health(env); await logSystemEvent(env, { trigger_source: "control_room_debug", action_label: "DEBUG > Health", job_name: "health", status: "success", http_status: 200, output_preview: h }); return json(h); }
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
+      if (url.pathname === "/deferred/full-run" && request.method === "POST") return withCors(await handleDeferredFullRunRequest(request, env));
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
       if (url.pathname === "/board/queue-payload/inspect") return withCors(await handleBoardQueuePayloadInspect(request, env));
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
@@ -1176,6 +1177,23 @@ async function runScheduled(event, env) {
   const slate = resolveSlateDate(input);
   const cronText = String(cron || "").trim();
 
+  await ensureDeferredFullRunTable(env).catch(() => null);
+  await resetStaleDeferredFullRuns(env).catch(() => null);
+
+  if (cronText === "* * * * *") {
+    const due = await runDueDeferredFullRun(env);
+    return {
+      ok: true,
+      version: SYSTEM_VERSION,
+      job: "scheduled_router",
+      routed_job: "deferred_full_run_once_poller",
+      cron,
+      result: due,
+      scheduler_alignment: "v1.2.69.3 one-minute cron is temporary and only executes queued one-shot Full Run requests. It does nothing when no deferred request is pending.",
+      note: "Temporary one-shot background Full Run poller. Remove this temporary cron/route in the next build after testing."
+    };
+  }
+
   let routedJob = "board_queue_auto_mine";
   if (cronText === "0 12 * * *") routedJob = "run_full_pipeline";
   else if (cronText === "0 15 * * *") routedJob = "board_queue_auto_mine";
@@ -1225,6 +1243,105 @@ async function runScheduled(event, env) {
     return result;
   }
 }
+
+async function ensureDeferredFullRunTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS deferred_full_run_once (
+      request_id TEXT PRIMARY KEY,
+      job_name TEXT DEFAULT 'run_full_pipeline',
+      slate_date TEXT NOT NULL,
+      slate_mode TEXT DEFAULT 'AUTO',
+      status TEXT DEFAULT 'PENDING',
+      requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      run_after TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      task_id TEXT,
+      requested_by TEXT,
+      output_json TEXT,
+      error TEXT
+    )
+  `).run();
+}
+
+async function resetStaleDeferredFullRuns(env) {
+  await ensureDeferredFullRunTable(env);
+  const res = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='PENDING', started_at=NULL, error='stale deferred run reset to pending'
+    WHERE status='RUNNING'
+      AND started_at < datetime('now','-15 minutes')
+  `).run();
+  return { stale_deferred_reset: Number(res?.meta?.changes || 0) };
+}
+
+async function handleDeferredFullRunRequest(request, env) {
+  if (!isAuthorized(request, env)) return unauthorized();
+  await ensureDeferredFullRunTable(env);
+  const body = await safeJson(request);
+  const slate = resolveSlateDate(body || {});
+  const existing = await env.DB.prepare(`
+    SELECT request_id, status, run_after, requested_at
+    FROM deferred_full_run_once
+    WHERE status IN ('PENDING','RUNNING')
+      AND job_name='run_full_pipeline'
+      AND slate_date=?
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(slate.slate_date).first();
+  if (existing) {
+    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.69.3 test mode." });
+  }
+  const requestId = `deferred_full_run|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
+  const runAfter = new Date(Date.now() + 60 * 1000).toISOString().replace('T',' ').replace(/\.\d{3}Z$/, '');
+  await env.DB.prepare(`
+    INSERT INTO deferred_full_run_once (request_id, job_name, slate_date, slate_mode, status, run_after, requested_by)
+    VALUES (?, 'run_full_pipeline', ?, ?, 'PENDING', ?, 'control_room_full_run_button')
+  `).bind(requestId, slate.slate_date, slate.slate_mode, runAfter).run();
+  await logSystemEvent(env, { trigger_source: "control_room_button", action_label: "SCRAPE > FULL RUN scheduled one-shot", job_name: "deferred_full_run_once", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "scheduled", http_status: 200, task_id: requestId, input_json: { request_id: requestId, run_after: runAfter } });
+  return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "SCHEDULED_ONE_SHOT", request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, message: "Full Run scheduled for the backend in about 1 minute. Do not keep Safari open for this run. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.", temporary_test_mode: true, removal_note: "This one-shot scheduling mode is temporary for testing and should be removed in the next build after validation." });
+}
+
+async function runDueDeferredFullRun(env) {
+  await ensureDeferredFullRunTable(env);
+  await resetStaleDeferredFullRuns(env);
+  const row = await env.DB.prepare(`
+    SELECT * FROM deferred_full_run_once
+    WHERE status='PENDING'
+      AND run_after <= CURRENT_TIMESTAMP
+    ORDER BY run_after ASC, requested_at ASC
+    LIMIT 1
+  `).first();
+  if (!row) return { ok: true, status: "NO_DEFERRED_FULL_RUN_DUE", checked_at: new Date().toISOString() };
+  const taskId = crypto.randomUUID();
+  const claim = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='RUNNING', started_at=CURRENT_TIMESTAMP, task_id=?
+    WHERE request_id=? AND status='PENDING'
+  `).bind(taskId, row.request_id).run();
+  if (Number(claim?.meta?.changes || 0) === 0) return { ok: true, status: "DEFERRED_FULL_RUN_ALREADY_CLAIMED", request_id: row.request_id };
+  const input = { job: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", trigger: "deferred_one_shot", request_id: row.request_id };
+  await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "started", task_id: taskId, input_json: input });
+  await env.DB.prepare(`
+    INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
+    VALUES (?, 'run_full_pipeline', 'running', CURRENT_TIMESTAMP, ?)
+  `).bind(taskId, JSON.stringify(input)).run();
+  try {
+    const result = await runFullPipeline(input, env);
+    const ok = !!result?.ok;
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+    await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(ok ? "COMPLETED" : "FAILED", JSON.stringify(result), ok ? null : String(result?.error || result?.status || "full_run_failed"), row.request_id).run();
+    await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: ok ? "success" : "failed", task_id: taskId, output_preview: result, error: ok ? null : String(result?.error || result?.status || "full_run_failed") });
+    return { ok, status: ok ? "DEFERRED_FULL_RUN_COMPLETED" : "DEFERRED_FULL_RUN_FAILED", request_id: row.request_id, task_id: taskId, result };
+  } catch (err) {
+    const msg = String(err?.message || err);
+    await env.DB.prepare(`UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=? WHERE task_id=?`).bind(msg, taskId).run().catch(() => null);
+    await env.DB.prepare(`UPDATE deferred_full_run_once SET status='FAILED', finished_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?`).bind(msg, row.request_id).run().catch(() => null);
+    await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "failed", task_id: taskId, error: msg });
+    return { ok: false, status: "DEFERRED_FULL_RUN_EXCEPTION", request_id: row.request_id, task_id: taskId, error: msg };
+  }
+}
+
 
 async function logSystemEvent(env, event = {}) {
   try {
