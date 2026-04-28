@@ -1,8 +1,9 @@
 // AlphaDog v1.2.59 - Starter Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.60 - Missing Starter Blade";
-const SYSTEM_CODENAME = "Starter Spine";
+const SYSTEM_VERSION = "v1.2.61 - Auto Queue Spine";
+const SYSTEM_CODENAME = "Auto Queue Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
+const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -15,6 +16,7 @@ const JOB_DISPLAY_LABELS = {
   board_sifter_preview: "SCRAPE > Board Sifter Preview",
   board_queue_preview: "SCRAPE > Board Queue Preview",
   board_queue_build: "SCRAPE > Board Queue Build",
+  board_queue_auto_build: "SCRAPE > Board Queue Auto Build",
   run_board_queue_pipeline: "SCRAPE > Board Queue Pipeline",
   board_queue_mine_one: "SCRAPE > Board Queue Mine One Raw",
   board_queue_repair: "REPAIR > Board Queue Raw State",
@@ -90,7 +92,12 @@ const JOBS = {
   board_queue_build: {
     prompt: null,
     tables: ["mlb_stats", "board_factor_queue"],
-    note: "materializes board-derived factor queue rows for supported single-player lines; no Gemini calls"
+    note: "materializes one Cloudflare-safe board-derived factor queue slice; no Gemini calls"
+  },
+  board_queue_auto_build: {
+    prompt: null,
+    tables: ["mlb_stats", "board_factor_queue"],
+    note: "auto-materializes all board-derived factor queue families using lightweight payloads; no Gemini calls"
   },
   run_board_queue_pipeline: {
     prompt: null,
@@ -3124,6 +3131,45 @@ async function enrichBoardQueueGamePayload(env, slateDate, queueType, row) {
   };
 }
 
+function boardQueueBuildChunkLimit(input) {
+  return input && input.auto_build ? BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT : BOARD_QUEUE_BUILD_CHUNK_LIMIT;
+}
+
+function boardLightPlayerQueuePayload(slateDate, queueType, playerBatchSize, chunk) {
+  return {
+    slate_date: slateDate,
+    queue_type: queueType,
+    batch_size: playerBatchSize,
+    payload_mode: "lightweight_hydrate_at_mining",
+    players: chunk.map(p => ({
+      player_name: String(p.player_name || "").trim(),
+      team: normTeam(p.team),
+      first_start_time: p.first_start_time || null,
+      leg_rows: Number(p.leg_rows || 0),
+      opponent_sample: p.opponent_sample || ""
+    })),
+    payload_quality: {
+      available: ["board_identity_stub"],
+      missing: ["hydrated_context_deferred_until_mining"],
+      avg_completeness_score: 10
+    }
+  };
+}
+
+function boardLightGameQueuePayload(slateDate, queueType, row) {
+  return {
+    slate_date: slateDate,
+    queue_type: queueType,
+    payload_mode: "lightweight_hydrate_at_mining",
+    game: row,
+    payload_quality: {
+      available: ["board_game_stub"],
+      missing: ["hydrated_context_deferred_until_mining"],
+      completeness_score: 10
+    }
+  };
+}
+
 async function buildBoardQueueRows(input, env) {
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const exists = await boardTableExists(env);
@@ -3168,7 +3214,7 @@ async function buildBoardQueueRows(input, env) {
   const requestedQueueType = String(input.queue_type || input.build_queue_type || "").trim() || null;
   const buildOffset = Math.max(0, Number(input.build_offset || input.offset || 0) || 0);
   const buildLimitRaw = Number(input.max_queue_rows || input.limit || 0) || 0;
-  const buildLimit = buildLimitRaw > 0 ? Math.max(1, Math.min(buildLimitRaw, BOARD_QUEUE_BUILD_CHUNK_LIMIT)) : null;
+  const buildLimit = buildLimitRaw > 0 ? Math.max(1, Math.min(buildLimitRaw, boardQueueBuildChunkLimit(input))) : null;
   const queueRows = [];
   const playerBatchSizes = {
     PLAYER_A_ROLE_RECENT_MATCHUP: 2,
@@ -3187,7 +3233,7 @@ async function buildBoardQueueRows(input, env) {
       const absoluteIndex = buildLimit ? buildOffset + index : index;
       const chunk = playerChunks[index];
       const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
-      const enrichedPayload = await enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk);
+      const enrichedPayload = input.light_payload ? boardLightPlayerQueuePayload(slateDate, queueType, playerBatchSize, chunk) : await enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk);
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, absoluteIndex + 1, scopeKey),
         slate_date: slateDate,
@@ -3221,7 +3267,7 @@ async function buildBoardQueueRows(input, env) {
       const absoluteIndex = buildLimit ? buildOffset + index : index;
       const row = gameRows[index];
       const scopeKey = `${row.game_key}|${row.start_time}`;
-      const enrichedPayload = await enrichBoardQueueGamePayload(env, slateDate, queueType, row);
+      const enrichedPayload = input.light_payload ? boardLightGameQueuePayload(slateDate, queueType, row) : await enrichBoardQueueGamePayload(env, slateDate, queueType, row);
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, absoluteIndex + 1, scopeKey),
         slate_date: slateDate,
@@ -3398,7 +3444,7 @@ async function runBoardQueueBuild(input, env) {
     };
   }
 
-  const chunkLimit = Math.min(BOARD_QUEUE_BUILD_CHUNK_LIMIT, selected.remaining_rows);
+  const chunkLimit = Math.min(boardQueueBuildChunkLimit(input), selected.remaining_rows);
   const built = await buildBoardQueueRows({
     ...input,
     slate_date: slateDate,
@@ -3465,20 +3511,94 @@ async function runBoardQueueBuild(input, env) {
     queue_estimate: built.queue_estimate,
     queue_health: queueHealth.rows,
     warnings: built.warnings,
-    note: "Cloudflare-safe chunk build completed one larger queue slice only. Click Board Queue Build again until build_complete=true. No Gemini calls, no factor scoring, no prop ranking."
+    note: "Cloudflare-safe manual chunk build completed one queue slice only. For full automatic materialization, use SCRAPE > Board Queue Auto Build. No Gemini calls, no factor scoring, no prop ranking."
+  };
+}
+
+async function runBoardQueueAutoBuild(input, env) {
+  await ensureBoardFactorQueueTable(env);
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+  const maxPassesRaw = Number(input.max_passes || input.auto_passes || 8) || 8;
+  const maxPasses = Math.max(1, Math.min(maxPassesRaw, 10));
+  const steps = [];
+  let totalInserted = 0;
+  let finalBuild = null;
+
+  for (let pass = 1; pass <= maxPasses; pass += 1) {
+    const step = await runBoardQueueBuild({
+      ...input,
+      job: "board_queue_auto_build",
+      slate_date: slateDate,
+      auto_build: true,
+      light_payload: true,
+      max_queue_rows: BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT
+    }, env);
+    finalBuild = step;
+    totalInserted += Number(step?.inserted_queue_rows || 0);
+    steps.push({
+      pass,
+      ok: Boolean(step?.ok),
+      status: step?.status || "unknown",
+      build_complete: Boolean(step?.build_complete),
+      inserted_queue_rows: Number(step?.inserted_queue_rows || 0),
+      chunk: step?.chunk || null,
+      queue_health: step?.queue_health || []
+    });
+    if (!step || !step.ok) break;
+    if (step.build_complete) break;
+    if (Number(step.inserted_queue_rows || 0) <= 0 && step.status !== "pass") break;
+  }
+
+  const queueHealth = await boardRows(env, `
+    SELECT queue_type, status, COUNT(*) AS rows_count, SUM(source_rows) AS source_rows
+    FROM board_factor_queue
+    WHERE slate_date = ?
+    GROUP BY queue_type, status
+    ORDER BY queue_type, status
+  `, [slateDate]);
+
+  const plan = await getBoardQueueBuildPlan(input, env, slateDate);
+  let totalRemaining = 0;
+  for (const row of plan) {
+    const existing = await getBoardQueueExistingCount(env, slateDate, row.queue_type, row.scope_type);
+    row.existing_rows = existing;
+    row.remaining_rows = Math.max(0, Number(row.desired_rows || 0) - existing);
+    totalRemaining += row.remaining_rows;
+  }
+
+  const buildComplete = totalRemaining === 0;
+  return {
+    ok: true,
+    job: "board_queue_auto_build",
+    version: SYSTEM_VERSION,
+    status: buildComplete ? "pass" : "needs_continue",
+    slate_date: slateDate,
+    table: "board_factor_queue",
+    mode: "auto_lightweight_hydrate_at_mining_no_gemini_no_scoring",
+    auto_passes_run: steps.length,
+    inserted_queue_rows: totalInserted,
+    build_complete: buildComplete,
+    needs_continue: !buildComplete,
+    remaining_rows_total: totalRemaining,
+    build_plan: plan,
+    steps,
+    queue_health: queueHealth.rows,
+    final_build: finalBuild,
+    next_action: buildComplete ? "Queue build complete. Next: SCRAPE > Board Queue Mine One Raw or scheduled miner." : "Run SCRAPE > Board Queue Auto Build again, or let scheduled backend continue. It safely paused before forcing another loop.",
+    note: "Auto builder materializes every queue family with lightweight payloads. Detailed context is hydrated later at mining time, preventing repeated manual chunk clicking and reducing Worker/D1 pressure. No Gemini calls, no factor scoring, no prop ranking."
   };
 }
 
 async function runBoardQueuePipeline(input, env) {
-  const result = await runBoardQueueBuild({ ...input, job: "run_board_queue_pipeline" }, env);
+  const result = await runBoardQueueAutoBuild({ ...input, job: "run_board_queue_pipeline", max_passes: input.max_passes || 8 }, env);
   return {
     ok: Boolean(result && result.ok),
     job: "run_board_queue_pipeline",
     version: SYSTEM_VERSION,
     status: result && result.ok ? "pass" : "review",
     slate_date: result?.slate_date || resolveSlateDate(input).slate_date,
-    board_queue_build: result,
-    note: "Scheduled board queue pipeline prepared enriched queue payloads only. No Gemini calls, no factor scoring, no prop ranking."
+    board_queue_auto_build: result,
+    note: "Scheduled board queue pipeline auto-prepared lightweight queue payloads across all supported families. No Gemini calls, no factor scoring, no prop ranking."
   };
 }
 
@@ -3491,6 +3611,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "board_queue_build") {
     return await runBoardQueueBuild({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_auto_build") {
+    return await runBoardQueueAutoBuild({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "run_board_queue_pipeline") {
     return await runBoardQueuePipeline({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
