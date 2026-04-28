@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.45 - Label Mirror</div>
+<div id="versionTag">v1.2.46 - Queue Glass</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -212,10 +212,65 @@ SELECT 'BOARD_FACTOR_QUEUE_EXISTS' AS audit_type, COUNT(*) AS count_value, CASE 
 SELECT slate_date, queue_type, status, COUNT(*) AS rows_count, SUM(source_rows) AS source_rows FROM board_factor_queue GROUP BY slate_date, queue_type, status ORDER BY slate_date DESC, queue_type, status LIMIT 50;
 SELECT slate_date, COUNT(*) AS total_queue_rows, SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows, SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows, SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows FROM board_factor_queue GROUP BY slate_date ORDER BY slate_date DESC LIMIT 10;`}
 function boardQueueSampleAudit(){return `
-SELECT queue_id, slate_date, queue_type, scope_type, batch_index, player_count, game_count, source_rows, player_names, game_key, team_a, team_b, start_time, status
+SELECT
+  queue_type,
+  status,
+  COUNT(*) AS rows_count,
+  SUM(source_rows) AS source_rows,
+  MIN(batch_index) AS first_batch,
+  MAX(batch_index) AS last_batch
 FROM board_factor_queue
-ORDER BY created_at DESC, queue_type ASC, batch_index ASC
-LIMIT 50;`}
+GROUP BY queue_type, status
+ORDER BY
+  CASE queue_type
+    WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1
+    WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2
+    WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3
+    WHEN 'GAME_WEATHER_CONTEXT' THEN 4
+    WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5
+    ELSE 99
+  END,
+  status;
+
+SELECT
+  CASE queue_type
+    WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN '01_PLAYER_A'
+    WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN '02_PLAYER_D'
+    WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN '03_GAME_B'
+    WHEN 'GAME_WEATHER_CONTEXT' THEN '04_WEATHER'
+    WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN '05_NEWS'
+    ELSE '99_OTHER'
+  END AS queue_group,
+  queue_id,
+  slate_date,
+  queue_type,
+  scope_type,
+  batch_index,
+  player_count,
+  game_count,
+  source_rows,
+  player_names,
+  game_key,
+  team_a,
+  team_b,
+  start_time,
+  status,
+  created_at,
+  updated_at
+FROM board_factor_queue
+ORDER BY
+  slate_date DESC,
+  CASE queue_type
+    WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1
+    WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2
+    WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3
+    WHEN 'GAME_WEATHER_CONTEXT' THEN 4
+    WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5
+    ELSE 99
+  END,
+  batch_index ASC,
+  queue_id ASC
+LIMIT 75;`}
 updateSlateLabels();setInterval(updateSlateLabels,1000);loadConfig();
 function checkBullpen(){return ``}
 function listBullpen(){return `SELECT game_id, team_id, last_game_ip, last3_ip, fatigue, source, confidence FROM bullpens_current WHERE game_id LIKE '${D()}_%' ORDER BY game_id, team_id;`}

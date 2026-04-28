@@ -1,6 +1,6 @@
-// AlphaDog v1.2.45 - Label Mirror compatible worker
+// AlphaDog v1.2.46 - Queue Glass compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.45 - Label Mirror";
+const SYSTEM_VERSION = "v1.2.46 - Queue Glass";
 const SYSTEM_CODENAME = "Label Mirror";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
