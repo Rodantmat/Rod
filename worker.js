@@ -1,6 +1,6 @@
-// AlphaDog v1.2.71 - Static Data Foundation compatible worker
+// AlphaDog v1.2.72 - Static Players Chunk Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.71 - Static Data Foundation";
+const SYSTEM_VERSION = "v1.2.72 - Static Players Chunk Repair";
 const SYSTEM_CODENAME = "Static Data Foundation";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -53,7 +53,13 @@ const JOB_DISPLAY_LABELS = {
   scrape_recent_usage: "SCRAPE > Usage",
   scrape_static_venues: "STATIC > Scrape Venues",
   scrape_static_team_aliases: "STATIC > Scrape Team Aliases",
-  scrape_static_players: "STATIC > Scrape Players",
+  scrape_static_players: "STATIC > Scrape Players (Legacy All)",
+  scrape_static_players_g1: "STATIC > Scrape Players G1",
+  scrape_static_players_g2: "STATIC > Scrape Players G2",
+  scrape_static_players_g3: "STATIC > Scrape Players G3",
+  scrape_static_players_g4: "STATIC > Scrape Players G4",
+  scrape_static_players_g5: "STATIC > Scrape Players G5",
+  scrape_static_players_g6: "STATIC > Scrape Players G6",
   scrape_static_player_splits_g1: "STATIC > Scrape Splits G1",
   scrape_static_player_splits_g2: "STATIC > Scrape Splits G2",
   scrape_static_player_splits_g3: "STATIC > Scrape Splits G3",
@@ -299,7 +305,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
-      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.71 stale running task reset before lock acquisition'
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.72 stale running task reset before lock acquisition'
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue','board_queue_auto_mine','run_board_queue_pipeline')
@@ -309,7 +315,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const lockRes = await env.DB.prepare(`
       UPDATE pipeline_locks
-      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.71 stale lock reset'
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.72 stale lock reset'
       WHERE status='RUNNING'
         AND updated_at < datetime('now','-15 minutes')
     `).run();
@@ -319,12 +325,12 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
     const queueRes = slateDate
       ? await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.71 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset')
           WHERE slate_date=? AND status='RUNNING'
         `).bind(slateDate).run()
       : await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.71 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset')
           WHERE status='RUNNING'
         `).run();
     audit.queue_rows_reset = Number(queueRes?.meta?.changes || 0);
@@ -560,8 +566,14 @@ const JOBS = {
   scrape_static_players: {
     prompt: null,
     tables: ["ref_players"],
-    note: "manual static active-player identity rebuild from MLB StatsAPI active rosters"
+    note: "legacy all-team static active-player identity rebuild; prefer G1-G6 to avoid subrequest limits"
   },
+  scrape_static_players_g1: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 1; wipes ref_players first" },
+  scrape_static_players_g2: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 2; append only" },
+  scrape_static_players_g3: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 3; append only" },
+  scrape_static_players_g4: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 4; append only" },
+  scrape_static_players_g5: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 5; append only" },
+  scrape_static_players_g6: { prompt: null, tables: ["ref_players"], note: "manual static active-player identity rebuild group 6; append only" },
   scrape_static_player_splits_g1: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 1" },
   scrape_static_player_splits_g2: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 2" },
   scrape_static_player_splits_g3: { prompt: null, tables: ["ref_player_splits"], note: "manual static player standard splits group 3" },
@@ -802,6 +814,12 @@ function executableJobNames() {
     "scrape_static_venues",
     "scrape_static_team_aliases",
     "scrape_static_players",
+    "scrape_static_players_g1",
+    "scrape_static_players_g2",
+    "scrape_static_players_g3",
+    "scrape_static_players_g4",
+    "scrape_static_players_g5",
+    "scrape_static_players_g6",
     "scrape_static_player_splits_g1",
     "scrape_static_player_splits_g2",
     "scrape_static_player_splits_g3",
@@ -1282,7 +1300,7 @@ async function runScheduled(event, env) {
       routed_job: "deferred_full_run_once_poller",
       cron,
       result: due,
-      scheduler_alignment: "v1.2.71 keeps the temporary one-minute one-shot Full Run poller only for deferred Full Run requests. Persistent mining remains handled by the separate */2 cron; static data jobs are manual/control-room only.",
+      scheduler_alignment: "v1.2.72 keeps the temporary one-minute one-shot Full Run poller only for deferred Full Run requests. Persistent mining remains handled by the separate */2 cron; static data jobs are manual/control-room only.",
       note: "Temporary one-shot background Full Run poller. Keep for now; remove after scheduler/miner reliability is fully proven."
     };
   }
@@ -1318,7 +1336,7 @@ async function runScheduled(event, env) {
       routed_job: routedJob,
       cron,
       result,
-      scheduler_alignment: "v1.2.71 routes the */2 cron to one bounded persistent miner invocation. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together. Static reference scrapers are not scheduled.",
+      scheduler_alignment: "v1.2.72 routes the */2 cron to one bounded persistent miner invocation. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together. Static reference scrapers are not scheduled.",
       note: "Persistent miner active: every 2 minutes it mines one family in a 20-second time box, uses independent locks, retries with backoff, and leaves scoring disabled."
     };
     await env.DB.prepare(`
@@ -1384,7 +1402,7 @@ async function handleDeferredFullRunRequest(request, env) {
     LIMIT 1
   `).bind(slate.slate_date).first();
   if (existing) {
-    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.71 one-shot Full Run mode." });
+    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.72 one-shot Full Run mode." });
   }
   const requestId = `deferred_full_run|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
   const runAfter = new Date(Date.now() + 60 * 1000).toISOString().replace('T',' ').replace(/\.\d{3}Z$/, '');
@@ -3277,7 +3295,7 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
 
   const staleRunning = await env.DB.prepare(`
     UPDATE board_factor_queue
-    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.71 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
+    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
     WHERE slate_date = ? AND status = 'RUNNING' AND updated_at < datetime('now', '-10 minutes')
   `).bind(slateDate).run();
 
@@ -3397,7 +3415,7 @@ async function runBoardQueueMineOne(input, env) {
     const resultId = canonicalWrite.result_id;
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.71 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.72 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
@@ -3502,7 +3520,7 @@ async function runBoardQueueAutoMineCore(input, env) {
     slate_date: slateDate,
     mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
     selected_queue_type: selectedQueueType || null,
-    family_rotation_policy: "v1.2.71 selects the under-mined family with the fewest completed result queues, honors RETRY_LATER backoff, and runs one family per invocation with no new rotation table.",
+    family_rotation_policy: "v1.2.72 selects the under-mined family with the fewest completed result queues, honors RETRY_LATER backoff, and runs one family per invocation with no new rotation table.",
     mine_limit: mineLimit,
     progress: {
       total_rows: totalRows,
@@ -4427,6 +4445,10 @@ const STATIC_VENUE_SUPPLEMENT = {
   14: { altitude_ft: 250, left_field_dimension_ft: 328, center_field_dimension_ft: 400, right_field_dimension_ft: 328, notes: "Supplemental controlled venue source; values not independently verified by Gemini." },
   2530: { altitude_ft: 25, left_field_dimension_ft: 318, center_field_dimension_ft: 408, right_field_dimension_ft: 314, notes: "Supplemental controlled venue source; values not independently verified by Gemini." }
 };
+const STATIC_TEAM_VENUE_OVERRIDES = {
+  TB: { venue_id: 2530, name: "George M. Steinbrenner Field", city: "Tampa", state: "FL", roof_status: "Open", surface_type: "Grass", notes: "Controlled override for Rays temporary home; MLB team endpoint may still report Tropicana Field." }
+};
+
 
 async function fetchMlbTeamsForStatic() {
   const fetched = await fetchJsonWithRetry("https://statsapi.mlb.com/api/v1/teams?sportId=1&activeStatus=Y", {}, 3, "mlb_static_teams");
@@ -4435,7 +4457,7 @@ async function fetchMlbTeamsForStatic() {
 }
 
 function normalizeRoleFromPosition(pos, throws) {
-  return String(pos || '').toUpperCase() === 'P' ? 'P' : 'BATTER';
+  return String(pos || '').toUpperCase() === 'P' ? 'PITCHER' : 'BATTER';
 }
 
 async function syncStaticVenues(input, env) {
@@ -4452,12 +4474,26 @@ async function syncStaticVenues(input, env) {
   let inserted = 0;
   const audit = [];
   for (const t of teams) {
-    const venueId = Number(t?.venue?.id || 0);
     const teamId = MLB_TEAM_ABBR[t.id];
-    let venue = t.venue || {};
+    const venueOverride = STATIC_TEAM_VENUE_OVERRIDES[teamId] || null;
+    let venueId = venueOverride?.venue_id ? Number(venueOverride.venue_id) : Number(t?.venue?.id || 0);
+    let venue = venueOverride ? {
+      id: venueId,
+      name: venueOverride.name,
+      location: { city: venueOverride.city, state: venueOverride.state, stateAbbrev: venueOverride.state },
+      fieldInfo: { roofType: venueOverride.roof_status, turfType: venueOverride.surface_type }
+    } : (t.venue || {});
     if (venueId) {
       const vf = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/venues/${venueId}`, {}, 2, `mlb_venue_${venueId}`);
       if (vf.ok && Array.isArray(vf.data?.venues) && vf.data.venues[0]) venue = { ...venue, ...vf.data.venues[0] };
+    }
+    if (venueOverride) {
+      venue = {
+        ...venue,
+        name: venueOverride.name,
+        location: { ...(venue.location || {}), city: venueOverride.city, state: venueOverride.state, stateAbbrev: venueOverride.state },
+        fieldInfo: { ...(venue.fieldInfo || {}), roofType: venueOverride.roof_status, turfType: venueOverride.surface_type }
+      };
     }
     const sup = STATIC_VENUE_SUPPLEMENT[venueId] || {};
     const fieldInfo = venue.fieldInfo || {};
@@ -4478,12 +4514,12 @@ async function syncStaticVenues(input, env) {
       sup.right_field_dimension_ft ?? null,
       sup.altitude_ft ? "mlb_statsapi_plus_controlled_static_venue_source" : "mlb_statsapi_venue_basic",
       sup.altitude_ft ? "HIGH_FOR_API_FIELDS_MEDIUM_FOR_SUPPLEMENTAL" : "HIGH_FOR_API_FIELDS",
-      sup.notes || "MLB StatsAPI venue basic fields; supplemental dimensions not available.",
+      venueOverride?.notes || sup.notes || "MLB StatsAPI venue basic fields; supplemental dimensions not available.",
     ).run();
     inserted += Number(res?.meta?.changes || 0);
-    audit.push({ team_id: teamId, venue_id: venueId, venue_name: venue.name || null, supplemental_static: Boolean(sup.altitude_ft) });
+    audit.push({ team_id: teamId, venue_id: venueId, venue_name: venue.name || null, supplemental_static: Boolean(sup.altitude_ft), override_applied: Boolean(venueOverride) });
   }
-  return { ok: true, job: input.job || "scrape_static_venues", version: SYSTEM_VERSION, status: "pass", table: "ref_venues", fetched_teams: teams.length, inserted_rows: inserted, audit, estimated_seconds: "5-15 seconds", note: "Wiped and rebuilt ref_venues. MLB StatsAPI is source for official venue basics; controlled supplemental fields are only present where explicitly mapped." };
+  return { ok: true, job: input.job || "scrape_static_venues", version: SYSTEM_VERSION, status: "pass", table: "ref_venues", fetched_teams: teams.length, inserted_rows: inserted, audit, estimated_seconds: "5-15 seconds", note: "Wiped and rebuilt ref_venues. MLB StatsAPI is source for official venue basics; controlled overrides/supplemental fields are only present where explicitly mapped." };
 }
 
 async function syncStaticTeamAliases(input, env) {
@@ -4520,8 +4556,11 @@ async function syncStaticTeamAliases(input, env) {
 async function syncStaticPlayers(input, env) {
   await ensureStaticReferenceTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
-  const teams = await fetchMlbTeamsForStatic();
-  await env.DB.prepare("DELETE FROM ref_players").run();
+  const allTeams = await fetchMlbTeamsForStatic();
+  const groupMatch = String(input?.job || '').match(/scrape_static_players_g([1-6])$/);
+  const group = groupMatch ? Number(groupMatch[1]) : null;
+  const teams = group ? groupSlice(allTeams, group) : allTeams;
+  if (group === 1 || !group) await env.DB.prepare("DELETE FROM ref_players").run();
   const stmt = env.DB.prepare(`
     INSERT OR REPLACE INTO ref_players (player_id, mlb_id, player_name, team_id, primary_position, role, bats, throws, birth_date, age, active, source_name, source_confidence, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'mlb_statsapi_active_roster_reference', 'HIGH', CURRENT_TIMESTAMP)
@@ -4539,9 +4578,10 @@ async function syncStaticPlayers(input, env) {
       const pos = entry.position || person.primaryPosition || {};
       const playerId = Number(person.id || 0);
       if (!playerId || !person.fullName) continue;
+      const primary = pos.abbreviation || pos.code || null;
       const res = await stmt.bind(
-        playerId, playerId, person.fullName, teamId, pos.abbreviation || pos.code || null,
-        normalizeRoleFromPosition(pos.code || pos.abbreviation, person?.pitchHand?.code),
+        playerId, playerId, person.fullName, teamId, primary,
+        normalizeRoleFromPosition(primary, person?.pitchHand?.code),
         person?.batSide?.code || null,
         person?.pitchHand?.code || null,
         person?.birthDate || null,
@@ -4550,7 +4590,25 @@ async function syncStaticPlayers(input, env) {
       inserted += Number(res?.meta?.changes || 0);
     }
   }
-  return { ok: true, job: input.job || "scrape_static_players", version: SYSTEM_VERSION, status: inserted > 0 ? "pass" : "empty", table: "ref_players", season, teams_checked: teams.length, inserted_rows: inserted, team_audit: audit, estimated_seconds: "25-60 seconds", note: "Wiped and rebuilt ref_players from MLB active rosters. This is a static/slow reference baseline, not daily slate status." };
+  const afterCount = await staticTableCount(env, "ref_players");
+  const failedTeams = audit.filter(a => !a.ok).length;
+  return {
+    ok: inserted > 0 && failedTeams === 0,
+    job: input.job || "scrape_static_players",
+    version: SYSTEM_VERSION,
+    status: failedTeams ? "partial_subrequest_safe_retry_needed" : (inserted > 0 ? "pass" : "empty"),
+    table: "ref_players",
+    season,
+    group,
+    teams_total: allTeams.length,
+    teams_checked: teams.length,
+    inserted_rows: inserted,
+    total_ref_players_after: afterCount.rows_count,
+    failed_teams: failedTeams,
+    team_audit: audit,
+    estimated_seconds: group ? "10-25 seconds per group" : "may exceed subrequest limits; prefer G1-G6",
+    note: group ? "Chunked static player scrape. G1 wipes ref_players, G2-G6 append. Pitchers are stored with role=PITCHER." : "Legacy all-team static player scrape. Prefer G1-G6 to avoid Cloudflare subrequest limits. Pitchers are stored with role=PITCHER."
+  };
 }
 
 function extractSplitCode(split) {
@@ -4593,7 +4651,7 @@ async function syncStaticPlayerSplits(input, env) {
   let inserted = 0, fetchedPlayers = 0, skipped = 0;
   const errors = [];
   for (const player of selected) {
-    const groups = player.role === 'P' ? ['pitching'] : ['hitting'];
+    const groups = player.role === 'PITCHER' ? ['pitching'] : ['hitting'];
     for (const groupType of groups) {
       const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(player.player_id)}/stats?stats=statSplits&group=${groupType}&season=${season}`;
       const fetched = await fetchJsonWithRetry(url, {}, 2, `static_splits_${player.player_id}_${groupType}`);
@@ -4626,7 +4684,7 @@ async function syncStaticPlayerGameLogs(input, env) {
   let inserted = 0, fetchedPlayers = 0, skipped = 0;
   const errors = [];
   for (const player of selected) {
-    const groupType = player.role === 'P' ? 'pitching' : 'hitting';
+    const groupType = player.role === 'PITCHER' ? 'pitching' : 'hitting';
     const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(player.player_id)}/stats?stats=gameLog&group=${groupType}&season=${season}`;
     const fetched = await fetchJsonWithRetry(url, {}, 2, `static_gamelog_${player.player_id}_${groupType}`);
     if (!fetched.ok) { errors.push({ player_id: player.player_id, player_name: player.player_name, error: fetched.error }); continue; }
@@ -4721,9 +4779,17 @@ async function syncStaticBvpCurrentSlate(input, env) {
 async function syncStaticAllFast(input, env) {
   const venues = await syncStaticVenues({ ...input, job: "scrape_static_venues" }, env);
   const aliases = await syncStaticTeamAliases({ ...input, job: "scrape_static_team_aliases" }, env);
-  const players = await syncStaticPlayers({ ...input, job: "scrape_static_players" }, env);
-  return { ok: Boolean(venues.ok && aliases.ok && players.ok), job: input.job || "scrape_static_all_fast", version: SYSTEM_VERSION, status: "pass", steps: { venues, aliases, players }, estimated_seconds: "45-90 seconds", note: "Fast static foundation only: venues + team aliases + active players. Splits, game logs, and BvP are separate because they are heavier." };
+  return {
+    ok: Boolean(venues.ok && aliases.ok),
+    job: input.job || "scrape_static_all_fast",
+    version: SYSTEM_VERSION,
+    status: "pass",
+    steps: { venues, aliases, players: { skipped: true, reason: "Static players are chunked in v1.2.72. Run Players G1-G6 in order to avoid Cloudflare subrequest limits." } },
+    estimated_seconds: "10-25 seconds",
+    note: "Fast static foundation only: venues + team aliases. Static players are intentionally separated into Players G1-G6 chunk buttons."
+  };
 }
+
 
 async function staticTableCount(env, tableName) {
   if (!(await tableExists(env, tableName))) return { table: tableName, exists: false, rows_count: 0 };
@@ -4735,14 +4801,14 @@ async function checkStaticData(input, env, target) {
   const targets = target === 'all' ? ['ref_venues','ref_team_aliases','ref_players','ref_player_splits','player_game_logs','ref_bvp_history'] : [target];
   const counts = [];
   for (const t of targets) counts.push(await staticTableCount(env, t));
-  const ok = counts.every(c => c.exists && c.rows_count > 0);
+  const dataOk = counts.every(c => c.exists && c.rows_count > 0);
   const samples = {};
   for (const c of counts) {
     if (!c.exists || c.rows_count <= 0) continue;
     const rows = await env.DB.prepare(`SELECT * FROM ${c.table} LIMIT 10`).all();
     samples[c.table] = rows.results || [];
   }
-  return { ok, job: input.job || `check_static_${target}`, version: SYSTEM_VERSION, status: ok ? 'pass' : 'needs_scrape', counts, samples, note: "Static checks are read-only. Missing/zero tables should be fixed by the matching STATIC scrape button." };
+  return { ok: true, data_ok: dataOk, job: input.job || `check_static_${target}`, version: SYSTEM_VERSION, status: dataOk ? 'pass' : 'needs_scrape', counts, samples, note: "Static checks are read-only. Missing/zero tables are not HTTP failures; fix them with the matching STATIC scrape button." };
 }
 
 async function executeTaskJob(jobName, body, slate, env) {
@@ -4774,6 +4840,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_static_venues") return await syncStaticVenues({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_team_aliases") return await syncStaticTeamAliases({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_players") return await syncStaticPlayers({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (/^scrape_static_players_g[1-6]$/.test(jobName)) return await syncStaticPlayers({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^scrape_static_player_splits_g[1-6]$/.test(jobName)) return await syncStaticPlayerSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^scrape_static_game_logs_g[1-6]$/.test(jobName)) return await syncStaticPlayerGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_bvp_current_slate") return await syncStaticBvpCurrentSlate({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -5078,7 +5145,7 @@ async function runFullPipelineCore(input, env) {
     job: "run_full_pipeline",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
-    dispatcher_mode: "v1.2.71_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
+    dispatcher_mode: "v1.2.72_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
     games,
     markets: marketsTotal,
     expected_starters: expectedStarters,
@@ -5130,7 +5197,7 @@ async function runFullPipeline(input, env) {
     const result = await runFullPipelineCore(input || {}, env);
     if (result && typeof result === 'object') {
       result.lock_status = 'RELEASED';
-      result.state_machine_policy = 'v1.2.71: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
+      result.state_machine_policy = 'v1.2.72: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
     }
     return result;
   } catch (err) {
@@ -5585,7 +5652,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
     inserted: { players_current: inserted },
     skipped_count: (validated.skipped?.length || 0) + (protectedFilter.skipped?.length || 0),
     skipped: [...(protectedFilter.skipped || []), ...(validated.skipped || [])].slice(0, 20),
-    starter_protection_policy: "v1.2.71 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
+    starter_protection_policy: "v1.2.72 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
     complete: deferred === 0
   };
 }
