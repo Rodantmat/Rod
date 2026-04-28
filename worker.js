@@ -1,6 +1,6 @@
-// AlphaDog v1.2.72 - Static Players Chunk Repair compatible worker
+// AlphaDog v1.2.73 - Static GroupSlice Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.72 - Static Players Chunk Repair";
+const SYSTEM_VERSION = "v1.2.73 - Static GroupSlice Repair";
 const SYSTEM_CODENAME = "Static Data Foundation";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -305,7 +305,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
-      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.72 stale running task reset before lock acquisition'
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.73 stale running task reset before lock acquisition'
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue','board_queue_auto_mine','run_board_queue_pipeline')
@@ -315,7 +315,7 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const lockRes = await env.DB.prepare(`
       UPDATE pipeline_locks
-      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.72 stale lock reset'
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.73 stale lock reset'
       WHERE status='RUNNING'
         AND updated_at < datetime('now','-15 minutes')
     `).run();
@@ -325,12 +325,12 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
     const queueRes = slateDate
       ? await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.73 stale RUNNING queue reset')
           WHERE slate_date=? AND status='RUNNING'
         `).bind(slateDate).run()
       : await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.73 stale RUNNING queue reset')
           WHERE status='RUNNING'
         `).run();
     audit.queue_rows_reset = Number(queueRes?.meta?.changes || 0);
@@ -1300,7 +1300,7 @@ async function runScheduled(event, env) {
       routed_job: "deferred_full_run_once_poller",
       cron,
       result: due,
-      scheduler_alignment: "v1.2.72 keeps the temporary one-minute one-shot Full Run poller only for deferred Full Run requests. Persistent mining remains handled by the separate */2 cron; static data jobs are manual/control-room only.",
+      scheduler_alignment: "v1.2.73 keeps the temporary one-minute one-shot Full Run poller only for deferred Full Run requests. Persistent mining remains handled by the separate */2 cron; static data jobs are manual/control-room only.",
       note: "Temporary one-shot background Full Run poller. Keep for now; remove after scheduler/miner reliability is fully proven."
     };
   }
@@ -1336,7 +1336,7 @@ async function runScheduled(event, env) {
       routed_job: routedJob,
       cron,
       result,
-      scheduler_alignment: "v1.2.72 routes the */2 cron to one bounded persistent miner invocation. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together. Static reference scrapers are not scheduled.",
+      scheduler_alignment: "v1.2.73 routes the */2 cron to one bounded persistent miner invocation. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together. Static reference scrapers are not scheduled.",
       note: "Persistent miner active: every 2 minutes it mines one family in a 20-second time box, uses independent locks, retries with backoff, and leaves scoring disabled."
     };
     await env.DB.prepare(`
@@ -1402,7 +1402,7 @@ async function handleDeferredFullRunRequest(request, env) {
     LIMIT 1
   `).bind(slate.slate_date).first();
   if (existing) {
-    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.72 one-shot Full Run mode." });
+    return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "ALREADY_SCHEDULED", slate_date: slate.slate_date, existing_request: existing, message: "A one-shot background Full Run is already pending or running. Do not click Full Run again. Check Scheduler Log / Tasks / queue health in about 15 minutes.", note: "Temporary v1.2.73 one-shot Full Run mode." });
   }
   const requestId = `deferred_full_run|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
   const runAfter = new Date(Date.now() + 60 * 1000).toISOString().replace('T',' ').replace(/\.\d{3}Z$/, '');
@@ -3295,7 +3295,7 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
 
   const staleRunning = await env.DB.prepare(`
     UPDATE board_factor_queue
-    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.72 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
+    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.73 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
     WHERE slate_date = ? AND status = 'RUNNING' AND updated_at < datetime('now', '-10 minutes')
   `).bind(slateDate).run();
 
@@ -3415,7 +3415,7 @@ async function runBoardQueueMineOne(input, env) {
     const resultId = canonicalWrite.result_id;
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.72 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.73 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
@@ -3520,7 +3520,7 @@ async function runBoardQueueAutoMineCore(input, env) {
     slate_date: slateDate,
     mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
     selected_queue_type: selectedQueueType || null,
-    family_rotation_policy: "v1.2.72 selects the under-mined family with the fewest completed result queues, honors RETRY_LATER backoff, and runs one family per invocation with no new rotation table.",
+    family_rotation_policy: "v1.2.73 selects the under-mined family with the fewest completed result queues, honors RETRY_LATER backoff, and runs one family per invocation with no new rotation table.",
     mine_limit: mineLimit,
     progress: {
       total_rows: totalRows,
@@ -4294,6 +4294,14 @@ function staticGroupFromJob(job, prefix) {
   return m ? Number(m[1]) : null;
 }
 
+function groupSlice(rows, group) {
+  const sorted = [...(rows || [])];
+  if (!group) return sorted;
+  const size = Math.ceil(sorted.length / STATIC_GROUP_COUNT);
+  const start = (group - 1) * size;
+  return sorted.slice(start, start + size);
+}
+
 function selectStaticGroupRows(rows, group) {
   const sorted = [...(rows || [])].sort((a, b) => String(a.player_name || '').localeCompare(String(b.player_name || '')) || Number(a.player_id || 0) - Number(b.player_id || 0));
   if (!group) return sorted;
@@ -4784,7 +4792,7 @@ async function syncStaticAllFast(input, env) {
     job: input.job || "scrape_static_all_fast",
     version: SYSTEM_VERSION,
     status: "pass",
-    steps: { venues, aliases, players: { skipped: true, reason: "Static players are chunked in v1.2.72. Run Players G1-G6 in order to avoid Cloudflare subrequest limits." } },
+    steps: { venues, aliases, players: { skipped: true, reason: "Static players are chunked in v1.2.73. Run Players G1-G6 in order to avoid Cloudflare subrequest limits." } },
     estimated_seconds: "10-25 seconds",
     note: "Fast static foundation only: venues + team aliases. Static players are intentionally separated into Players G1-G6 chunk buttons."
   };
@@ -5145,7 +5153,7 @@ async function runFullPipelineCore(input, env) {
     job: "run_full_pipeline",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
-    dispatcher_mode: "v1.2.72_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
+    dispatcher_mode: "v1.2.73_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
     games,
     markets: marketsTotal,
     expected_starters: expectedStarters,
@@ -5197,7 +5205,7 @@ async function runFullPipeline(input, env) {
     const result = await runFullPipelineCore(input || {}, env);
     if (result && typeof result === 'object') {
       result.lock_status = 'RELEASED';
-      result.state_machine_policy = 'v1.2.72: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
+      result.state_machine_policy = 'v1.2.73: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
     }
     return result;
   } catch (err) {
@@ -5652,7 +5660,7 @@ async function syncMlbApiPlayersIdentity(input, env) {
     inserted: { players_current: inserted },
     skipped_count: (validated.skipped?.length || 0) + (protectedFilter.skipped?.length || 0),
     skipped: [...(protectedFilter.skipped || []), ...(validated.skipped || [])].slice(0, 20),
-    starter_protection_policy: "v1.2.72 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
+    starter_protection_policy: "v1.2.73 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
     complete: deferred === 0
   };
 }
