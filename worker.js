@@ -1,8 +1,8 @@
-// AlphaDog v1.2.55 - Chunk Forge compatible worker
+// AlphaDog v1.2.56 - Fast Chunk compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.55 - Chunk Forge";
-const SYSTEM_CODENAME = "Chunk Forge";
-const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 6;
+const SYSTEM_VERSION = "v1.2.56 - Fast Chunk";
+const SYSTEM_CODENAME = "Fast Chunk";
+const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -3433,7 +3433,7 @@ async function runBoardQueueBuild(input, env) {
     queue_estimate: built.queue_estimate,
     queue_health: queueHealth.rows,
     warnings: built.warnings,
-    note: "Cloudflare-safe chunk build completed one small queue slice only. Click Board Queue Build again until build_complete=true. No Gemini calls, no factor scoring, no prop ranking."
+    note: "Cloudflare-safe chunk build completed one larger queue slice only. Click Board Queue Build again until build_complete=true. No Gemini calls, no factor scoring, no prop ranking."
   };
 }
 
