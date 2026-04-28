@@ -1,10 +1,10 @@
-// AlphaDog v1.2.67 - State Machine Spine compatible worker
+// AlphaDog v1.2.68 - Atomic Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.67 - State Machine Spine";
-const SYSTEM_CODENAME = "State Machine Spine";
+const SYSTEM_VERSION = "v1.2.68 - Atomic Dispatcher";
+const SYSTEM_CODENAME = "Atomic Dispatcher";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
-const BOARD_QUEUE_AUTO_MINE_LIMIT = 8;
+const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
 const BOARD_QUEUE_RETRY_LIMIT = 3;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -125,6 +125,44 @@ async function releasePipelineLock(env, lockId, lockedBy) {
   } catch (err) {
     return { released: false, lock_id: lockId, error: String(err?.message || err) };
   }
+}
+
+async function resetStalePipelineRuntime(env, slateDate = null) {
+  const audit = { task_runs_reset: 0, queue_rows_reset: 0, locks_reset: 0 };
+  try {
+    const taskRes = await env.DB.prepare(`
+      UPDATE task_runs
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.68 stale running task reset before dispatcher lock'
+      WHERE status='running'
+        AND started_at < datetime('now','-15 minutes')
+        AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue')
+    `).run();
+    audit.task_runs_reset = Number(taskRes?.meta?.changes || 0);
+  } catch (err) { audit.task_runs_error = String(err?.message || err); }
+  try {
+    const lockRes = await env.DB.prepare(`
+      UPDATE pipeline_locks
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.68 stale lock reset'
+      WHERE status='RUNNING'
+        AND updated_at < datetime('now','-15 minutes')
+    `).run();
+    audit.locks_reset = Number(lockRes?.meta?.changes || 0);
+  } catch (err) { audit.locks_error = String(err?.message || err); }
+  try {
+    const queueRes = slateDate
+      ? await env.DB.prepare(`
+          UPDATE board_factor_queue
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.68 stale RUNNING queue reset')
+          WHERE slate_date=? AND status='RUNNING'
+        `).bind(slateDate).run()
+      : await env.DB.prepare(`
+          UPDATE board_factor_queue
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.68 stale RUNNING queue reset')
+          WHERE status='RUNNING'
+        `).run();
+    audit.queue_rows_reset = Number(queueRes?.meta?.changes || 0);
+  } catch (err) { audit.queue_rows_error = String(err?.message || err); }
+  return audit;
 }
 
 async function boardQueueTotals(env, slateDate) {
@@ -4108,137 +4146,53 @@ async function runFullPipelineCore(input, env) {
   const slateDate = slate.slate_date;
   const startedAt = new Date().toISOString();
   const steps = [];
-  const groupsRun = [];
-  const preservedStarterOverrides = await snapshotReusableStarterOverrides(env, slateDate);
-  if (preservedStarterOverrides.length) steps.push({ label: "Snapshot Reusable Missing Starters", job: "internal_snapshot_projected_starters", result: { ok: true, rows: preservedStarterOverrides.length } });
+  const warnings = [];
+  const errors = [];
 
-  async function step(label, job) {
-    const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
-      ? await syncMlbApiGamesMarkets({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
-      : (job === "scrape_starters_missing")
-        ? await syncMissingStartersLiveFallback({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
-        : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-    steps.push({ label, job, result });
-    return result;
-  }
+  const staleRecovery = await resetStalePipelineRuntime(env, slateDate);
+  steps.push({ label: "Stale Runtime Recovery", job: "internal_stale_recovery", result: staleRecovery });
 
-  async function stepWithRetry(label, job, maxAttempts, successCheck) {
-    let last = null;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
-        ? await syncMlbApiGamesMarkets({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
-        : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-      last = result;
-      steps.push({ label, job, attempt, result });
-
-      if (result.ok && (!successCheck || await successCheck(result))) {
-        return result;
+  async function safeStep(label, job, runner, required = false) {
+    try {
+      const result = await runner();
+      steps.push({ label, job, result });
+      if (result && result.ok === false) {
+        const msg = `${label}: ${result.error || result.status || 'not ok'`};
+        (required ? errors : warnings).push(msg);
       }
+      return result;
+    } catch (err) {
+      const result = { ok: false, status: "STEP_EXCEPTION", error: String(err?.message || err) };
+      steps.push({ label, job, result });
+      const msg = `${label}: ${result.error}`;
+      (required ? errors : warnings).push(msg);
+      return result;
     }
-    return last || { ok: false, error: "No attempts executed" };
   }
 
-  await env.DB.prepare("DELETE FROM starters_current WHERE game_id LIKE ? AND source = 'mlb_statsapi_probable_pitcher'").bind(`${slateDate}_%`).run();
-  await env.DB.prepare("DELETE FROM bullpens_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
-  await env.DB.prepare("DELETE FROM lineups_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
-  await env.DB.prepare("DELETE FROM markets_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
-  await env.DB.prepare("DELETE FROM games WHERE game_date = ?").bind(slateDate).run();
-  steps.push({ label: "Refresh Volatile Slate Tables", job: "internal_clean", result: { ok: true, slate_date: slateDate, preserved_manual_and_fallback_starters: true } });
+  const markets = await safeStep("Markets", "scrape_games_markets", async () => {
+    let last = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      last = await syncMlbApiGamesMarkets({ ...(input || {}), job: "scrape_games_markets", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+      if (last && last.ok) break;
+    }
+    return last || { ok: false, error: "No market attempt executed" };
+  }, true);
 
-  const markets = await stepWithRetry("Markets", "scrape_games_markets", 3, async () => {
-    const gameCount = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate);
-    return gameCount > 0;
-  });
+  const games = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate).catch(() => 0);
+  const marketsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM markets_current WHERE game_id LIKE ?", `${slateDate}_%`).catch(() => 0);
 
-  const games = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate);
+  const boardQueueAutoBuild = await safeStep("Board Queue Auto Build", "board_queue_auto_build", async () => {
+    return await runBoardQueueAutoBuild({ ...(input || {}), job: "board_queue_auto_build", slate_date: slateDate, slate_mode: slate.slate_mode, max_passes: 8 }, env);
+  }, false);
 
-  if (!markets.ok || games <= 0) {
-    return {
-      ok: false,
-      status: "FAILED",
-      failed_step: "Markets",
-      slate_date: slateDate,
-      games,
-      started_at: startedAt,
-      finished_at: new Date().toISOString(),
-      steps
-    };
-  }
-  let groupPlan = "MLB_API_PRIMARY";
-
-  const mlbApi = await syncMlbApiProbableStarters({ ...(input || {}), job: "scrape_starters_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Starters", job: "scrape_starters_mlb_api", result: mlbApi });
-  groupsRun.push("MLB_API");
-
-  if (!mlbApi.ok) {
-    return { ok: false, status: "FAILED", failed_step: "MLB_API_STarters", slate_date: slateDate, games, group_plan: groupPlan, steps };
-  }
-
-  const bullpenResult = await syncMlbApiBullpens({ ...(input || {}), job: "scrape_bullpens_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Bullpens", job: "scrape_bullpens_mlb_api", result: bullpenResult });
-
-  const lineupResult = await syncMlbApiLineups({ ...(input || {}), job: "scrape_lineups_mlb_api", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
-  steps.push({ label: "MLB API Lineups", job: "scrape_lineups_mlb_api", result: lineupResult });
-
-  const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
-
-  let missingRepair = null;
-  if (startersAfterApi < games * 2 || preservedStarterOverrides.length) {
-    missingRepair = await repairMissingStartersLockstep(input, env, slateDate, slate, steps, preservedStarterOverrides);
-    groupsRun.push("MISSING_FALLBACK_LOCKSTEP");
-  }
-
-  try {
-    await env.DB.prepare("DELETE FROM board_factor_results WHERE slate_date <> ?").bind(slateDate).run();
-    await env.DB.prepare("DELETE FROM board_factor_queue WHERE slate_date <> ?").bind(slateDate).run();
-    steps.push({ label: "Clean Old Board Queue Slates", job: "internal_clean_board_old_slates", result: { ok: true, protected_current_slate: slateDate } });
-  } catch (cleanErr) {
-    steps.push({ label: "Clean Old Board Queue Slates", job: "internal_clean_board_old_slates", result: { ok: false, error: String(cleanErr?.message || cleanErr) } });
-  }
-
-  let boardQueueAutoBuild = null;
-  try {
-    boardQueueAutoBuild = await runBoardQueueAutoBuild({ ...(input || {}), job: "board_queue_auto_build", slate_date: slateDate, slate_mode: slate.slate_mode, max_passes: 8 }, env);
-    steps.push({ label: "Board Queue Auto Build", job: "board_queue_auto_build", result: boardQueueAutoBuild });
-  } catch (boardBuildErr) {
-    boardQueueAutoBuild = { ok: false, error: String(boardBuildErr?.message || boardBuildErr) };
-    steps.push({ label: "Board Queue Auto Build", job: "board_queue_auto_build", result: boardQueueAutoBuild });
-  }
-
-  let boardQueueAutoMine = null;
-  try {
-    boardQueueAutoMine = await runBoardQueueAutoMineWaves(input, env, slateDate, slate, 3);
-    steps.push({ label: "Board Queue Auto Mine Raw Waves", job: "board_queue_auto_mine", result: boardQueueAutoMine });
-  } catch (boardMineErr) {
-    boardQueueAutoMine = { ok: false, error: String(boardMineErr?.message || boardMineErr) };
-    steps.push({ label: "Board Queue Auto Mine Raw Waves", job: "board_queue_auto_mine", result: boardQueueAutoMine });
-  }
-
-  const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
-  const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`);
-  const lineupsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?", `${slateDate}_%`);
-  const recentUsageTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM player_recent_usage");
-  const playersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM players_current");
-  const badRows = await countScalar(env, `
-    SELECT COUNT(*) AS c
-    FROM starters_current
-    WHERE game_id LIKE ?
-      AND (
-        starter_name LIKE '%Ace%'
-        OR starter_name IN ('TBD','TBA','Unknown','Starter')
-        OR (
-          source NOT IN ('mlb_statsapi_probable_pitcher','gemini_live_missing_starter_fallback')
-          AND (
-            era IS NULL OR era <= 0
-            OR whip IS NULL OR whip <= 0
-            OR strikeouts IS NULL OR strikeouts <= 0
-            OR innings_pitched IS NULL OR innings_pitched <= 0
-          )
-        )
-      )
-  `, `${slateDate}_%`);
-
-  const missingGames = await countScalar(env, `
+  const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`).catch(() => 0);
+  const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`).catch(() => 0);
+  const lineupsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?", `${slateDate}_%`).catch(() => 0);
+  const recentUsageTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM player_recent_usage").catch(() => 0);
+  const playersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM players_current").catch(() => 0);
+  const expectedStarters = games * 2;
+  const missingGames = games > 0 ? await countScalar(env, `
     SELECT COUNT(*) AS c FROM (
       SELECT g.game_id, COUNT(s.team_id) AS starters_found
       FROM games g
@@ -4247,127 +4201,96 @@ async function runFullPipelineCore(input, env) {
       GROUP BY g.game_id
       HAVING starters_found < 2
     )
-  `, slateDate);
+  `, slateDate).catch(() => 0) : 0;
+  if (missingGames > 0) warnings.push(`${missingGames} games still have one-sided/TBD starters; mining should continue around available contexts and retry missing context later.`);
+  if (lineupsTotal === 0) warnings.push("Confirmed lineups are not posted yet; lineup sweep/cron should retry later.");
 
-  const teamMismatch = await countScalar(env, `
-    SELECT COUNT(*) AS c
-    FROM starters_current s
-    JOIN games g ON s.game_id = g.game_id
-    WHERE g.game_date = ?
-      AND s.team_id NOT IN (g.away_team, g.home_team)
-  `, slateDate);
+  const queueTotals = await boardQueueTotals(env, slateDate).catch(() => null);
+  const pending = Number(queueTotals?.pending_rows || 0);
+  const retryLater = Number(queueTotals?.retry_later_rows || 0);
+  const running = Number(queueTotals?.running_rows || 0);
+  const errorRows = Number(queueTotals?.error_rows || 0);
 
-  const duplicateStarters = await countScalar(env, `
-    SELECT COUNT(*) AS c FROM (
-      SELECT starter_name
-      FROM starters_current
-      WHERE game_id LIKE ?
-      GROUP BY starter_name
-      HAVING COUNT(*) > 1
-    )
-  `, `${slateDate}_%`);
-
-  const stalePairs = await countScalar(env, `
-    SELECT COUNT(*) AS c
-    FROM starters_current
-    WHERE game_id LIKE ?
-      AND (
-        (starter_name='Justin Verlander' AND team_id IN ('HOU','NYM'))
-        OR (starter_name='Chris Sale' AND team_id IN ('BOS','CHW'))
-        OR (starter_name='Corbin Burnes' AND team_id='MIL')
-        OR (starter_name='Clayton Kershaw' AND team_id='LAD')
-        OR (starter_name='Max Scherzer' AND team_id IN ('NYM','TEX','WSN'))
-        OR (starter_name='Zack Greinke' AND team_id IN ('KC','HOU','ARI','LAD'))
-      )
-  `, `${slateDate}_%`);
-
-  const statsMissing = await countScalar(env, `
-    SELECT COUNT(*) AS c
-    FROM starters_current
-    WHERE game_id LIKE ?
-      AND (
-        era IS NULL OR era <= 0
-        OR whip IS NULL OR whip <= 0
-        OR strikeouts IS NULL OR strikeouts <= 0
-        OR innings_pitched IS NULL OR innings_pitched <= 0
-      )
-  `, `${slateDate}_%`);
-
-  const expectedStarters = games * 2;
-  const criticalSuccess = games > 0 && bullpensTotal === expectedStarters && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
-  const starterWarningOnly = startersTotal < expectedStarters || missingGames > 0 || badRows > 0;
-  const boardContinuation = boardQueueAutoMine && boardQueueAutoMine.needs_continue === true;
-  const success = criticalSuccess;
+  let pipelineStatus = "PASS";
+  if (games <= 0 || marketsTotal <= 0 || !markets?.ok) pipelineStatus = "FAIL";
+  else if (pending > 0 || retryLater > 0 || running > 0) pipelineStatus = "RETRY_LATER";
+  else if (warnings.length || errorRows > 0 || errors.length) pipelineStatus = "PARTIAL_OK";
 
   return {
-    ok: success,
-    status: success ? (starterWarningOnly || boardContinuation ? "SUCCESS_WITH_CONTINUATION_WARNINGS" : "SUCCESS") : "FAILED_AUDIT",
+    ok: pipelineStatus !== "FAIL",
+    status: pipelineStatus,
+    pipeline_status: pipelineStatus,
+    version: SYSTEM_VERSION,
+    job: "run_full_pipeline",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
+    dispatcher_mode: "v1.2.68_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
     games,
+    markets: marketsTotal,
     expected_starters: expectedStarters,
     starters_total: startersTotal,
     bullpens_total: bullpensTotal,
-    lineups_total: null,
-    recent_usage_total: null,
-    players_total: null,
-    players_layer_mode: "separate_buttons_to_avoid_worker_request_limit",
+    lineups_total: lineupsTotal,
+    recent_usage_total: recentUsageTotal,
+    players_total: playersTotal,
+    queue_totals: queueTotals,
     board_queue_auto_build: boardQueueAutoBuild,
-    board_queue_auto_mine: boardQueueAutoMine,
-    groups_run: groupsRun,
-    group_plan: groupPlan,
-    bad_rows: badRows,
+    board_queue_auto_mine: { skipped_in_full_run: true, reason: "Mining is intentionally excluded from FULL RUN to avoid Cloudflare subrequest limits. Scheduled/manual Auto Mine processes the queue in 5-row batches." },
     missing_games: missingGames,
-    team_mismatch: teamMismatch,
-    duplicate_starters: duplicateStarters,
-    stale_pairs: stalePairs,
-    stats_missing: statsMissing,
-    starter_audit_policy: "missing/projected-unavailable starters are warning-state, not a hard full-run failure; raw mining continues and marks missing context where needed",
-    missing_starter_repair: missingRepair,
-    board_mining_needs_continue: boardContinuation,
-    full_run_ready_for_scheduler_continuation: success,
+    warnings,
+    errors,
+    audit_gates: {
+      pass: "games/markets refreshed and no queue continuation needed",
+      partial_ok: "non-fatal data warnings only",
+      retry_later: "queue still has PENDING/RETRY_LATER/RUNNING rows for scheduled miner",
+      fail: "games or markets empty after retry"
+    },
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     steps
   };
 }
 
-
-
 async function runFullPipeline(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
   const lockedBy = `${input?.trigger || 'manual'}:${crypto.randomUUID()}`;
-  const lock = await acquirePipelineLock(env, `FULL_PIPELINE|${slateDate}`, lockedBy, 15);
+  await resetStalePipelineRuntime(env, slateDate).catch(() => null);
+  const lock = await acquirePipelineLock(env, `FULL_PIPELINE`, lockedBy, 15);
   if (!lock.acquired) {
     const totals = await boardQueueTotals(env, slateDate).catch(() => null);
     return {
       ok: true,
       version: SYSTEM_VERSION,
       job: 'run_full_pipeline',
-      status: 'LOCKED_SKIP_ALREADY_RUNNING',
-      pipeline_status: 'RETRY_LATER',
+      status: 'LOCKED',
+      pipeline_status: 'LOCKED',
       slate_date: slateDate,
       lock_status: lock,
       board_queue_totals: totals,
-      note: 'A full pipeline is already active for this slate. This request exited cleanly to prevent overlap; scheduled/UI retries can check progress instead of starting duplicate work.'
+      note: 'A full pipeline is already active. This request exited cleanly to prevent duplicate Worker subrequest storms. Mining can continue separately.'
     };
   }
   try {
     const result = await runFullPipelineCore(input || {}, env);
-    if (result && result.ok === false && result.status === 'FAILED_AUDIT') {
-      result.ok = true;
-      result.pipeline_status = 'PARTIAL_OK';
-      result.status = 'PARTIAL_OK_WITH_WARNINGS';
-      result.note = 'Data-quality warnings were recorded, but the pipeline did not hard-fail. Queue mining continues and missing/TBD units remain stateful for retry.';
-    }
     if (result && typeof result === 'object') {
       result.lock_status = 'RELEASED';
-      result.state_machine_policy = 'Full run uses lock + partial warnings + stateful queue continuation. Data warnings do not return HTTP 500 unless the core market/game fetch is empty.';
+      result.state_machine_policy = 'v1.2.68: FULL RUN is a lightweight atomic dispatcher. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
     }
     return result;
+  } catch (err) {
+    return {
+      ok: true,
+      version: SYSTEM_VERSION,
+      job: 'run_full_pipeline',
+      status: 'PARTIAL_OK_EXCEPTION_CAPTURED',
+      pipeline_status: 'PARTIAL_OK',
+      slate_date: slateDate,
+      error: String(err?.message || err),
+      note: 'Exception captured without HTTP 500 so the control room does not retry into a duplicate FULL RUN. Check system_event_log and let scheduled miner continue.'
+    };
   } finally {
-    await releasePipelineLock(env, `FULL_PIPELINE|${slateDate}`, lockedBy);
+    await releasePipelineLock(env, `FULL_PIPELINE`, lockedBy);
   }
 }
 
