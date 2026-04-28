@@ -1,7 +1,7 @@
-// AlphaDog v1.2.51 - Raw Wire compatible worker
+// AlphaDog v1.2.52 - Raw Sentinel compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.51 - Raw Wire";
-const SYSTEM_CODENAME = "Raw Wire";
+const SYSTEM_VERSION = "v1.2.52 - Raw Sentinel";
+const SYSTEM_CODENAME = "Raw Sentinel";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -1103,7 +1103,7 @@ async function handleBoardFactorResultInspect(request, env) {
         batch_index: row.batch_index,
         status: row.status,
         model: row.model,
-        summary_from_table: { factor_count: row.factor_count, min_score: row.min_score, max_score: row.max_score, avg_score: row.avg_score },
+        summary_from_table: { raw_factor_count: row.factor_count, legacy_min_score: row.min_score, legacy_max_score: row.max_score, legacy_avg_score: row.avg_score },
         parsed_ok: parsed.ok,
         parsed_error: parsed.ok ? null : parsed.error,
         parsed_header: parsedHeader,
@@ -2410,78 +2410,114 @@ function boardPromptDefinitionForQueueType(queueType) {
   return { prompt_id: "GEMINI_RAW_FACTOR_CONTEXT_V1", family: "Raw Factor Context", target_type: "UNKNOWN", factor_ids: [] };
 }
 
-function boardFactorPromptForQueueRow(queueRow) {
+function compactObject(obj, keys) {
+  if (!obj || typeof obj !== "object") return null;
+  const out = {};
+  for (const key of keys) {
+    if (obj[key] !== undefined && obj[key] !== null && obj[key] !== "") out[key] = obj[key];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function compactBoardProps(props) {
+  const arr = Array.isArray(props) ? props : [];
+  const byType = {};
+  for (const p of arr) {
+    const stat = String(p?.stat_type || "UNKNOWN");
+    if (!byType[stat]) byType[stat] = [];
+    byType[stat].push({ line_score: p?.line_score, odds_type: p?.odds_type, is_promo: p?.is_promo ? 1 : 0 });
+  }
+  return Object.entries(byType).map(([stat_type, lines]) => ({ stat_type, line_count: lines.length, lines: lines.slice(0, 5) })).slice(0, 18);
+}
+
+function compactPayloadForGemini(queueRow, payload) {
+  const queueType = String(queueRow.queue_type || "");
+  const base = {
+    queue_id: queueRow.queue_id,
+    slate_date: queueRow.slate_date,
+    queue_type: queueRow.queue_type,
+    scope_type: queueRow.scope_type,
+    scope_key: queueRow.scope_key,
+    batch_index: queueRow.batch_index,
+    player_count: queueRow.player_count,
+    game_count: queueRow.game_count,
+    game_key: queueRow.game_key,
+    team_a: queueRow.team_a,
+    team_b: queueRow.team_b,
+    start_time: queueRow.start_time
+  };
+  if (queueType.startsWith("PLAYER_")) {
+    const players = Array.isArray(payload?.enriched_player_contexts) ? payload.enriched_player_contexts : [];
+    return {
+      ...base,
+      batch_size: Number(payload?.batch_size || players.length || 4),
+      players: players.map(p => ({
+        player_key: p.player_key,
+        player_name: p.player_name,
+        team: p.team,
+        opponent: p.opponent,
+        game_id: p.game_id,
+        start_time: p.start_time,
+        board_leg_rows: p.board_leg_rows,
+        board_stat_type_counts: p.board_stat_type_counts || {},
+        board_props_compact: compactBoardProps(p.board_props),
+        game_context: compactObject(p.game_context, ["game_id", "game_date", "away_team", "home_team", "venue", "status", "start_time_utc", "getaway_day"]),
+        player_profile: compactObject(p.player_profile, ["player_name", "team_id", "role", "games", "ab", "hits", "avg", "obp", "slg", "strikeouts", "walks", "innings_pitched", "era", "whip", "k_per_9", "age", "position", "bats", "throws", "source", "confidence"]),
+        lineup_context: compactObject(p.lineup_context, ["lineup_slot", "confirmed", "source", "updated_at"]),
+        recent_usage: compactObject(p.recent_usage, ["last_game_ab", "last_game_hits", "lineup_slot", "last_pitch_count", "last_innings", "days_rest", "updated_at"]),
+        opposing_starter: compactObject(p.opposing_starter, ["starter_name", "team_id", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"]),
+        market_context: compactObject(p.market_context, ["game_total", "open_total", "current_total", "away_moneyline", "home_moneyline", "away_implied_runs", "home_implied_runs", "runline", "source", "confidence"]),
+        opposing_bullpen_context: compactObject(p.opposing_bullpen_context, ["team_id", "bullpen_era", "bullpen_whip", "last_game_ip", "last3_ip", "fatigue", "source", "confidence"]),
+        payload_quality: p.payload_quality || null
+      }))
+    };
+  }
+  if (queueType.startsWith("GAME_")) {
+    const g = payload?.enriched_game_context || payload?.game || payload || {};
+    return { ...base, game: compactObject(g, ["game_key", "game_id", "game_date", "team_a", "team_b", "away_team", "home_team", "venue", "status", "start_time", "start_time_utc", "source_rows", "game_total", "open_total", "current_total", "weather", "wind", "temperature", "precipitation", "news", "injuries", "bullpen", "market_context", "payload_quality"]) };
+  }
+  return { ...base, payload };
+}
+
+function boardFactorPromptForQueueRow(queueRow, mode = "primary") {
   const payload = (() => { try { return JSON.parse(queueRow.payload_json || "{}"); } catch (_) { return {}; } })();
   const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
-  return `You are AlphaDog's controlled MLB raw factor miner. Return JSON only. No markdown.
+  const compactPayload = compactPayloadForGemini(queueRow, payload);
+  const retryMode = mode === "retry";
+  return `You are AlphaDog's controlled MLB raw factor miner. Return VALID JSON only. No markdown.
 
 ARCHITECTURE LOCK:
-- You do NOT score props.
-- You do NOT rank props.
-- You do NOT make picks.
-- You do NOT calculate final scores.
-- You do NOT invent missing MLB, weather, lineup, injury, or news facts.
-- Your job is raw factor extraction only, correlated to the current PrizePicks board queue row.
-- Keep the locked prompt family and factor IDs.
-- If a factor has usable raw system data, echo the raw evidence and mark it AVAILABLE.
-- If a factor is unavailable, mark it MISSING and list the missing fields.
-- If a factor is partly supported, mark it PARTIAL and include exactly what is present.
-- Do not include score_0_100, signal, confidence, averages, green/yellow/red counts, or scoring math.
-- Exception: only include a Gemini-produced score when the factor definition explicitly cannot exist without a Gemini score. For the current A/B/D/E raw wire, prefer raw evidence over scores.
+- Raw factor extraction only.
+- No prop scoring, no picks, no rankings, no final score math.
+- Do not invent missing facts.
+- Use only the supplied compact system payload and locked factor family.
+- If available, return short raw evidence. If unavailable, mark MISSING.
+- Do not include score_0_100, signal, confidence_0_100, green/yellow/red, probabilities, recommendations, or pick language.
+
+OUTPUT SIZE LOCK:
+- Keep JSON small and complete. Do not echo full board_props arrays.
+- raw_data max 8 scalar keys per factor.
+- note max 90 characters.
+- missing_data max 5 strings per factor.
+- warnings max 3 strings per item.
+${retryMode ? "- RETRY MODE: previous output failed validation or JSON parsing. Return smaller JSON. No nested raw_data deeper than 1 level." : ""}
 
 LOCKED PROMPT FAMILY:
-${JSON.stringify(def, null, 2)}
+${JSON.stringify(def)}
 
-QUEUE ROW AND ENRICHED SYSTEM PAYLOAD:
-${JSON.stringify({ queue_id: queueRow.queue_id, slate_date: queueRow.slate_date, queue_type: queueRow.queue_type, scope_type: queueRow.scope_type, scope_key: queueRow.scope_key, batch_index: queueRow.batch_index, player_count: queueRow.player_count, game_count: queueRow.game_count, source_rows: queueRow.source_rows, player_names: queueRow.player_names, game_key: queueRow.game_key, team_a: queueRow.team_a, team_b: queueRow.team_b, start_time: queueRow.start_time, payload }, null, 2)}
+COMPACT SYSTEM PAYLOAD:
+${JSON.stringify(compactPayload)}
 
 OUTPUT JSON SCHEMA:
-{
-  "ok": true,
-  "raw_mode": true,
-  "prompt_id": "${def.prompt_id}",
-  "queue_id": "exact queue_id",
-  "queue_type": "exact queue_type",
-  "scope_type": "exact scope_type",
-  "slate_date": "YYYY-MM-DD",
-  "factor_family": "${def.family}",
-  "items": [
-    {
-      "target_key": "player name + team OR game_key",
-      "target_type": "${def.target_type}",
-      "raw_factors": [
-        {
-          "factor_id": "A01/B01/D01/E01 etc",
-          "factor_name": "locked factor name",
-          "source_type": "SYSTEM_DATA|GEMINI_EXTRACTED|MISSING",
-          "availability": "AVAILABLE|PARTIAL|MISSING",
-          "raw_data": {},
-          "note": "short raw evidence note, no pick language",
-          "missing_data": []
-        }
-      ],
-      "missing_data": [],
-      "warnings": []
-    }
-  ],
-  "summary": {
-    "raw_mode": true,
-    "item_count": 0,
-    "factor_family": "${def.family}",
-    "missing_data": [],
-    "warnings": [],
-    "ready_for_system_json": true
-  }
-}
+{"ok":true,"raw_mode":true,"prompt_id":"${def.prompt_id}","queue_id":"${queueRow.queue_id}","queue_type":"${queueRow.queue_type}","scope_type":"${queueRow.scope_type}","slate_date":"${queueRow.slate_date}","factor_family":"${def.family}","items":[{"target_key":"player name + team OR game_key","target_type":"${def.target_type}","raw_factors":[{"factor_id":"A01/B01/D01/E01","factor_name":"locked name","source_type":"SYSTEM_DATA|GEMINI_EXTRACTED|MISSING","availability":"AVAILABLE|PARTIAL|MISSING","raw_data":{},"note":"short raw evidence only","missing_data":[]}],"missing_data":[],"warnings":[]}],"summary":{"raw_mode":true,"item_count":0,"factor_family":"${def.family}","missing_data":[],"warnings":[],"ready_for_system_json":true}}
 
 TARGET RULES:
-- If this queue row is PLAYER_BATCH_4, return exactly one item per player in the payload players/enriched_player_contexts arrays.
-- If this queue row is GAME, return exactly one item for the game_key.
-- Every item should include all locked factor IDs for that family when possible.
-- raw_data must be an object or compact string copied from supplied system payload only.
-- Keep output small enough for storage, but do not omit available raw evidence fields.`;
+- PLAYER_BATCH_4: return exactly one item per player in compact payload players.
+- GAME: return exactly one item for game_key.
+- Include the locked factor IDs for this family.
+- Valid complete JSON is mandatory.`;
 }
-
+function factorRowsFromRawPayload(parsed) {
 function factorRowsFromRawPayload(parsed) {
   if (!parsed || typeof parsed !== "object") return [];
   if (Array.isArray(parsed.results)) return parsed.results;
@@ -2505,6 +2541,80 @@ function summarizeRawFactorPayload(parsed) {
   return { factor_count: rows.length, item_count: items.length, min_score: null, max_score: null, avg_score: null };
 }
 
+
+function expectedItemCountForQueue(queueRow, parsedPayload) {
+  const qt = String(queueRow.queue_type || "");
+  if (qt.startsWith("PLAYER_")) {
+    const enriched = Array.isArray(parsedPayload?.enriched_player_contexts) ? parsedPayload.enriched_player_contexts.length : 0;
+    const players = Array.isArray(parsedPayload?.players) ? parsedPayload.players.length : 0;
+    return enriched || players || Number(queueRow.player_count || 0) || 1;
+  }
+  if (qt.startsWith("GAME_")) return 1;
+  return 1;
+}
+
+function validateRawFactorPayload(parsed, queueRow) {
+  const errors = [];
+  if (!parsed || typeof parsed !== "object") errors.push("payload_not_object");
+  if (parsed?.ok !== true) errors.push("missing_ok_true");
+  if (parsed?.raw_mode !== true) errors.push("missing_raw_mode_true");
+  if (String(parsed?.queue_id || "") !== String(queueRow.queue_id || "")) errors.push("queue_id_mismatch");
+  if (String(parsed?.queue_type || "") !== String(queueRow.queue_type || "")) errors.push("queue_type_mismatch");
+  if (!Array.isArray(parsed?.items)) errors.push("items_not_array");
+
+  const items = Array.isArray(parsed?.items) ? parsed.items : [];
+  const storedPayload = parseStoredBoardPayload(queueRow.payload_json);
+  const expectedItems = expectedItemCountForQueue(queueRow, storedPayload);
+  if (items.length !== expectedItems) errors.push(`item_count_${items.length}_expected_${expectedItems}`);
+
+  const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
+  const factorIds = new Set((def.factor_ids || []).map(x => x[0]));
+  const forbiddenKeys = ["score_0_100", "signal", "confidence_0_100", "probability", "final_score", "pick", "recommendation"];
+
+  items.forEach((item, idx) => {
+    if (!item || typeof item !== "object") errors.push(`item_${idx}_not_object`);
+    if (!item?.target_key) errors.push(`item_${idx}_missing_target_key`);
+    if (!Array.isArray(item?.raw_factors)) errors.push(`item_${idx}_raw_factors_not_array`);
+    const rows = Array.isArray(item?.raw_factors) ? item.raw_factors : [];
+    if (!rows.length) errors.push(`item_${idx}_empty_raw_factors`);
+    for (const f of rows) {
+      if (!f?.factor_id) errors.push(`item_${idx}_factor_missing_id`);
+      if (factorIds.size && f?.factor_id && !factorIds.has(String(f.factor_id))) errors.push(`item_${idx}_unexpected_factor_${f.factor_id}`);
+      if (!f?.availability || !["AVAILABLE", "PARTIAL", "MISSING"].includes(String(f.availability))) errors.push(`item_${idx}_${f?.factor_id || "factor"}_bad_availability`);
+      for (const k of forbiddenKeys) if (Object.prototype.hasOwnProperty.call(f || {}, k)) errors.push(`forbidden_key_${k}`);
+    }
+  });
+
+  return { ok: errors.length === 0, errors: errors.slice(0, 20) };
+}
+
+async function mineRawPayloadWithValidation(env, queueRow) {
+  const attempts = [];
+  for (const mode of ["primary", "retry"]) {
+    const prompt = boardFactorPromptForQueueRow(queueRow, mode);
+    const raw = await callGeminiWithFallback(env, prompt);
+    const clean = cleanJsonText(raw);
+    let parsed;
+    try {
+      parsed = parseStrictJson(clean);
+    } catch (err) {
+      attempts.push({ mode, ok: false, stage: "parse", error: String(err?.message || err).slice(0, 500), raw_length: String(raw || "").length });
+      continue;
+    }
+    parsed.raw_mode = parsed.raw_mode === true;
+    parsed.queue_id = parsed.queue_id || queueRow.queue_id;
+    parsed.queue_type = parsed.queue_type || queueRow.queue_type;
+    parsed.scope_type = parsed.scope_type || queueRow.scope_type;
+    parsed.slate_date = parsed.slate_date || queueRow.slate_date;
+    const validation = validateRawFactorPayload(parsed, queueRow);
+    attempts.push({ mode, ok: validation.ok, stage: "validation", errors: validation.errors, raw_length: String(raw || "").length });
+    if (validation.ok) return { parsed, attempts };
+  }
+  const last = attempts[attempts.length - 1] || { error: "unknown" };
+  const err = new Error(`Gemini raw payload failed validation after ${attempts.length} attempt(s): ${JSON.stringify(last).slice(0, 700)}`);
+  err.validation_attempts = attempts;
+  throw err;
+}
 async function runBoardQueueMineOne(input, env) {
   await ensureBoardFactorQueueTable(env);
   await ensureBoardFactorResultsTable(env);
@@ -2529,22 +2639,18 @@ async function runBoardQueueMineOne(input, env) {
   try {
     const hydratedNext = await hydrateQueueRowPayloadIfNeeded(env, next);
     const hydratedPayload = parseStoredBoardPayload(hydratedNext.payload_json);
-    const prompt = boardFactorPromptForQueueRow(hydratedNext);
-    const raw = await callGeminiWithFallback(env, prompt);
-    const parsed = parseStrictJson(cleanJsonText(raw));
-    if (!parsed || parsed.ok !== true) throw new Error("Gemini JSON missing ok=true");
-    parsed.raw_mode = parsed.raw_mode !== false;
-    parsed.queue_id = next.queue_id; parsed.queue_type = parsed.queue_type || next.queue_type; parsed.scope_type = parsed.scope_type || next.scope_type; parsed.slate_date = parsed.slate_date || next.slate_date;
+    const mined = await mineRawPayloadWithValidation(env, hydratedNext);
+    const parsed = mined.parsed;
     const summary = summarizeRawFactorPayload(parsed);
     const resultId = `${next.queue_id}|RESULT|${Date.now()}`;
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, null, null, null, JSON.stringify(parsed)).run();
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation_attempts: mined.attempts, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
-    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, note: "One queue row failed and was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
+    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: err?.validation_attempts || null, note: "One queue row failed after validation/retry and was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
   }
 }
 
