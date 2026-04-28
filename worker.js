@@ -1,7 +1,7 @@
-// AlphaDog v1.2.46 - Queue Glass compatible worker
+// AlphaDog v1.2.47 - First Miner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.46 - Queue Glass";
-const SYSTEM_CODENAME = "Label Mirror";
+const SYSTEM_VERSION = "v1.2.47 - First Miner";
+const SYSTEM_CODENAME = "First Miner";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -15,6 +15,7 @@ const JOB_DISPLAY_LABELS = {
   board_queue_preview: "SCRAPE > Board Queue Preview",
   board_queue_build: "SCRAPE > Board Queue Build",
   run_board_queue_pipeline: "SCRAPE > Board Queue Pipeline",
+  board_queue_mine_one: "SCRAPE > Board Queue Mine One",
   build_edge_candidates_hits: "SCRAPE > Build Hits Candidates",
   build_edge_candidates_rbi: "SCRAPE > Build RBI Candidates",
   build_edge_candidates_rfi: "SCRAPE > Build RFI Candidates",
@@ -93,6 +94,11 @@ const JOBS = {
     prompt: null,
     tables: ["mlb_stats", "board_factor_queue"],
     note: "scheduled board flow: materializes board-derived queue rows after the board table refresh; no Gemini calls"
+  },
+  board_queue_mine_one: {
+    prompt: null,
+    tables: ["board_factor_queue", "board_factor_results"],
+    note: "mines exactly one pending board factor queue row with Gemini and stores raw factor output; no prop scoring"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -413,6 +419,7 @@ function executableJobNames() {
     "scrape_recent_usage_mlb_api",
     "scrape_recent_usage",
     "scrape_derived_metrics",
+    "board_queue_mine_one",
     "scrape_players_mlb_api",
     "scrape_players",
     "scrape_players_mlb_api_g1",
@@ -2088,6 +2095,114 @@ async function ensureBoardFactorQueueTable(env) {
   return { ok: true, table: "board_factor_queue" };
 }
 
+async function ensureBoardFactorResultsTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS board_factor_results (
+      result_id TEXT PRIMARY KEY,
+      queue_id TEXT NOT NULL,
+      slate_date TEXT NOT NULL,
+      queue_type TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_key TEXT NOT NULL,
+      batch_index INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'COMPLETED',
+      model TEXT,
+      factor_count INTEGER DEFAULT 0,
+      min_score INTEGER,
+      max_score INTEGER,
+      avg_score REAL,
+      raw_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_results_slate_type ON board_factor_results (slate_date, queue_type)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_results_queue ON board_factor_results (queue_id)`).run();
+  return { ok: true, table: "board_factor_results" };
+}
+
+function boardFactorPromptForQueueRow(queueRow) {
+  const payload = (() => { try { return JSON.parse(queueRow.payload_json || "{}"); } catch (_) { return {}; } })();
+  return `You are AlphaDog's controlled MLB factor miner. Return JSON only. No markdown.
+
+MISSION:
+Mine one board factor queue item. Do not rank props. Do not calculate final prop scores. Do not make picks. Only return factor-level observations for the supplied queue row.
+
+QUEUE ROW:
+${JSON.stringify({ queue_id: queueRow.queue_id, slate_date: queueRow.slate_date, queue_type: queueRow.queue_type, scope_type: queueRow.scope_type, scope_key: queueRow.scope_key, batch_index: queueRow.batch_index, player_count: queueRow.player_count, game_count: queueRow.game_count, source_rows: queueRow.source_rows, player_names: queueRow.player_names, game_key: queueRow.game_key, team_a: queueRow.team_a, team_b: queueRow.team_b, start_time: queueRow.start_time, payload }, null, 2)}
+
+OUTPUT JSON SCHEMA:
+{
+  "ok": true,
+  "queue_id": "exact queue_id",
+  "queue_type": "exact queue_type",
+  "scope_type": "exact scope_type",
+  "slate_date": "YYYY-MM-DD",
+  "factor_family": "short family name",
+  "results": [
+    { "target_key": "player name + team OR game_key", "score_0_100": 0, "signal": "GREEN|YELLOW|RED", "confidence_0_100": 0, "summary": "one concise sentence", "missing_data": [] }
+  ],
+  "warnings": []
+}
+
+SCORING RULES:
+- score_0_100 is a factor strength score only, not a prop score.
+- GREEN means supportive, YELLOW means mixed/uncertain, RED means negative/risky.
+- Use 50 when neutral or data is insufficient.
+- confidence_0_100 must drop when information is incomplete.
+- missing_data must list key missing fields.
+- If this is a player batch, return one result per player.
+- If this is a game row, return one result for the game_key.
+- Never invent unavailable injuries, weather, lineup status, or news. If unknown, mark missing_data and lower confidence.`;
+}
+
+function summarizeFactorScores(parsed) {
+  const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+  const scores = rows.map(r => Number(r.score_0_100)).filter(n => Number.isFinite(n));
+  const sum = scores.reduce((a,b)=>a+b,0);
+  return { factor_count: rows.length, min_score: scores.length ? Math.round(Math.min(...scores)) : null, max_score: scores.length ? Math.round(Math.max(...scores)) : null, avg_score: scores.length ? Number((sum / scores.length).toFixed(2)) : null };
+}
+
+async function runBoardQueueMineOne(input, env) {
+  await ensureBoardFactorQueueTable(env);
+  await ensureBoardFactorResultsTable(env);
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+  const preferredType = String(input.queue_type || "").trim();
+  const binds = preferredType ? [slateDate, preferredType] : [slateDate];
+  const typeWhere = preferredType ? "AND queue_type = ?" : "";
+  const next = await env.DB.prepare(`
+    SELECT * FROM board_factor_queue
+    WHERE slate_date = ? ${typeWhere} AND status = 'PENDING'
+    ORDER BY CASE queue_type WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1 WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2 WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3 WHEN 'GAME_WEATHER_CONTEXT' THEN 4 WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5 ELSE 99 END, batch_index ASC, queue_id ASC
+    LIMIT 1
+  `).bind(...binds).first();
+
+  if (!next) {
+    const health = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "empty", slate_date: slateDate, message: "No pending board factor queue row found.", queue_health: health.rows, note: "No Gemini call made." };
+  }
+
+  await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+  const model = SCRAPE_MODEL;
+  try {
+    const prompt = boardFactorPromptForQueueRow(next);
+    const raw = await callGeminiWithFallback(env, prompt);
+    const parsed = parseStrictJson(cleanJsonText(raw));
+    if (!parsed || parsed.ok !== true || !Array.isArray(parsed.results)) throw new Error("Gemini JSON missing ok=true or results array");
+    parsed.queue_id = next.queue_id; parsed.queue_type = parsed.queue_type || next.queue_type; parsed.scope_type = parsed.scope_type || next.scope_type; parsed.slate_date = parsed.slate_date || next.slate_date;
+    const summary = summarizeFactorScores(parsed);
+    const resultId = `${next.queue_id}|RESULT|${Date.now()}`;
+    await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, summary.min_score, summary.max_score, summary.avg_score, JSON.stringify(parsed)).run();
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+    const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count }, result_id: resultId, model, factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row. Factor result stored. No prop scoring, no ranking, no candidate logic." };
+  } catch (err) {
+    const msg = String(err?.message || err).slice(0, 900);
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
+    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, note: "One queue row failed and was marked ERROR. No prop scoring or ranking was attempted." };
+  }
+}
+
 function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
   return `${slateDate}|${queueType}|${String(batchIndex).padStart(4, "0")}|${boardSlug(scopeKey)}`;
 }
@@ -2345,6 +2460,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "run_board_queue_pipeline") {
     return await runBoardQueuePipeline({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_mine_one") {
+    return await runBoardQueueMineOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
