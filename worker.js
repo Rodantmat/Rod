@@ -1,7 +1,7 @@
-// AlphaDog v1.2.65 - Scheduler Miner Spine compatible worker
+// AlphaDog v1.2.66 - Pipeline Lockstep compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.65 - Scheduler Miner Spine";
-const SYSTEM_CODENAME = "Scheduler Miner Spine";
+const SYSTEM_VERSION = "v1.2.66 - Pipeline Lockstep";
+const SYSTEM_CODENAME = "Pipeline Lockstep";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 6;
@@ -928,7 +928,7 @@ async function runScheduled(event, env) {
       board_queue_pipeline: boardQueue,
       board_queue_auto_mine: boardMining,
       scheduler_alignment: "Run this scheduled handler after PrizePicks scrape windows; each invocation continues unfinished raw mining instead of requiring manual clicks.",
-      note: "Scheduled handler now runs slate prep, materializes the board_factor_queue, and mines a safe raw-factor batch. Failed mining rows are retried/flagged and picked back up by future scheduled runs. No prop scoring or ranking is performed here."
+      note: "Scheduled handler now runs slate prep, restores reusable starter overrides, materializes the board_factor_queue, and mines bounded raw-factor waves. Missing/projected-unavailable starters do not block mining. Failed mining rows are retried/flagged and picked back up by future scheduled runs. No prop scoring or ranking is performed here."
     };
     await env.DB.prepare(`
       UPDATE task_runs
@@ -3864,12 +3864,113 @@ async function countScalar(env, sql, bindValue) {
   return Number(values[0] || 0);
 }
 
+
+async function snapshotReusableStarterOverrides(env, slateDate) {
+  try {
+    const rows = await env.DB.prepare(`
+      SELECT * FROM starters_current
+      WHERE game_id LIKE ?
+        AND source IN (
+          'gemini_live_missing_starter_fallback',
+          'gemini_live_projected_missing_starter',
+          'gemini_live_probable_missing_starter',
+          'manual_projected_missing_starter',
+          'manual_probable_missing_starter'
+        )
+        AND starter_name IS NOT NULL
+        AND TRIM(starter_name) <> ''
+        AND starter_name NOT IN ('TBD','TBA','Unknown','Starter')
+    `).bind(`${slateDate}_%`).all();
+    return rows.results || [];
+  } catch (_) { return []; }
+}
+
+async function restoreReusableStarterOverrides(env, slateDate, rows) {
+  if (!Array.isArray(rows) || !rows.length) return { restored: 0, skipped_existing: 0 };
+  const existsStmt = env.DB.prepare("SELECT COUNT(*) AS c FROM starters_current WHERE game_id=? AND team_id=?");
+  const insertStmt = env.DB.prepare(`
+    INSERT OR REPLACE INTO starters_current (
+      game_id, team_id, starter_name, throws, era, whip, strikeouts, innings_pitched,
+      walks, hits_allowed, hr_allowed, days_rest, source, confidence, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `);
+  let restored = 0;
+  let skipped = 0;
+  for (const r of rows) {
+    if (!String(r.game_id || '').startsWith(`${slateDate}_`)) continue;
+    const ex = await existsStmt.bind(r.game_id, r.team_id).first();
+    if (Number(ex?.c || 0) > 0) { skipped++; continue; }
+    const res = await insertStmt.bind(
+      r.game_id, r.team_id, r.starter_name, r.throws ?? null,
+      r.era ?? null, r.whip ?? null, r.strikeouts ?? null, r.innings_pitched ?? null,
+      r.walks ?? null, r.hits_allowed ?? null, r.hr_allowed ?? null, r.days_rest ?? null,
+      r.source || 'manual_projected_missing_starter', r.confidence || 'projected'
+    ).run();
+    restored += Number(res?.meta?.changes || 0);
+  }
+  return { restored, skipped_existing: skipped };
+}
+
+async function countMissingStarterGames(env, slateDate) {
+  return await countScalar(env, `
+    SELECT COUNT(*) AS c FROM (
+      SELECT g.game_id, COUNT(s.team_id) AS starters_found
+      FROM games g
+      LEFT JOIN starters_current s ON g.game_id = s.game_id
+      WHERE g.game_date = ?
+      GROUP BY g.game_id
+      HAVING starters_found < 2
+    )
+  `, slateDate);
+}
+
+async function repairMissingStartersLockstep(input, env, slateDate, slate, steps, preservedRows) {
+  const attempts = [];
+  let restored = await restoreReusableStarterOverrides(env, slateDate, preservedRows);
+  steps.push({ label: "Restore Reusable Missing Starters", job: "internal_restore_projected_starters", result: { ok: true, ...restored } });
+  let remaining = await countMissingStarterGames(env, slateDate);
+  for (let attempt = 1; attempt <= 3 && remaining > 0; attempt++) {
+    const result = await syncMissingStartersLiveFallback({ ...(input || {}), job: "scrape_starters_missing", slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+    attempts.push({ attempt, result });
+    steps.push({ label: "Missing Starter Fallback", job: "scrape_starters_missing", attempt, result });
+    restored = await restoreReusableStarterOverrides(env, slateDate, preservedRows);
+    if (restored.restored || restored.skipped_existing) steps.push({ label: "Restore Reusable Missing Starters After Fallback", job: "internal_restore_projected_starters", attempt, result: { ok: true, ...restored } });
+    remaining = await countMissingStarterGames(env, slateDate);
+    if (remaining <= 0) break;
+    await sleepMs(900 * attempt);
+  }
+  const stillMissing = await missingStarterTargets(env, slateDate);
+  return { ok: true, status: stillMissing.length ? "tolerated_partial_true_missing" : "pass", attempts, still_missing_targets: stillMissing, still_missing_games: await countMissingStarterGames(env, slateDate), note: stillMissing.length ? "Starter fallback exhausted live/override sources. Missing teams are warning-state TBD/projected-unavailable so full run continues mining raw board data." : "All starter pairs filled." };
+}
+
+async function runBoardQueueAutoMineWaves(input, env, slateDate, slate, maxWaves = 3) {
+  const waves = [];
+  for (let wave = 1; wave <= maxWaves; wave++) {
+    const result = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+    waves.push({ wave, result });
+    if (!result?.needs_continue) break;
+    if (result?.mined_rows === 0 && result?.retry_later_count === 0 && result?.failed_count === 0) break;
+    await sleepMs(700);
+  }
+  const totals = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+      SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
+      SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
+      SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
+    FROM board_factor_queue WHERE slate_date=?
+  `).bind(slateDate).first();
+  return { ok: true, job: "board_queue_auto_mine_waves", version: SYSTEM_VERSION, slate_date: slateDate, waves_run: waves.length, waves, totals: { total_rows: Number(totals?.total_rows || 0), pending_rows: Number(totals?.pending_rows || 0), completed_rows: Number(totals?.completed_rows || 0), running_rows: Number(totals?.running_rows || 0), error_rows: Number(totals?.error_rows || 0) }, needs_continue: Number(totals?.pending_rows || 0) > 0 || Number(totals?.running_rows || 0) > 0 || Number(totals?.error_rows || 0) > 0, note: "Full run runs bounded mining waves only. Remaining rows are normal continuation work for scheduled runs; no data is abandoned." };
+}
+
 async function runFullPipeline(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
   const startedAt = new Date().toISOString();
   const steps = [];
   const groupsRun = [];
+  const preservedStarterOverrides = await snapshotReusableStarterOverrides(env, slateDate);
+  if (preservedStarterOverrides.length) steps.push({ label: "Snapshot Reusable Missing Starters", job: "internal_snapshot_projected_starters", result: { ok: true, rows: preservedStarterOverrides.length } });
 
   async function step(label, job) {
     const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
@@ -3941,12 +4042,10 @@ async function runFullPipeline(input, env) {
 
   const startersAfterApi = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
 
-  if (startersAfterApi < games * 2) {
-    const missingRepair = await step("Gemini Missing Fallback", "scrape_starters_missing");
-    groupsRun.push("MISSING_FALLBACK");
-    if (!missingRepair.ok) {
-      return { ok: false, status: "FAILED", failed_step: "Missing", slate_date: slateDate, games, group_plan: groupPlan, steps };
-    }
+  let missingRepair = null;
+  if (startersAfterApi < games * 2 || preservedStarterOverrides.length) {
+    missingRepair = await repairMissingStartersLockstep(input, env, slateDate, slate, steps, preservedStarterOverrides);
+    groupsRun.push("MISSING_FALLBACK_LOCKSTEP");
   }
 
   try {
@@ -3968,11 +4067,11 @@ async function runFullPipeline(input, env) {
 
   let boardQueueAutoMine = null;
   try {
-    boardQueueAutoMine = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
-    steps.push({ label: "Board Queue Auto Mine Raw", job: "board_queue_auto_mine", result: boardQueueAutoMine });
+    boardQueueAutoMine = await runBoardQueueAutoMineWaves(input, env, slateDate, slate, 3);
+    steps.push({ label: "Board Queue Auto Mine Raw Waves", job: "board_queue_auto_mine", result: boardQueueAutoMine });
   } catch (boardMineErr) {
     boardQueueAutoMine = { ok: false, error: String(boardMineErr?.message || boardMineErr) };
-    steps.push({ label: "Board Queue Auto Mine Raw", job: "board_queue_auto_mine", result: boardQueueAutoMine });
+    steps.push({ label: "Board Queue Auto Mine Raw Waves", job: "board_queue_auto_mine", result: boardQueueAutoMine });
   }
 
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
@@ -4055,11 +4154,14 @@ async function runFullPipeline(input, env) {
   `, `${slateDate}_%`);
 
   const expectedStarters = games * 2;
-  const success = games > 0 && startersTotal === expectedStarters && bullpensTotal === expectedStarters && badRows === 0 && missingGames === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
+  const criticalSuccess = games > 0 && bullpensTotal === expectedStarters && badRows === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
+  const starterWarningOnly = startersTotal < expectedStarters || missingGames > 0;
+  const boardContinuation = boardQueueAutoMine && boardQueueAutoMine.needs_continue === true;
+  const success = criticalSuccess;
 
   return {
     ok: success,
-    status: success ? "SUCCESS" : "FAILED_AUDIT",
+    status: success ? (starterWarningOnly || boardContinuation ? "SUCCESS_WITH_CONTINUATION_WARNINGS" : "SUCCESS") : "FAILED_AUDIT",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
     games,
@@ -4080,6 +4182,10 @@ async function runFullPipeline(input, env) {
     duplicate_starters: duplicateStarters,
     stale_pairs: stalePairs,
     stats_missing: statsMissing,
+    starter_audit_policy: "missing/projected-unavailable starters are warning-state, not a hard full-run failure; raw mining continues and marks missing context where needed",
+    missing_starter_repair: missingRepair,
+    board_mining_needs_continue: boardContinuation,
+    full_run_ready_for_scheduler_continuation: success,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     steps
