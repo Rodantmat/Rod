@@ -1,7 +1,7 @@
-// AlphaDog v1.2.58 - Recovery Spine compatible worker
+// AlphaDog v1.2.59 - Starter Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.58 - Recovery Spine";
-const SYSTEM_CODENAME = "Recovery Spine";
+const SYSTEM_VERSION = "v1.2.59 - Starter Spine";
+const SYSTEM_CODENAME = "Starter Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -3507,6 +3507,18 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_starters_mlb_api" || jobName === "repair_starters_mlb_api") {
     return await syncMlbApiProbableStarters({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+  if (/^scrape_starters_group_[123]$/.test(jobName)) {
+    const groupJob = JOBS[jobName] || {};
+    return await syncMlbApiProbableStarters({
+      ...(body || {}),
+      job: jobName,
+      slate_date: slate.slate_date,
+      slate_mode: slate.slate_mode,
+      game_group_index: Number(groupJob.gameGroupIndex || 0),
+      game_group_size: Number(groupJob.gameGroupSize || 5),
+      deterministic_group_sync: true
+    }, env);
+  }
   if (jobName === "scrape_bullpens_mlb_api" || jobName === "scrape_bullpens") {
     return await syncMlbApiBullpens({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
@@ -4571,9 +4583,60 @@ async function syncMlbApiProbableStarters(input, env) {
     }
   }
 
-  const validated = validateRows("starters_current", rows);
+  let workingRows = rows;
+  let groupFilter = null;
+  if (input && input.game_group_index !== undefined && input.game_group_index !== null) {
+    const groupSize = Math.max(1, Number(input.game_group_size || 5));
+    const groupIndex = Math.max(0, Number(input.game_group_index || 0));
+    const offset = groupIndex * groupSize;
+    const groupResult = await env.DB.prepare(
+      "SELECT game_id, away_team, home_team FROM games WHERE game_date = ? ORDER BY game_id ASC LIMIT ? OFFSET ?"
+    ).bind(slateDate, groupSize, offset).all();
+    const groupGames = groupResult.results || [];
+    const allowed = new Set(groupGames.map(g => g.game_id));
+    workingRows = rows.filter(r => allowed.has(r.game_id));
+    groupFilter = {
+      enabled: true,
+      group_index: groupIndex,
+      group_size: groupSize,
+      offset,
+      games: groupGames,
+      source_rows_before_filter: rows.length,
+      source_rows_after_filter: workingRows.length
+    };
+  }
+
+  const validated = validateRows("starters_current", workingRows);
   if (!validated.ok) throw new Error(`MLB starter validation failed: ${validated.error}`);
   const inserted = await upsertRows(env, "starters_current", validated.rows);
+
+  let missingAfter = [];
+  try {
+    const missingSql = groupFilter && groupFilter.games && groupFilter.games.length
+      ? `
+        SELECT g.game_id, g.away_team, g.home_team, COUNT(s.team_id) AS starters_found
+        FROM games g
+        LEFT JOIN starters_current s ON s.game_id = g.game_id
+        WHERE g.game_date = ? AND g.game_id IN (${groupFilter.games.map(() => '?').join(',')})
+        GROUP BY g.game_id, g.away_team, g.home_team
+        HAVING starters_found < 2
+        ORDER BY g.game_id
+      `
+      : `
+        SELECT g.game_id, g.away_team, g.home_team, COUNT(s.team_id) AS starters_found
+        FROM games g
+        LEFT JOIN starters_current s ON s.game_id = g.game_id
+        WHERE g.game_date = ?
+        GROUP BY g.game_id, g.away_team, g.home_team
+        HAVING starters_found < 2
+        ORDER BY g.game_id
+      `;
+    const binds = groupFilter && groupFilter.games && groupFilter.games.length ? [slateDate, ...groupFilter.games.map(g => g.game_id)] : [slateDate];
+    const miss = await env.DB.prepare(missingSql).bind(...binds).all();
+    missingAfter = miss.results || [];
+  } catch (e) {
+    missingAfter = [{ error: String(e?.message || e) }];
+  }
 
   const statsFilled = validated.rows.filter(r =>
     r.era !== null && r.era !== undefined && Number(r.era) > 0 &&
@@ -4586,11 +4649,18 @@ async function syncMlbApiProbableStarters(input, env) {
     ok: true,
     job: input.job || "scrape_starters_mlb_api",
     slate_date: slateDate,
+    status: inserted > 0 ? "pass" : (missingAfter.length ? "no_new_probables_missing_remain" : "no_new_rows_already_current"),
+    slate_mode: slate.slate_mode,
     source: "mlb_statsapi_schedule_probablePitcher_people_stats",
-    fetched_rows: rows.length,
+    mode: groupFilter ? "deterministic_mlb_api_group_sync_no_gemini" : "deterministic_mlb_api_full_sync_no_gemini",
+    fetched_rows: workingRows.length,
+    source_rows_before_group_filter: rows.length,
     stats_filled: statsFilled,
     stats_missing: validated.rows.length - statsFilled,
     inserted: { starters_current: inserted },
+    group_filter: groupFilter,
+    missing_starter_games_after: missingAfter,
+    note: groupFilter ? "Starter group buttons now use deterministic MLB Stats API data, not Gemini. Zero inserts are not a fake failure; check missing_starter_games_after for truly unresolved official probables." : "Full deterministic MLB Stats API probable starter sync.",
     skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
   };
