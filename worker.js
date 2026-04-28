@@ -1,9 +1,11 @@
-// AlphaDog v1.2.64 - Miner Pulse compatible worker
+// AlphaDog v1.2.65 - Scheduler Miner Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.64 - Miner Pulse";
-const SYSTEM_CODENAME = "Miner Pulse";
+const SYSTEM_VERSION = "v1.2.65 - Scheduler Miner Spine";
+const SYSTEM_CODENAME = "Scheduler Miner Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
+const BOARD_QUEUE_AUTO_MINE_LIMIT = 6;
+const BOARD_QUEUE_RETRY_LIMIT = 3;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -906,19 +908,27 @@ async function runScheduled(event, env) {
   try {
     const fullPipeline = await runFullPipeline(input, env);
     let boardQueue = null;
+    let boardMining = null;
     try {
-      boardQueue = await runBoardQueuePipeline({ ...input, job: "run_board_queue_pipeline" }, env);
+      boardQueue = await runBoardQueuePipeline({ ...input, job: "run_board_queue_pipeline", max_passes: 8 }, env);
     } catch (boardErr) {
       boardQueue = { ok: false, job: "run_board_queue_pipeline", error: String(boardErr?.message || boardErr) };
     }
+    try {
+      boardMining = await runBoardQueueAutoMine({ ...input, job: "board_queue_auto_mine", limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+    } catch (mineErr) {
+      boardMining = { ok: false, job: "board_queue_auto_mine", error: String(mineErr?.message || mineErr) };
+    }
     const result = {
-      ok: Boolean(fullPipeline?.ok) && Boolean(boardQueue?.ok),
+      ok: Boolean(fullPipeline?.ok) && Boolean(boardQueue?.ok) && Boolean(boardMining?.ok),
       version: SYSTEM_VERSION,
       job: "scheduled_full_pipeline_plus_board_queue",
       cron: event?.cron || null,
       full_pipeline: fullPipeline,
       board_queue_pipeline: boardQueue,
-      note: "Scheduled handler now also materializes the board_factor_queue after the regular full pipeline. No Gemini calls are made by the board queue step."
+      board_queue_auto_mine: boardMining,
+      scheduler_alignment: "Run this scheduled handler after PrizePicks scrape windows; each invocation continues unfinished raw mining instead of requiring manual clicks.",
+      note: "Scheduled handler now runs slate prep, materializes the board_factor_queue, and mines a safe raw-factor batch. Failed mining rows are retried/flagged and picked back up by future scheduled runs. No prop scoring or ranking is performed here."
     };
     await env.DB.prepare(`
       UPDATE task_runs
@@ -2799,7 +2809,7 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
   if (resetErrors) {
     resetErrorRows = await env.DB.prepare(`
       UPDATE board_factor_queue
-      SET status='PENDING', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+      SET status='PENDING', attempt_count=0, last_error=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE slate_date = ?
         AND status = 'ERROR'
         AND NOT EXISTS (
@@ -2898,12 +2908,19 @@ async function runBoardQueueMineOne(input, env) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
     if (isTransientMiningError(msg)) {
+      const attemptsUsed = Number(next.attempt_count || 0) + 1;
+      if (attemptsUsed >= BOARD_QUEUE_RETRY_LIMIT) {
+        const flagged = `retry_exhausted_after_${BOARD_QUEUE_RETRY_LIMIT}_attempts: ${msg}`.slice(0, 900);
+        await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(flagged, next.queue_id).run();
+        const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+        return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_exhausted_flagged", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed }, error: flagged, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/API failure exhausted the per-row retry limit. Queue row was flagged ERROR with last_error so it is visible, and scheduled/full-run repair can reset it for a future retry wave. No scoring, no ranking." };
+      }
       await env.DB.prepare(`UPDATE board_factor_queue SET status='PENDING', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
       const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-      return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was returned to PENDING, not marked ERROR. No scoring, no ranking." };
+      return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed, retry_limit: BOARD_QUEUE_RETRY_LIMIT }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was returned to PENDING until the per-row retry limit is exhausted. No scoring, no ranking." };
     }
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
-    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after backend raw JSON/schema validation and one compact retry, or another non-transient backend failure. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
+    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: Number(next.attempt_count || 0) + 1 }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after backend raw JSON/schema validation and one compact retry, or another non-transient backend failure. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
   }
 }
 
@@ -2913,8 +2930,9 @@ async function runBoardQueueAutoMine(input, env) {
   await ensureBoardFactorResultsTable(env);
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const preferredType = String(input.queue_type || "").trim();
-  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 6);
-  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 6, 6));
+  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || BOARD_QUEUE_AUTO_MINE_LIMIT);
+  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : BOARD_QUEUE_AUTO_MINE_LIMIT, BOARD_QUEUE_AUTO_MINE_LIMIT));
+  const retryErrors = input.retry_errors === true || input.reset_errors === true || input.trigger === "scheduled";
   const steps = [];
   let minedCount = 0;
   let completedByExisting = 0;
@@ -2922,7 +2940,7 @@ async function runBoardQueueAutoMine(input, env) {
   let failedCount = 0;
   let emptyReached = false;
 
-  const repairBefore = await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
+  const repairBefore = await repairBoardQueueRawState(env, slateDate, { reset_errors: retryErrors });
   const beforeTotals = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
       SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
@@ -2948,8 +2966,8 @@ async function runBoardQueueAutoMine(input, env) {
     if (result.status === "pass") minedCount++;
     if (result.status === "skipped_existing_raw_result") completedByExisting++;
     if (result.status === "empty") { emptyReached = true; break; }
-    if (result.status === "retry_later") { retryLaterCount++; break; }
-    if (!result.ok || result.status === "failed") { failedCount++; break; }
+    if (result.status === "retry_later") { retryLaterCount++; continue; }
+    if (!result.ok || result.status === "failed" || result.status === "retry_exhausted_flagged") { failedCount++; continue; }
   }
 
   const repairAfter = await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
@@ -2970,7 +2988,7 @@ async function runBoardQueueAutoMine(input, env) {
   const errors = Number(totals?.error_rows || 0);
   const completedBefore = Number(beforeTotals?.completed_rows || 0);
   const progressPct = totalRows > 0 ? Math.round((completed / totalRows) * 1000) / 10 : 100;
-  const status = emptyReached || pending === 0 ? "pass" : retryLaterCount ? "partial_retry_later" : failedCount ? "partial_error" : "partial";
+  const status = emptyReached || pending === 0 ? "pass" : failedCount ? "partial_flagged_continue" : retryLaterCount ? "partial_retry_later" : "partial";
 
   return {
     ok: true,
@@ -2990,7 +3008,7 @@ async function runBoardQueueAutoMine(input, env) {
       running_after: running,
       error_after: errors,
       percent_complete: progressPct,
-      needs_continue: pending > 0 && retryLaterCount === 0 && failedCount === 0
+      needs_continue: pending > 0
     },
     repair: { before: repairBefore?.changes || null, after: repairAfter?.changes || null },
     mined_rows: minedCount,
@@ -3001,12 +3019,12 @@ async function runBoardQueueAutoMine(input, env) {
     completed_rows_after: completed,
     running_rows_after: running,
     error_rows_after: errors,
-    needs_continue: pending > 0 && retryLaterCount === 0 && failedCount === 0,
+    needs_continue: pending > 0,
     steps,
     queue_health: queueHealth.rows,
     result_health: resultHealth.rows,
-    next_action: pending > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
-    note: "Auto miner runs a smaller safe batch of Mine One Raw calls and reports progress counters. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
+    next_action: pending > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue. Failed rows are flagged after 3 attempts and visible in queue health." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
+    note: "Auto miner runs a smaller safe batch of Mine One Raw calls, reports progress counters, retries transient rows up to 3 attempts, flags exhausted rows, and lets scheduled/full-run repair pick them back up. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
   };
 }
 function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
@@ -3931,6 +3949,32 @@ async function runFullPipeline(input, env) {
     }
   }
 
+  try {
+    await env.DB.prepare("DELETE FROM board_factor_results WHERE slate_date <> ?").bind(slateDate).run();
+    await env.DB.prepare("DELETE FROM board_factor_queue WHERE slate_date <> ?").bind(slateDate).run();
+    steps.push({ label: "Clean Old Board Queue Slates", job: "internal_clean_board_old_slates", result: { ok: true, protected_current_slate: slateDate } });
+  } catch (cleanErr) {
+    steps.push({ label: "Clean Old Board Queue Slates", job: "internal_clean_board_old_slates", result: { ok: false, error: String(cleanErr?.message || cleanErr) } });
+  }
+
+  let boardQueueAutoBuild = null;
+  try {
+    boardQueueAutoBuild = await runBoardQueueAutoBuild({ ...(input || {}), job: "board_queue_auto_build", slate_date: slateDate, slate_mode: slate.slate_mode, max_passes: 8 }, env);
+    steps.push({ label: "Board Queue Auto Build", job: "board_queue_auto_build", result: boardQueueAutoBuild });
+  } catch (boardBuildErr) {
+    boardQueueAutoBuild = { ok: false, error: String(boardBuildErr?.message || boardBuildErr) };
+    steps.push({ label: "Board Queue Auto Build", job: "board_queue_auto_build", result: boardQueueAutoBuild });
+  }
+
+  let boardQueueAutoMine = null;
+  try {
+    boardQueueAutoMine = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+    steps.push({ label: "Board Queue Auto Mine Raw", job: "board_queue_auto_mine", result: boardQueueAutoMine });
+  } catch (boardMineErr) {
+    boardQueueAutoMine = { ok: false, error: String(boardMineErr?.message || boardMineErr) };
+    steps.push({ label: "Board Queue Auto Mine Raw", job: "board_queue_auto_mine", result: boardQueueAutoMine });
+  }
+
   const startersTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM starters_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const bullpensTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM bullpens_current WHERE game_id LIKE ?", `${slateDate}_%`);
   const lineupsTotal = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?", `${slateDate}_%`);
@@ -4026,6 +4070,8 @@ async function runFullPipeline(input, env) {
     recent_usage_total: null,
     players_total: null,
     players_layer_mode: "separate_buttons_to_avoid_worker_request_limit",
+    board_queue_auto_build: boardQueueAutoBuild,
+    board_queue_auto_mine: boardQueueAutoMine,
     groups_run: groupsRun,
     group_plan: groupPlan,
     bad_rows: badRows,
