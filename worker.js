@@ -1,7 +1,7 @@
-// AlphaDog v1.2.49 - Payload Forge compatible worker
+// AlphaDog v1.2.50 - Context Injector compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.49 - Payload Forge";
-const SYSTEM_CODENAME = "Payload Forge";
+const SYSTEM_VERSION = "v1.2.50 - Context Injector";
+const SYSTEM_CODENAME = "Context Injector";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -1000,10 +1000,11 @@ async function handleBoardQueuePayloadInspect(request, env) {
     `).bind(...binds).all();
 
     const rows = res.results || [];
-    const inspected = rows.map(row => {
-      const rawText = String(row.payload_json || "{}");
-      const parsed = safeParseJsonText(rawText);
-      const payload = parsed.ok ? parsed.value : null;
+    const inspected = await Promise.all(rows.map(async row => {
+      const inspectedPayload = await inspectPayloadForQueueRow(env, row);
+      const rawText = inspectedPayload.rawText;
+      const parsed = inspectedPayload.parsed;
+      const payload = inspectedPayload.payload;
       const playerContexts = Array.isArray(payload?.enriched_player_contexts) ? payload.enriched_player_contexts : [];
       const gameContext = payload?.enriched_game_context || null;
       return {
@@ -1017,6 +1018,8 @@ async function handleBoardQueuePayloadInspect(request, env) {
         game_count: row.game_count,
         payload_parse_ok: parsed.ok,
         payload_parse_error: parsed.ok ? null : parsed.error,
+        enrichment_preview_used: inspectedPayload.enrichment_preview_used,
+        enrichment_preview_error: inspectedPayload.enrichment_preview_error,
         payload_quality: payload?.payload_quality || null,
         enriched_player_context_count: playerContexts.length,
         enriched_game_context_present: !!gameContext,
@@ -1027,7 +1030,7 @@ async function handleBoardQueuePayloadInspect(request, env) {
         created_at: row.created_at,
         updated_at: row.updated_at
       };
-    });
+    }));
 
     return json({
       ok: true,
@@ -1037,7 +1040,7 @@ async function handleBoardQueuePayloadInspect(request, env) {
       filters: { queue_id: queueId || null, queue_type: queueType || null, status: status || null, limit, raw_max_chars: rawMaxChars },
       row_count: rows.length,
       results: inspected,
-      note: "Read-only inspection of enriched board queue payloads. No queue changes, no Gemini calls, no scoring."
+      note: "Read-only inspection of board queue payloads. Thin stored payloads are enriched in preview for diagnosis only. No queue status changes, no Gemini calls, no scoring."
     });
   } catch (err) {
     return json({ ok: false, version: SYSTEM_VERSION, endpoint: "board_queue_payload_inspect", error: String(err?.message || err) }, { status: 500 });
@@ -2306,6 +2309,93 @@ async function ensureBoardFactorResultsTable(env) {
   return { ok: true, table: "board_factor_results" };
 }
 
+function isBoardQueuePayloadEnriched(payload, queueType) {
+  if (!payload || typeof payload !== "object") return false;
+  if (String(queueType || "").startsWith("PLAYER_")) {
+    return Array.isArray(payload.enriched_player_contexts) && payload.enriched_player_contexts.length > 0;
+  }
+  if (String(queueType || "").startsWith("GAME_")) {
+    return !!payload.enriched_game_context;
+  }
+  return Array.isArray(payload.enriched_player_contexts) || !!payload.enriched_game_context;
+}
+
+function parseStoredBoardPayload(payloadJson) {
+  try { return JSON.parse(String(payloadJson || "{}")); } catch (_) { return {}; }
+}
+
+async function buildFreshPayloadForQueueRow(env, queueRow) {
+  const slateDate = String(queueRow.slate_date || resolveSlateDate({}).slate_date);
+  const queueType = String(queueRow.queue_type || "");
+  const stored = parseStoredBoardPayload(queueRow.payload_json);
+
+  if (queueType.startsWith("PLAYER_")) {
+    let players = Array.isArray(stored.players) ? stored.players : [];
+    if (!players.length && queueRow.player_names) {
+      players = String(queueRow.player_names).split("|").map(name => ({
+        player_name: String(name || "").trim(),
+        team: String(queueRow.team_id || "").trim(),
+        first_start_time: queueRow.start_time,
+        leg_rows: 0
+      })).filter(p => p.player_name);
+    }
+    const chunk = players.map(p => ({
+      player_name: String(p.player_name || "").trim(),
+      team: normTeam(firstNonEmpty(p.team, queueRow.team_id)),
+      first_start_time: firstNonEmpty(p.first_start_time, p.start_time, queueRow.start_time),
+      leg_rows: Number(p.leg_rows || 0),
+      opponent_sample: p.opponent_sample || ""
+    })).filter(p => p.player_name);
+    return await enrichBoardQueuePlayerPayload(env, slateDate, queueType, Number(stored.batch_size || queueRow.player_count || chunk.length || 4), chunk);
+  }
+
+  if (queueType.startsWith("GAME_")) {
+    const gameRow = stored.game || {
+      game_key: queueRow.game_key,
+      team_a: queueRow.team_a,
+      team_b: queueRow.team_b,
+      start_time: queueRow.start_time,
+      leg_rows: queueRow.source_rows
+    };
+    return await enrichBoardQueueGamePayload(env, slateDate, queueType, gameRow);
+  }
+
+  return stored;
+}
+
+async function injectFreshPayloadIntoQueueRow(env, queueRow) {
+  const freshPayload = await buildFreshPayloadForQueueRow(env, queueRow);
+  const freshJson = JSON.stringify(freshPayload);
+  await env.DB.prepare(`UPDATE board_factor_queue SET payload_json = ?, updated_at = CURRENT_TIMESTAMP WHERE queue_id = ?`).bind(freshJson, queueRow.queue_id).run();
+  return { ...queueRow, payload_json: freshJson };
+}
+
+async function hydrateQueueRowPayloadIfNeeded(env, queueRow) {
+  const stored = parseStoredBoardPayload(queueRow.payload_json);
+  if (isBoardQueuePayloadEnriched(stored, queueRow.queue_type)) return queueRow;
+  return await injectFreshPayloadIntoQueueRow(env, queueRow);
+}
+
+async function inspectPayloadForQueueRow(env, row) {
+  const rawText = String(row.payload_json || "{}");
+  const parsed = safeParseJsonText(rawText);
+  let payload = parsed.ok ? parsed.value : null;
+  let displayPayload = payload;
+  let enrichment_preview_used = false;
+  let enrichment_preview_error = null;
+
+  if (parsed.ok && !isBoardQueuePayloadEnriched(payload, row.queue_type)) {
+    try {
+      displayPayload = await buildFreshPayloadForQueueRow(env, row);
+      enrichment_preview_used = true;
+    } catch (err) {
+      enrichment_preview_error = String(err?.message || err);
+    }
+  }
+
+  return { rawText, parsed, payload: displayPayload || payload || {}, enrichment_preview_used, enrichment_preview_error };
+}
+
 function boardFactorPromptForQueueRow(queueRow) {
   const payload = (() => { try { return JSON.parse(queueRow.payload_json || "{}"); } catch (_) { return {}; } })();
   return `You are AlphaDog's controlled MLB factor miner. Return JSON only. No markdown.
@@ -2375,7 +2465,9 @@ async function runBoardQueueMineOne(input, env) {
   await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
   const model = SCRAPE_MODEL;
   try {
-    const prompt = boardFactorPromptForQueueRow(next);
+    const hydratedNext = await hydrateQueueRowPayloadIfNeeded(env, next);
+    const hydratedPayload = parseStoredBoardPayload(hydratedNext.payload_json);
+    const prompt = boardFactorPromptForQueueRow(hydratedNext);
     const raw = await callGeminiWithFallback(env, prompt);
     const parsed = parseStrictJson(cleanJsonText(raw));
     if (!parsed || parsed.ok !== true || !Array.isArray(parsed.results)) throw new Error("Gemini JSON missing ok=true or results array");
@@ -2385,7 +2477,7 @@ async function runBoardQueueMineOne(input, env) {
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, summary.min_score, summary.max_score, summary.avg_score, JSON.stringify(parsed)).run();
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count }, result_id: resultId, model, factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row. Factor result stored. No prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row. Factor result stored. No prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
