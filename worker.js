@@ -1,7 +1,7 @@
 // AlphaDog v1.2.69 - Lockjaw Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.69.1 - Endpoint Anchor";
-const SYSTEM_CODENAME = "Lockjaw Dispatcher";
+const SYSTEM_VERSION = "v1.2.69.2 - SQL Auth Restore";
+const SYSTEM_CODENAME = "SQL Auth Restore";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -611,6 +611,16 @@ function withCors(response) {
     statusText: response.statusText,
     headers
   });
+}
+
+function isAuthorized(request, env) {
+  const expected = env && env.INGEST_TOKEN;
+  if (!expected) return true;
+  return request.headers.get("x-ingest-token") === expected;
+}
+
+function unauthorized() {
+  return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
 export default {
