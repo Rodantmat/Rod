@@ -1,7 +1,8 @@
-// AlphaDog v1.2.54 - Compact Split compatible worker
+// AlphaDog v1.2.55 - Chunk Forge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.54 - Compact Split";
-const SYSTEM_CODENAME = "Compact Split";
+const SYSTEM_VERSION = "v1.2.55 - Chunk Forge";
+const SYSTEM_CODENAME = "Chunk Forge";
+const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 6;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -3132,6 +3133,10 @@ async function buildBoardQueueRows(input, env) {
     ORDER BY start_time ASC, game_key ASC
   `, activeBinds);
 
+  const requestedQueueType = String(input.queue_type || input.build_queue_type || "").trim() || null;
+  const buildOffset = Math.max(0, Number(input.build_offset || input.offset || 0) || 0);
+  const buildLimitRaw = Number(input.max_queue_rows || input.limit || 0) || 0;
+  const buildLimit = buildLimitRaw > 0 ? Math.max(1, Math.min(buildLimitRaw, BOARD_QUEUE_BUILD_CHUNK_LIMIT)) : null;
   const queueRows = [];
   const playerBatchSizes = {
     PLAYER_A_ROLE_RECENT_MATCHUP: 2,
@@ -3142,19 +3147,22 @@ async function buildBoardQueueRows(input, env) {
     "PLAYER_D_ADVANCED_FORM_CONTACT"
   ];
   for (const queueType of playerQueueTypes) {
+    if (requestedQueueType && queueType !== requestedQueueType) continue;
     const playerBatchSize = playerBatchSizes[queueType] || 4;
-    const playerChunks = boardChunkRows(players.rows, playerBatchSize);
+    const allPlayerChunks = boardChunkRows(players.rows, playerBatchSize);
+    const playerChunks = buildLimit ? allPlayerChunks.slice(buildOffset, buildOffset + buildLimit) : allPlayerChunks;
     for (let index = 0; index < playerChunks.length; index += 1) {
+      const absoluteIndex = buildLimit ? buildOffset + index : index;
       const chunk = playerChunks[index];
       const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
       const enrichedPayload = await enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk);
       queueRows.push({
-        queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
+        queue_id: boardQueueId(slateDate, queueType, absoluteIndex + 1, scopeKey),
         slate_date: slateDate,
         queue_type: queueType,
         scope_type: `PLAYER_BATCH_${playerBatchSize}`,
         scope_key: scopeKey,
-        batch_index: index + 1,
+        batch_index: absoluteIndex + 1,
         player_count: chunk.length,
         game_count: 0,
         source_rows: chunk.reduce((sum, r) => sum + Number(r.leg_rows || 0), 0),
@@ -3175,17 +3183,20 @@ async function buildBoardQueueRows(input, env) {
     "GAME_NEWS_INJURY_CONTEXT"
   ];
   for (const queueType of gameQueueTypes) {
-    for (let index = 0; index < games.rows.length; index += 1) {
-      const row = games.rows[index];
+    if (requestedQueueType && queueType !== requestedQueueType) continue;
+    const gameRows = buildLimit ? games.rows.slice(buildOffset, buildOffset + buildLimit) : games.rows;
+    for (let index = 0; index < gameRows.length; index += 1) {
+      const absoluteIndex = buildLimit ? buildOffset + index : index;
+      const row = gameRows[index];
       const scopeKey = `${row.game_key}|${row.start_time}`;
       const enrichedPayload = await enrichBoardQueueGamePayload(env, slateDate, queueType, row);
       queueRows.push({
-        queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
+        queue_id: boardQueueId(slateDate, queueType, absoluteIndex + 1, scopeKey),
         slate_date: slateDate,
         queue_type: queueType,
         scope_type: "GAME",
         scope_key: scopeKey,
-        batch_index: index + 1,
+        batch_index: absoluteIndex + 1,
         player_count: 0,
         game_count: 1,
         source_rows: Number(row.leg_rows || 0),
@@ -3258,22 +3269,115 @@ async function runBoardQueuePreview(input, env) {
   };
 }
 
+async function getBoardQueueBuildPlan(input, env, slateDate) {
+  const slateRows = await boardScalar(env, "SELECT COUNT(*) FROM mlb_stats WHERE substr(start_time, 1, 10) = ?", [slateDate]);
+  const activeWhere = Number(slateRows.value || 0) > 0 ? "substr(start_time, 1, 10) = ?" : "1=1";
+  const activeBinds = Number(slateRows.value || 0) > 0 ? [slateDate] : [];
+  const singleWhere = boardSingleRowWhere();
+  const gameKeySql = boardNormalizedGameKeySql();
+  const playerCount = await boardScalar(env, `
+    SELECT COUNT(*) FROM (
+      SELECT player_name, team
+      FROM mlb_stats
+      WHERE ${activeWhere} AND ${singleWhere}
+      GROUP BY player_name, team
+    )
+  `, activeBinds);
+  const gameCount = await boardScalar(env, `
+    SELECT COUNT(*) FROM (
+      SELECT ${gameKeySql} AS game_key, MIN(start_time) AS start_time
+      FROM mlb_stats
+      WHERE ${activeWhere} AND ${singleWhere}
+      GROUP BY game_key, start_time
+    )
+  `, activeBinds);
+  const players = Number(playerCount.value || 0);
+  const games = Number(gameCount.value || 0);
+  return [
+    { queue_type: "PLAYER_A_ROLE_RECENT_MATCHUP", desired_rows: Math.ceil(players / 2), scope_type: "PLAYER_BATCH_2" },
+    { queue_type: "PLAYER_D_ADVANCED_FORM_CONTACT", desired_rows: Math.ceil(players / 2), scope_type: "PLAYER_BATCH_2" },
+    { queue_type: "GAME_B_TEAM_BULLPEN_ENVIRONMENT", desired_rows: games, scope_type: "GAME" },
+    { queue_type: "GAME_WEATHER_CONTEXT", desired_rows: games, scope_type: "GAME" },
+    { queue_type: "GAME_NEWS_INJURY_CONTEXT", desired_rows: games, scope_type: "GAME" }
+  ];
+}
+
+async function getBoardQueueExistingCount(env, slateDate, queueType, scopeType) {
+  const row = await boardScalar(env, `
+    SELECT COUNT(*)
+    FROM board_factor_queue
+    WHERE slate_date = ? AND queue_type = ? AND scope_type = ?
+  `, [slateDate, queueType, scopeType]);
+  return Number(row.value || 0);
+}
+
 async function runBoardQueueBuild(input, env) {
   await ensureBoardFactorQueueTable(env);
-  const built = await buildBoardQueueRows(input, env);
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+
+  await env.DB.prepare(`
+    DELETE FROM board_factor_results
+    WHERE slate_date = ?
+      AND queue_id IN (
+        SELECT queue_id FROM board_factor_queue
+        WHERE slate_date = ?
+          AND queue_type IN ('PLAYER_A_ROLE_RECENT_MATCHUP','PLAYER_D_ADVANCED_FORM_CONTACT')
+          AND scope_type <> 'PLAYER_BATCH_2'
+      )
+  `).bind(slateDate, slateDate).run();
+  await env.DB.prepare(`
+    DELETE FROM board_factor_queue
+    WHERE slate_date = ?
+      AND queue_type IN ('PLAYER_A_ROLE_RECENT_MATCHUP','PLAYER_D_ADVANCED_FORM_CONTACT')
+      AND scope_type <> 'PLAYER_BATCH_2'
+  `).bind(slateDate).run();
+
+  const plan = await getBoardQueueBuildPlan(input, env, slateDate);
+  let selected = null;
+  for (const row of plan) {
+    const existing = await getBoardQueueExistingCount(env, slateDate, row.queue_type, row.scope_type);
+    row.existing_rows = existing;
+    row.remaining_rows = Math.max(0, Number(row.desired_rows || 0) - existing);
+    if (!selected && row.remaining_rows > 0) selected = row;
+  }
+
+  if (!selected) {
+    const queueHealthDone = await boardRows(env, `
+      SELECT queue_type, status, COUNT(*) AS rows_count, SUM(source_rows) AS source_rows
+      FROM board_factor_queue
+      WHERE slate_date = ?
+      GROUP BY queue_type, status
+      ORDER BY queue_type, status
+    `, [slateDate]);
+    return {
+      ok: true,
+      job: "board_queue_build",
+      version: SYSTEM_VERSION,
+      status: "pass",
+      slate_date: slateDate,
+      table: "board_factor_queue",
+      mode: "cloudflare_safe_chunked_queue_builder_no_gemini_no_scoring",
+      inserted_queue_rows: 0,
+      build_complete: true,
+      build_plan: plan,
+      queue_health: queueHealthDone.rows,
+      warnings: [],
+      note: "Board queue is already fully materialized for supported queue types. No Gemini calls, no factor scoring, no prop ranking."
+    };
+  }
+
+  const chunkLimit = Math.min(BOARD_QUEUE_BUILD_CHUNK_LIMIT, selected.remaining_rows);
+  const built = await buildBoardQueueRows({
+    ...input,
+    slate_date: slateDate,
+    queue_type: selected.queue_type,
+    build_offset: selected.existing_rows,
+    max_queue_rows: chunkLimit
+  }, env);
   if (!built.ok) return built;
-  const slateDate = built.slate_date;
-  const allowedTypes = [
-    "PLAYER_A_ROLE_RECENT_MATCHUP",
-    "PLAYER_D_ADVANCED_FORM_CONTACT",
-    "GAME_B_TEAM_BULLPEN_ENVIRONMENT",
-    "GAME_WEATHER_CONTEXT",
-    "GAME_NEWS_INJURY_CONTEXT"
-  ];
-  await env.DB.prepare(`DELETE FROM board_factor_queue WHERE slate_date = ? AND queue_type IN (${allowedTypes.map(() => "?").join(",")})`).bind(slateDate, ...allowedTypes).run();
 
   const stmt = env.DB.prepare(`
-    INSERT INTO board_factor_queue (
+    INSERT OR IGNORE INTO board_factor_queue (
       queue_id, slate_date, queue_type, scope_type, scope_key, batch_index,
       player_count, game_count, source_rows, player_names, team_id, game_key,
       team_a, team_b, start_time, status, attempt_count, last_error, payload_json,
@@ -3283,13 +3387,21 @@ async function runBoardQueueBuild(input, env) {
 
   let inserted = 0;
   for (const r of built.queue_rows) {
-    await stmt.bind(
+    const result = await stmt.bind(
       r.queue_id, r.slate_date, r.queue_type, r.scope_type, r.scope_key, r.batch_index,
       r.player_count, r.game_count, r.source_rows, r.player_names, r.team_id, r.game_key,
       r.team_a, r.team_b, r.start_time, r.payload_json
     ).run();
-    inserted += 1;
+    inserted += Number(result?.meta?.changes || 0);
   }
+
+  const refreshedExisting = await getBoardQueueExistingCount(env, slateDate, selected.queue_type, selected.scope_type);
+  selected.existing_rows_after = refreshedExisting;
+  selected.remaining_rows_after = Math.max(0, Number(selected.desired_rows || 0) - refreshedExisting);
+  const buildComplete = selected.remaining_rows_after === 0 && plan.every(r => {
+    if (r.queue_type === selected.queue_type) return true;
+    return Number(r.remaining_rows || 0) === 0;
+  });
 
   const queueHealth = await boardRows(env, `
     SELECT queue_type, status, COUNT(*) AS rows_count, SUM(source_rows) AS source_rows
@@ -3303,21 +3415,25 @@ async function runBoardQueueBuild(input, env) {
     ok: true,
     job: "board_queue_build",
     version: SYSTEM_VERSION,
-    status: built.warnings.length ? "review" : "pass",
+    status: buildComplete ? "pass" : "partial",
     slate_date: slateDate,
     table: "board_factor_queue",
-    mode: "materialize_supported_board_factor_queue_with_enriched_payload_no_gemini_no_scoring",
-    deleted_previous_types: allowedTypes,
-    inserted_queue_rows: inserted,
-    counts: {
-      supported_unique_players: built.supported_unique_players,
-      normalized_supported_games: built.normalized_supported_games,
-      player_batch_size: built.player_batch_size
+    mode: "cloudflare_safe_chunked_queue_builder_no_gemini_no_scoring",
+    chunk: {
+      queue_type: selected.queue_type,
+      scope_type: selected.scope_type,
+      offset: selected.existing_rows,
+      requested_rows: chunkLimit,
+      inserted_rows: inserted,
+      remaining_rows_after: selected.remaining_rows_after
     },
+    inserted_queue_rows: inserted,
+    build_complete: buildComplete,
+    build_plan: plan,
     queue_estimate: built.queue_estimate,
     queue_health: queueHealth.rows,
     warnings: built.warnings,
-    note: "Queue rows include enriched payload context. No Gemini calls, no factor scoring, no prop ranking. Combo lines remain deferred."
+    note: "Cloudflare-safe chunk build completed one small queue slice only. Click Board Queue Build again until build_complete=true. No Gemini calls, no factor scoring, no prop ranking."
   };
 }
 
