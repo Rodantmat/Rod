@@ -1,7 +1,7 @@
-// AlphaDog v1.2.47 - First Miner compatible worker
+// AlphaDog v1.2.48 - Result Lantern compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.47 - First Miner";
-const SYSTEM_CODENAME = "First Miner";
+const SYSTEM_VERSION = "v1.2.48 - Result Lantern";
+const SYSTEM_CODENAME = "Result Lantern";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -338,6 +338,7 @@ export default {
       if (url.pathname === "/health") return json(health(env));
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
+      if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
       if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
@@ -938,6 +939,108 @@ function compactDebugSQLRows(rows, maxChars) {
     }
     return out;
   });
+}
+
+
+function safeParseJsonText(value) {
+  try {
+    return { ok: true, value: JSON.parse(String(value || "{}")) };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err), value: null };
+  }
+}
+
+function clampInspectLimit(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 5;
+  return Math.max(1, Math.min(Math.floor(n), 25));
+}
+
+function clampInspectRawChars(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 12000;
+  return Math.max(1000, Math.min(Math.floor(n), 50000));
+}
+
+async function handleBoardFactorResultInspect(request, env) {
+  if (!isAuthorized(request, env)) return json({ ok: false, error: "Unauthorized" }, { status: 401 });
+
+  try {
+    await ensureBoardFactorResultsTable(env);
+    const url = new URL(request.url);
+    const body = request.method === "POST" ? await safeJson(request) : {};
+    const slateDate = String(body?.slate_date || url.searchParams.get("slate_date") || resolveSlateDate({}).slate_date);
+    const queueType = String(body?.queue_type || url.searchParams.get("queue_type") || "").trim();
+    const queueId = String(body?.queue_id || url.searchParams.get("queue_id") || "").trim();
+    const resultId = String(body?.result_id || url.searchParams.get("result_id") || "").trim();
+    const limit = clampInspectLimit(body?.limit ?? url.searchParams.get("limit"));
+    const rawMaxChars = clampInspectRawChars(body?.raw_max_chars ?? url.searchParams.get("raw_max_chars"));
+
+    const where = ["slate_date = ?"];
+    const binds = [slateDate];
+    if (resultId) { where.push("result_id = ?"); binds.push(resultId); }
+    if (queueId) { where.push("queue_id = ?"); binds.push(queueId); }
+    if (queueType) { where.push("queue_type = ?"); binds.push(queueType); }
+
+    const sql = `
+      SELECT result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model,
+             factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at
+      FROM board_factor_results
+      WHERE ${where.join(" AND ")}
+      ORDER BY created_at DESC, result_id DESC
+      LIMIT ${limit}
+    `;
+    const res = await env.DB.prepare(sql).bind(...binds).all();
+    const rows = res.results || [];
+    const inspected = rows.map(row => {
+      const rawText = String(row.raw_json || "");
+      const parsed = safeParseJsonText(rawText);
+      const normalizedResults = Array.isArray(parsed.value?.results) ? parsed.value.results : [];
+      const parsedHeader = parsed.value && typeof parsed.value === "object" ? {
+        ok: parsed.value.ok ?? null,
+        queue_id: parsed.value.queue_id ?? row.queue_id,
+        queue_type: parsed.value.queue_type ?? row.queue_type,
+        scope_type: parsed.value.scope_type ?? row.scope_type,
+        slate_date: parsed.value.slate_date ?? row.slate_date,
+        factor_family: parsed.value.factor_family ?? null,
+        warnings: Array.isArray(parsed.value.warnings) ? parsed.value.warnings : []
+      } : null;
+      return {
+        result_id: row.result_id,
+        queue_id: row.queue_id,
+        slate_date: row.slate_date,
+        queue_type: row.queue_type,
+        scope_type: row.scope_type,
+        scope_key: row.scope_key,
+        batch_index: row.batch_index,
+        status: row.status,
+        model: row.model,
+        summary_from_table: { factor_count: row.factor_count, min_score: row.min_score, max_score: row.max_score, avg_score: row.avg_score },
+        parsed_ok: parsed.ok,
+        parsed_error: parsed.ok ? null : parsed.error,
+        parsed_header: parsedHeader,
+        parsed_results_count: normalizedResults.length,
+        parsed_results: normalizedResults,
+        raw_json_text: rawText.length > rawMaxChars ? rawText.slice(0, rawMaxChars) + `...[truncated ${rawText.length - rawMaxChars} chars]` : rawText,
+        raw_json_length: rawText.length,
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      };
+    });
+
+    return json({
+      ok: true,
+      version: SYSTEM_VERSION,
+      endpoint: "board_factor_result_inspect",
+      slate_date: slateDate,
+      filters: { result_id: resultId || null, queue_id: queueId || null, queue_type: queueType || null, limit, raw_max_chars: rawMaxChars },
+      row_count: rows.length,
+      results: inspected,
+      note: "Read-only inspection of stored Gemini factor result JSON. No queue changes, no Gemini calls, no scoring."
+    });
+  } catch (err) {
+    return json({ ok: false, version: SYSTEM_VERSION, endpoint: "board_factor_result_inspect", error: String(err?.message || err) }, { status: 500 });
+  }
 }
 
 async function handleDebugSQL(request, env) {
