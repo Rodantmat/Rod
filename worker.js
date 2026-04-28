@@ -1,7 +1,7 @@
-// AlphaDog v1.2.52 - Raw Sentinel compatible worker
+// AlphaDog v1.2.53 - Queue Guardian compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.52 - Raw Sentinel";
-const SYSTEM_CODENAME = "Raw Sentinel";
+const SYSTEM_VERSION = "v1.2.53 - Queue Guardian";
+const SYSTEM_CODENAME = "Queue Guardian";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -16,6 +16,7 @@ const JOB_DISPLAY_LABELS = {
   board_queue_build: "SCRAPE > Board Queue Build",
   run_board_queue_pipeline: "SCRAPE > Board Queue Pipeline",
   board_queue_mine_one: "SCRAPE > Board Queue Mine One Raw",
+  board_queue_repair: "REPAIR > Board Queue Raw State",
   build_edge_candidates_hits: "SCRAPE > Build Hits Candidates",
   build_edge_candidates_rbi: "SCRAPE > Build RBI Candidates",
   build_edge_candidates_rfi: "SCRAPE > Build RFI Candidates",
@@ -99,6 +100,11 @@ const JOBS = {
     prompt: null,
     tables: ["board_factor_queue", "board_factor_results"],
     note: "mines exactly one pending board factor queue row with Gemini and stores raw factor output; no prop scoring"
+  },
+  board_queue_repair: {
+    prompt: null,
+    tables: ["board_factor_queue", "board_factor_results"],
+    note: "repairs queue/result status only: completed raw results win, stale running rows return to pending, optional error reset; no Gemini and no scoring"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -422,6 +428,7 @@ function executableJobNames() {
     "scrape_recent_usage",
     "scrape_derived_metrics",
     "board_queue_mine_one",
+    "board_queue_repair",
     "scrape_players_mlb_api",
     "scrape_players",
     "scrape_players_mlb_api_g1",
@@ -2671,26 +2678,161 @@ async function callGeminiRawWithValidation(env, queueRow) {
   throw err;
 }
 
+function isValidRawBoardResultRow(row) {
+  if (!row) return false;
+  if (String(row.status || "") !== "COMPLETED") return false;
+  if (Number(row.factor_count || 0) <= 0) return false;
+  const raw = String(row.raw_json || "");
+  return raw.includes('"raw_mode":true') && raw.includes('"items"') && raw.includes('"raw_factors"');
+}
+
+async function validRawResultForQueue(env, queueId) {
+  const row = await env.DB.prepare(`
+    SELECT result_id, status, factor_count, raw_json
+    FROM board_factor_results
+    WHERE queue_id = ? AND status = 'COMPLETED' AND factor_count > 0
+    ORDER BY created_at DESC, result_id DESC
+    LIMIT 1
+  `).bind(queueId).first();
+  return isValidRawBoardResultRow(row) ? row : null;
+}
+
+function isTransientMiningError(msg) {
+  const text = String(msg || "").toLowerCase();
+  return [
+    "load failed", "fetch", "network", "connection", "timeout", "timed out",
+    "too many api requests", "rate limit", "429", "503", "502", "504",
+    "temporarily", "overloaded", "deadline", "aborted", "quota"
+  ].some(x => text.includes(x));
+}
+
+async function repairBoardQueueRawState(env, slateDate, options = {}) {
+  await ensureBoardFactorQueueTable(env);
+  await ensureBoardFactorResultsTable(env);
+  const resetErrors = options.reset_errors === true || options.reset_error_rows === true;
+
+  const completedFromRaw = await env.DB.prepare(`
+    UPDATE board_factor_queue
+    SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slate_date = ?
+      AND queue_id IN (
+        SELECT DISTINCT queue_id
+        FROM board_factor_results
+        WHERE slate_date = ?
+          AND status = 'COMPLETED'
+          AND factor_count > 0
+          AND raw_json LIKE '%"raw_mode":true%'
+          AND raw_json LIKE '%"raw_factors"%'
+      )
+      AND status <> 'COMPLETED'
+  `).bind(slateDate, slateDate).run();
+
+  const duplicatePending = await env.DB.prepare(`
+    UPDATE board_factor_queue
+    SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slate_date = ?
+      AND status = 'PENDING'
+      AND EXISTS (
+        SELECT 1 FROM board_factor_results r
+        WHERE r.queue_id = board_factor_queue.queue_id
+          AND r.status = 'COMPLETED'
+          AND r.factor_count > 0
+          AND r.raw_json LIKE '%"raw_mode":true%'
+          AND r.raw_json LIKE '%"raw_factors"%'
+      )
+  `).bind(slateDate).run();
+
+  const staleRunning = await env.DB.prepare(`
+    UPDATE board_factor_queue
+    SET status='PENDING', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+    WHERE slate_date = ? AND status = 'RUNNING'
+  `).bind(slateDate).run();
+
+  let resetErrorRows = { meta: { changes: 0 } };
+  if (resetErrors) {
+    resetErrorRows = await env.DB.prepare(`
+      UPDATE board_factor_queue
+      SET status='PENDING', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+      WHERE slate_date = ?
+        AND status = 'ERROR'
+        AND NOT EXISTS (
+          SELECT 1 FROM board_factor_results r
+          WHERE r.queue_id = board_factor_queue.queue_id
+            AND r.status = 'COMPLETED'
+            AND r.factor_count > 0
+            AND r.raw_json LIKE '%"raw_mode":true%'
+            AND r.raw_json LIKE '%"raw_factors"%'
+        )
+    `).bind(slateDate).run();
+  }
+
+  const health = await boardRows(env, `
+    SELECT queue_type, status, COUNT(*) AS rows_count
+    FROM board_factor_queue
+    WHERE slate_date = ?
+    GROUP BY queue_type, status
+    ORDER BY queue_type, status
+  `, [slateDate]);
+
+  return {
+    ok: true,
+    job: "board_queue_repair",
+    version: SYSTEM_VERSION,
+    status: "pass",
+    slate_date: slateDate,
+    changes: {
+      completed_from_valid_raw_results: Number(completedFromRaw?.meta?.changes || 0),
+      duplicate_pending_completed: Number(duplicatePending?.meta?.changes || 0),
+      stale_running_returned_to_pending: Number(staleRunning?.meta?.changes || 0),
+      error_rows_reset_to_pending: Number(resetErrorRows?.meta?.changes || 0)
+    },
+    queue_health: health.rows,
+    note: "Queue-state repair only. Valid raw results win and protect against duplicate mining. RUNNING rows are returned to PENDING. ERROR rows are reset only when reset_errors=true. No Gemini, no scoring, no ranking."
+  };
+}
+
+async function runBoardQueueRepair(input, env) {
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+  return await repairBoardQueueRawState(env, slateDate, input || {});
+}
+
 async function runBoardQueueMineOne(input, env) {
   await ensureBoardFactorQueueTable(env);
   await ensureBoardFactorResultsTable(env);
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const preferredType = String(input.queue_type || "").trim();
+  await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
   const binds = preferredType ? [slateDate, preferredType] : [slateDate];
-  const typeWhere = preferredType ? "AND queue_type = ?" : "";
+  const typeWhere = preferredType ? "AND q.queue_type = ?" : "";
   const next = await env.DB.prepare(`
-    SELECT * FROM board_factor_queue
-    WHERE slate_date = ? ${typeWhere} AND status = 'PENDING'
-    ORDER BY CASE queue_type WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1 WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2 WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3 WHEN 'GAME_WEATHER_CONTEXT' THEN 4 WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5 ELSE 99 END, batch_index ASC, queue_id ASC
+    SELECT q.* FROM board_factor_queue q
+    WHERE q.slate_date = ? ${typeWhere}
+      AND q.status = 'PENDING'
+      AND NOT EXISTS (
+        SELECT 1 FROM board_factor_results r
+        WHERE r.queue_id = q.queue_id
+          AND r.status = 'COMPLETED'
+          AND r.factor_count > 0
+          AND r.raw_json LIKE '%"raw_mode":true%'
+          AND r.raw_json LIKE '%"raw_factors"%'
+      )
+    ORDER BY CASE q.queue_type WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1 WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2 WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3 WHEN 'GAME_WEATHER_CONTEXT' THEN 4 WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5 ELSE 99 END, q.batch_index ASC, q.queue_id ASC
     LIMIT 1
   `).bind(...binds).first();
 
   if (!next) {
     const health = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "empty", slate_date: slateDate, message: "No pending board factor queue row found.", queue_health: health.rows, note: "No Gemini call made." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "empty", slate_date: slateDate, message: "No pending board factor queue row without a valid raw result was found.", queue_health: health.rows, note: "No Gemini call made. Duplicate raw-result protection is active." };
   }
 
-  await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+  const alreadyRaw = await validRawResultForQueue(env, next.queue_id);
+  if (alreadyRaw) {
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+    const health = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "skipped_existing_raw_result", slate_date: slateDate, skipped_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, existing_result_id: alreadyRaw.result_id, queue_health: health.rows, note: "Skipped this queue row because a valid raw result already exists. No Gemini call made." };
+  }
+
+  await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=? AND status='PENDING'`).bind(next.queue_id).run();
   const model = SCRAPE_MODEL;
   try {
     const hydratedNext = await hydrateQueueRowPayloadIfNeeded(env, next);
@@ -2704,12 +2846,17 @@ async function runBoardQueueMineOne(input, env) {
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, null, null, null, JSON.stringify(parsed)).run();
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored after validation. If first Gemini output fails JSON/schema validation, the miner retries once with a stricter compact prompt. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored after validation. Duplicate raw-result protection is active. If Gemini output fails JSON/schema validation, the miner retries once with a stricter compact prompt. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
+    if (isTransientMiningError(msg)) {
+      await env.DB.prepare(`UPDATE board_factor_queue SET status='PENDING', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
+      const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+      return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was returned to PENDING, not marked ERROR. No scoring, no ranking." };
+    }
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
-    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after raw JSON/schema validation and one compact retry. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
+    return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after backend raw JSON/schema validation and one compact retry, or another non-transient backend failure. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
   }
 }
 
@@ -3198,6 +3345,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "board_queue_mine_one") {
     return await runBoardQueueMineOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_repair") {
+    return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "scrape_games_markets" || jobName === "daily_mlb_slate") {
     return await syncMlbApiGamesMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
