@@ -1,7 +1,7 @@
-// AlphaDog v1.2.56 - Fast Chunk compatible worker
+// AlphaDog v1.2.57 - Event Ledger compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.56 - Fast Chunk";
-const SYSTEM_CODENAME = "Fast Chunk";
+const SYSTEM_VERSION = "v1.2.57 - Event Ledger";
+const SYSTEM_CODENAME = "Event Ledger";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -10,7 +10,7 @@ const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
 const JOB_DISPLAY_LABELS = {
   run_full_pipeline: "SCRAPE > FULL RUN",
   scheduled_full_pipeline_plus_board_queue: "SCRAPE > FULL RUN + Board Queue Pipeline",
-  daily_mlb_slate: "SCRAPE > Markets",
+  daily_mlb_slate: "SCRAPE > Daily MLB Slate",
   scrape_games_markets: "SCRAPE > Markets",
   board_sifter_preview: "SCRAPE > Board Sifter Preview",
   board_queue_preview: "SCRAPE > Board Queue Preview",
@@ -342,7 +342,7 @@ export default {
         return new Response(null, { headers: CORS_HEADERS });
       }
 
-      if (url.pathname === "/health") return json(health(env));
+      if (url.pathname === "/health") { const h = health(env); await logSystemEvent(env, { trigger_source: "control_room_debug", action_label: "DEBUG > Health", job_name: "health", status: "success", http_status: 200, output_preview: h }); return json(h); }
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
@@ -881,6 +881,8 @@ async function handleDailyHealth(request, env) {
 async function runScheduled(event, env) {
   const taskId = crypto.randomUUID();
   const input = { job: "run_full_pipeline", cron: event?.cron || null, slate_mode: "AUTO", trigger: "scheduled" };
+  const slate = resolveSlateDate(input);
+  await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "started", task_id: taskId, input_json: input });
 
   await env.DB.prepare(`
     INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
@@ -909,12 +911,14 @@ async function runScheduled(event, env) {
       SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
       WHERE task_id = ?
     `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+    await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: result.ok ? "success" : "failed", task_id: taskId, output_preview: result, error: result.ok ? null : "scheduled_pipeline_failed" });
   } catch (err) {
     await env.DB.prepare(`
       UPDATE task_runs
       SET status = ?, finished_at = CURRENT_TIMESTAMP, error = ?
       WHERE task_id = ?
     `).bind("failed", String(err?.message || err), taskId).run();
+    await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "failed", task_id: taskId, error: String(err?.message || err) });
   }
 }
 
@@ -926,6 +930,29 @@ function isAuthorized(request, env) {
 
 function unauthorized() {
   return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+}
+
+async function ensureSystemEventLog(env) {
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS system_event_log (event_id TEXT PRIMARY KEY, event_time TEXT DEFAULT CURRENT_TIMESTAMP, version TEXT, trigger_source TEXT, action_label TEXT, job_name TEXT, slate_date TEXT, slate_mode TEXT, status TEXT, http_status INTEGER, task_id TEXT, input_json TEXT, output_preview TEXT, error TEXT)`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_time ON system_event_log(event_time)`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_job ON system_event_log(job_name, event_time)`).run();
+    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_slate ON system_event_log(slate_date, event_time)`).run();
+  } catch (_) {}
+}
+function compactLogText(value, max = 1800) {
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    return text && text.length > max ? text.slice(0, max) + `...[truncated ${text.length - max} chars]` : text;
+  } catch (_) { return String(value || "").slice(0, max); }
+}
+async function logSystemEvent(env, event = {}) {
+  try {
+    await ensureSystemEventLog(env);
+    await env.DB.prepare(`INSERT INTO system_event_log (event_id, version, trigger_source, action_label, job_name, slate_date, slate_mode, status, http_status, task_id, input_json, output_preview, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+      crypto.randomUUID(), SYSTEM_VERSION, String(event.trigger_source || "unknown"), event.action_label ? String(event.action_label) : null, event.job_name ? String(event.job_name) : null, event.slate_date ? String(event.slate_date) : null, event.slate_mode ? String(event.slate_mode) : null, event.status ? String(event.status) : null, Number.isFinite(Number(event.http_status)) ? Number(event.http_status) : null, event.task_id ? String(event.task_id) : null, event.input_json ? compactLogText(event.input_json) : null, event.output_preview ? compactLogText(event.output_preview) : null, event.error ? compactLogText(event.error) : null
+    ).run();
+  } catch (_) {}
 }
 
 function clampDebugSQLMaxRows(value) {
@@ -1144,10 +1171,12 @@ async function handleBoardFactorResultInspect(request, env) {
 async function handleDebugSQL(request, env) {
   if (!isAuthorized(request, env)) return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
+  let body = null;
   try {
-    const body = await safeJson(request);
+    body = await safeJson(request);
     const sql = String(body?.sql || "").trim();
-    if (!sql) return json({ ok: false, error: "Missing SQL" }, { status: 400 });
+    await logSystemEvent(env, { trigger_source: "control_room_sql", action_label: "MANUAL/CHECK SQL", job_name: "debug_sql", status: sql ? "started" : "missing_sql", input_json: { sql: sql.slice(0, 1200) } });
+    if (!sql) { await logSystemEvent(env, { trigger_source: "control_room_sql", action_label: "MANUAL/CHECK SQL", job_name: "debug_sql", status: "failed", http_status: 400, error: "Missing SQL" }); return json({ ok: false, error: "Missing SQL" }, { status: 400 }); }
 
     const maxRows = clampDebugSQLMaxRows(body?.max_rows ?? body?.maxRows);
     const maxChars = Math.max(200, Math.min(Number(body?.max_chars ?? body?.maxChars) || 900, 2000));
@@ -1188,8 +1217,11 @@ async function handleDebugSQL(request, env) {
       }
     }
 
-    return json({ ok: true, version: SYSTEM_VERSION, manual_sql_output_guard: { enabled: true, default_max_rows: 50, hard_max_rows: 100 }, outputs });
+    const responseBody = { ok: true, version: SYSTEM_VERSION, manual_sql_output_guard: { enabled: true, default_max_rows: 50, hard_max_rows: 100 }, outputs };
+    await logSystemEvent(env, { trigger_source: "control_room_sql", action_label: "MANUAL/CHECK SQL", job_name: "debug_sql", status: "success", http_status: 200, output_preview: responseBody });
+    return json(responseBody);
   } catch (err) {
+    await logSystemEvent(env, { trigger_source: "control_room_sql", action_label: "MANUAL/CHECK SQL", job_name: "debug_sql", status: "failed", http_status: 500, input_json: body, error: String(err?.message || err) });
     return json({ ok: false, error: String(err?.message || err) }, { status: 500 });
   }
 }
@@ -3509,8 +3541,10 @@ async function handleTaskRun(request, env) {
   const jobName = String((body || {}).job || "scrape_games_markets");
   const taskId = crypto.randomUUID();
   const input = { ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" };
+  await logSystemEvent(env, { trigger_source: "control_room_button", action_label: displayLabelForJob(jobName), job_name: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "started", task_id: taskId, input_json: input });
 
   if (!isExecutableJobName(jobName)) {
+    await logSystemEvent(env, { trigger_source: "control_room_button", action_label: displayLabelForJob(jobName), job_name: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "rejected_unknown_job", http_status: 400, task_id: taskId, input_json: input });
     return Response.json({
       ok: false,
       status: "REJECTED_UNKNOWN_JOB",
@@ -3550,7 +3584,9 @@ async function handleTaskRun(request, env) {
   }
 
   if (result && typeof result === "object" && !result.task_id) result.task_id = taskId;
-  return Response.json(result, { status: result.ok ? 200 : 500 });
+  const httpStatus = result.ok ? 200 : 500;
+  await logSystemEvent(env, { trigger_source: "control_room_button", action_label: displayLabelForJob(jobName), job_name: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: result.ok ? "success" : "failed", http_status: httpStatus, task_id: taskId, input_json: input, output_preview: result, error: result.ok ? null : (result.error || result.status || "job_failed") });
+  return Response.json(result, { status: httpStatus });
 }
 
 async function countScalar(env, sql, bindValue) {
@@ -4296,11 +4332,14 @@ async function syncMlbApiLineups(input, env) {
   return {
     ok: true,
     job: input.job || "scrape_lineups_mlb_api",
+    status: rows.length > 0 ? "pass" : "no_confirmed_lineups_yet",
     slate_date: slateDate,
     source: "mlb_statsapi_boxscore_lineup",
     games_checked: gamesChecked,
     fetched_rows: rows.length,
     inserted: { lineups_current: inserted },
+    retry_later: rows.length === 0,
+    note: rows.length > 0 ? "Confirmed/available MLB API lineup rows inserted." : "MLB boxscore batting orders were not posted yet. Scheduled task should retry later after lineups are published.",
     skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
   };
