@@ -1,0 +1,14 @@
+name = "alphadog-phase3-starter-groups"
+main = "worker.js"
+compatibility_date = "2026-04-24"
+
+[vars]
+PROMPT_BASE_URL = "https://raw.githubusercontent.com/Rodantmat/Rod/main"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "prop-engine-db"
+database_id = "ec21a626-1b31-45fd-816c-5baf5609a6c3"
+
+[triggers]
+crons = ["0 12 * * *", "0 15 * * *", "30 18 * * *"]

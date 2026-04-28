@@ -1,11 +1,13 @@
-// AlphaDog v1.2.68 - Atomic Dispatcher compatible worker
+// AlphaDog v1.2.69 - Lockjaw Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.68 - Atomic Dispatcher";
-const SYSTEM_CODENAME = "Atomic Dispatcher";
+const SYSTEM_VERSION = "v1.2.69 - Lockjaw Dispatcher";
+const SYSTEM_CODENAME = "Lockjaw Dispatcher";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
 const BOARD_QUEUE_RETRY_LIMIT = 3;
+const BOARD_QUEUE_RUNTIME_CUTOFF_MS = 20000;
+const WORKER_DEPLOY_TARGET = "alphadog-phase3-starter-groups";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -81,6 +83,147 @@ async function safeEnsureColumn(env, tableName, columnName, columnSpec) {
   }
 }
 
+async function safeTableColumns(env, tableName) {
+  try {
+    const info = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all();
+    return new Set((info.results || []).map(r => String(r.name || '').toLowerCase()));
+  } catch (_) { return new Set(); }
+}
+
+async function ensureStarterCompatibilityColumns(env) {
+  const added = [];
+  const dataSource = await safeEnsureColumn(env, 'starters_current', 'data_source', 'TEXT');
+  added.push(dataSource);
+  try {
+    await env.DB.prepare(`
+      UPDATE starters_current
+      SET data_source = COALESCE(data_source, source)
+      WHERE data_source IS NULL AND source IS NOT NULL
+    `).run();
+  } catch (err) {
+    added.push({ column: 'data_source_backfill', added: false, error: String(err?.message || err) });
+  }
+  return { ok: true, table: 'starters_current', columns: added };
+}
+
+function normalizeStarterNameForGuard(name) { return String(name || '').trim(); }
+function isUnknownStarterName(name) {
+  const v = normalizeStarterNameForGuard(name).toLowerCase();
+  if (!v) return true;
+  return ['tbd','tba','unknown','starter','no probable pitcher','no starter','not available','unavailable','null','none'].includes(v);
+}
+function starterSourceText(row) { return `${String(row?.source || '')} ${String(row?.data_source || '')} ${String(row?.confidence || '')}`.toLowerCase(); }
+function isManualStarterSource(row) { return starterSourceText(row).includes('manual'); }
+function isFallbackStarterSource(row) {
+  const text = starterSourceText(row);
+  return text.includes('fallback') || text.includes('projected') || text.includes('gemini_live_missing_starter') || text.includes('gemini_live_projected_missing_starter') || text.includes('gemini_live_probable_missing_starter');
+}
+function isOfficialStarterSource(row) {
+  const text = starterSourceText(row);
+  return text.includes('official') || text.includes('mlb_statsapi_probable_pitcher') || text.includes('probable');
+}
+function shouldProtectExistingStarter(existing, incoming) {
+  if (!existing) return false;
+  const existingValid = !isUnknownStarterName(existing.starter_name);
+  const incomingValid = !isUnknownStarterName(incoming?.starter_name);
+  if (existingValid && !incomingValid) return true;
+  if (existingValid && isManualStarterSource(existing) && !isManualStarterSource(incoming)) return true;
+  if (existingValid && isOfficialStarterSource(existing) && isFallbackStarterSource(incoming) && !isOfficialStarterSource(incoming)) return true;
+  return false;
+}
+async function sanitizeStarterRowsForProtectedUpsert(env, rows) {
+  await ensureStarterCompatibilityColumns(env).catch(() => null);
+  const out = [], skipped = [];
+  const existingStmt = env.DB.prepare(`SELECT * FROM starters_current WHERE game_id=? AND team_id=? LIMIT 1`);
+  for (const raw of rows || []) {
+    const row = { ...(raw || {}) };
+    row.team_id = String(row.team_id || '').toUpperCase();
+    if (!row.data_source && row.source) row.data_source = row.source;
+    if (!row.source && row.data_source) row.source = row.data_source;
+    if (isUnknownStarterName(row.starter_name)) {
+      skipped.push({ game_id: row.game_id || null, team_id: row.team_id || null, starter_name: row.starter_name || null, reason: 'incoming_blank_tbd_unknown_rejected' });
+      continue;
+    }
+    let existing = null;
+    try { existing = await existingStmt.bind(row.game_id, row.team_id).first(); } catch (_) { existing = null; }
+    if (shouldProtectExistingStarter(existing, row)) {
+      skipped.push({ game_id: row.game_id || null, team_id: row.team_id || null, existing_starter: existing?.starter_name || null, incoming_starter: row.starter_name || null, existing_source: existing?.source || existing?.data_source || null, incoming_source: row.source || row.data_source || null, reason: 'protected_existing_starter_preserved' });
+      continue;
+    }
+    out.push(row);
+  }
+  return { rows: out, skipped };
+}
+async function stopFutureDuplicateRawResultsForQueue(env, queueId) {
+  try {
+    await env.DB.prepare(`
+      DELETE FROM board_factor_results
+      WHERE queue_id = ?
+        AND (status <> 'COMPLETED' OR COALESCE(factor_count,0) <= 0 OR raw_json NOT LIKE '%"raw_mode":true%' OR raw_json NOT LIKE '%"raw_factors"%')
+    `).bind(queueId).run();
+  } catch (_) {}
+}
+async function writeCanonicalBoardFactorResult(env, queueRow, model, summary, parsed) {
+  await stopFutureDuplicateRawResultsForQueue(env, queueRow.queue_id);
+  const resultId = `${queueRow.queue_id}|RESULT`;
+  const rawJson = JSON.stringify(parsed);
+  const existingValid = await validRawResultForQueue(env, queueRow.queue_id);
+  if (existingValid) return { result_id: existingValid.result_id, reused_existing: true };
+  try {
+    await env.DB.prepare(`
+      INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(result_id) DO UPDATE SET
+        status='COMPLETED', model=excluded.model, factor_count=excluded.factor_count,
+        min_score=excluded.min_score, max_score=excluded.max_score, avg_score=excluded.avg_score,
+        raw_json=excluded.raw_json, updated_at=CURRENT_TIMESTAMP
+    `).bind(resultId, queueRow.queue_id, queueRow.slate_date, queueRow.queue_type, queueRow.scope_type, queueRow.scope_key, queueRow.batch_index, model, summary.factor_count, null, null, null, rawJson).run();
+  } catch (_) {
+    await env.DB.prepare(`DELETE FROM board_factor_results WHERE result_id=?`).bind(resultId).run().catch(() => null);
+    await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, queueRow.queue_id, queueRow.slate_date, queueRow.queue_type, queueRow.scope_type, queueRow.scope_key, queueRow.batch_index, model, summary.factor_count, null, null, null, rawJson).run();
+  }
+  return { result_id: resultId, reused_existing: false };
+}
+async function chooseFairBoardQueueType(env, slateDate) {
+  const row = await env.DB.prepare(`
+    WITH q AS (
+      SELECT queue_type,
+        SUM(CASE WHEN status IN ('PENDING','RETRY_LATER') AND COALESCE(attempt_count,0) < ? THEN 1 ELSE 0 END) AS available_rows,
+        SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+        SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
+        SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_queue_rows,
+        COUNT(*) AS total_queue_rows
+      FROM board_factor_queue
+      WHERE slate_date=?
+      GROUP BY queue_type
+    ), r AS (
+      SELECT queue_type,
+        COUNT(DISTINCT CASE WHEN status='COMPLETED' AND COALESCE(factor_count,0) > 0 THEN queue_id ELSE NULL END) AS completed_result_queues
+      FROM board_factor_results
+      WHERE slate_date=?
+      GROUP BY queue_type
+    )
+    SELECT q.queue_type, q.available_rows, q.pending_rows, q.retry_later_rows,
+      q.completed_queue_rows, q.total_queue_rows, COALESCE(r.completed_result_queues,0) AS completed_result_queues,
+      CASE q.queue_type
+        WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 1
+        WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 2
+        WHEN 'GAME_WEATHER_CONTEXT' THEN 3
+        WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 4
+        WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 5
+        ELSE 99
+      END AS family_priority
+    FROM q LEFT JOIN r ON r.queue_type=q.queue_type
+    WHERE q.available_rows > 0
+    ORDER BY COALESCE(r.completed_result_queues,0) ASC,
+      CAST(COALESCE(r.completed_result_queues,0) AS REAL) / CASE WHEN q.total_queue_rows > 0 THEN q.total_queue_rows ELSE 1 END ASC,
+      family_priority ASC,
+      q.available_rows DESC
+    LIMIT 1
+  `).bind(BOARD_QUEUE_RETRY_LIMIT, slateDate, slateDate).first();
+  return row?.queue_type ? String(row.queue_type) : '';
+}
+
 async function ensurePipelineLocksTable(env) {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS pipeline_locks (
@@ -132,17 +275,17 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
   try {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
-      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.68 stale running task reset before dispatcher lock'
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP, error='v1.2.69 stale running task reset before lock acquisition'
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
-        AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue')
+        AND job_name IN ('run_full_pipeline','scheduled_full_pipeline_plus_board_queue','board_queue_auto_mine','run_board_queue_pipeline')
     `).run();
     audit.task_runs_reset = Number(taskRes?.meta?.changes || 0);
   } catch (err) { audit.task_runs_error = String(err?.message || err); }
   try {
     const lockRes = await env.DB.prepare(`
       UPDATE pipeline_locks
-      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.68 stale lock reset'
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='v1.2.69 stale lock reset'
       WHERE status='RUNNING'
         AND updated_at < datetime('now','-15 minutes')
     `).run();
@@ -152,12 +295,12 @@ async function resetStalePipelineRuntime(env, slateDate = null) {
     const queueRes = slateDate
       ? await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.68 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset')
           WHERE slate_date=? AND status='RUNNING'
         `).bind(slateDate).run()
       : await env.DB.prepare(`
           UPDATE board_factor_queue
-          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.68 stale RUNNING queue reset')
+          SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset')
           WHERE status='RUNNING'
         `).run();
     audit.queue_rows_reset = Number(queueRes?.meta?.changes || 0);
@@ -408,7 +551,7 @@ const TABLES = {
     conflict: ["team_id"]
   },
   starters_current: {
-    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "confidence"],
+    allowed: ["game_id", "team_id", "starter_name", "throws", "era", "whip", "strikeouts", "innings_pitched", "walks", "hits_allowed", "hr_allowed", "days_rest", "source", "data_source", "confidence"],
     required: ["game_id", "team_id", "starter_name"],
     conflict: ["game_id", "team_id"]
   },
@@ -542,7 +685,7 @@ function health(env) {
   return {
     ok: true,
     version: SYSTEM_VERSION,
-    worker: "alphadog-phase3-starter-groups",
+    worker: WORKER_DEPLOY_TARGET,
     db_bound: !!env.DB,
     ingest_token_bound: !!env.INGEST_TOKEN,
     gemini_key_bound: !!env.GEMINI_API_KEY,
@@ -1018,80 +1161,61 @@ async function handleDailyHealth(request, env) {
 
 async function runScheduled(event, env) {
   const taskId = crypto.randomUUID();
-  const input = { job: "run_full_pipeline", cron: event?.cron || null, slate_mode: "AUTO", trigger: "scheduled" };
+  const cron = event?.cron || null;
+  const input = { job: "scheduled_router", cron, slate_mode: "AUTO", trigger: "scheduled" };
   const slate = resolveSlateDate(input);
-  await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "started", task_id: taskId, input_json: input });
+  const cronText = String(cron || "").trim();
+
+  let routedJob = "board_queue_auto_mine";
+  if (cronText === "0 12 * * *") routedJob = "run_full_pipeline";
+  else if (cronText === "0 15 * * *") routedJob = "board_queue_auto_mine";
+  else if (cronText === "30 18 * * *") routedJob = "board_queue_auto_mine";
+
+  await resetStalePipelineRuntime(env, slate.slate_date).catch(() => null);
+  await ensureStarterCompatibilityColumns(env).catch(() => null);
+  await logSystemEvent(env, { trigger_source: "scheduled", action_label: `SCHEDULED > ${displayLabelForJob(routedJob)}`, job_name: routedJob, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "started", task_id: taskId, input_json: { ...input, routed_job: routedJob } });
 
   await env.DB.prepare(`
     INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
-  `).bind(taskId, "scheduled_full_pipeline_plus_board_queue", "running", JSON.stringify(input)).run();
+  `).bind(taskId, routedJob, "running", JSON.stringify({ ...input, routed_job: routedJob })).run();
 
   try {
-    const fullPipeline = await runFullPipeline(input, env);
-    let boardQueue = null;
-    let boardMining = null;
-    try {
-      boardQueue = await runBoardQueuePipeline({ ...input, job: "run_board_queue_pipeline", max_passes: 8 }, env);
-    } catch (boardErr) {
-      boardQueue = { ok: false, job: "run_board_queue_pipeline", error: String(boardErr?.message || boardErr) };
+    let result;
+    if (routedJob === "run_full_pipeline") {
+      result = await runFullPipeline({ ...input, job: "run_full_pipeline", slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    } else if (routedJob === "board_queue_auto_mine") {
+      result = await runBoardQueueAutoMine({ ...input, job: "board_queue_auto_mine", slate_date: slate.slate_date, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
+    } else {
+      result = await executeTaskJob(routedJob, input, slate, env);
     }
-    try {
-      boardMining = await runBoardQueueAutoMine({ ...input, job: "board_queue_auto_mine", limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: true }, env);
-    } catch (mineErr) {
-      boardMining = { ok: false, job: "board_queue_auto_mine", error: String(mineErr?.message || mineErr) };
-    }
-    const result = {
-      ok: Boolean(fullPipeline?.ok) && Boolean(boardQueue?.ok) && Boolean(boardMining?.ok),
+    const wrapped = {
+      ok: !!result?.ok,
       version: SYSTEM_VERSION,
-      job: "scheduled_full_pipeline_plus_board_queue",
-      cron: event?.cron || null,
-      full_pipeline: fullPipeline,
-      board_queue_pipeline: boardQueue,
-      board_queue_auto_mine: boardMining,
-      scheduler_alignment: "Run this scheduled handler after PrizePicks scrape windows; each invocation continues unfinished raw mining instead of requiring manual clicks.",
-      note: "Scheduled handler now runs slate prep, restores reusable starter overrides, materializes the board_factor_queue, and mines bounded raw-factor waves. Missing/projected-unavailable starters do not block mining. Failed mining rows are retried/flagged and picked back up by future scheduled runs. No prop scoring or ranking is performed here."
+      job: "scheduled_router",
+      routed_job: routedJob,
+      cron,
+      result,
+      scheduler_alignment: "v1.2.69 routes each cron to one bounded job only. No scheduled invocation runs Full Pipeline + Queue Pipeline + Auto Mine together.",
+      note: "Scheduler split/lightening active. Full dispatcher and raw miner use independent locks; scoring remains disabled."
     };
     await env.DB.prepare(`
       UPDATE task_runs
       SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
       WHERE task_id = ?
-    `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
-    await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: result.ok ? "success" : "failed", task_id: taskId, output_preview: result, error: result.ok ? null : "scheduled_pipeline_failed" });
+    `).bind(wrapped.ok ? "success" : "failed", JSON.stringify(wrapped), taskId).run();
+    await logSystemEvent(env, { trigger_source: "scheduled", action_label: `SCHEDULED > ${displayLabelForJob(routedJob)}`, job_name: routedJob, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: wrapped.ok ? "success" : "failed", task_id: taskId, output_preview: wrapped, error: wrapped.ok ? null : "scheduled_routed_job_failed" });
+    return wrapped;
   } catch (err) {
+    const result = { ok: false, version: SYSTEM_VERSION, job: "scheduled_router", routed_job: routedJob, status: "FAILED_EXCEPTION", cron, error: String(err?.message || err) };
     await env.DB.prepare(`
-      UPDATE task_runs
-      SET status = ?, finished_at = CURRENT_TIMESTAMP, error = ?
-      WHERE task_id = ?
-    `).bind("failed", String(err?.message || err), taskId).run();
-    await logSystemEvent(env, { trigger_source: "scheduled", action_label: "SCHEDULED > Full Pipeline + Board Queue", job_name: "scheduled_full_pipeline_plus_board_queue", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "failed", task_id: taskId, error: String(err?.message || err) });
+      UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE task_id=?
+    `).bind(result.error, JSON.stringify(result), taskId).run().catch(() => null);
+    await logSystemEvent(env, { trigger_source: "scheduled", action_label: `SCHEDULED > ${displayLabelForJob(routedJob)}`, job_name: routedJob, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "failed", task_id: taskId, error: result.error });
+    return result;
   }
 }
 
-function isAuthorized(request, env) {
-  const expected = env.INGEST_TOKEN;
-  if (!expected) return true;
-  return request.headers.get("x-ingest-token") === expected;
-}
-
-function unauthorized() {
-  return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-}
-
-async function ensureSystemEventLog(env) {
-  try {
-    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS system_event_log (event_id TEXT PRIMARY KEY, event_time TEXT DEFAULT CURRENT_TIMESTAMP, version TEXT, trigger_source TEXT, action_label TEXT, job_name TEXT, slate_date TEXT, slate_mode TEXT, status TEXT, http_status INTEGER, task_id TEXT, input_json TEXT, output_preview TEXT, error TEXT)`).run();
-    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_time ON system_event_log(event_time)`).run();
-    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_job ON system_event_log(job_name, event_time)`).run();
-    await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_system_event_log_slate ON system_event_log(slate_date, event_time)`).run();
-  } catch (_) {}
-}
-function compactLogText(value, max = 1800) {
-  try {
-    const text = typeof value === "string" ? value : JSON.stringify(value);
-    return text && text.length > max ? text.slice(0, max) + `...[truncated ${text.length - max} chars]` : text;
-  } catch (_) { return String(value || "").slice(0, max); }
-}
 async function logSystemEvent(env, event = {}) {
   try {
     await ensureSystemEventLog(env);
@@ -2932,7 +3056,7 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
 
   const staleRunning = await env.DB.prepare(`
     UPDATE board_factor_queue
-    SET status='PENDING', last_error=NULL, updated_at=CURRENT_TIMESTAMP
+    SET status='RETRY_LATER', last_error=COALESCE(last_error,'v1.2.69 stale RUNNING queue reset'), updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP
     WHERE slate_date = ? AND status = 'RUNNING' AND updated_at < datetime('now', '-10 minutes')
   `).bind(slateDate).run();
 
@@ -3042,11 +3166,11 @@ async function runBoardQueueMineOne(input, env) {
     parsed.validation = { ok: true, attempts: mined.attempts };
     parsed.queue_id = next.queue_id; parsed.queue_type = next.queue_type; parsed.scope_type = next.scope_type; parsed.slate_date = next.slate_date;
     const summary = summarizeRawFactorPayload(parsed);
-    const resultId = `${next.queue_id}|RESULT|${Date.now()}`;
-    await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, null, null, null, JSON.stringify(parsed)).run();
+    const canonicalWrite = await writeCanonicalBoardFactorResult(env, next, model, summary, parsed);
+    const resultId = canonicalWrite.result_id;
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored after validation. Duplicate raw-result protection is active. If Gemini output fails JSON/schema validation, the miner retries once with a stricter compact prompt. No backend scoring, no prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, canonical_result_write: true, reused_existing_result: canonicalWrite.reused_existing, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. v1.2.69 canonical result write is active: future successful writes use one deterministic result row per queue_id. Old duplicate rows are preserved for audit. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     const validationAttempts = Array.isArray(err?.validation_attempts) ? err.validation_attempts : [];
@@ -3077,6 +3201,8 @@ async function runBoardQueueAutoMineCore(input, env) {
   const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : BOARD_QUEUE_AUTO_MINE_LIMIT, BOARD_QUEUE_AUTO_MINE_LIMIT));
   const retryErrors = input.retry_errors === true || input.reset_errors === true || input.trigger === "scheduled";
   const steps = [];
+  const startedMs = Date.now();
+  const selectedQueueType = preferredType || await chooseFairBoardQueueType(env, slateDate);
   let minedCount = 0;
   let completedByExisting = 0;
   let retryLaterCount = 0;
@@ -3095,7 +3221,12 @@ async function runBoardQueueAutoMineCore(input, env) {
   `).bind(slateDate).first();
 
   for (let i = 0; i < mineLimit; i++) {
-    const result = await runBoardQueueMineOne({ ...(input || {}), slate_date: slateDate, queue_type: preferredType }, env);
+    if (Date.now() - startedMs > BOARD_QUEUE_RUNTIME_CUTOFF_MS) {
+      steps.push({ pass: i + 1, ok: true, status: "runtime_cutoff", selected_queue_type: selectedQueueType, elapsed_ms: Date.now() - startedMs });
+      break;
+    }
+    if (!selectedQueueType) { emptyReached = true; break; }
+    const result = await runBoardQueueMineOne({ ...(input || {}), slate_date: slateDate, queue_type: selectedQueueType }, env);
     steps.push({
       pass: i + 1,
       ok: !!result.ok,
@@ -3143,6 +3274,8 @@ async function runBoardQueueAutoMineCore(input, env) {
     status,
     slate_date: slateDate,
     mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
+    selected_queue_type: selectedQueueType || null,
+    family_rotation_policy: "v1.2.69 selects the under-mined family with the fewest completed result queues; one family per invocation; no new rotation table.",
     mine_limit: mineLimit,
     progress: {
       total_rows: totalRows,
@@ -3180,6 +3313,7 @@ async function runBoardQueueAutoMine(input, env) {
   const slateDate = String(input?.slate_date || resolveSlateDate(input || {}).slate_date);
   const lockId = `BOARD_QUEUE_AUTO_MINE|${slateDate}`;
   const lockedBy = `${input?.trigger || 'manual'}:${crypto.randomUUID()}`;
+  await resetStalePipelineRuntime(env, slateDate).catch(() => null);
   const lock = await acquirePipelineLock(env, lockId, lockedBy, 10);
   if (!lock.acquired) {
     const totals = await boardQueueTotals(env, slateDate).catch(() => null);
@@ -4157,7 +4291,7 @@ async function runFullPipelineCore(input, env) {
       const result = await runner();
       steps.push({ label, job, result });
       if (result && result.ok === false) {
-        const msg = `${label}: ${result.error || result.status || 'not ok'`};
+        const msg = `${label}: ${result.error || result.status || 'not ok'}`;
         (required ? errors : warnings).push(msg);
       }
       return result;
@@ -4224,7 +4358,7 @@ async function runFullPipelineCore(input, env) {
     job: "run_full_pipeline",
     slate_date: slateDate,
     slate_mode: slate.slate_mode,
-    dispatcher_mode: "v1.2.68_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
+    dispatcher_mode: "v1.2.69_full_run_is_lightweight_dispatcher_no_mining_no_starter_sweep",
     games,
     markets: marketsTotal,
     expected_starters: expectedStarters,
@@ -4256,7 +4390,8 @@ async function runFullPipeline(input, env) {
   const slateDate = slate.slate_date;
   const lockedBy = `${input?.trigger || 'manual'}:${crypto.randomUUID()}`;
   await resetStalePipelineRuntime(env, slateDate).catch(() => null);
-  const lock = await acquirePipelineLock(env, `FULL_PIPELINE`, lockedBy, 15);
+  const lockId = `FULL_PIPELINE|${slateDate}`;
+  const lock = await acquirePipelineLock(env, lockId, lockedBy, 15);
   if (!lock.acquired) {
     const totals = await boardQueueTotals(env, slateDate).catch(() => null);
     return {
@@ -4275,7 +4410,7 @@ async function runFullPipeline(input, env) {
     const result = await runFullPipelineCore(input || {}, env);
     if (result && typeof result === 'object') {
       result.lock_status = 'RELEASED';
-      result.state_machine_policy = 'v1.2.68: FULL RUN is a lightweight atomic dispatcher. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
+      result.state_machine_policy = 'v1.2.69: FULL RUN is a lightweight atomic dispatcher using a slate-scoped FULL_PIPELINE lock. It does not mine rows or run starter/lineup sweeps, preventing Cloudflare subrequest overload.';
     }
     return result;
   } catch (err) {
@@ -4290,7 +4425,7 @@ async function runFullPipeline(input, env) {
       note: 'Exception captured without HTTP 500 so the control room does not retry into a duplicate FULL RUN. Check system_event_log and let scheduled miner continue.'
     };
   } finally {
-    await releasePipelineLock(env, `FULL_PIPELINE`, lockedBy);
+    await releasePipelineLock(env, lockId, lockedBy);
   }
 }
 
@@ -4385,6 +4520,7 @@ function apiStarterRow(gameId, teamId, pitcher, slateDate, statsOverride) {
     hr_allowed: stats.hr_allowed,
     days_rest: null,
     source: "mlb_statsapi_probable_pitcher",
+    data_source: "mlb_statsapi_probable_pitcher",
     confidence: "official_probable"
   };
 }
@@ -4727,8 +4863,9 @@ async function syncMlbApiPlayersIdentity(input, env) {
     deferred_rows: deferred,
     write_cap: maxWrites,
     inserted: { players_current: inserted },
-    skipped_count: validated.skipped?.length || 0,
-    skipped: (validated.skipped || []).slice(0, 20),
+    skipped_count: (validated.skipped?.length || 0) + (protectedFilter.skipped?.length || 0),
+    skipped: [...(protectedFilter.skipped || []), ...(validated.skipped || [])].slice(0, 20),
+    starter_protection_policy: "v1.2.69 preserves manual/fallback/valid official starters from blank/TBD/unknown API overwrite; valid official API may upgrade fallback rows.",
     complete: deferred === 0
   };
 }
@@ -5099,7 +5236,9 @@ async function syncMlbApiProbableStarters(input, env) {
     };
   }
 
-  const validated = validateRows("starters_current", workingRows);
+  await ensureStarterCompatibilityColumns(env).catch(() => null);
+  const protectedFilter = await sanitizeStarterRowsForProtectedUpsert(env, workingRows);
+  const validated = validateRows("starters_current", protectedFilter.rows);
   if (!validated.ok) throw new Error(`MLB starter validation failed: ${validated.error}`);
   const inserted = await upsertRows(env, "starters_current", validated.rows);
 
@@ -5164,7 +5303,7 @@ function normalizePitcherThrowCode(value){const text=String(value||"").trim().to
 function usableMissingStarterConfidence(value){const c=String(value||"").trim().toLowerCase();return c==="confirmed"||c==="official"||c==="probable"||c==="projected"}
 async function missingStarterTargets(env,slateDate){const result=await env.DB.prepare(`SELECT g.game_id,g.away_team,g.home_team,g.start_time_utc,MAX(CASE WHEN s.team_id=g.away_team THEN s.starter_name ELSE NULL END) AS away_starter,MAX(CASE WHEN s.team_id=g.home_team THEN s.starter_name ELSE NULL END) AS home_starter,SUM(CASE WHEN s.team_id=g.away_team THEN 1 ELSE 0 END) AS has_away,SUM(CASE WHEN s.team_id=g.home_team THEN 1 ELSE 0 END) AS has_home,COUNT(s.team_id) AS starters_found FROM games g LEFT JOIN starters_current s ON s.game_id=g.game_id WHERE g.game_date=? GROUP BY g.game_id,g.away_team,g.home_team,g.start_time_utc HAVING starters_found<2 ORDER BY g.start_time_utc,g.game_id`).bind(slateDate).all();const targets=[];for(const g of(result.results||[])){if(!Number(g.has_away||0))targets.push({game_id:g.game_id,away_team:g.away_team,home_team:g.home_team,missing_team:g.away_team,known_team:g.home_team,known_starter:g.home_starter||null,start_time_utc:g.start_time_utc||null});if(!Number(g.has_home||0))targets.push({game_id:g.game_id,away_team:g.away_team,home_team:g.home_team,missing_team:g.home_team,known_team:g.away_team,known_starter:g.away_starter||null,start_time_utc:g.start_time_utc||null})}return targets}
 function buildMissingStarterLivePrompt(slateDate,targets){return `You are repairing a deterministic MLB probable-starter database for slate ${slateDate}. Return ONLY valid JSON. No markdown. For each target, use current live MLB probable pitcher context. Prefer official MLB, team pages, reputable previews, Pitcher List, FanGraphs/RosterResource, ESPN, CBS, FOX, Rotowire. Do not invent. If truly TBD/not available, set starter_found=false and leave starter_name/throws empty. Targets: ${JSON.stringify(targets)} Required JSON shape: {"ok":true,"checked_at":"ISO timestamp","games":[{"game_id":"","away_team":"","home_team":"","missing_team":"","starter_found":true,"starter_name":"Full Name","throws":"RHP or LHP or R or L","confidence":"confirmed|official|probable|projected|not_available","source_summary":"short","notes":"short"}],"summary":{"missing_games_checked":0,"starters_found":0,"starters_not_available":0,"should_backend_fill_missing":true}}`}
-async function syncMissingStartersLiveFallback(input,env){const slate=resolveSlateDate(input||{});const slateDate=String(input?.slate_date||slate.slate_date);const targets=await missingStarterTargets(env,slateDate);if(!targets.length){return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:"pass_no_missing_starters",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",missing_games_checked:0,starters_found:0,inserted:{starters_current:0},still_missing_tbd:[],note:"No missing starter team/game pairs were found. No Gemini call made."}}const raw=await callGeminiWithFallback(env,buildMissingStarterLivePrompt(slateDate,targets));const parsed=parseStrictJson(cleanJsonText(raw));const games=Array.isArray(parsed.games)?parsed.games:[];const targetKeys=new Set(targets.map(t=>`${t.game_id}|${t.missing_team}`));const accepted=[];const rejected=[];for(const row of games){const key=`${row.game_id}|${row.missing_team}`;if(!targetKeys.has(key)){rejected.push({game_id:row.game_id||null,missing_team:row.missing_team||null,reason:"not_in_missing_target_list"});continue}const name=String(row.starter_name||"").trim();if(row.starter_found!==true||!name){rejected.push({game_id:row.game_id,missing_team:row.missing_team,reason:"not_available_or_empty",confidence:row.confidence||null,notes:row.notes||null});continue}if(!usableMissingStarterConfidence(row.confidence)){rejected.push({game_id:row.game_id,missing_team:row.missing_team,starter_name:name,reason:"low_or_invalid_confidence",confidence:row.confidence||null});continue}accepted.push({game_id:String(row.game_id),team_id:String(row.missing_team).toUpperCase(),starter_name:name,throws:normalizePitcherThrowCode(row.throws),source:"gemini_live_missing_starter_fallback",confidence:String(row.confidence||"projected").toLowerCase()})}const stmt=env.DB.prepare(`INSERT OR REPLACE INTO starters_current (game_id,team_id,starter_name,throws,era,whip,strikeouts,innings_pitched,walks,hits_allowed,hr_allowed,days_rest,source,confidence,updated_at) VALUES (?,?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,?,?,CURRENT_TIMESTAMP)`);let inserted=0;for(const r of accepted){const result=await stmt.bind(r.game_id,r.team_id,r.starter_name,r.throws,r.source,r.confidence).run();inserted+=Number(result?.meta?.changes||0)}const remainingTargets=await missingStarterTargets(env,slateDate);return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:remainingTargets.length?"partial_missing_tbd_remain":"pass",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",source:"gemini_live_missing_starter_fallback",requested_targets:targets,missing_games_checked:targets.length,starters_found:accepted.length,starters_inserted:inserted,inserted:{starters_current:inserted},accepted_starters:accepted.map(r=>({game_id:r.game_id,team_id:r.team_id,starter_name:r.starter_name,throws:r.throws,confidence:r.confidence})),rejected_or_tbd:rejected,still_missing_tbd:remainingTargets,raw_summary:parsed.summary||null,note:"Targeted missing-starter fallback only. Fills probable/projected/confirmed one-sided starters with nullable stats and preserves true TBD as still_missing_tbd. No broad starter rewrite."}}
+async function syncMissingStartersLiveFallback(input,env){const slate=resolveSlateDate(input||{});const slateDate=String(input?.slate_date||slate.slate_date);const targets=await missingStarterTargets(env,slateDate);if(!targets.length){return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:"pass_no_missing_starters",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",missing_games_checked:0,starters_found:0,inserted:{starters_current:0},still_missing_tbd:[],note:"No missing starter team/game pairs were found. No Gemini call made."}}const raw=await callGeminiWithFallback(env,buildMissingStarterLivePrompt(slateDate,targets));const parsed=parseStrictJson(cleanJsonText(raw));const games=Array.isArray(parsed.games)?parsed.games:[];const targetKeys=new Set(targets.map(t=>`${t.game_id}|${t.missing_team}`));const accepted=[];const rejected=[];for(const row of games){const key=`${row.game_id}|${row.missing_team}`;if(!targetKeys.has(key)){rejected.push({game_id:row.game_id||null,missing_team:row.missing_team||null,reason:"not_in_missing_target_list"});continue}const name=String(row.starter_name||"").trim();if(row.starter_found!==true||!name){rejected.push({game_id:row.game_id,missing_team:row.missing_team,reason:"not_available_or_empty",confidence:row.confidence||null,notes:row.notes||null});continue}if(!usableMissingStarterConfidence(row.confidence)){rejected.push({game_id:row.game_id,missing_team:row.missing_team,starter_name:name,reason:"low_or_invalid_confidence",confidence:row.confidence||null});continue}accepted.push({game_id:String(row.game_id),team_id:String(row.missing_team).toUpperCase(),starter_name:name,throws:normalizePitcherThrowCode(row.throws),source:"gemini_live_missing_starter_fallback",data_source:"gemini_live_missing_starter_fallback",confidence:String(row.confidence||"projected").toLowerCase()})}await ensureStarterCompatibilityColumns(env).catch(()=>null);const protectedFilter=await sanitizeStarterRowsForProtectedUpsert(env,accepted);const stmt=env.DB.prepare(`INSERT OR REPLACE INTO starters_current (game_id,team_id,starter_name,throws,era,whip,strikeouts,innings_pitched,walks,hits_allowed,hr_allowed,days_rest,source,data_source,confidence,updated_at) VALUES (?,?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,?,?,?,CURRENT_TIMESTAMP)`);let inserted=0;for(const r of protectedFilter.rows){const result=await stmt.bind(r.game_id,r.team_id,r.starter_name,r.throws,r.source,r.data_source||r.source,r.confidence).run();inserted+=Number(result?.meta?.changes||0)}const remainingTargets=await missingStarterTargets(env,slateDate);return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:remainingTargets.length?"partial_missing_tbd_remain":"pass",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",source:"gemini_live_missing_starter_fallback",requested_targets:targets,missing_games_checked:targets.length,starters_found:accepted.length,starters_inserted:inserted,inserted:{starters_current:inserted},accepted_starters:accepted.map(r=>({game_id:r.game_id,team_id:r.team_id,starter_name:r.starter_name,throws:r.throws,confidence:r.confidence})),rejected_or_tbd:[...rejected,...(protectedFilter?.skipped||[])],still_missing_tbd:remainingTargets,raw_summary:parsed.summary||null,note:"Targeted missing-starter fallback only. Fills probable/projected/confirmed one-sided starters with nullable stats and preserves true TBD as still_missing_tbd. No broad starter rewrite."}}
 
 async function runJob(input, env) {
   const slate = resolveSlateDate(input || {});
@@ -5422,7 +5561,13 @@ async function upsertRows(env, table, rows) {
   const spec = TABLES[table];
   let inserted = 0;
 
+  if (table === "starters_current") await ensureStarterCompatibilityColumns(env).catch(() => null);
+
   for (const row of rows) {
+    if (table === "starters_current") {
+      if (!row.data_source && row.source) row.data_source = row.source;
+      if (!row.source && row.data_source) row.source = row.data_source;
+    }
     const cols = Object.keys(row).filter(c => spec.allowed.includes(c));
     if (!cols.length) continue;
 
