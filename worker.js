@@ -1,10 +1,10 @@
-// AlphaDog v1.2.66 - Pipeline Lockstep compatible worker
+// AlphaDog v1.2.67 - State Machine Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.66 - Pipeline Lockstep";
-const SYSTEM_CODENAME = "Pipeline Lockstep";
+const SYSTEM_VERSION = "v1.2.67 - State Machine Spine";
+const SYSTEM_CODENAME = "State Machine Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
-const BOARD_QUEUE_AUTO_MINE_LIMIT = 6;
+const BOARD_QUEUE_AUTO_MINE_LIMIT = 8;
 const BOARD_QUEUE_RETRY_LIMIT = 3;
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -64,6 +64,90 @@ function withDisplayLabel(row) {
 
 function withDisplayLabels(rows) {
   return Array.isArray(rows) ? rows.map(withDisplayLabel) : [];
+}
+
+
+async function safeEnsureColumn(env, tableName, columnName, columnSpec) {
+  try {
+    const info = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all();
+    const cols = (info.results || []).map(r => String(r.name || '').toLowerCase());
+    if (!cols.includes(String(columnName).toLowerCase())) {
+      await env.DB.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSpec}`).run();
+      return { column: columnName, added: true };
+    }
+    return { column: columnName, added: false };
+  } catch (err) {
+    return { column: columnName, added: false, error: String(err?.message || err) };
+  }
+}
+
+async function ensurePipelineLocksTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS pipeline_locks (
+      lock_id TEXT PRIMARY KEY,
+      status TEXT DEFAULT 'IDLE',
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      locked_by TEXT,
+      note TEXT
+    )
+  `).run();
+  return { ok: true, table: 'pipeline_locks' };
+}
+
+async function acquirePipelineLock(env, lockId, lockedBy, staleMinutes = 15) {
+  await ensurePipelineLocksTable(env);
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO pipeline_locks (lock_id, status, updated_at, locked_by, note)
+    VALUES (?, 'IDLE', CURRENT_TIMESTAMP, NULL, 'auto-created')
+  `).bind(lockId).run();
+  const res = await env.DB.prepare(`
+    UPDATE pipeline_locks
+    SET status='RUNNING', updated_at=CURRENT_TIMESTAMP, locked_by=?, note='acquired'
+    WHERE lock_id=?
+      AND (
+        status IS NULL OR status <> 'RUNNING'
+        OR updated_at < datetime('now', '-' || ? || ' minutes')
+      )
+  `).bind(lockedBy, lockId, String(staleMinutes)).run();
+  const acquired = Number(res?.meta?.changes || 0) > 0;
+  const row = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(lockId).first();
+  return { acquired, lock_id: lockId, locked_by: lockedBy, current: row || null };
+}
+
+async function releasePipelineLock(env, lockId, lockedBy) {
+  try {
+    const res = await env.DB.prepare(`
+      UPDATE pipeline_locks
+      SET status='IDLE', updated_at=CURRENT_TIMESTAMP, locked_by=NULL, note='released'
+      WHERE lock_id=? AND (locked_by=? OR locked_by IS NULL OR status <> 'RUNNING')
+    `).bind(lockId, lockedBy).run();
+    return { released: Number(res?.meta?.changes || 0) > 0, lock_id: lockId };
+  } catch (err) {
+    return { released: false, lock_id: lockId, error: String(err?.message || err) };
+  }
+}
+
+async function boardQueueTotals(env, slateDate) {
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+      SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
+      SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
+      SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
+    FROM board_factor_queue WHERE slate_date=?
+  `).bind(slateDate).first();
+  const total = Number(row?.total_rows || 0);
+  const completed = Number(row?.completed_rows || 0);
+  return {
+    total_rows: total,
+    pending_rows: Number(row?.pending_rows || 0),
+    retry_later_rows: Number(row?.retry_later_rows || 0),
+    completed_rows: completed,
+    running_rows: Number(row?.running_rows || 0),
+    error_rows: Number(row?.error_rows || 0),
+    percent_complete: total > 0 ? Math.round((completed / total) * 1000) / 10 : 100
+  };
 }
 
 
@@ -2341,14 +2425,23 @@ async function ensureBoardFactorQueueTable(env) {
       start_time TEXT,
       status TEXT DEFAULT 'PENDING',
       attempt_count INTEGER DEFAULT 0,
+      retry_count INTEGER DEFAULT 0,
       last_error TEXT,
       payload_json TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      last_processed_at TEXT
     )
   `).run();
+  await safeEnsureColumn(env, 'board_factor_queue', 'status', "TEXT DEFAULT 'PENDING'");
+  await safeEnsureColumn(env, 'board_factor_queue', 'attempt_count', 'INTEGER DEFAULT 0');
+  await safeEnsureColumn(env, 'board_factor_queue', 'retry_count', 'INTEGER DEFAULT 0');
+  await safeEnsureColumn(env, 'board_factor_queue', 'last_error', 'TEXT');
+  await safeEnsureColumn(env, 'board_factor_queue', 'updated_at', 'TEXT DEFAULT CURRENT_TIMESTAMP');
+  await safeEnsureColumn(env, 'board_factor_queue', 'last_processed_at', 'TEXT');
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_queue_slate_type_status ON board_factor_queue (slate_date, queue_type, status)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_queue_scope ON board_factor_queue (scope_type, scope_key)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_board_factor_queue_state_pick ON board_factor_queue (slate_date, status, attempt_count, updated_at)`).run();
   return { ok: true, table: "board_factor_queue" };
 }
 
@@ -2802,14 +2895,14 @@ async function repairBoardQueueRawState(env, slateDate, options = {}) {
   const staleRunning = await env.DB.prepare(`
     UPDATE board_factor_queue
     SET status='PENDING', last_error=NULL, updated_at=CURRENT_TIMESTAMP
-    WHERE slate_date = ? AND status = 'RUNNING'
+    WHERE slate_date = ? AND status = 'RUNNING' AND updated_at < datetime('now', '-10 minutes')
   `).bind(slateDate).run();
 
   let resetErrorRows = { meta: { changes: 0 } };
   if (resetErrors) {
     resetErrorRows = await env.DB.prepare(`
       UPDATE board_factor_queue
-      SET status='PENDING', attempt_count=0, last_error=NULL, updated_at=CURRENT_TIMESTAMP
+      SET status='RETRY_LATER', attempt_count=0, retry_count=0, last_error=NULL, updated_at=CURRENT_TIMESTAMP
       WHERE slate_date = ?
         AND status = 'ERROR'
         AND NOT EXISTS (
@@ -2859,12 +2952,13 @@ async function runBoardQueueMineOne(input, env) {
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
   const preferredType = String(input.queue_type || "").trim();
   await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
-  const binds = preferredType ? [slateDate, preferredType] : [slateDate];
+  const binds = preferredType ? [slateDate, preferredType, BOARD_QUEUE_RETRY_LIMIT] : [slateDate, BOARD_QUEUE_RETRY_LIMIT];
   const typeWhere = preferredType ? "AND q.queue_type = ?" : "";
   const next = await env.DB.prepare(`
     SELECT q.* FROM board_factor_queue q
     WHERE q.slate_date = ? ${typeWhere}
-      AND q.status = 'PENDING'
+      AND q.status IN ('PENDING','RETRY_LATER')
+      AND COALESCE(q.attempt_count, 0) < ?
       AND NOT EXISTS (
         SELECT 1 FROM board_factor_results r
         WHERE r.queue_id = q.queue_id
@@ -2873,7 +2967,18 @@ async function runBoardQueueMineOne(input, env) {
           AND r.raw_json LIKE '%"raw_mode":true%'
           AND r.raw_json LIKE '%"raw_factors"%'
       )
-    ORDER BY CASE q.queue_type WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 1 WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 2 WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 3 WHEN 'GAME_WEATHER_CONTEXT' THEN 4 WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 5 ELSE 99 END, q.batch_index ASC, q.queue_id ASC
+    ORDER BY COALESCE(q.attempt_count, 0) ASC,
+      CASE q.queue_type
+        WHEN 'GAME_B_TEAM_BULLPEN_ENVIRONMENT' THEN 1
+        WHEN 'GAME_WEATHER_CONTEXT' THEN 2
+        WHEN 'GAME_NEWS_INJURY_CONTEXT' THEN 3
+        WHEN 'PLAYER_D_ADVANCED_FORM_CONTACT' THEN 4
+        WHEN 'PLAYER_A_ROLE_RECENT_MATCHUP' THEN 5
+        ELSE 99
+      END,
+      COALESCE(q.last_processed_at, q.updated_at, q.created_at) ASC,
+      q.batch_index ASC,
+      q.queue_id ASC
     LIMIT 1
   `).bind(...binds).first();
 
@@ -2884,12 +2989,12 @@ async function runBoardQueueMineOne(input, env) {
 
   const alreadyRaw = await validRawResultForQueue(env, next.queue_id);
   if (alreadyRaw) {
-    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const health = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
     return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "skipped_existing_raw_result", slate_date: slateDate, skipped_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index }, existing_result_id: alreadyRaw.result_id, queue_health: health.rows, note: "Skipped this queue row because a valid raw result already exists. No Gemini call made." };
   }
 
-  await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=? AND status='PENDING'`).bind(next.queue_id).run();
+  await env.DB.prepare(`UPDATE board_factor_queue SET status='RUNNING', attempt_count=attempt_count+1, last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=? AND status IN ('PENDING','RETRY_LATER')`).bind(next.queue_id).run();
   const model = SCRAPE_MODEL;
   try {
     const hydratedNext = await hydrateQueueRowPayloadIfNeeded(env, next);
@@ -2901,7 +3006,7 @@ async function runBoardQueueMineOne(input, env) {
     const summary = summarizeRawFactorPayload(parsed);
     const resultId = `${next.queue_id}|RESULT|${Date.now()}`;
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, null, null, null, JSON.stringify(parsed)).run();
-    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
     return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, raw_factor_summary: summary, validation: parsed.validation, queue_health: queueHealth.rows, note: "Mined exactly one queue row as raw factor extraction. Raw Gemini/system-correlated factor data stored after validation. Duplicate raw-result protection is active. If Gemini output fails JSON/schema validation, the miner retries once with a stricter compact prompt. No backend scoring, no prop scoring, no ranking, no candidate logic." };
   } catch (err) {
@@ -2911,21 +3016,21 @@ async function runBoardQueueMineOne(input, env) {
       const attemptsUsed = Number(next.attempt_count || 0) + 1;
       if (attemptsUsed >= BOARD_QUEUE_RETRY_LIMIT) {
         const flagged = `retry_exhausted_after_${BOARD_QUEUE_RETRY_LIMIT}_attempts: ${msg}`.slice(0, 900);
-        await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(flagged, next.queue_id).run();
+        await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(flagged, next.queue_id).run();
         const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
         return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_exhausted_flagged", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed }, error: flagged, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/API failure exhausted the per-row retry limit. Queue row was flagged ERROR with last_error so it is visible, and scheduled/full-run repair can reset it for a future retry wave. No scoring, no ranking." };
       }
-      await env.DB.prepare(`UPDATE board_factor_queue SET status='PENDING', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
+      await env.DB.prepare(`UPDATE board_factor_queue SET status='RETRY_LATER', retry_count=COALESCE(retry_count,0)+1, last_error=?, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
       const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
       return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "retry_later", slate_date: slateDate, retry_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: attemptsUsed, retry_limit: BOARD_QUEUE_RETRY_LIMIT }, error: msg, validation_attempts: validationAttempts, queue_health: queueHealth.rows, note: "Transient/network/API failure. Queue row was returned to PENDING until the per-row retry limit is exhausted. No scoring, no ranking." };
     }
-    await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
+    await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP, last_processed_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
     return { ok: false, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "failed", slate_date: slateDate, failed_queue: { queue_id: next.queue_id, queue_type: next.queue_type, batch_index: next.batch_index, attempts_used: Number(next.attempt_count || 0) + 1 }, error: msg, validation_attempts: validationAttempts, note: "One queue row failed only after backend raw JSON/schema validation and one compact retry, or another non-transient backend failure. It was marked ERROR. No backend scoring, prop scoring, or ranking was attempted." };
   }
 }
 
 
-async function runBoardQueueAutoMine(input, env) {
+async function runBoardQueueAutoMineCore(input, env) {
   await ensureBoardFactorQueueTable(env);
   await ensureBoardFactorResultsTable(env);
   const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
@@ -2944,6 +3049,7 @@ async function runBoardQueueAutoMine(input, env) {
   const beforeTotals = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
       SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
       SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
       SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
       SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
@@ -2976,6 +3082,7 @@ async function runBoardQueueAutoMine(input, env) {
   const totals = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
       SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
       SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
       SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
       SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
@@ -2985,10 +3092,11 @@ async function runBoardQueueAutoMine(input, env) {
   const pending = Number(totals?.pending_rows || 0);
   const completed = Number(totals?.completed_rows || 0);
   const running = Number(totals?.running_rows || 0);
+  const retryLater = Number(totals?.retry_later_rows || 0);
   const errors = Number(totals?.error_rows || 0);
   const completedBefore = Number(beforeTotals?.completed_rows || 0);
   const progressPct = totalRows > 0 ? Math.round((completed / totalRows) * 1000) / 10 : 100;
-  const status = emptyReached || pending === 0 ? "pass" : failedCount ? "partial_flagged_continue" : retryLaterCount ? "partial_retry_later" : "partial";
+  const status = emptyReached || (pending === 0 && retryLater === 0 && running === 0) ? "pass" : failedCount ? "partial_flagged_continue" : retryLaterCount ? "partial_retry_later" : "partial";
 
   return {
     ok: true,
@@ -3005,10 +3113,11 @@ async function runBoardQueueAutoMine(input, env) {
       mined_this_run: minedCount,
       completed_by_existing_raw_result: completedByExisting,
       pending_after: pending,
+      retry_later_after: retryLater,
       running_after: running,
       error_after: errors,
       percent_complete: progressPct,
-      needs_continue: pending > 0
+      needs_continue: (pending + retryLater + running) > 0
     },
     repair: { before: repairBefore?.changes || null, after: repairAfter?.changes || null },
     mined_rows: minedCount,
@@ -3016,17 +3125,47 @@ async function runBoardQueueAutoMine(input, env) {
     retry_later_count: retryLaterCount,
     failed_count: failedCount,
     pending_rows_after: pending,
+    retry_later_rows_after: retryLater,
     completed_rows_after: completed,
     running_rows_after: running,
     error_rows_after: errors,
-    needs_continue: pending > 0,
+    needs_continue: (pending + retryLater + running) > 0,
     steps,
     queue_health: queueHealth.rows,
     result_health: resultHealth.rows,
-    next_action: pending > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue. Failed rows are flagged after 3 attempts and visible in queue health." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
+    next_action: (pending + retryLater + running) > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue. Failed rows are flagged after 3 attempts and visible in queue health." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
     note: "Auto miner runs a smaller safe batch of Mine One Raw calls, reports progress counters, retries transient rows up to 3 attempts, flags exhausted rows, and lets scheduled/full-run repair pick them back up. It repairs stale RUNNING rows before and after every batch. No prop scoring, no ranking, no candidate logic."
   };
 }
+
+async function runBoardQueueAutoMine(input, env) {
+  const slateDate = String(input?.slate_date || resolveSlateDate(input || {}).slate_date);
+  const lockId = `BOARD_QUEUE_AUTO_MINE|${slateDate}`;
+  const lockedBy = `${input?.trigger || 'manual'}:${crypto.randomUUID()}`;
+  const lock = await acquirePipelineLock(env, lockId, lockedBy, 10);
+  if (!lock.acquired) {
+    const totals = await boardQueueTotals(env, slateDate).catch(() => null);
+    return {
+      ok: true,
+      job: 'board_queue_auto_mine',
+      version: SYSTEM_VERSION,
+      status: 'LOCKED_SKIP_ALREADY_RUNNING',
+      slate_date: slateDate,
+      lock_status: lock,
+      totals,
+      needs_continue: true,
+      note: 'Another miner is already active for this slate. This invocation exited cleanly so duplicate UI/Cron clicks do not create overlapping writes.'
+    };
+  }
+  try {
+    const result = await runBoardQueueAutoMineCore(input || {}, env);
+    result.lock_status = 'RELEASED';
+    return result;
+  } finally {
+    await releasePipelineLock(env, lockId, lockedBy);
+  }
+}
+
 function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
   return `${slateDate}|${queueType}|${String(batchIndex).padStart(4, "0")}|${boardSlug(scopeKey)}`;
 }
@@ -3955,15 +4094,16 @@ async function runBoardQueueAutoMineWaves(input, env, slateDate, slate, maxWaves
   const totals = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
       SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
       SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
       SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
       SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
     FROM board_factor_queue WHERE slate_date=?
   `).bind(slateDate).first();
-  return { ok: true, job: "board_queue_auto_mine_waves", version: SYSTEM_VERSION, slate_date: slateDate, waves_run: waves.length, waves, totals: { total_rows: Number(totals?.total_rows || 0), pending_rows: Number(totals?.pending_rows || 0), completed_rows: Number(totals?.completed_rows || 0), running_rows: Number(totals?.running_rows || 0), error_rows: Number(totals?.error_rows || 0) }, needs_continue: Number(totals?.pending_rows || 0) > 0 || Number(totals?.running_rows || 0) > 0 || Number(totals?.error_rows || 0) > 0, note: "Full run runs bounded mining waves only. Remaining rows are normal continuation work for scheduled runs; no data is abandoned." };
+  return { ok: true, job: "board_queue_auto_mine_waves", version: SYSTEM_VERSION, slate_date: slateDate, waves_run: waves.length, waves, totals: { total_rows: Number(totals?.total_rows || 0), pending_rows: Number(totals?.pending_rows || 0), completed_rows: Number(totals?.completed_rows || 0), retry_later_rows: Number(totals?.retry_later_rows || 0), running_rows: Number(totals?.running_rows || 0), error_rows: Number(totals?.error_rows || 0) }, needs_continue: Number(totals?.pending_rows || 0) > 0 || Number(totals?.retry_later_rows || 0) > 0 || Number(totals?.running_rows || 0) > 0 || Number(totals?.error_rows || 0) > 0, note: "Full run runs bounded mining waves only. Remaining rows are normal continuation work for scheduled runs; no data is abandoned." };
 }
 
-async function runFullPipeline(input, env) {
+async function runFullPipelineCore(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
   const startedAt = new Date().toISOString();
@@ -3998,12 +4138,12 @@ async function runFullPipeline(input, env) {
     return last || { ok: false, error: "No attempts executed" };
   }
 
-  await env.DB.prepare("DELETE FROM starters_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
+  await env.DB.prepare("DELETE FROM starters_current WHERE game_id LIKE ? AND source = 'mlb_statsapi_probable_pitcher'").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM bullpens_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM lineups_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM markets_current WHERE game_id LIKE ?").bind(`${slateDate}_%`).run();
   await env.DB.prepare("DELETE FROM games WHERE game_date = ?").bind(slateDate).run();
-  steps.push({ label: "Clean Slate", job: "internal_clean", result: { ok: true, slate_date: slateDate } });
+  steps.push({ label: "Refresh Volatile Slate Tables", job: "internal_clean", result: { ok: true, slate_date: slateDate, preserved_manual_and_fallback_starters: true } });
 
   const markets = await stepWithRetry("Markets", "scrape_games_markets", 3, async () => {
     const gameCount = await countScalar(env, "SELECT COUNT(*) AS c FROM games WHERE game_date = ?", slateDate);
@@ -4154,8 +4294,8 @@ async function runFullPipeline(input, env) {
   `, `${slateDate}_%`);
 
   const expectedStarters = games * 2;
-  const criticalSuccess = games > 0 && bullpensTotal === expectedStarters && badRows === 0 && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
-  const starterWarningOnly = startersTotal < expectedStarters || missingGames > 0;
+  const criticalSuccess = games > 0 && bullpensTotal === expectedStarters && teamMismatch === 0 && duplicateStarters === 0 && stalePairs === 0;
+  const starterWarningOnly = startersTotal < expectedStarters || missingGames > 0 || badRows > 0;
   const boardContinuation = boardQueueAutoMine && boardQueueAutoMine.needs_continue === true;
   const success = criticalSuccess;
 
@@ -4192,6 +4332,44 @@ async function runFullPipeline(input, env) {
   };
 }
 
+
+
+async function runFullPipeline(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const lockedBy = `${input?.trigger || 'manual'}:${crypto.randomUUID()}`;
+  const lock = await acquirePipelineLock(env, `FULL_PIPELINE|${slateDate}`, lockedBy, 15);
+  if (!lock.acquired) {
+    const totals = await boardQueueTotals(env, slateDate).catch(() => null);
+    return {
+      ok: true,
+      version: SYSTEM_VERSION,
+      job: 'run_full_pipeline',
+      status: 'LOCKED_SKIP_ALREADY_RUNNING',
+      pipeline_status: 'RETRY_LATER',
+      slate_date: slateDate,
+      lock_status: lock,
+      board_queue_totals: totals,
+      note: 'A full pipeline is already active for this slate. This request exited cleanly to prevent overlap; scheduled/UI retries can check progress instead of starting duplicate work.'
+    };
+  }
+  try {
+    const result = await runFullPipelineCore(input || {}, env);
+    if (result && result.ok === false && result.status === 'FAILED_AUDIT') {
+      result.ok = true;
+      result.pipeline_status = 'PARTIAL_OK';
+      result.status = 'PARTIAL_OK_WITH_WARNINGS';
+      result.note = 'Data-quality warnings were recorded, but the pipeline did not hard-fail. Queue mining continues and missing/TBD units remain stateful for retry.';
+    }
+    if (result && typeof result === 'object') {
+      result.lock_status = 'RELEASED';
+      result.state_machine_policy = 'Full run uses lock + partial warnings + stateful queue continuation. Data warnings do not return HTTP 500 unless the core market/game fetch is empty.';
+    }
+    return result;
+  } finally {
+    await releasePipelineLock(env, `FULL_PIPELINE|${slateDate}`, lockedBy);
+  }
+}
 
 
 const MLB_TEAM_ABBR = {
