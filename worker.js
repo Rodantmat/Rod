@@ -1,7 +1,7 @@
-// AlphaDog v1.2.50 - Context Injector compatible worker
+// AlphaDog v1.2.51 - Queue Splitter compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.50 - Context Injector";
-const SYSTEM_CODENAME = "Context Injector";
+const SYSTEM_VERSION = "v1.2.51 - Queue Splitter";
+const SYSTEM_CODENAME = "Queue Splitter";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -2415,14 +2415,15 @@ OUTPUT JSON SCHEMA:
   "slate_date": "YYYY-MM-DD",
   "factor_family": "short family name",
   "results": [
-    { "target_key": "player name + team OR game_key", "score_0_100": 0, "signal": "GREEN|YELLOW|RED", "confidence_0_100": 0, "summary": "one concise sentence", "missing_data": [] }
+    { "target_key": "player name + team OR game_key", "score_0_100": 0, "signal": "GREEN|YELLOW|RED", "confidence_0_100": 0, "summary": "one concise raw factor sentence", "missing_data": [] }
   ],
   "warnings": []
 }
 
-SCORING RULES:
-- score_0_100 is a factor strength score only, not a prop score.
-- GREEN means supportive, YELLOW means mixed/uncertain, RED means negative/risky.
+RAW MINING RULES:
+- This is raw factor mining only, not final scoring, not prop scoring, not ranking, not picks.
+- score_0_100 is allowed only as the raw Gemini factor value for this factor family, never as a final prop score.
+- GREEN/YELLOW/RED is a raw factor label only.
 - Use enriched_player_contexts and enriched_game_context first. Do not ignore those fields.
 - For PLAYER_A_ROLE_RECENT_MATCHUP, evaluate role, lineup slot, recent usage, season player profile, handedness matchup, opposing starter contact allowance, strikeout pressure, and on-base support.
 - For PLAYER_D_ADVANCED_FORM_CONTACT, evaluate recent form, recent hit/AB pressure, AVG/OBP/SLG, hit baseline, strikeout drag, total-base/contact context, and form vs season baseline.
@@ -2477,7 +2478,7 @@ async function runBoardQueueMineOne(input, env) {
     await env.DB.prepare(`INSERT INTO board_factor_results (result_id, queue_id, slate_date, queue_type, scope_type, scope_key, batch_index, status, model, factor_count, min_score, max_score, avg_score, raw_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'COMPLETED', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(resultId, next.queue_id, next.slate_date, next.queue_type, next.scope_type, next.scope_key, next.batch_index, model, summary.factor_count, summary.min_score, summary.max_score, summary.avg_score, JSON.stringify(parsed)).run();
     await env.DB.prepare(`UPDATE board_factor_queue SET status='COMPLETED', last_error=NULL, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(next.queue_id).run();
     const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
-    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row. Factor result stored. No prop scoring, no ranking, no candidate logic." };
+    return { ok: true, job: "board_queue_mine_one", version: SYSTEM_VERSION, status: "pass", slate_date: slateDate, mined_queue: { queue_id: next.queue_id, queue_type: next.queue_type, scope_type: next.scope_type, batch_index: next.batch_index, player_count: next.player_count, game_count: next.game_count, payload_injected_before_gemini: isBoardQueuePayloadEnriched(hydratedPayload, hydratedNext.queue_type) }, result_id: resultId, model, factor_summary: summary, queue_health: queueHealth.rows, note: "Mined exactly one queue row. Raw factor result stored. No prop scoring, no ranking, no candidate logic." };
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 900);
     await env.DB.prepare(`UPDATE board_factor_queue SET status='ERROR', last_error=?, updated_at=CURRENT_TIMESTAMP WHERE queue_id=?`).bind(msg, next.queue_id).run();
@@ -2768,7 +2769,19 @@ async function buildBoardQueueRows(input, env) {
     for (let index = 0; index < playerChunks.length; index += 1) {
       const chunk = playerChunks[index];
       const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
-      const enrichedPayload = await enrichBoardQueuePlayerPayload(env, slateDate, queueType, playerBatchSize, chunk);
+      const rawPayload = {
+        slate_date: slateDate,
+        queue_type: queueType,
+        batch_size: playerBatchSize,
+        players: chunk.map(r => ({
+          player_name: r.player_name,
+          team: r.team,
+          first_start_time: r.first_start_time,
+          leg_rows: Number(r.leg_rows || 0)
+        })),
+        payload_mode: "LIGHTWEIGHT_QUEUE_ONLY",
+        enrichment_mode: "DEFER_TO_BOARD_QUEUE_MINE_ONE"
+      };
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
         slate_date: slateDate,
@@ -2785,7 +2798,7 @@ async function buildBoardQueueRows(input, env) {
         team_a: null,
         team_b: null,
         start_time: chunk.map(r => r.first_start_time).filter(Boolean).sort()[0] || null,
-        payload_json: JSON.stringify(enrichedPayload)
+        payload_json: JSON.stringify(rawPayload)
       });
     }
   }
@@ -2799,7 +2812,13 @@ async function buildBoardQueueRows(input, env) {
     for (let index = 0; index < games.rows.length; index += 1) {
       const row = games.rows[index];
       const scopeKey = `${row.game_key}|${row.start_time}`;
-      const enrichedPayload = await enrichBoardQueueGamePayload(env, slateDate, queueType, row);
+      const rawPayload = {
+        slate_date: slateDate,
+        queue_type: queueType,
+        game: row,
+        payload_mode: "LIGHTWEIGHT_QUEUE_ONLY",
+        enrichment_mode: "DEFER_TO_BOARD_QUEUE_MINE_ONE"
+      };
       queueRows.push({
         queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
         slate_date: slateDate,
@@ -2816,7 +2835,7 @@ async function buildBoardQueueRows(input, env) {
         team_a: row.team_a,
         team_b: row.team_b,
         start_time: row.start_time,
-        payload_json: JSON.stringify(enrichedPayload)
+        payload_json: JSON.stringify(rawPayload)
       });
     }
   }
@@ -2927,7 +2946,7 @@ async function runBoardQueueBuild(input, env) {
     status: built.warnings.length ? "review" : "pass",
     slate_date: slateDate,
     table: "board_factor_queue",
-    mode: "materialize_supported_board_factor_queue_with_enriched_payload_no_gemini_no_scoring",
+    mode: "materialize_lightweight_supported_board_factor_queue_no_enrichment_no_gemini_no_scoring",
     deleted_previous_types: allowedTypes,
     inserted_queue_rows: inserted,
     counts: {
@@ -2938,7 +2957,7 @@ async function runBoardQueueBuild(input, env) {
     queue_estimate: built.queue_estimate,
     queue_health: queueHealth.rows,
     warnings: built.warnings,
-    note: "Queue rows include enriched payload context. No Gemini calls, no factor scoring, no prop ranking. Combo lines remain deferred."
+    note: "Queue rows are lightweight only. Enrichment is deferred to board_queue_mine_one one row at a time. No Gemini calls during queue build, no scoring, no prop ranking. Combo lines remain deferred."
   };
 }
 
@@ -2951,7 +2970,7 @@ async function runBoardQueuePipeline(input, env) {
     status: result && result.ok ? "pass" : "review",
     slate_date: result?.slate_date || resolveSlateDate(input).slate_date,
     board_queue_build: result,
-    note: "Scheduled board queue pipeline prepared enriched queue payloads only. No Gemini calls, no factor scoring, no prop ranking."
+    note: "Scheduled board queue pipeline prepared lightweight queue payloads only. Enrichment is deferred to board_queue_mine_one. No Gemini calls during queue build, no scoring, no prop ranking."
   };
 }
 
