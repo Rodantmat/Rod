@@ -1,7 +1,7 @@
-// AlphaDog v1.2.53 - Queue Guardian compatible worker
+// AlphaDog v1.2.54 - Compact Split compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.53 - Queue Guardian";
-const SYSTEM_CODENAME = "Queue Guardian";
+const SYSTEM_VERSION = "v1.2.54 - Compact Split";
+const SYSTEM_CODENAME = "Compact Split";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -2567,7 +2567,7 @@ OUTPUT JSON SCHEMA, EXACT SHAPE:
 }
 
 TARGET RULES:
-- PLAYER_BATCH_4: return exactly one item per player in payload.players.
+- PLAYER_BATCH_2 or PLAYER_BATCH_4: return exactly one item per player in payload.players.
 - GAME: return exactly one item for payload.game_key.
 - Include locked factor IDs for this family.
 - Use compact raw evidence from supplied payload only.
@@ -3133,13 +3133,17 @@ async function buildBoardQueueRows(input, env) {
   `, activeBinds);
 
   const queueRows = [];
-  const playerBatchSize = 4;
-  const playerChunks = boardChunkRows(players.rows, playerBatchSize);
+  const playerBatchSizes = {
+    PLAYER_A_ROLE_RECENT_MATCHUP: 2,
+    PLAYER_D_ADVANCED_FORM_CONTACT: 2
+  };
   const playerQueueTypes = [
     "PLAYER_A_ROLE_RECENT_MATCHUP",
     "PLAYER_D_ADVANCED_FORM_CONTACT"
   ];
   for (const queueType of playerQueueTypes) {
+    const playerBatchSize = playerBatchSizes[queueType] || 4;
+    const playerChunks = boardChunkRows(players.rows, playerBatchSize);
     for (let index = 0; index < playerChunks.length; index += 1) {
       const chunk = playerChunks[index];
       const scopeKey = chunk.map(r => `${r.team}:${r.player_name}`).join("|");
@@ -3148,7 +3152,7 @@ async function buildBoardQueueRows(input, env) {
         queue_id: boardQueueId(slateDate, queueType, index + 1, scopeKey),
         slate_date: slateDate,
         queue_type: queueType,
-        scope_type: "PLAYER_BATCH_4",
+        scope_type: `PLAYER_BATCH_${playerBatchSize}`,
         scope_key: scopeKey,
         batch_index: index + 1,
         player_count: chunk.length,
@@ -3209,7 +3213,7 @@ async function buildBoardQueueRows(input, env) {
     version: SYSTEM_VERSION,
     slate_date: slateDate,
     active_mode: activeMode,
-    player_batch_size: playerBatchSize,
+    player_batch_size: playerBatchSizes,
     supported_unique_players: players.rows.length,
     normalized_supported_games: games.rows.length,
     queue_rows: queueRows,
