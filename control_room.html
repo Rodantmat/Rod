@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.69 - Lockjaw Dispatcher</div>
+<div id="versionTag">v1.2.69.1 - Endpoint Anchor</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -106,7 +106,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <div id="minePulse" style="display:none;border:1px solid #1f8b4c;border-radius:12px;padding:14px;margin:12px 0;background:#07130d;color:#21f06f;font-family:monospace;font-size:17px;line-height:1.35;white-space:pre-wrap;">Miner Pulse idle.</div><pre id="output">Output will appear here.</pre><button class="copy" onclick="copyOutput()">COPY OUTPUT</button>
 
 <script>
-const BASE="https://alphadog-phase3-starter-groups.rodolfoaamattos.workers.dev", JOB_URL=BASE+"/tasks/run", SQL_URL=BASE+"/debug/sql", INSPECT_URL=BASE+"/board/factor-results/inspect", PAYLOAD_INSPECT_URL=BASE+"/board/queue-payload/inspect", HEALTH_URL=BASE+"/health", DAILY_HEALTH_URL=BASE+"/health/daily", CONFIG_URL="https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt";
+const BASE="https://prop-ingestion-git.rodolfoaamattos.workers.dev", JOB_URL=BASE+"/tasks/run", SQL_URL=BASE+"/debug/sql", INSPECT_URL=BASE+"/board/factor-results/inspect", PAYLOAD_INSPECT_URL=BASE+"/board/queue-payload/inspect", HEALTH_URL=BASE+"/health", DAILY_HEALTH_URL=BASE+"/health/daily", CONFIG_URL="https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt";
 let TOKEN="", CONFIG_LOADED=false, SLATE_MODE=localStorage.getItem("alphadog_slate_mode")||"AUTO", MANUAL_DATE=localStorage.getItem("alphadog_manual_date")||"";
 function pad2(n){return String(n).padStart(2,"0")}
 function addDaysISO(s,d){const p=s.split("-").map(Number),x=new Date(Date.UTC(p[0],p[1]-1,p[2]));x.setUTCDate(x.getUTCDate()+d);return x.getUTCFullYear()+"-"+pad2(x.getUTCMonth()+1)+"-"+pad2(x.getUTCDate())}
@@ -488,7 +488,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.69 - Lockjaw Dispatcher",
+    version: "v1.2.69.1 - Endpoint Anchor",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

@@ -1,6 +1,6 @@
 // AlphaDog v1.2.69 - Lockjaw Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.69 - Lockjaw Dispatcher";
+const SYSTEM_VERSION = "v1.2.69.1 - Endpoint Anchor";
 const SYSTEM_CODENAME = "Lockjaw Dispatcher";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
