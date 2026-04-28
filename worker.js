@@ -1,7 +1,7 @@
-// AlphaDog v1.2.59 - Starter Spine compatible worker
+// AlphaDog v1.2.62 - Auto Mine Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.61 - Auto Queue Spine";
-const SYSTEM_CODENAME = "Auto Queue Spine";
+const SYSTEM_VERSION = "v1.2.62 - Auto Mine Spine";
+const SYSTEM_CODENAME = "Auto Mine Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const PRIMARY_MODEL = "gemini-2.5-pro";
@@ -19,6 +19,7 @@ const JOB_DISPLAY_LABELS = {
   board_queue_auto_build: "SCRAPE > Board Queue Auto Build",
   run_board_queue_pipeline: "SCRAPE > Board Queue Pipeline",
   board_queue_mine_one: "SCRAPE > Board Queue Mine One Raw",
+  board_queue_auto_mine: "SCRAPE > Board Queue Auto Mine Raw",
   board_queue_repair: "REPAIR > Board Queue Raw State",
   build_edge_candidates_hits: "SCRAPE > Build Hits Candidates",
   build_edge_candidates_rbi: "SCRAPE > Build RBI Candidates",
@@ -108,6 +109,11 @@ const JOBS = {
     prompt: null,
     tables: ["board_factor_queue", "board_factor_results"],
     note: "mines exactly one pending board factor queue row with Gemini and stores raw factor output; no prop scoring"
+  },
+  board_queue_auto_mine: {
+    prompt: null,
+    tables: ["board_factor_queue", "board_factor_results"],
+    note: "mines a Cloudflare-safe batch of pending board factor queue rows with Gemini; no prop scoring"
   },
   board_queue_repair: {
     prompt: null,
@@ -436,6 +442,7 @@ function executableJobNames() {
     "scrape_recent_usage",
     "scrape_derived_metrics",
     "board_queue_mine_one",
+    "board_queue_auto_mine",
     "board_queue_repair",
     "scrape_players_mlb_api",
     "scrape_players",
@@ -2900,6 +2907,74 @@ async function runBoardQueueMineOne(input, env) {
   }
 }
 
+
+async function runBoardQueueAutoMine(input, env) {
+  await ensureBoardFactorQueueTable(env);
+  await ensureBoardFactorResultsTable(env);
+  const slateDate = String(input.slate_date || resolveSlateDate(input).slate_date);
+  const preferredType = String(input.queue_type || "").trim();
+  const requestedLimit = Number(input.limit || input.max_rows || input.max_mines || 5);
+  const mineLimit = Math.max(1, Math.min(Number.isFinite(requestedLimit) ? requestedLimit : 5, 8));
+  const steps = [];
+  let minedCount = 0;
+  let completedByExisting = 0;
+  let retryLaterCount = 0;
+  let failedCount = 0;
+  let emptyReached = false;
+
+  await repairBoardQueueRawState(env, slateDate, { reset_errors: false });
+
+  for (let i = 0; i < mineLimit; i++) {
+    const result = await runBoardQueueMineOne({ ...(input || {}), slate_date: slateDate, queue_type: preferredType }, env);
+    steps.push({
+      pass: i + 1,
+      ok: !!result.ok,
+      status: result.status,
+      mined_queue: result.mined_queue || null,
+      skipped_queue: result.skipped_queue || null,
+      retry_queue: result.retry_queue || null,
+      failed_queue: result.failed_queue || null,
+      result_id: result.result_id || result.existing_result_id || null,
+      error: result.error || null
+    });
+
+    if (result.status === "pass") minedCount++;
+    if (result.status === "skipped_existing_raw_result") completedByExisting++;
+    if (result.status === "empty") { emptyReached = true; break; }
+    if (result.status === "retry_later") { retryLaterCount++; break; }
+    if (!result.ok || result.status === "failed") { failedCount++; break; }
+  }
+
+  const queueHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+  const resultHealth = await boardRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date = ? GROUP BY queue_type, status ORDER BY queue_type, status`, [slateDate]);
+  const totals = await env.DB.prepare(`SELECT COUNT(*) AS total_rows, SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows, SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows, SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows FROM board_factor_queue WHERE slate_date=?`).bind(slateDate).first();
+  const pending = Number(totals?.pending_rows || 0);
+  const errors = Number(totals?.error_rows || 0);
+  const status = emptyReached || pending === 0 ? "pass" : retryLaterCount ? "partial_retry_later" : failedCount ? "partial_error" : "partial";
+
+  return {
+    ok: true,
+    job: "board_queue_auto_mine",
+    version: SYSTEM_VERSION,
+    status,
+    slate_date: slateDate,
+    mode: "cloudflare_safe_auto_raw_factor_mining_no_prop_scoring",
+    mine_limit: mineLimit,
+    mined_rows: minedCount,
+    completed_by_existing_raw_result: completedByExisting,
+    retry_later_count: retryLaterCount,
+    failed_count: failedCount,
+    pending_rows_after: pending,
+    completed_rows_after: Number(totals?.completed_rows || 0),
+    error_rows_after: errors,
+    needs_continue: pending > 0 && retryLaterCount === 0 && failedCount === 0,
+    steps,
+    queue_health: queueHealth.rows,
+    result_health: resultHealth.rows,
+    next_action: pending > 0 ? "Run SCRAPE > Board Queue Auto Mine Raw again later, or let the scheduled miner continue." : "Raw board queue mining complete. Next phase can build scored factor summaries/candidates.",
+    note: "Auto miner runs a small safe batch of Mine One Raw calls in one Worker invocation. It stops on transient Gemini/API retry_later, hard validation failure, or empty queue. No prop scoring, no ranking, no candidate logic."
+  };
+}
 function boardQueueId(slateDate, queueType, batchIndex, scopeKey) {
   return `${slateDate}|${queueType}|${String(batchIndex).padStart(4, "0")}|${boardSlug(scopeKey)}`;
 }
@@ -3620,6 +3695,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
   if (jobName === "board_queue_mine_one") {
     return await runBoardQueueMineOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
+  if (jobName === "board_queue_auto_mine") {
+    return await runBoardQueueAutoMine({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
