@@ -1,6 +1,6 @@
 // AlphaDog v1.2.59 - Starter Spine compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.59 - Starter Spine";
+const SYSTEM_VERSION = "v1.2.60 - Missing Starter Blade";
 const SYSTEM_CODENAME = "Starter Spine";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const PRIMARY_MODEL = "gemini-2.5-pro";
@@ -3543,6 +3543,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_players_mlb_api" || jobName === "scrape_players" || /^scrape_players_mlb_api_g[1-6]$/.test(jobName)) {
     return await syncMlbApiPlayersIdentity({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+  if (jobName === "scrape_starters_missing") {
+    return await syncMissingStartersLiveFallback({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  }
   return await runJob({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 }
 
@@ -3618,7 +3621,9 @@ async function runFullPipeline(input, env) {
   async function step(label, job) {
     const result = (job === "scrape_games_markets" || job === "daily_mlb_slate")
       ? await syncMlbApiGamesMarkets({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
-      : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
+      : (job === "scrape_starters_missing")
+        ? await syncMissingStartersLiveFallback({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env)
+        : await runJob({ ...(input || {}), job, slate_date: slateDate, slate_mode: slate.slate_mode }, env);
     steps.push({ label, job, result });
     return result;
   }
@@ -3704,7 +3709,7 @@ async function runFullPipeline(input, env) {
         starter_name LIKE '%Ace%'
         OR starter_name IN ('TBD','TBA','Unknown','Starter')
         OR (
-          source != 'mlb_statsapi_probable_pitcher'
+          source NOT IN ('mlb_statsapi_probable_pitcher','gemini_live_missing_starter_fallback')
           AND (
             era IS NULL OR era <= 0
             OR whip IS NULL OR whip <= 0
@@ -4666,6 +4671,12 @@ async function syncMlbApiProbableStarters(input, env) {
   };
 }
 
+
+function normalizePitcherThrowCode(value){const text=String(value||"").trim().toUpperCase();if(!text)return null;if(text==="R"||text==="RHP"||text.includes("RIGHT"))return"R";if(text==="L"||text==="LHP"||text.includes("LEFT"))return"L";if(text==="S"||text.includes("SWITCH"))return"S";return text.slice(0,1)}
+function usableMissingStarterConfidence(value){const c=String(value||"").trim().toLowerCase();return c==="confirmed"||c==="official"||c==="probable"||c==="projected"}
+async function missingStarterTargets(env,slateDate){const result=await env.DB.prepare(`SELECT g.game_id,g.away_team,g.home_team,g.start_time_utc,MAX(CASE WHEN s.team_id=g.away_team THEN s.starter_name ELSE NULL END) AS away_starter,MAX(CASE WHEN s.team_id=g.home_team THEN s.starter_name ELSE NULL END) AS home_starter,SUM(CASE WHEN s.team_id=g.away_team THEN 1 ELSE 0 END) AS has_away,SUM(CASE WHEN s.team_id=g.home_team THEN 1 ELSE 0 END) AS has_home,COUNT(s.team_id) AS starters_found FROM games g LEFT JOIN starters_current s ON s.game_id=g.game_id WHERE g.game_date=? GROUP BY g.game_id,g.away_team,g.home_team,g.start_time_utc HAVING starters_found<2 ORDER BY g.start_time_utc,g.game_id`).bind(slateDate).all();const targets=[];for(const g of(result.results||[])){if(!Number(g.has_away||0))targets.push({game_id:g.game_id,away_team:g.away_team,home_team:g.home_team,missing_team:g.away_team,known_team:g.home_team,known_starter:g.home_starter||null,start_time_utc:g.start_time_utc||null});if(!Number(g.has_home||0))targets.push({game_id:g.game_id,away_team:g.away_team,home_team:g.home_team,missing_team:g.home_team,known_team:g.away_team,known_starter:g.away_starter||null,start_time_utc:g.start_time_utc||null})}return targets}
+function buildMissingStarterLivePrompt(slateDate,targets){return `You are repairing a deterministic MLB probable-starter database for slate ${slateDate}. Return ONLY valid JSON. No markdown. For each target, use current live MLB probable pitcher context. Prefer official MLB, team pages, reputable previews, Pitcher List, FanGraphs/RosterResource, ESPN, CBS, FOX, Rotowire. Do not invent. If truly TBD/not available, set starter_found=false and leave starter_name/throws empty. Targets: ${JSON.stringify(targets)} Required JSON shape: {"ok":true,"checked_at":"ISO timestamp","games":[{"game_id":"","away_team":"","home_team":"","missing_team":"","starter_found":true,"starter_name":"Full Name","throws":"RHP or LHP or R or L","confidence":"confirmed|official|probable|projected|not_available","source_summary":"short","notes":"short"}],"summary":{"missing_games_checked":0,"starters_found":0,"starters_not_available":0,"should_backend_fill_missing":true}}`}
+async function syncMissingStartersLiveFallback(input,env){const slate=resolveSlateDate(input||{});const slateDate=String(input?.slate_date||slate.slate_date);const targets=await missingStarterTargets(env,slateDate);if(!targets.length){return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:"pass_no_missing_starters",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",missing_games_checked:0,starters_found:0,inserted:{starters_current:0},still_missing_tbd:[],note:"No missing starter team/game pairs were found. No Gemini call made."}}const raw=await callGeminiWithFallback(env,buildMissingStarterLivePrompt(slateDate,targets));const parsed=parseStrictJson(cleanJsonText(raw));const games=Array.isArray(parsed.games)?parsed.games:[];const targetKeys=new Set(targets.map(t=>`${t.game_id}|${t.missing_team}`));const accepted=[];const rejected=[];for(const row of games){const key=`${row.game_id}|${row.missing_team}`;if(!targetKeys.has(key)){rejected.push({game_id:row.game_id||null,missing_team:row.missing_team||null,reason:"not_in_missing_target_list"});continue}const name=String(row.starter_name||"").trim();if(row.starter_found!==true||!name){rejected.push({game_id:row.game_id,missing_team:row.missing_team,reason:"not_available_or_empty",confidence:row.confidence||null,notes:row.notes||null});continue}if(!usableMissingStarterConfidence(row.confidence)){rejected.push({game_id:row.game_id,missing_team:row.missing_team,starter_name:name,reason:"low_or_invalid_confidence",confidence:row.confidence||null});continue}accepted.push({game_id:String(row.game_id),team_id:String(row.missing_team).toUpperCase(),starter_name:name,throws:normalizePitcherThrowCode(row.throws),source:"gemini_live_missing_starter_fallback",confidence:String(row.confidence||"projected").toLowerCase()})}const stmt=env.DB.prepare(`INSERT OR REPLACE INTO starters_current (game_id,team_id,starter_name,throws,era,whip,strikeouts,innings_pitched,walks,hits_allowed,hr_allowed,days_rest,source,confidence,updated_at) VALUES (?,?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,?,?,CURRENT_TIMESTAMP)`);let inserted=0;for(const r of accepted){const result=await stmt.bind(r.game_id,r.team_id,r.starter_name,r.throws,r.source,r.confidence).run();inserted+=Number(result?.meta?.changes||0)}const remainingTargets=await missingStarterTargets(env,slateDate);return{ok:true,job:"scrape_starters_missing",version:SYSTEM_VERSION,status:remainingTargets.length?"partial_missing_tbd_remain":"pass",slate_date:slateDate,mode:"targeted_live_missing_starter_fallback",source:"gemini_live_missing_starter_fallback",requested_targets:targets,missing_games_checked:targets.length,starters_found:accepted.length,starters_inserted:inserted,inserted:{starters_current:inserted},accepted_starters:accepted.map(r=>({game_id:r.game_id,team_id:r.team_id,starter_name:r.starter_name,throws:r.throws,confidence:r.confidence})),rejected_or_tbd:rejected,still_missing_tbd:remainingTargets,raw_summary:parsed.summary||null,note:"Targeted missing-starter fallback only. Fills probable/projected/confirmed one-sided starters with nullable stats and preserves true TBD as still_missing_tbd. No broad starter rewrite."}}
 
 async function runJob(input, env) {
   const slate = resolveSlateDate(input || {});
