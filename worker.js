@@ -1,7 +1,7 @@
-// AlphaDog v1.2.91 - Incremental Temp State Finalizer compatible worker
+// AlphaDog v1.2.93 - Everyday Phase 1 Baseline compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.91 - Incremental Temp State Finalizer";
-const SYSTEM_CODENAME = "Incremental Temp State Finalizer";
+const SYSTEM_VERSION = "v1.2.93 - Everyday Phase 1 Baseline";
+const SYSTEM_CODENAME = "Everyday Phase 1 Baseline";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -110,6 +110,10 @@ const JOB_DISPLAY_LABELS = {
   check_incremental_player_splits: "CHECK > Incremental Player Splits",
   check_incremental_derived_metrics: "CHECK > Incremental Derived Metrics",
   check_incremental_all: "CHECK > Incremental All",
+  schedule_everyday_phase1_once: "EVERYDAY PHASE 1 > Schedule Baseline Test",
+  run_everyday_phase1_tick: "EVERYDAY PHASE 1 > Run Baseline Tick",
+  check_everyday_phase1: "EVERYDAY PHASE 1 > Check Baseline",
+  everyday_phase1_all_direct: "EVERYDAY PHASE 1 > Run Direct Baseline",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -667,6 +671,11 @@ const JOBS = {
   check_incremental_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "check derived incremental metrics coverage" },
   check_incremental_all: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "check all incremental base tables" },
 
+  schedule_everyday_phase1_once: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "schedule one protected everyday phase 1 baseline pipeline test" },
+  run_everyday_phase1_tick: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "advance one protected everyday phase 1 baseline pipeline step" },
+  check_everyday_phase1: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi", "mlb_stats"], note: "check everyday phase 1 baseline readiness" },
+  everyday_phase1_all_direct: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "direct one-request phase 1 baseline runner; use scheduled/tick path first on iPhone" },
+
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
   check_static_players: { prompt: null, tables: ["ref_players"], note: "check static player reference" },
@@ -962,6 +971,10 @@ function executableJobNames() {
     "check_incremental_player_splits",
     "check_incremental_derived_metrics",
     "check_incremental_all",
+    "schedule_everyday_phase1_once",
+    "run_everyday_phase1_tick",
+    "check_everyday_phase1",
+    "everyday_phase1_all_direct",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -6143,6 +6156,138 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
   const dataOk = failures.length === 0;
   return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.91 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
 }
+
+async function ensureEverydayPhase1Tables(env) {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS everyday_phase1_runs (" +
+    "request_id TEXT PRIMARY KEY, " +
+    "slate_date TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "current_step TEXT NOT NULL, " +
+    "created_at TEXT DEFAULT CURRENT_TIMESTAMP, " +
+    "started_at TEXT, " +
+    "finished_at TEXT, " +
+    "updated_at TEXT DEFAULT CURRENT_TIMESTAMP, " +
+    "error TEXT, " +
+    "output_preview TEXT)"
+  ).run();
+}
+
+const EVERYDAY_PHASE1_STEPS = [
+  "games_markets",
+  "starters",
+  "bullpens",
+  "lineups",
+  "usage",
+  "candidates_hits",
+  "candidates_rbi",
+  "candidates_rfi",
+  "completed"
+];
+
+function nextEverydayPhase1Step(step) {
+  const idx = EVERYDAY_PHASE1_STEPS.indexOf(String(step || "games_markets"));
+  if (idx < 0) return "games_markets";
+  return EVERYDAY_PHASE1_STEPS[Math.min(idx + 1, EVERYDAY_PHASE1_STEPS.length - 1)];
+}
+
+async function scheduleEverydayPhase1Once(input, env) {
+  await ensureEverydayPhase1Tables(env);
+  const slate = resolveSlateDate(input || {});
+  const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Phase 1 Tick or wait for a cron if wired later." };
+  const requestId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)").bind(requestId, slate.slate_date).run();
+  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"4-9 minutes if advanced by repeated ticks", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. No Gemini, no weather/news, no final scoring." };
+}
+
+async function runEverydayPhase1Tick(input, env) {
+  await ensureEverydayPhase1Tables(env);
+  const slate = resolveSlateDate(input || {});
+  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
+  const requestId = row.request_id;
+  const step = row.current_step || "games_markets";
+  if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
+  let jobName;
+  if (step === "games_markets") jobName = "scrape_games_markets";
+  else if (step === "starters") jobName = "scrape_starters_mlb_api";
+  else if (step === "bullpens") jobName = "scrape_bullpens_mlb_api";
+  else if (step === "lineups") jobName = "scrape_lineups_mlb_api";
+  else if (step === "usage") jobName = "scrape_recent_usage_mlb_api";
+  else if (step === "candidates_hits") jobName = "build_edge_candidates_hits";
+  else if (step === "candidates_rbi") jobName = "build_edge_candidates_rbi";
+  else if (step === "candidates_rfi") jobName = "build_edge_candidates_rfi";
+  else if (step === "completed") {
+    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
+    return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"already_completed", request_id:requestId, slate_date:slate.slate_date, live_tables_touched:false };
+  } else {
+    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?").bind("unknown_step_" + step, requestId).run();
+    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_unknown_step", request_id:requestId, step, live_tables_touched:false };
+  }
+  try {
+    const result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
+    if (!result || result.ok === false) throw new Error(String(result?.error || result?.status || "step_failed"));
+    const nextStep = nextEverydayPhase1Step(step);
+    const complete = nextStep === "completed";
+    await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(nextStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed_step:step, jobName, result }).slice(0, 4000), requestId).run();
+    const check = complete ? await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env) : null;
+    return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, request_id:requestId, slate_date:slate.slate_date, processed_step:step, routed_job:jobName, next_step:nextStep, phase1_complete:complete, step_result:result, final_check:check, live_tables_touched:true, note: complete ? "Everyday Phase 1 baseline completed. Run Check Baseline to verify readiness." : "Everyday Phase 1 advanced one bounded step. Run tick again for the next step." };
+  } catch (err) {
+    const error = String(err?.message || err);
+    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=? WHERE request_id=?").bind(error, JSON.stringify({ processed_step:step, jobName, error }).slice(0,4000), requestId).run().catch(() => null);
+    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_exception", request_id:requestId, slate_date:slate.slate_date, processed_step:step, routed_job:jobName, error, live_tables_touched:false };
+  }
+}
+
+async function runEverydayPhase1Direct(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const scheduled = await scheduleEverydayPhase1Once({ ...(input || {}), job:"everyday_phase1_all_direct", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+  const ticks = [];
+  for (let i = 0; i < 8; i++) {
+    const tick = await runEverydayPhase1Tick({ ...(input || {}), job:"run_everyday_phase1_tick", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+    ticks.push(tick);
+    if (!tick.ok || tick.phase1_complete || tick.status === "idle_no_due_phase1_run") break;
+  }
+  const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+  return { ok:ticks.every(t => t.ok !== false) && check.ok, data_ok:!!check.data_ok, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:check.data_ok ? "pass" : "needs_review", slate_date:slate.slate_date, scheduled, ticks, check, live_tables_touched:true, warning:"Direct mode can be heavier. Prefer Schedule Baseline Test + Run Baseline Tick on iPhone." };
+}
+
+async function checkEverydayPhase1(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const d = slate.slate_date;
+  const counts = {};
+  async function c(name, sql, bind) { counts[name] = await countScalar(env, sql, bind).catch(() => 0); }
+  await c("games", "SELECT COUNT(*) FROM games WHERE game_date=?", d);
+  await c("markets", "SELECT COUNT(*) FROM markets_current WHERE game_id LIKE ?", d + "_%");
+  await c("starters", "SELECT COUNT(*) FROM starters_current WHERE game_id LIKE ?", d + "_%");
+  await c("bullpens", "SELECT COUNT(*) FROM bullpens_current WHERE game_id LIKE ?", d + "_%");
+  await c("lineups", "SELECT COUNT(*) FROM lineups_current WHERE game_id LIKE ?", d + "_%");
+  await c("usage_rows", "SELECT COUNT(*) FROM player_recent_usage");
+  await c("prizepicks_rows", "SELECT COUNT(*) FROM mlb_stats");
+  await c("players_current", "SELECT COUNT(*) FROM players_current");
+  await c("hits_candidates", "SELECT COUNT(*) FROM edge_candidates_hits WHERE slate_date=?", d);
+  await c("rbi_candidates", "SELECT COUNT(*) FROM edge_candidates_rbi WHERE slate_date=?", d);
+  await c("rfi_candidates", "SELECT COUNT(*) FROM edge_candidates_rfi WHERE slate_date=?", d);
+  await c("board_queue_rows", "SELECT COUNT(*) FROM board_factor_queue WHERE slate_date=?", d);
+  const latestRun = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 1").bind(d).first().catch(() => null);
+  const expectedTeams = counts.games * 2;
+  const failures = [];
+  const warnings = [];
+  if (counts.prizepicks_rows <= 0) failures.push("PRIZEPICKS_BOARD_EMPTY");
+  if (counts.games <= 0) failures.push("GAMES_EMPTY");
+  if (counts.markets <= 0) failures.push("MARKETS_EMPTY");
+  if (counts.starters < Math.max(1, expectedTeams - 2)) warnings.push("STARTERS_PARTIAL_OR_EARLY");
+  if (counts.bullpens < Math.max(1, expectedTeams - 2)) warnings.push("BULLPENS_PARTIAL_OR_EARLY");
+  if (counts.lineups <= 0) warnings.push("LINEUPS_NOT_POSTED_YET");
+  if (counts.usage_rows <= 0) warnings.push("RECENT_USAGE_EMPTY");
+  if (counts.hits_candidates <= 0) warnings.push("HITS_CANDIDATES_EMPTY");
+  if (counts.rbi_candidates <= 0) warnings.push("RBI_CANDIDATES_EMPTY");
+  if (counts.rfi_candidates <= 0) warnings.push("RFI_CANDIDATES_EMPTY");
+  const dataOk = failures.length === 0;
+  return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE", counts, expected_teams:expectedTeams, latest_phase1_run:latestRun, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Weather, news/scratch context, line movement scoring, final math, and final candidate ranking are later phases." };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);

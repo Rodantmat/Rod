@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.91 - Incremental Temp State Finalizer</div>
+<div id="versionTag">v1.2.93 - Everyday Phase 1 Baseline</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -144,6 +144,12 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="audit" onclick="runJobButton('CERTIFY TEMP > Promote Incremental Temp To Live','promote_incremental_temp_to_live')">Promote Incremental Temp</button>
 <button class="danger" onclick="runJobButton('CERTIFY TEMP > Clean Incremental Temp','clean_incremental_temp_tables')">Clean Incremental Temp</button>
 </div><div class="small">Daily flow: temp stage/scrape → audit → promote → clean temp → rebuild derived metrics. Scheduled daily at 1:45 AM PT/PDT.</div></div>
+<div class="card"><h2>Everyday Phase 1</h2><div class="grid">
+<button onclick="runJobButton('EVERYDAY PHASE 1 > Schedule Baseline Test','schedule_everyday_phase1_once')">Schedule Baseline Test</button>
+<button onclick="runJobButton('EVERYDAY PHASE 1 > Run Baseline Tick','run_everyday_phase1_tick')">Run Baseline Tick</button>
+<button onclick="runJobButton('EVERYDAY PHASE 1 > Check Baseline','check_everyday_phase1')">Check Baseline</button>
+<button class="btn blue" onclick="runJobButton('EVERYDAY PHASE 1 > Run Direct Baseline','everyday_phase1_all_direct')">Run Direct Baseline</button>
+</div><div class="small">Phase 1 baseline: board freshness, games, markets, starters, bullpens, lineups, usage, and Hits/RBI/RFI candidate readiness. No weather/news/scoring yet. Use Schedule + Tick for safest iPhone testing.</div></div>
 
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
@@ -564,7 +570,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.91 - Incremental Temp State Finalizer",
+    version: "v1.2.93 - Everyday Phase 1 Baseline",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
