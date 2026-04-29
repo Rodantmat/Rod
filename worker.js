@@ -1,7 +1,7 @@
-// AlphaDog v1.2.93 - Everyday Phase 1 Baseline compatible worker
+// AlphaDog v1.2.94 - Phase 1 Route Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.93 - Everyday Phase 1 Baseline";
-const SYSTEM_CODENAME = "Everyday Phase 1 Baseline";
+const SYSTEM_VERSION = "v1.2.94 - Phase 1 Route Repair";
+const SYSTEM_CODENAME = "Phase 1 Route Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -6313,6 +6313,13 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+
+  // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
+  // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".
+  if (jobName === "schedule_everyday_phase1_once") return await scheduleEverydayPhase1Once({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_everyday_phase1_tick") return await runEverydayPhase1Tick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "check_everyday_phase1") return await checkEverydayPhase1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "everyday_phase1_all_direct") return await runEverydayPhase1AllDirect({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
