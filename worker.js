@@ -1,7 +1,7 @@
-// AlphaDog v1.2.90 - Incremental Temp Reset Rebuild compatible worker
+// AlphaDog v1.2.91 - Incremental Temp State Finalizer compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.90 - Incremental Temp Reset Rebuild";
-const SYSTEM_CODENAME = "Missing Ref Player Repair";
+const SYSTEM_VERSION = "v1.2.91 - Incremental Temp State Finalizer";
+const SYSTEM_CODENAME = "Incremental Temp State Finalizer";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -5540,29 +5540,62 @@ async function resetIncrementalTempTables(env, options = {}) {
   await ensureIncrementalBaseTables(env);
   const resetLogs = options.logs !== false;
   const resetSplits = options.splits !== false;
-  const meta = { reset_logs: resetLogs, reset_splits: resetSplits, method: 'DROP_AND_RECREATE_EMPTY_TEMP_TABLES' };
+  const meta = { reset_logs: resetLogs, reset_splits: resetSplits, method: 'DROP_IF_EXISTS_CREATE_IF_NOT_EXISTS_EMPTY_TEMP_TABLES' };
   if (resetLogs) {
     await env.DB.prepare(`DROP TABLE IF EXISTS player_game_logs_temp`).run();
-    await env.DB.prepare(`CREATE TABLE player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run();
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run();
   }
   if (resetSplits) {
     await env.DB.prepare(`DROP TABLE IF EXISTS ref_player_splits_temp`).run();
-    await env.DB.prepare(`CREATE TABLE ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run();
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run();
   }
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_temp_refresh_runs (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, run_after TEXT, current_step TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, output_json TEXT, error TEXT)`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_temp_certification_audits (audit_id TEXT PRIMARY KEY, grade TEXT NOT NULL, data_ok INTEGER NOT NULL, status TEXT NOT NULL, temp_refresh_request_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, counts_json TEXT, failures_json TEXT, warnings_json TEXT, output_json TEXT)`).run();
   return meta;
 }
 
+async function finalizeStaleIncrementalTaskState(env) {
+  await ensureIncrementalTempTables(env);
+  const audit = { task_runs_reset: 0, refresh_runs_reset: 0 };
+  try {
+    const taskRes = await env.DB.prepare(`
+      UPDATE task_runs
+      SET status='stale_reset', finished_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, 'v1.2.91 stale incremental task finalized before new incremental action')
+      WHERE status='running'
+        AND started_at < datetime('now','-15 minutes')
+        AND job_name IN (
+          'schedule_incremental_temp_refresh_once','run_incremental_temp_refresh_tick','check_incremental_temp_all',
+          'audit_incremental_temp_certification','promote_incremental_temp_to_live','clean_incremental_temp_tables',
+          'incremental_base_derived_metrics','check_incremental_derived_metrics'
+        )
+    `).run();
+    audit.task_runs_reset = Number(taskRes?.meta?.changes || 0);
+  } catch (err) { audit.task_runs_error = String(err?.message || err); }
+  try {
+    const refreshRes = await env.DB.prepare(`
+      UPDATE incremental_temp_refresh_runs
+      SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, 'v1.2.91 stale incremental temp refresh finalized')
+      WHERE status IN ('pending','running')
+        AND updated_at < datetime('now','-30 minutes')
+    `).run();
+    audit.refresh_runs_reset = Number(refreshRes?.meta?.changes || 0);
+  } catch (err) { audit.refresh_runs_error = String(err?.message || err); }
+  return audit;
+}
+
 async function scheduleIncrementalTempRefreshOnce(input, env) {
   await ensureIncrementalTempTables(env);
-  const existing = await env.DB.prepare(`SELECT request_id, status, current_step, run_after, updated_at FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-  if (existing) return { ok:true, data_ok:false, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'already_scheduled_or_running', existing_request:existing, live_tables_touched:false };
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
+  const existing = await env.DB.prepare(`SELECT request_id, status, current_step, run_after, updated_at, error FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  if (existing) return { ok:true, data_ok:false, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'already_scheduled_or_running', existing_request:existing, stale_finalizer, live_tables_touched:false };
   const requestId = crypto.randomUUID();
   const reset = await resetIncrementalTempTables(env);
-  await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, output_json) VALUES (?, 'pending', datetime('now', '+1 minute'), 'stage_logs', ?)`).bind(requestId, JSON.stringify({ live_tables_touched:false })).run();
-  return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_steps:['stage_game_logs_temp','stage_splits_temp','audit','promote','clean','derived','completed'], live_tables_touched:false, estimated_total_minutes:'5-10 minutes after first cron tick', note:'Daily incremental pipeline resets temp with DROP/CREATE, stages into temp, audits, promotes, cleans temp, then rebuilds derived metrics.' };
+  await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, output_json, error) VALUES (?, 'pending', datetime('now', '+1 minute'), 'stage_logs', ?, NULL)`).bind(requestId, JSON.stringify({ live_tables_touched:false, reset, stale_finalizer })).run();
+  return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_steps:['stage_game_logs_temp','stage_splits_temp','audit','promote','clean','derived','completed'], reset, stale_finalizer, live_tables_touched:false, estimated_total_minutes:'5-10 minutes after first cron tick', note:'Daily incremental pipeline resets temp with DROP/CREATE, stages into temp, audits, promotes, cleans temp, then rebuilds derived metrics.' };
 }
+
 async function dedupeIncrementalTempTables(env) {
   await ensureIncrementalTempTables(env);
   const before = [await staticTableCount(env, 'player_game_logs_temp'), await staticTableCount(env, 'ref_player_splits_temp')];
@@ -5621,10 +5654,11 @@ async function stageIncrementalSplitsTemp(input, env) {
 function nextIncrementalTempStep(step) { return ({ stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
 async function runIncrementalTempScheduledTick(input, env) {
   await ensureIncrementalTempTables(env);
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
   const row = await env.DB.prepare(`SELECT * FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') AND (run_after IS NULL OR run_after <= CURRENT_TIMESTAMP) ORDER BY created_at ASC LIMIT 1`).first().catch(() => null);
-  if (!row) return { ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', status:'idle_no_due_temp_refresh', trigger:input.trigger || 'manual', live_tables_touched:false };
+  if (!row) return { ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', status:'idle_no_due_temp_refresh', trigger:input.trigger || 'manual', stale_finalizer, live_tables_touched:false };
   const requestId = row.request_id; const step = row.current_step || 'stage_logs';
-  await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(requestId).run();
+  await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?`).bind(requestId).run();
   let result;
   try {
     if (step === 'stage_logs') result = await stageIncrementalGameLogsTemp(input, env);
@@ -5641,8 +5675,8 @@ async function runIncrementalTempScheduledTick(input, env) {
     }
     const nextStep = nextIncrementalTempStep(step); const complete = nextStep === 'completed';
     const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
-    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp stage, audit, protected promotion, temp cleanup, and derived rebuild finished.' : 'Daily incremental pipeline advanced one protected step. Minute cron will continue.' };
-    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp stage, audit, protected promotion, temp cleanup, and derived rebuild finished. Error state cleared on completion.' : 'Daily incremental pipeline advanced one protected step. Minute cron will continue.' };
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'failed_exception', error:String(err?.message || err), live_tables_touched:false };
@@ -5652,27 +5686,41 @@ async function runIncrementalTempScheduledTick(input, env) {
 }
 async function checkIncrementalTempData(input, env) {
   await ensureIncrementalTempTables(env);
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
   const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
   const duplicateTempLogs = await sampleRows(env, `SELECT player_id, game_pk, group_type, COUNT(*) AS rows_count FROM player_game_logs_temp GROUP BY player_id, game_pk, group_type HAVING COUNT(*) > 1 LIMIT 20`);
   const duplicateTempSplits = await sampleRows(env, `SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits_temp GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`);
   const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
   const dataOk = duplicateTempLogs.length === 0 && duplicateTempSplits.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || 'check_incremental_temp_all', version:SYSTEM_VERSION, status:dataOk?'pass':'needs_review', counts, quality:{ duplicate_temp_logs:duplicateTempLogs, duplicate_temp_splits:duplicateTempSplits }, latest_temp_refresh:latestRun, live_tables_touched:false };
+  return { ok:true, data_ok:dataOk, job:input.job || 'check_incremental_temp_all', version:SYSTEM_VERSION, status:dataOk?'pass':'needs_review', counts, quality:{ duplicate_temp_logs:duplicateTempLogs, duplicate_temp_splits:duplicateTempSplits }, latest_temp_refresh:latestRun, stale_finalizer, live_tables_touched:false };
 }
 async function auditIncrementalTempCertification(input, env) {
   await ensureIncrementalTempTables(env);
-  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-  const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, output_json FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
   const m = Object.fromEntries(counts.map(c => [c.table, Number(c.rows_count || 0)])); const failures=[]; const warnings=[];
-  if (!latestRun || latestRun.current_step !== 'audit') failures.push({ code:'TEMP_REFRESH_NOT_READY_FOR_AUDIT', latest_run:latestRun });
-  if ((m.player_game_logs_temp || 0) < 10000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:10000 });
-  if ((m.ref_player_splits_temp || 0) < 1000) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:1000 });
+  const isAuditStep = !!latestRun && latestRun.current_step === 'audit' && latestRun.status === 'running';
+  const isCompletedFinalState = !!latestRun && latestRun.status === 'completed' && latestRun.current_step === 'completed' && !latestRun.error;
+  const isPostCleanEmptyTemp = isCompletedFinalState && (m.player_game_logs_temp || 0) === 0 && (m.ref_player_splits_temp || 0) === 0;
+  if (!latestRun) failures.push({ code:'TEMP_REFRESH_NOT_FOUND' });
+  else if (latestRun.error) failures.push({ code:'TEMP_REFRESH_HAS_ERROR', error:latestRun.error, latest_run:{ request_id:latestRun.request_id, status:latestRun.status, current_step:latestRun.current_step, updated_at:latestRun.updated_at } });
+  else if (!isAuditStep && !isCompletedFinalState) failures.push({ code:'TEMP_REFRESH_NOT_READY_FOR_AUDIT', latest_run:{ request_id:latestRun.request_id, status:latestRun.status, current_step:latestRun.current_step, updated_at:latestRun.updated_at } });
+  if (isAuditStep) {
+    if ((m.player_game_logs_temp || 0) < 10000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:10000 });
+    if ((m.ref_player_splits_temp || 0) < 1000) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:1000 });
+  } else if (isCompletedFinalState) {
+    if ((m.player_game_logs || 0) < 10000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.player_game_logs, required_min:10000 });
+    if ((m.ref_player_splits || 0) < 1000) failures.push({ code:'LIVE_SPLIT_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.ref_player_splits, required_min:1000 });
+    if ((m.incremental_player_metrics || 0) < 700) failures.push({ code:'DERIVED_METRIC_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.incremental_player_metrics, required_min:700 });
+    if (isPostCleanEmptyTemp) warnings.push({ code:'TEMP_TABLES_EMPTY_AFTER_SUCCESSFUL_CLEAN', note:'Expected after completed pipeline. Audit used live table counts and final completed state.' });
+  }
   const duplicateTempLogs = await sampleRows(env, `SELECT player_id, game_pk, group_type, COUNT(*) AS rows_count FROM player_game_logs_temp GROUP BY player_id, game_pk, group_type HAVING COUNT(*) > 1 LIMIT 20`);
   const duplicateTempSplits = await sampleRows(env, `SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits_temp GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`);
   if (duplicateTempLogs.length) failures.push({ code:'DUPLICATE_TEMP_GAME_LOG_KEYS', rows:duplicateTempLogs });
   if (duplicateTempSplits.length) failures.push({ code:'DUPLICATE_TEMP_SPLIT_KEYS', rows:duplicateTempSplits });
   const grade = failures.length ? 'F' : warnings.length ? 'A' : 'A+'; const dataOk = grade === 'A+' || grade === 'A'; const auditId = crypto.randomUUID();
-  const result = { ok:true, data_ok:dataOk, job:input.job || 'audit_incremental_temp_certification', version:SYSTEM_VERSION, status:dataOk?'certified':'blocked', certification_grade:grade, promotion_allowed:dataOk, temp_refresh:latestRun, counts, quality:{ failures, warnings }, live_tables_touched:false };
+  const result = { ok:true, data_ok:dataOk, job:input.job || 'audit_incremental_temp_certification', version:SYSTEM_VERSION, status:dataOk?'certified':'blocked', certification_grade:grade, promotion_allowed:dataOk && isAuditStep, final_state_certified:dataOk && isCompletedFinalState, audit_mode:isCompletedFinalState?'COMPLETED_FINAL_STATE_LIVE_COUNTS':'ACTIVE_TEMP_PRE_PROMOTION', temp_refresh:latestRun ? { request_id:latestRun.request_id, status:latestRun.status, current_step:latestRun.current_step, created_at:latestRun.created_at, started_at:latestRun.started_at, finished_at:latestRun.finished_at, updated_at:latestRun.updated_at, error:latestRun.error || null } : null, counts, quality:{ failures, warnings }, stale_finalizer, live_tables_touched:false };
   await env.DB.prepare(`INSERT OR REPLACE INTO incremental_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, grade, dataOk?1:0, result.status, latestRun?.request_id || null, JSON.stringify(counts), JSON.stringify(failures), JSON.stringify(warnings), JSON.stringify(result)).run();
   return { ...result, audit_id:auditId };
 }
@@ -5682,24 +5730,26 @@ async function latestIncrementalTempAudit(env) {
 }
 async function promoteIncrementalTempToLive(input, env) {
   await ensureIncrementalTempTables(env);
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
   const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, finished_at, updated_at FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(()=>null);
   const audit = await latestIncrementalTempAudit(env);
-  if (!latestRun || latestRun.current_step !== 'promote') return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_temp_refresh_not_ready_for_promotion', latest_temp_refresh:latestRun, live_tables_touched:false };
-  if (!audit || !['A+','A'].includes(String(audit.grade || '')) || audit.temp_refresh_request_id !== latestRun.request_id) return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_no_valid_certified_audit', latest_audit:audit, live_tables_touched:false };
+  if (!latestRun || latestRun.current_step !== 'promote') return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_temp_refresh_not_ready_for_promotion', latest_temp_refresh:latestRun, stale_finalizer, live_tables_touched:false };
+  if (!audit || !['A+','A'].includes(String(audit.grade || '')) || audit.temp_refresh_request_id !== latestRun.request_id) return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_no_valid_certified_audit', latest_audit:audit, stale_finalizer, live_tables_touched:false };
   const before = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
   const dedupe = await dedupeIncrementalTempTables(env);
   const tempCounts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
   const logPromote = await env.DB.prepare(`INSERT OR REPLACE INTO player_game_logs SELECT * FROM player_game_logs_temp`).run();
   const splitPromote = await env.DB.prepare(`INSERT OR REPLACE INTO ref_player_splits SELECT * FROM ref_player_splits_temp`).run();
   const after = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
-  return { ok:true, data_ok:true, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'promoted_idempotent', certification_grade:audit.grade, audit_id:audit.audit_id, temp_refresh_request_id:latestRun.request_id, before_counts:before, temp_counts:tempCounts, after_counts:after, dedupe, promote_meta:{ game_logs:logPromote?.meta || null, splits:splitPromote?.meta || null }, live_tables_touched:true, note:'Certified incremental temp tables promoted with idempotent INSERT OR REPLACE after temp dedupe. Safe to rerun without UNIQUE crashes. Derived metrics rebuild is next step.' };
+  return { ok:true, data_ok:true, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'promoted_idempotent', certification_grade:audit.grade, audit_id:audit.audit_id, temp_refresh_request_id:latestRun.request_id, before_counts:before, temp_counts:tempCounts, after_counts:after, dedupe, stale_finalizer, promote_meta:{ game_logs:logPromote?.meta || null, splits:splitPromote?.meta || null }, live_tables_touched:true, note:'Certified incremental temp tables promoted with idempotent INSERT OR REPLACE after temp dedupe. Safe to rerun without UNIQUE crashes. Derived metrics rebuild is next step.' };
 }
 async function cleanIncrementalTempTables(input, env) {
   await ensureIncrementalTempTables(env);
+  const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
   const before=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
   const reset = await resetIncrementalTempTables(env);
   const after=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  return { ok:true, data_ok:true, job:input.job || 'clean_incremental_temp_tables', version:SYSTEM_VERSION, status:'temp_reset_cleaned', before_counts:before, after_counts:after, reset, live_tables_touched:false, note:'Incremental temp tables were cleaned by DROP + CREATE empty tables to avoid D1 timeout from large DELETE operations.' };
+  return { ok:true, data_ok:true, job:input.job || 'clean_incremental_temp_tables', version:SYSTEM_VERSION, status:'temp_reset_cleaned', before_counts:before, after_counts:after, reset, stale_finalizer, live_tables_touched:false, note:'Incremental temp tables were cleaned by DROP + CREATE empty tables to avoid D1 timeout from large DELETE operations.' };
 }
 
 
@@ -5827,7 +5877,7 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
   const skipped = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players p LEFT JOIN incremental_player_metrics m ON m.player_id = p.player_id AND m.season = ? WHERE p.active=1 AND m.player_id IS NULL`).bind(season).first().catch(() => ({ c: 0 }));
   const samples = await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, last10_hits, last10_ab, total_rbi, total_home_runs FROM incremental_player_metrics WHERE season=? ORDER BY games_logged DESC, player_name LIMIT 10`).bind(season).all();
 
-  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.86 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
+  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.91 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
 }
 async function repairMissingRefPlayers(input, env) {
   await ensureStaticReferenceTables(env);
@@ -6039,11 +6089,11 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
       check_mode:'DERIVED_LITE_D1_SAFE',
       counts,
       coverage:{ active_players:active, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] },
-      quality:{ failures, warnings, full_table_duplicate_scan_skipped:true, reason:'v1.2.86 avoids heavy D1 timeout scans for derived-only check' },
+      quality:{ failures, warnings, full_table_duplicate_scan_skipped:true, reason:'v1.2.91 avoids heavy D1 timeout scans for derived-only check' },
       samples,
       external_api_calls:0,
       live_tables_touched:false,
-      note:'v1.2.86 derived check is lightweight: count, coverage, null/zero integrity, role split, and 10-row sample only. No heavy full-table duplicate scan.'
+      note:'v1.2.91 derived check is lightweight: count, coverage, null/zero integrity, role split, and 10-row sample only. No heavy full-table duplicate scan.'
     };
   }
 
@@ -6091,7 +6141,7 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
   if (Number(gameCoverage?.players_with_logs || 0) < Number(activePlayers?.c || 0) && (target === 'game_logs' || target === 'all')) warnings.push('some_active_players_have_no_game_logs_this_season');
   if (target === 'all') warnings.push('all_incremental_check_is_lite; run individual checks for deeper duplicate scans');
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.86 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
+  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.91 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
 }
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
