@@ -1,7 +1,7 @@
-// AlphaDog v1.2.95 - Phase 1 Auto Runner compatible worker
+// AlphaDog v1.2.96 - Phase 2A Weather/Roof Context compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.95 - Phase 1 Auto Runner";
-const SYSTEM_CODENAME = "Phase 1 Auto Runner";
+const SYSTEM_VERSION = "v1.2.96 - Phase 2A Weather/Roof Context";
+const SYSTEM_CODENAME = "Phase 2A Weather/Roof Context";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -114,6 +114,8 @@ const JOB_DISPLAY_LABELS = {
   run_everyday_phase1_tick: "EVERYDAY PHASE 1 > Run Baseline Tick",
   check_everyday_phase1: "EVERYDAY PHASE 1 > Check Baseline",
   everyday_phase1_all_direct: "EVERYDAY PHASE 1 > Run Direct Baseline",
+  scrape_phase2_weather_context: "EVERYDAY PHASE 2A > Run Weather/Roof",
+  check_phase2_weather_context: "EVERYDAY PHASE 2A > Check Weather/Roof",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -675,6 +677,8 @@ const JOBS = {
   run_everyday_phase1_tick: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "advance one protected everyday phase 1 baseline pipeline step" },
   check_everyday_phase1: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi", "mlb_stats"], note: "check everyday phase 1 baseline readiness" },
   everyday_phase1_all_direct: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "direct one-request phase 1 baseline runner; use scheduled/tick path first on iPhone" },
+  scrape_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games", "ref_venues"], note: "Phase 2A today-slate weather/wind/roof context. OpenWeather primary, Open-Meteo no-key fallback. No scoring." },
+  check_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games"], note: "Check Phase 2A weather/wind/roof context coverage for today slate" },
 
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
@@ -6306,6 +6310,128 @@ async function checkEverydayPhase1(input, env) {
   return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE_AUTO_RUNNER", counts, expected_teams:expectedTeams, latest_phase1_run:latestRun, phase1_age_seconds:phase1AgeSeconds, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Today-slate only; no static remine, no incremental history, no Gemini, no weather/news, no final scoring. Lineups may be retry-later/non-blocking if not posted." };
 }
 
+
+const PHASE2_STADIUM_COORDS = {
+  ARI:{lat:33.4455, lon:-112.0667, roof:"RETRACTABLE"}, ATL:{lat:33.8908, lon:-84.4678, roof:"OPEN"}, BAL:{lat:39.2840, lon:-76.6217, roof:"OPEN"}, BOS:{lat:42.3467, lon:-71.0972, roof:"OPEN"}, CHC:{lat:41.9484, lon:-87.6553, roof:"OPEN"}, CWS:{lat:41.8300, lon:-87.6339, roof:"OPEN"}, CIN:{lat:39.0979, lon:-84.5082, roof:"OPEN"}, CLE:{lat:41.4962, lon:-81.6852, roof:"OPEN"}, COL:{lat:39.7561, lon:-104.9942, roof:"OPEN"}, DET:{lat:42.3390, lon:-83.0485, roof:"OPEN"}, HOU:{lat:29.7572, lon:-95.3555, roof:"RETRACTABLE"}, KC:{lat:39.0517, lon:-94.4803, roof:"OPEN"}, LAA:{lat:33.8003, lon:-117.8827, roof:"OPEN"}, LAD:{lat:34.0739, lon:-118.2400, roof:"OPEN"}, MIA:{lat:25.7781, lon:-80.2197, roof:"RETRACTABLE"}, MIL:{lat:43.0280, lon:-87.9712, roof:"RETRACTABLE"}, MIN:{lat:44.9817, lon:-93.2776, roof:"OPEN"}, NYM:{lat:40.7571, lon:-73.8458, roof:"OPEN"}, NYY:{lat:40.8296, lon:-73.9262, roof:"OPEN"}, OAK:{lat:38.5802, lon:-121.5133, roof:"OPEN"}, PHI:{lat:39.9061, lon:-75.1665, roof:"OPEN"}, PIT:{lat:40.4469, lon:-80.0057, roof:"OPEN"}, SD:{lat:32.7073, lon:-117.1566, roof:"OPEN"}, SEA:{lat:47.5914, lon:-122.3325, roof:"RETRACTABLE"}, SFG:{lat:37.7786, lon:-122.3893, roof:"OPEN"}, STL:{lat:38.6226, lon:-90.1928, roof:"OPEN"}, TB:{lat:27.9803, lon:-82.5067, roof:"OPEN"}, TEX:{lat:32.7473, lon:-97.0842, roof:"RETRACTABLE"}, TOR:{lat:43.6414, lon:-79.3894, roof:"RETRACTABLE"}, WSN:{lat:38.8730, lon:-77.0074, roof:"OPEN"}
+};
+
+async function ensureGameWeatherContextTable(env) {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS game_weather_context (" +
+    "context_id TEXT PRIMARY KEY, slate_date TEXT NOT NULL, game_id TEXT NOT NULL, away_team TEXT, home_team TEXT, " +
+    "venue_id INTEGER, venue_name TEXT, city TEXT, state TEXT, latitude REAL, longitude REAL, roof_type TEXT, roof_context TEXT, " +
+    "source_name TEXT, source_status TEXT, temp_f REAL, feels_like_f REAL, humidity_pct REAL, pressure_hpa REAL, wind_speed_mph REAL, wind_direction_deg REAL, " +
+    "precipitation_1h_in REAL, cloud_pct REAL, weather_risk TEXT, fetched_at TEXT, raw_json TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+  ).run();
+}
+
+function phase2WeatherRisk(row) {
+  const wind = Number(row.wind_speed_mph || 0);
+  const precip = Number(row.precipitation_1h_in || 0);
+  const roof = String(row.roof_type || '').toUpperCase();
+  if (roof === 'RETRACTABLE' && (precip > 0.01 || wind >= 15)) return 'ROOF_DEPENDENT_WEATHER_ELEVATED';
+  if (precip > 0.05) return 'PRECIP_RISK';
+  if (wind >= 18) return 'HIGH_WIND';
+  if (wind >= 12) return 'MODERATE_WIND';
+  return 'NORMAL';
+}
+
+function phase2RoofContext(teamId, roofType) {
+  const roof = String(roofType || PHASE2_STADIUM_COORDS[String(teamId || '').toUpperCase()]?.roof || 'UNKNOWN').toUpperCase();
+  if (roof === 'RETRACTABLE') return 'RETRACTABLE_ROOF_STATUS_NOT_AUTOMATICALLY_CONFIRMED';
+  if (roof === 'DOME' || roof === 'FIXED_DOME') return 'FIXED_ROOF_WEATHER_LOW_DIRECT_IMPACT';
+  if (roof === 'OPEN') return 'OPEN_AIR_WEATHER_DIRECT_IMPACT';
+  return 'ROOF_CONTEXT_UNKNOWN';
+}
+
+async function fetchOpenWeatherContext(env, loc) {
+  const key = env.OPENWEATHER_API_KEY;
+  if (!key) return { ok:false, missing_key:true, error:'OPENWEATHER_API_KEY missing' };
+  const url = 'https://api.openweathermap.org/data/2.5/weather?lat=' + encodeURIComponent(loc.lat) + '&lon=' + encodeURIComponent(loc.lon) + '&appid=' + encodeURIComponent(key) + '&units=imperial';
+  const res = await fetchJsonWithRetry(url, {}, 2, 'openweather_current');
+  if (!res.ok) return { ok:false, error:res.error || 'openweather_failed' };
+  const d = res.data || {};
+  return { ok:true, data:{
+    source_name:'openweather_current', source_status:'primary_success',
+    temp_f: d.main?.temp ?? null, feels_like_f: d.main?.feels_like ?? null, humidity_pct: d.main?.humidity ?? null, pressure_hpa: d.main?.pressure ?? null,
+    wind_speed_mph: d.wind?.speed ?? null, wind_direction_deg: d.wind?.deg ?? null, precipitation_1h_in: d.rain?.['1h'] ?? d.snow?.['1h'] ?? 0, cloud_pct: d.clouds?.all ?? null,
+    raw_json: JSON.stringify({ provider:'openweather', sample:{ weather:d.weather, main:d.main, wind:d.wind, rain:d.rain, snow:d.snow, clouds:d.clouds } })
+  }};
+}
+
+async function fetchOpenMeteoContext(loc) {
+  const current = 'temperature_2m,relative_humidity_2m,precipitation,rain,pressure_msl,cloud_cover,wind_speed_10m,wind_direction_10m';
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + encodeURIComponent(loc.lat) + '&longitude=' + encodeURIComponent(loc.lon) + '&current=' + current + '&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch';
+  const res = await fetchJsonWithRetry(url, {}, 2, 'open_meteo_current');
+  if (!res.ok) return { ok:false, error:res.error || 'open_meteo_failed' };
+  const c = res.data?.current || {};
+  return { ok:true, data:{
+    source_name:'open_meteo_current_no_key', source_status:'fallback_success',
+    temp_f: c.temperature_2m ?? null, feels_like_f: null, humidity_pct: c.relative_humidity_2m ?? null, pressure_hpa: c.pressure_msl ?? null,
+    wind_speed_mph: c.wind_speed_10m ?? null, wind_direction_deg: c.wind_direction_10m ?? null, precipitation_1h_in: c.precipitation ?? c.rain ?? 0, cloud_pct: c.cloud_cover ?? null,
+    raw_json: JSON.stringify({ provider:'open-meteo', current:c })
+  }};
+}
+
+async function scrapePhase2WeatherContext(input, env) {
+  await ensureStaticReferenceTables(env).catch(()=>null);
+  await ensureGameWeatherContextTable(env);
+  const slate = resolveSlateDate(input || {});
+  const d = String(input?.slate_date || slate.slate_date);
+  const games = (await env.DB.prepare('SELECT game_id, game_date, away_team, home_team, start_time_utc, venue FROM games WHERE game_date=? ORDER BY game_id').bind(d).all()).results || [];
+  const venueRows = (await env.DB.prepare('SELECT * FROM ref_venues').all().catch(()=>({results:[]}))).results || [];
+  const venueByTeam = new Map(venueRows.map(v => [String(v.team_id || '').toUpperCase(), v]));
+  const warnings = [], errors = [], samples = [];
+  let inserted = 0, openWeatherCount = 0, openMeteoCount = 0, skipped = 0;
+  const stmt = env.DB.prepare(
+    'INSERT INTO game_weather_context (context_id, slate_date, game_id, away_team, home_team, venue_id, venue_name, city, state, latitude, longitude, roof_type, roof_context, source_name, source_status, temp_f, feels_like_f, humidity_pct, pressure_hpa, wind_speed_mph, wind_direction_deg, precipitation_1h_in, cloud_pct, weather_risk, fetched_at, raw_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP) ' +
+    'ON CONFLICT(context_id) DO UPDATE SET away_team=excluded.away_team, home_team=excluded.home_team, venue_id=excluded.venue_id, venue_name=excluded.venue_name, city=excluded.city, state=excluded.state, latitude=excluded.latitude, longitude=excluded.longitude, roof_type=excluded.roof_type, roof_context=excluded.roof_context, source_name=excluded.source_name, source_status=excluded.source_status, temp_f=excluded.temp_f, feels_like_f=excluded.feels_like_f, humidity_pct=excluded.humidity_pct, pressure_hpa=excluded.pressure_hpa, wind_speed_mph=excluded.wind_speed_mph, wind_direction_deg=excluded.wind_direction_deg, precipitation_1h_in=excluded.precipitation_1h_in, cloud_pct=excluded.cloud_pct, weather_risk=excluded.weather_risk, fetched_at=CURRENT_TIMESTAMP, raw_json=excluded.raw_json, updated_at=CURRENT_TIMESTAMP'
+  );
+  for (const g of games) {
+    const home = String(g.home_team || '').toUpperCase();
+    const v = venueByTeam.get(home) || {};
+    const coords = PHASE2_STADIUM_COORDS[home] || null;
+    if (!coords) { skipped++; errors.push({ game_id:g.game_id, home_team:home, error:'missing_static_coordinates' }); continue; }
+    let fetched = await fetchOpenWeatherContext(env, { lat:coords.lat, lon:coords.lon });
+    if (!fetched.ok) {
+      if (fetched.missing_key) warnings.push('OPENWEATHER_API_KEY_MISSING_USED_OPEN_METEO_FALLBACK');
+      else warnings.push('OPENWEATHER_FAILED_USED_OPEN_METEO_FALLBACK:' + home);
+      fetched = await fetchOpenMeteoContext({ lat:coords.lat, lon:coords.lon });
+    }
+    if (!fetched.ok) { skipped++; errors.push({ game_id:g.game_id, home_team:home, error:fetched.error || 'weather_fetch_failed' }); continue; }
+    const data = fetched.data || {};
+    if (data.source_name === 'openweather_current') openWeatherCount++; else openMeteoCount++;
+    const roofType = String(coords.roof || v.roof_status || 'UNKNOWN').toUpperCase();
+    const row = { context_id:d + '|' + g.game_id + '|weather', slate_date:d, game_id:g.game_id, away_team:g.away_team, home_team:home, venue_id:v.venue_id ?? null, venue_name:v.mlb_venue_name || g.venue || null, city:v.city || null, state:v.state || null, latitude:coords.lat, longitude:coords.lon, roof_type:roofType, roof_context:phase2RoofContext(home, roofType), ...data };
+    row.weather_risk = phase2WeatherRisk(row);
+    const res = await stmt.bind(row.context_id, row.slate_date, row.game_id, row.away_team, row.home_team, row.venue_id, row.venue_name, row.city, row.state, row.latitude, row.longitude, row.roof_type, row.roof_context, row.source_name, row.source_status, row.temp_f, row.feels_like_f, row.humidity_pct, row.pressure_hpa, row.wind_speed_mph, row.wind_direction_deg, row.precipitation_1h_in, row.cloud_pct, row.weather_risk, row.raw_json).run();
+    inserted += Number(res?.meta?.changes || 0);
+    if (samples.length < 5) samples.push({ game_id:row.game_id, home_team:row.home_team, venue_name:row.venue_name, source_name:row.source_name, temp_f:row.temp_f, wind_speed_mph:row.wind_speed_mph, wind_direction_deg:row.wind_direction_deg, roof_type:row.roof_type, weather_risk:row.weather_risk });
+  }
+  const check = await checkPhase2WeatherContext({ ...(input || {}), job:'check_phase2_weather_context', slate_date:d }, env);
+  return { ok:true, data_ok:check.data_ok, job:input.job || 'scrape_phase2_weather_context', version:SYSTEM_VERSION, status:check.data_ok ? 'pass' : 'pass_with_warnings', slate_date:d, source_policy:'OPENWEATHER_API_KEY primary; Open-Meteo no-key fallback', games_checked:games.length, inserted:{ game_weather_context:inserted }, source_counts:{ openweather_current:openWeatherCount, open_meteo_current_no_key:openMeteoCount }, skipped_count:skipped, warnings:[...new Set(warnings)], errors, samples, final_check:check, live_tables_touched:true, note:'Phase 2A weather/roof context only. Today slate only. No scoring, no Gemini, no static/incremental remine. Roof open/closed is not auto-confirmed; retractable parks are marked roof-dependent.' };
+}
+
+async function checkPhase2WeatherContext(input, env) {
+  await ensureGameWeatherContextTable(env);
+  const slate = resolveSlateDate(input || {});
+  const d = String(input?.slate_date || slate.slate_date);
+  const games = await countScalar(env, 'SELECT COUNT(*) AS c FROM games WHERE game_date=?', d).catch(()=>0);
+  const weatherRows = await countScalar(env, 'SELECT COUNT(*) AS c FROM game_weather_context WHERE slate_date=?', d).catch(()=>0);
+  const staleRows = await countScalar(env, "SELECT COUNT(*) AS c FROM game_weather_context WHERE slate_date=? AND updated_at < datetime('now','-8 hours')", d).catch(()=>0);
+  const missing = (await env.DB.prepare('SELECT g.game_id, g.away_team, g.home_team FROM games g LEFT JOIN game_weather_context w ON w.game_id=g.game_id AND w.slate_date=g.game_date WHERE g.game_date=? AND w.game_id IS NULL ORDER BY g.game_id LIMIT 30').bind(d).all().catch(()=>({results:[]}))).results || [];
+  const sourceSplit = (await env.DB.prepare('SELECT source_name, COUNT(*) AS rows_count FROM game_weather_context WHERE slate_date=? GROUP BY source_name ORDER BY rows_count DESC').bind(d).all().catch(()=>({results:[]}))).results || [];
+  const riskSplit = (await env.DB.prepare('SELECT weather_risk, COUNT(*) AS rows_count FROM game_weather_context WHERE slate_date=? GROUP BY weather_risk ORDER BY rows_count DESC').bind(d).all().catch(()=>({results:[]}))).results || [];
+  const samples = (await env.DB.prepare('SELECT game_id, home_team, venue_name, source_name, temp_f, wind_speed_mph, wind_direction_deg, precipitation_1h_in, roof_type, roof_context, weather_risk, updated_at FROM game_weather_context WHERE slate_date=? ORDER BY game_id LIMIT 10').bind(d).all().catch(()=>({results:[]}))).results || [];
+  const failures = [], warnings = [];
+  if (games <= 0) failures.push('GAMES_EMPTY_RUN_PHASE1_FIRST');
+  if (weatherRows < games) failures.push('WEATHER_CONTEXT_MISSING_GAMES');
+  if (staleRows > 0) warnings.push('WEATHER_CONTEXT_STALE_ROWS_OVER_8H');
+  if (sourceSplit.some(r => String(r.source_name || '').includes('open_meteo'))) warnings.push('OPEN_METEO_FALLBACK_USED_FOR_SOME_OR_ALL_GAMES');
+  const dataOk = failures.length === 0;
+  return { ok:true, data_ok:dataOk, job:input.job || 'check_phase2_weather_context', version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? 'pass_with_warnings' : 'pass') : 'fail', slate_date:d, check_mode:'EVERYDAY_PHASE2A_WEATHER_ROOF_CONTEXT', counts:{ games, weather_context_rows:weatherRows, stale_rows_over_8h:staleRows }, source_split:sourceSplit, risk_split:riskSplit, missing_games:missing, samples, quality:{ failures, warnings }, live_tables_touched:false, note:'Phase 2A validates weather/wind/roof context only. Roof state is not confirmed automatically; retractable parks remain roof-dependent until a roof-status source is added.' };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -6338,6 +6464,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_everyday_phase1_tick") return await runEverydayPhase1Tick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_everyday_phase1") return await checkEverydayPhase1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "everyday_phase1_all_direct") return await runEverydayPhase1Direct({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+
+  if (jobName === "scrape_phase2_weather_context") return await scrapePhase2WeatherContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "check_phase2_weather_context") return await checkPhase2WeatherContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);

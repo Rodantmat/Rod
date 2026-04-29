@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.95 - Phase 1 Auto Runner</div>
+<div id="versionTag">v1.2.96 - Phase 2A Weather/Roof Context</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -150,6 +150,10 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('EVERYDAY PHASE 1 > Check Baseline','check_everyday_phase1')">Check Baseline</button>
 <button class="btn blue" onclick="runJobButton('EVERYDAY PHASE 1 > Run Direct Baseline','everyday_phase1_all_direct')">Run Direct Baseline</button>
 </div><div class="small">Phase 1 baseline: board freshness, games, markets, starters, bullpens, lineups, usage, and Hits/RBI/RFI candidate readiness. No weather/news/scoring yet. Use Schedule + Tick for safest iPhone testing.</div></div>
+<div class="card"><h2>Everyday Phase 2A</h2><div class="grid">
+<button onclick="runJobButton('EVERYDAY PHASE 2A > Run Weather/Roof','scrape_phase2_weather_context')">Run Weather/Roof</button>
+<button onclick="runJobButton('EVERYDAY PHASE 2A > Check Weather/Roof','check_phase2_weather_context')">Check Weather/Roof</button>
+</div><div class="small">Phase 2A weather/wind/roof context: OpenWeather primary using OPENWEATHER_API_KEY, Open-Meteo no-key fallback. Today slate only. No Gemini and no scoring.</div></div>
 
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
@@ -570,7 +574,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.95 - Phase 1 Auto Runner",
+    version: "v1.2.96 - Phase 2A Weather/Roof Context",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
