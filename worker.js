@@ -1,7 +1,7 @@
-// AlphaDog v1.3.01 - Phase 2C-I Current Market Context compatible worker
+// AlphaDog v1.3.02 - Phase 2C-I Market Context Chunk Runner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.01 - Phase 2C-I Current Market Context";
-const SYSTEM_CODENAME = "Phase 2C-I Current Market Context";
+const SYSTEM_VERSION = "v1.3.02 - Phase 2C-I Market Context Chunk Runner";
+const SYSTEM_CODENAME = "Phase 2C-I Market Context Chunk Runner";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -685,8 +685,8 @@ const JOBS = {
   check_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games"], note: "Check Phase 2A weather/wind/roof context coverage for today slate" },
   scrape_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Phase 2B today-slate lineup confirmation with last-available lineup fallback, top-order completeness, and late-scratch shell. No scoring and no Gemini." },
   check_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Check Phase 2B lineup confirmation, last-lineup fallback, and late-scratch shell readiness" },
-  scrape_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "prizepicks_market_snapshots", "mlb_stats"], note: "Phase 2C-I current PrizePicks board market/projection context from latest mlb_stats capture window. No scoring, no external odds, no Gemini." },
-  check_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "prizepicks_market_snapshots", "mlb_stats"], note: "Check Phase 2C-I current PrizePicks market/projection context readiness" },
+  scrape_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "phase2c_market_context_runs", "mlb_stats"], note: "Phase 2C-I current PrizePicks board market/projection context from latest mlb_stats capture window, processed in bounded chunks. No scoring, no external odds, no Gemini." },
+  check_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "phase2c_market_context_runs", "mlb_stats"], note: "Check Phase 2C-I current PrizePicks market/projection context readiness and chunk runner state" },
 
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
@@ -6715,6 +6715,12 @@ function phase2cIsSupportedSingle(row) {
   return 1;
 }
 
+function phase2cChunkSize(input) {
+  const requested = Number(input?.chunk_size || input?.limit || 400);
+  if (!Number.isFinite(requested)) return 400;
+  return Math.max(100, Math.min(500, Math.floor(requested)));
+}
+
 async function ensurePhase2cMarketContextTables(env) {
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS prizepicks_current_market_context (
@@ -6748,60 +6754,92 @@ async function ensurePhase2cMarketContextTables(env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_ctx_board_updated ON prizepicks_current_market_context(board_updated_at)`).run();
 
   await env.DB.prepare(`
-    CREATE TABLE IF NOT EXISTS prizepicks_market_snapshots (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      snapshot_run_id TEXT NOT NULL,
-      projection_key TEXT NOT NULL,
-      line_id TEXT,
-      player_name TEXT,
-      team TEXT,
-      opponent TEXT,
-      stat_type TEXT,
-      line_score REAL,
-      odds_type TEXT,
-      is_promo INTEGER DEFAULT 0,
-      start_time TEXT,
+    CREATE TABLE IF NOT EXISTS phase2c_market_context_runs (
+      run_id TEXT PRIMARY KEY,
       slate_date TEXT,
-      board_updated_at TEXT,
-      captured_at TEXT NOT NULL,
-      source TEXT DEFAULT 'mlb_stats',
-      source_confidence TEXT DEFAULT 'HIGH',
-      identity_method TEXT DEFAULT 'line_id',
-      is_supported_single INTEGER DEFAULT 1
+      latest_board_updated_at TEXT,
+      board_window_rule TEXT,
+      total_rows INTEGER DEFAULT 0,
+      processed_rows INTEGER DEFAULT 0,
+      remaining_rows INTEGER DEFAULT 0,
+      chunk_size INTEGER DEFAULT 400,
+      status TEXT DEFAULT 'partial_continue',
+      started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      supersede_done INTEGER DEFAULT 0,
+      warnings_json TEXT DEFAULT '[]'
     )
   `).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_snap_run ON prizepicks_market_snapshots(snapshot_run_id)`).run();
-  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_snap_projection ON prizepicks_market_snapshots(projection_key)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_phase2c_runs_status ON phase2c_market_context_runs(status, slate_date, latest_board_updated_at)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_phase2c_runs_updated ON phase2c_market_context_runs(updated_at)`).run();
+}
+
+async function phase2cLatestBoardMeta(env) {
+  const latest = await env.DB.prepare(`SELECT MAX(updated_at) AS latest_updated_at FROM mlb_stats`).first();
+  const latestUpdatedAt = latest?.latest_updated_at || null;
+  if (!latestUpdatedAt) return { latestUpdatedAt: null, totalRows: 0, oldestInWindow: null, newestInWindow: null };
+  const meta = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows, MIN(updated_at) AS oldest_in_window, MAX(updated_at) AS newest_in_window
+    FROM mlb_stats
+    WHERE updated_at >= datetime(?, '-10 minutes')
+  `).bind(latestUpdatedAt).first();
+  return {
+    latestUpdatedAt,
+    totalRows: Number(meta?.total_rows || 0),
+    oldestInWindow: meta?.oldest_in_window || null,
+    newestInWindow: meta?.newest_in_window || null
+  };
+}
+
+async function phase2cGetOrStartRun(env, slateDate, latestUpdatedAt, totalRows, chunkSize, forceNew) {
+  if (!forceNew) {
+    const existing = await env.DB.prepare(`
+      SELECT * FROM phase2c_market_context_runs
+      WHERE slate_date=? AND latest_board_updated_at=? AND status IN ('started','partial_continue')
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).bind(slateDate, latestUpdatedAt).first();
+    if (existing?.run_id) return { run: existing, is_new: false };
+  }
+  const runId = crypto.randomUUID();
+  await env.DB.prepare(`
+    UPDATE prizepicks_current_market_context
+    SET is_current=0, is_stale=1, status='SUPERSEDED', updated_at=CURRENT_TIMESTAMP
+    WHERE is_current=1
+  `).run();
+  await env.DB.prepare(`
+    INSERT INTO phase2c_market_context_runs (
+      run_id, slate_date, latest_board_updated_at, board_window_rule, total_rows, processed_rows, remaining_rows,
+      chunk_size, status, started_at, updated_at, supersede_done
+    ) VALUES (?, ?, ?, 'mlb_stats.updated_at >= latest updated_at minus 10 minutes', ?, 0, ?, ?, 'started', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+  `).bind(runId, slateDate, latestUpdatedAt, totalRows, totalRows, chunkSize).run();
+  const run = await env.DB.prepare(`SELECT * FROM phase2c_market_context_runs WHERE run_id=?`).bind(runId).first();
+  return { run, is_new: true };
 }
 
 async function scrapePhase2cMarketContext(input = {}, env) {
   const slateDate = input.slate_date || resolveSlateDate(input).slate_date;
   const job = input.job || "scrape_phase2c_market_context";
   const capturedAt = new Date().toISOString();
-  const snapshotRunId = crypto.randomUUID();
+  const chunkSize = phase2cChunkSize(input);
+  const forceNew = Boolean(input.force_new || input.restart || input.reset_run);
   await ensurePhase2cMarketContextTables(env);
-
-  const latest = await env.DB.prepare(`SELECT MAX(updated_at) AS latest_updated_at FROM mlb_stats`).first();
-  const latestUpdatedAt = latest?.latest_updated_at || null;
-  if (!latestUpdatedAt) {
-    return { ok: false, data_ok: false, job, version: SYSTEM_VERSION, phase: "Phase 2C-I", status: "warn_empty_board", source_table: "mlb_stats", active_window_rule: "latest updated_at minus 10 minutes", slate_date: slateDate, rows_read: 0, active_rows_upserted: 0, warnings: ["mlb_stats is empty or has no updated_at values"], note: "No scoring, no external odds, no Gemini, no cron." };
+  const boardMeta = await phase2cLatestBoardMeta(env);
+  if (!boardMeta.latestUpdatedAt || boardMeta.totalRows <= 0) {
+    return { ok: false, data_ok: false, job, version: SYSTEM_VERSION, phase: "Phase 2C-I Market Context Chunk Runner", status: "warn_empty_board", source_table: "mlb_stats", active_window_rule: "latest updated_at minus 10 minutes", slate_date: slateDate, rows_read: 0, rows_processed_this_chunk: 0, warnings: ["mlb_stats is empty or latest capture window returned zero rows"], note: "No scoring, no external odds, no Gemini, no cron." };
   }
-
-  const boardRes = await env.DB.prepare(`
+  const { run, is_new } = await phase2cGetOrStartRun(env, slateDate, boardMeta.latestUpdatedAt, boardMeta.totalRows, chunkSize, forceNew);
+  const offset = Number(run?.processed_rows || 0);
+  const rowsRes = await env.DB.prepare(`
     SELECT line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, updated_at
     FROM mlb_stats
     WHERE updated_at >= datetime(?, '-10 minutes')
-    ORDER BY updated_at DESC, start_time ASC, player_name ASC, stat_type ASC
-  `).bind(latestUpdatedAt).all();
-  const rows = Array.isArray(boardRes?.results) ? boardRes.results : [];
-
-  await env.DB.prepare(`
-    UPDATE prizepicks_current_market_context
-    SET is_current=0, is_stale=1, status='SUPERSEDED', updated_at=CURRENT_TIMESTAMP
-    WHERE is_current=1
-  `).run();
-
-  const upsertStmt = env.DB.prepare(`
+    ORDER BY updated_at DESC, start_time ASC, player_name ASC, stat_type ASC, line_id ASC
+    LIMIT ? OFFSET ?
+  `).bind(boardMeta.latestUpdatedAt, chunkSize, offset).all();
+  const rows = Array.isArray(rowsRes?.results) ? rowsRes.results : [];
+  const upsertSql = `
     INSERT INTO prizepicks_current_market_context (
       projection_key, line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo,
       start_time, slate_date, board_updated_at, captured_at, is_current, is_stale, source, source_confidence,
@@ -6828,26 +6866,18 @@ async function scrapePhase2cMarketContext(input = {}, env) {
       is_supported_single=excluded.is_supported_single,
       status='ACTIVE',
       updated_at=CURRENT_TIMESTAMP
-  `);
-  const snapStmt = env.DB.prepare(`
-    INSERT INTO prizepicks_market_snapshots (
-      snapshot_run_id, projection_key, line_id, player_name, team, opponent, stat_type, line_score, odds_type,
-      is_promo, start_time, slate_date, board_updated_at, captured_at, source, source_confidence, identity_method, is_supported_single
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mlb_stats', ?, ?, ?)
-  `);
-
-  let activeRowsUpserted = 0;
-  let snapshotRowsInserted = 0;
+  `;
   let lineIdRows = 0;
   let fallbackRows = 0;
   let supportedSingleRows = 0;
   const warnings = [];
+  const batch = [];
   for (const r of rows) {
     const ident = phase2cProjectionKey(r);
     const supported = phase2cIsSupportedSingle(r);
     if (ident.identity_method === "line_id") lineIdRows++; else fallbackRows++;
     if (supported) supportedSingleRows++;
-    const bind = [
+    batch.push(env.DB.prepare(upsertSql).bind(
       ident.projection_key,
       phase2cCleanText(r.line_id) || null,
       phase2cCleanText(r.player_name) || null,
@@ -6859,20 +6889,24 @@ async function scrapePhase2cMarketContext(input = {}, env) {
       Number(r.is_promo || 0),
       phase2cCleanText(r.start_time) || null,
       slateDate,
-      phase2cCleanText(r.updated_at) || latestUpdatedAt,
+      phase2cCleanText(r.updated_at) || boardMeta.latestUpdatedAt,
       capturedAt,
       ident.source_confidence,
       ident.identity_method,
       supported
-    ];
-    const up = await upsertStmt.bind(...bind).run();
-    activeRowsUpserted += Number(up?.meta?.changes || 0) > 0 ? 1 : 0;
-    await snapStmt.bind(snapshotRunId, ...bind).run();
-    snapshotRowsInserted++;
+    ));
   }
+  if (batch.length) await env.DB.batch(batch);
+  const processedRows = Math.min(offset + rows.length, boardMeta.totalRows);
+  const remainingRows = Math.max(boardMeta.totalRows - processedRows, 0);
+  const status = remainingRows > 0 ? "partial_continue" : "completed";
+  await env.DB.prepare(`
+    UPDATE phase2c_market_context_runs
+    SET processed_rows=?, remaining_rows=?, chunk_size=?, status=?, updated_at=CURRENT_TIMESTAMP, completed_at=CASE WHEN ?='completed' THEN CURRENT_TIMESTAMP ELSE completed_at END
+    WHERE run_id=?
+  `).bind(processedRows, remainingRows, chunkSize, status, status, run.run_id).run();
   if (fallbackRows > 0) warnings.push(`${fallbackRows} rows used fallback_composite identity because line_id was missing.`);
-  if (rows.length === 0) warnings.push("Latest mlb_stats capture window returned zero rows.");
-
+  if (rows.length === 0 && remainingRows > 0) warnings.push("Chunk returned zero rows before run completion. Review latest board window ordering/offset.");
   const statCounts = await env.DB.prepare(`
     SELECT stat_type, COUNT(*) AS rows_count
     FROM prizepicks_current_market_context
@@ -6889,48 +6923,46 @@ async function scrapePhase2cMarketContext(input = {}, env) {
     ORDER BY rows_count DESC, odds_type
     LIMIT 20
   `).all();
-  const summary = await env.DB.prepare(`
-    SELECT
-      COUNT(*) AS active_rows,
-      COUNT(DISTINCT player_name || '|' || team) AS unique_players,
-      COUNT(DISTINCT CASE WHEN UPPER(TRIM(team)) < UPPER(TRIM(opponent)) THEN UPPER(TRIM(team)) || '_' || UPPER(TRIM(opponent)) ELSE UPPER(TRIM(opponent)) || '_' || UPPER(TRIM(team)) END || '|' || COALESCE(start_time,'')) AS unique_games,
-      SUM(CASE WHEN line_id IS NULL OR TRIM(line_id)='' THEN 1 ELSE 0 END) AS missing_line_id,
-      SUM(CASE WHEN is_supported_single=1 THEN 1 ELSE 0 END) AS supported_single_rows
-    FROM prizepicks_current_market_context
-    WHERE is_current=1
-  `).first();
   const sample = await env.DB.prepare(`
     SELECT projection_key, line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, slate_date, board_updated_at, source_confidence, identity_method, is_supported_single, status
     FROM prizepicks_current_market_context
     WHERE is_current=1
     ORDER BY board_updated_at DESC, start_time ASC, player_name ASC
-    LIMIT 25
+    LIMIT 20
   `).all();
-
   return {
-    ok: rows.length > 0,
-    data_ok: rows.length > 0,
+    ok: rows.length > 0 || status === "completed",
+    data_ok: rows.length > 0 || status === "completed",
     job,
     version: SYSTEM_VERSION,
-    phase: "Phase 2C-I Current Market Context",
-    status: rows.length > 0 ? "pass" : "warn_empty_board_window",
+    phase: "Phase 2C-I Market Context Chunk Runner",
+    status,
     source_table: "mlb_stats",
     active_context_table: "prizepicks_current_market_context",
-    optional_audit_table: "prizepicks_market_snapshots",
+    run_state_table: "phase2c_market_context_runs",
     slate_date: slateDate,
-    latest_mlb_stats_updated_at: latestUpdatedAt,
-    active_window_rule: "mlb_stats.updated_at >= latest updated_at minus 10 minutes",
-    snapshot_run_id: snapshotRunId,
-    rows_read: rows.length,
-    active_rows_upserted: activeRowsUpserted,
-    snapshot_rows_inserted: snapshotRowsInserted,
-    identity: { line_id_rows: lineIdRows, fallback_composite_rows: fallbackRows },
-    current_context_summary: summary || {},
-    stat_type_counts: statCounts.results || [],
-    odds_type_counts: oddsCounts.results || [],
+    run_id: run.run_id,
+    new_run_started: is_new,
+    latest_board_batch_window: {
+      rule: "mlb_stats.updated_at >= latest updated_at minus 10 minutes",
+      oldest_updated_at: boardMeta.oldestInWindow,
+      latest_updated_at: boardMeta.newestInWindow,
+      total_rows: boardMeta.totalRows
+    },
+    chunk: {
+      chunk_size: chunkSize,
+      offset_started_at: offset,
+      rows_processed_this_chunk: rows.length,
+      processed_rows: processedRows,
+      remaining_rows: remainingRows
+    },
+    identity_this_chunk: { line_id_rows: lineIdRows, fallback_composite_rows: fallbackRows, supported_single_rows: supportedSingleRows },
+    stat_type_counts_current_so_far: statCounts.results || [],
+    odds_type_counts_current_so_far: oddsCounts.results || [],
     sample_current_rows: sample.results || [],
     warnings,
-    note: "Current PrizePicks board rows are the active market/projection source. Snapshot history is audit-only. No scoring, no external odds, no Gemini, no cron."
+    next_action: status === "partial_continue" ? "Press EVERYDAY PHASE 2C > Run Market Context again until status is completed." : "Run EVERYDAY PHASE 2C > Check Market Context.",
+    note: "Current PrizePicks board rows are the active market/projection source. Snapshot/history writes are deferred. No scoring, no external odds, no Gemini, no cron."
   };
 }
 
@@ -6938,7 +6970,13 @@ async function checkPhase2cMarketContext(input = {}, env) {
   const slateDate = input.slate_date || resolveSlateDate(input).slate_date;
   const job = input.job || "check_phase2c_market_context";
   await ensurePhase2cMarketContextTables(env);
-
+  const boardMeta = await phase2cLatestBoardMeta(env);
+  const run = await env.DB.prepare(`
+    SELECT * FROM phase2c_market_context_runs
+    WHERE slate_date=?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).bind(slateDate).first();
   const summary = await env.DB.prepare(`
     SELECT
       COUNT(*) AS total_context_rows,
@@ -6986,32 +7024,50 @@ async function checkPhase2cMarketContext(input = {}, env) {
     ORDER BY board_updated_at DESC, start_time ASC, player_name ASC
     LIMIT 25
   `).all();
-  const snapshotCount = await env.DB.prepare(`SELECT COUNT(*) AS snapshot_rows FROM prizepicks_market_snapshots`).first();
   const activeRows = Number(summary?.active_rows || 0);
   const missingCritical = ["active_missing_player", "active_missing_team", "active_missing_opponent", "active_missing_stat_type", "active_missing_line_score", "active_missing_start_time"].reduce((n, k) => n + Number(summary?.[k] || 0), 0);
+  const runStatus = run?.status || "not_started";
   const warnings = [];
   if (activeRows <= 0) warnings.push("No active current market context rows found. Run EVERYDAY PHASE 2C > Run Market Context.");
+  if (runStatus === "partial_continue" || runStatus === "started") warnings.push("Current Phase 2C run is not complete. Keep pressing EVERYDAY PHASE 2C > Run Market Context until status is completed.");
   if (Number(summary?.active_missing_line_id || 0) > 0) warnings.push(`${summary.active_missing_line_id} active rows are missing line_id and use fallback identity.`);
   if (missingCritical > 0) warnings.push(`${missingCritical} active rows are missing critical board fields.`);
-
   return {
-    ok: activeRows > 0,
-    data_ok: activeRows > 0 && missingCritical === 0,
+    ok: activeRows > 0 && runStatus === "completed",
+    data_ok: activeRows > 0 && runStatus === "completed" && missingCritical === 0,
     job,
     version: SYSTEM_VERSION,
-    phase: "Phase 2C-I Current Market Context",
-    status: activeRows > 0 && missingCritical === 0 ? "pass" : (activeRows > 0 ? "warn_review" : "warn_empty"),
+    phase: "Phase 2C-I Market Context Chunk Runner",
+    status: activeRows > 0 && runStatus === "completed" && missingCritical === 0 ? "pass" : (activeRows > 0 ? "partial_or_warn_review" : "warn_empty"),
     active_context_table: "prizepicks_current_market_context",
-    optional_audit_table: "prizepicks_market_snapshots",
+    run_state_table: "phase2c_market_context_runs",
     slate_date: slateDate,
+    current_run: run ? {
+      run_id: run.run_id,
+      status: run.status,
+      processed_rows: Number(run.processed_rows || 0),
+      remaining_rows: Number(run.remaining_rows || 0),
+      total_rows: Number(run.total_rows || 0),
+      chunk_size: Number(run.chunk_size || 0),
+      latest_board_updated_at: run.latest_board_updated_at,
+      started_at: run.started_at,
+      updated_at: run.updated_at,
+      completed_at: run.completed_at
+    } : null,
+    latest_board_batch_window: {
+      rule: "mlb_stats.updated_at >= latest updated_at minus 10 minutes",
+      oldest_updated_at: boardMeta.oldestInWindow,
+      latest_updated_at: boardMeta.newestInWindow,
+      total_rows: boardMeta.totalRows
+    },
     summary: summary || {},
-    snapshot_audit: snapshotCount || {},
     identity_counts: identityCounts.results || [],
     stat_type_counts: statCounts.results || [],
     odds_type_counts: oddsCounts.results || [],
     sample_current_rows: sample.results || [],
     warnings,
-    note: "This check validates current PrizePicks board context only. It does not score legs, call Gemini, read external odds, or run cron."
+    next_action: runStatus === "completed" ? "Phase 2C-I current market context is ready for later scoring design." : "Press EVERYDAY PHASE 2C > Run Market Context until current_run.status is completed.",
+    note: "This check validates current PrizePicks board context only. It does not score legs, call Gemini, read external odds, write snapshots, or run cron."
   };
 }
 

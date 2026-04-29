@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.01 - Phase 2C-I Current Market Context</div>
+<div id="versionTag">v1.3.02 - Phase 2C-I Market Context Chunk Runner</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -161,7 +161,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <div class="card"><h2>Everyday Phase 2C</h2><div class="grid">
 <button onclick="runJobButton('EVERYDAY PHASE 2C > Run Market Context','scrape_phase2c_market_context')">Run Market Context</button>
 <button onclick="runJobButton('EVERYDAY PHASE 2C > Check Market Context','check_phase2c_market_context')">Check Market Context</button>
-</div><div class="small">Phase 2C-I current PrizePicks board market/projection context from the latest mlb_stats capture window. Current board is truth. No scoring, no external odds, no Gemini, and no cron.</div></div>
+</div><div class="small">Phase 2C-I current PrizePicks board market/projection context from the latest mlb_stats capture window. Processes in safe chunks; keep pressing Run Market Context until completed. No scoring, no external odds, no Gemini, and no cron.</div></div>
 
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
