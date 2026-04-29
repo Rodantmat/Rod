@@ -1,7 +1,7 @@
-// AlphaDog v1.2.84 - Incremental Derived D1 Repair compatible worker
+// AlphaDog v1.2.85 - Incremental Derived Check Lite compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.84 - Incremental Derived D1 Repair";
-const SYSTEM_CODENAME = "Incremental Derived D1 Repair";
+const SYSTEM_VERSION = "v1.2.85 - Incremental Derived Check Lite";
+const SYSTEM_CODENAME = "Incremental Derived Check Lite";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -5629,38 +5629,128 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
   await ensureIncrementalBaseTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const counts = [];
-  async function addCount(table) {
-    try { const r = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM ${table}`).first(); counts.push({ table, exists:true, rows_count:Number(r?.rows_count || 0) }); }
-    catch (e) { counts.push({ table, exists:false, rows_count:0, error:String(e?.message || e) }); }
+  async function addCount(table, seasonAware = false) {
+    try {
+      const sql = seasonAware ? `SELECT COUNT(*) AS rows_count FROM ${table} WHERE season = ?` : `SELECT COUNT(*) AS rows_count FROM ${table}`;
+      const stmt = seasonAware ? env.DB.prepare(sql).bind(season) : env.DB.prepare(sql);
+      const r = await stmt.first();
+      counts.push({ table, exists:true, rows_count:Number(r?.rows_count || 0) });
+    } catch (e) {
+      counts.push({ table, exists:false, rows_count:0, error:String(e?.message || e) });
+    }
   }
-  if (target === 'game_logs' || target === 'all') await addCount('player_game_logs');
-  if (target === 'splits' || target === 'all') await addCount('ref_player_splits');
-  if (target === 'derived' || target === 'all') await addCount('incremental_player_metrics');
+
+  // v1.2.85: derived check is intentionally lite. The previous generic checker could run
+  // expensive full-table GROUP BY scans and time out D1 after the derived build already passed.
+  if (target === 'derived') {
+    await addCount('incremental_player_metrics', true);
+    const activePlayers = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players WHERE active=1`).first().catch(() => ({ c: 0 }));
+    const derivedCoverage = await env.DB.prepare(`
+      SELECT
+        COUNT(*) AS players_with_metrics,
+        MIN(last_game_date) AS oldest_last_game,
+        MAX(last_game_date) AS newest_last_game,
+        SUM(CASE WHEN games_logged IS NULL OR games_logged <= 0 THEN 1 ELSE 0 END) AS players_with_zero_games,
+        SUM(CASE WHEN player_name IS NULL OR TRIM(player_name) = '' THEN 1 ELSE 0 END) AS missing_player_names,
+        SUM(CASE WHEN role IS NULL OR TRIM(role) = '' THEN 1 ELSE 0 END) AS missing_roles,
+        SUM(CASE WHEN source_confidence IS NULL OR TRIM(source_confidence) = '' THEN 1 ELSE 0 END) AS missing_source_confidence
+      FROM incremental_player_metrics
+      WHERE season = ?
+    `).bind(season).first().catch(() => null);
+    const roleSplit = await env.DB.prepare(`
+      SELECT role, COUNT(*) AS players_with_metrics
+      FROM incremental_player_metrics
+      WHERE season = ?
+      GROUP BY role
+      ORDER BY role
+    `).bind(season).all().catch(() => ({ results: [] }));
+    const samples = {
+      incremental_player_metrics: (await env.DB.prepare(`
+        SELECT player_id, player_name, team_id, role, games_logged, first_game_date, last_game_date,
+               total_ab, total_hits, total_rbi, total_home_runs, last3_hits, last5_hits, last10_hits, last20_hits,
+               source_confidence, updated_at
+        FROM incremental_player_metrics
+        WHERE season = ?
+        ORDER BY updated_at DESC, player_name
+        LIMIT 10
+      `).bind(season).all().catch(() => ({ results: [] }))).results || []
+    };
+    const failures = [];
+    const warnings = [];
+    const active = Number(activePlayers?.c || 0);
+    const playersWithMetrics = Number(derivedCoverage?.players_with_metrics || 0);
+    const minCov = Math.max(700, Math.floor(active * 0.85));
+    if (playersWithMetrics < minCov) failures.push('derived_metric_player_coverage_low');
+    if (Number(derivedCoverage?.players_with_zero_games || 0) > 0) failures.push('derived_metrics_zero_game_rows');
+    if (Number(derivedCoverage?.missing_player_names || 0) > 0) failures.push('derived_metrics_missing_player_names');
+    if (Number(derivedCoverage?.missing_roles || 0) > 0) failures.push('derived_metrics_missing_roles');
+    if (Number(derivedCoverage?.missing_source_confidence || 0) > 0) warnings.push('derived_metrics_missing_source_confidence');
+    if (playersWithMetrics < active) warnings.push('some_active_players_have_no_derived_metrics_because_no_game_logs');
+    const dataOk = failures.length === 0;
+    return {
+      ok:true,
+      data_ok:dataOk,
+      job:input.job || 'check_incremental_derived_metrics',
+      version:SYSTEM_VERSION,
+      status:dataOk ? 'pass' : 'needs_review',
+      season,
+      check_mode:'DERIVED_LITE_D1_SAFE',
+      counts,
+      coverage:{ active_players:active, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] },
+      quality:{ failures, warnings, full_table_duplicate_scan_skipped:true, reason:'v1.2.85 avoids heavy D1 timeout scans for derived-only check' },
+      samples,
+      external_api_calls:0,
+      live_tables_touched:false,
+      note:'v1.2.85 derived check is lightweight: count, coverage, null/zero integrity, role split, and 10-row sample only. No heavy full-table duplicate scan.'
+    };
+  }
+
+  if (target === 'game_logs' || target === 'all') await addCount('player_game_logs', true);
+  if (target === 'splits' || target === 'all') await addCount('ref_player_splits', true);
+  if (target === 'all') await addCount('incremental_player_metrics', true);
+
   const activePlayers = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players WHERE active=1`).first().catch(() => ({ c: 0 }));
-  const gameCoverage = await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_logs, COUNT(*) AS log_rows, MIN(game_date) AS first_game_date, MAX(game_date) AS last_game_date FROM player_game_logs WHERE season=?`).bind(season).first().catch(() => null);
-  const splitCoverage = await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_splits, COUNT(*) AS split_rows FROM ref_player_splits WHERE season=?`).bind(season).first().catch(() => null);
-  const derivedCoverage = await env.DB.prepare(`SELECT COUNT(*) AS players_with_metrics, MIN(last_game_date) AS oldest_last_game, MAX(last_game_date) AS newest_last_game FROM incremental_player_metrics WHERE season=?`).bind(season).first().catch(() => null);
-  const duplicateLogs = await env.DB.prepare(`SELECT player_id, season, game_pk, COUNT(*) AS rows_count FROM player_game_logs GROUP BY player_id, season, game_pk HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
-  const duplicateSplits = await env.DB.prepare(`SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
-  const orphanLogs = await env.DB.prepare(`SELECT COUNT(*) AS c FROM player_game_logs g LEFT JOIN ref_players p ON p.player_id=g.player_id WHERE p.player_id IS NULL`).first().catch(() => ({ c: 0 }));
-  const roleSplit = await env.DB.prepare(`SELECT p.role, COUNT(DISTINCT g.player_id) AS players_with_logs, COUNT(g.game_pk) AS log_rows FROM player_game_logs g JOIN ref_players p ON p.player_id=g.player_id WHERE g.season=? GROUP BY p.role ORDER BY p.role`).bind(season).all().catch(() => ({ results: [] }));
+  const gameCoverage = (target === 'game_logs' || target === 'all')
+    ? await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_logs, COUNT(*) AS log_rows, MIN(game_date) AS first_game_date, MAX(game_date) AS last_game_date FROM player_game_logs WHERE season=?`).bind(season).first().catch(() => null)
+    : null;
+  const splitCoverage = (target === 'splits' || target === 'all')
+    ? await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_splits, COUNT(*) AS split_rows FROM ref_player_splits WHERE season=?`).bind(season).first().catch(() => null)
+    : null;
+  const derivedCoverage = (target === 'all')
+    ? await env.DB.prepare(`SELECT COUNT(*) AS players_with_metrics, MIN(last_game_date) AS oldest_last_game, MAX(last_game_date) AS newest_last_game FROM incremental_player_metrics WHERE season=?`).bind(season).first().catch(() => null)
+    : null;
+
+  const duplicateLogs = (target === 'game_logs')
+    ? await env.DB.prepare(`SELECT player_id, season, game_pk, COUNT(*) AS rows_count FROM player_game_logs WHERE season=? GROUP BY player_id, season, game_pk HAVING COUNT(*) > 1 LIMIT 20`).bind(season).all().catch(() => ({ results: [] }))
+    : { results: [] };
+  const duplicateSplits = (target === 'splits')
+    ? await env.DB.prepare(`SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits WHERE season=? GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`).bind(season).all().catch(() => ({ results: [] }))
+    : { results: [] };
+  const orphanLogs = (target === 'game_logs')
+    ? await env.DB.prepare(`SELECT COUNT(*) AS c FROM player_game_logs g LEFT JOIN ref_players p ON p.player_id=g.player_id WHERE g.season=? AND p.player_id IS NULL`).bind(season).first().catch(() => ({ c: 0 }))
+    : { c: 0 };
+  const roleSplit = (target === 'game_logs')
+    ? await env.DB.prepare(`SELECT p.role, COUNT(DISTINCT g.player_id) AS players_with_logs, COUNT(g.game_pk) AS log_rows FROM player_game_logs g JOIN ref_players p ON p.player_id=g.player_id WHERE g.season=? GROUP BY p.role ORDER BY p.role`).bind(season).all().catch(() => ({ results: [] }))
+    : { results: [] };
+
   const samples = {};
-  if (target === 'game_logs' || target === 'all') samples.player_game_logs = (await env.DB.prepare(`SELECT player_id, season, game_date, team_id, opponent_team, group_type, pa, ab, hits, home_runs, strikeouts, walks, source_confidence, updated_at FROM player_game_logs ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
-  if (target === 'splits' || target === 'all') samples.ref_player_splits = (await env.DB.prepare(`SELECT player_id, season, group_type, split_code, pa, ab, hits, home_runs, strikeouts, walks, avg, obp, slg, ops, source_confidence, updated_at FROM ref_player_splits ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
-  if (target === 'derived' || target === 'all') samples.incremental_player_metrics = (await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, total_ab, total_hits, total_rbi, last10_hits, last10_ab, source_confidence, updated_at FROM incremental_player_metrics ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
+  if (target === 'game_logs' || target === 'all') samples.player_game_logs = (await env.DB.prepare(`SELECT player_id, season, game_date, team_id, opponent_team, group_type, pa, ab, hits, home_runs, strikeouts, walks, source_confidence, updated_at FROM player_game_logs WHERE season=? ORDER BY updated_at DESC LIMIT 10`).bind(season).all().catch(() => ({ results: [] }))).results || [];
+  if (target === 'splits' || target === 'all') samples.ref_player_splits = (await env.DB.prepare(`SELECT player_id, season, group_type, split_code, pa, ab, hits, home_runs, strikeouts, walks, avg, obp, slg, ops, source_confidence, updated_at FROM ref_player_splits WHERE season=? ORDER BY updated_at DESC LIMIT 10`).bind(season).all().catch(() => ({ results: [] }))).results || [];
+  if (target === 'all') samples.incremental_player_metrics = (await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, total_ab, total_hits, total_rbi, last10_hits, last10_ab, source_confidence, updated_at FROM incremental_player_metrics WHERE season=? ORDER BY updated_at DESC LIMIT 10`).bind(season).all().catch(() => ({ results: [] }))).results || [];
+
   const failures = [], warnings = [];
   const minCov = Math.max(700, Math.floor(Number(activePlayers?.c || 0) * 0.85));
   if ((target === 'game_logs' || target === 'all') && Number(gameCoverage?.players_with_logs || 0) < minCov) failures.push('game_log_player_coverage_low');
   if ((target === 'splits' || target === 'all') && Number(splitCoverage?.players_with_splits || 0) < minCov) failures.push('split_player_coverage_low');
-  if ((target === 'derived' || target === 'all') && Number(derivedCoverage?.players_with_metrics || 0) < minCov) failures.push('derived_metric_player_coverage_low');
+  if (target === 'all' && Number(derivedCoverage?.players_with_metrics || 0) < minCov) failures.push('derived_metric_player_coverage_low');
   if ((duplicateLogs.results || []).length) failures.push('duplicate_player_game_logs');
   if ((duplicateSplits.results || []).length) failures.push('duplicate_player_splits');
   if (Number(orphanLogs?.c || 0) > 0) failures.push('orphan_game_logs_without_ref_player');
-  if (Number(gameCoverage?.players_with_logs || 0) < Number(activePlayers?.c || 0)) warnings.push('some_active_players_have_no_game_logs_this_season');
+  if (Number(gameCoverage?.players_with_logs || 0) < Number(activePlayers?.c || 0) && (target === 'game_logs' || target === 'all')) warnings.push('some_active_players_have_no_game_logs_this_season');
+  if (target === 'all') warnings.push('all_incremental_check_is_lite; run individual checks for deeper duplicate scans');
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'Incremental checks are read-only and avoid large raw_json payloads. Build derived metrics after game logs/splits are fully mined.' };
+  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.85 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
 }
-
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
