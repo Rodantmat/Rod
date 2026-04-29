@@ -1,6 +1,6 @@
-// AlphaDog v1.2.88 - Missing Ref Player Repair compatible worker
+// AlphaDog v1.2.89 - Incremental Temp Idempotent Promote compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.88 - Missing Ref Player Repair";
+const SYSTEM_VERSION = "v1.2.89 - Incremental Temp Idempotent Promote";
 const SYSTEM_CODENAME = "Missing Ref Player Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -5544,19 +5544,60 @@ async function scheduleIncrementalTempRefreshOnce(input, env) {
   await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, output_json) VALUES (?, 'pending', datetime('now', '+1 minute'), 'stage_logs', ?)`).bind(requestId, JSON.stringify({ live_tables_touched:false })).run();
   return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_steps:['stage_game_logs_temp','stage_splits_temp','audit','promote','clean','derived','completed'], live_tables_touched:false, estimated_total_minutes:'5-10 minutes after first cron tick', note:'Daily incremental pipeline stages into temp, audits, promotes, cleans temp, then rebuilds derived metrics.' };
 }
+async function dedupeIncrementalTempTables(env) {
+  await ensureIncrementalTempTables(env);
+  const before = [await staticTableCount(env, 'player_game_logs_temp'), await staticTableCount(env, 'ref_player_splits_temp')];
+  const logDedupe = await env.DB.prepare(`
+    DELETE FROM player_game_logs_temp
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid)
+      FROM player_game_logs_temp
+      GROUP BY player_id, game_pk, group_type
+    )
+  `).run();
+  const splitDedupe = await env.DB.prepare(`
+    DELETE FROM ref_player_splits_temp
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid)
+      FROM ref_player_splits_temp
+      GROUP BY player_id, season, group_type, split_code
+    )
+  `).run();
+  const after = [await staticTableCount(env, 'player_game_logs_temp'), await staticTableCount(env, 'ref_player_splits_temp')];
+  return { before_counts: before, after_counts: after, log_dedupe_meta: logDedupe?.meta || null, split_dedupe_meta: splitDedupe?.meta || null };
+}
+
 async function stageIncrementalGameLogsTemp(input, env) {
   await ensureIncrementalTempTables(env);
   await env.DB.prepare(`DELETE FROM player_game_logs_temp`).run();
-  const res = await env.DB.prepare(`INSERT INTO player_game_logs_temp SELECT * FROM player_game_logs`).run();
+  const res = await env.DB.prepare(`
+    INSERT INTO player_game_logs_temp
+    SELECT * FROM player_game_logs
+    WHERE rowid IN (
+      SELECT MIN(rowid)
+      FROM player_game_logs
+      GROUP BY player_id, game_pk, group_type
+    )
+  `).run();
+  const dedupe = await dedupeIncrementalTempTables(env);
   const count = await staticTableCount(env, 'player_game_logs_temp');
-  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'player_game_logs_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, live_tables_touched:false, note:'Staged current incremental game-log table into temp. Live table untouched.' };
+  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'player_game_logs_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, dedupe, live_tables_touched:false, note:'Staged current incremental game-log table into temp after clearing temp first. Temp rows are deduped by player_id/game_pk/group_type. Live table untouched.' };
 }
 async function stageIncrementalSplitsTemp(input, env) {
   await ensureIncrementalTempTables(env);
   await env.DB.prepare(`DELETE FROM ref_player_splits_temp`).run();
-  const res = await env.DB.prepare(`INSERT INTO ref_player_splits_temp SELECT * FROM ref_player_splits`).run();
+  const res = await env.DB.prepare(`
+    INSERT INTO ref_player_splits_temp
+    SELECT * FROM ref_player_splits
+    WHERE rowid IN (
+      SELECT MIN(rowid)
+      FROM ref_player_splits
+      GROUP BY player_id, season, group_type, split_code
+    )
+  `).run();
+  const dedupe = await dedupeIncrementalTempTables(env);
   const count = await staticTableCount(env, 'ref_player_splits_temp');
-  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'ref_player_splits_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, live_tables_touched:false, note:'Staged current incremental split table into temp. Live table untouched.' };
+  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'ref_player_splits_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, dedupe, live_tables_touched:false, note:'Staged current incremental split table into temp after clearing temp first. Temp rows are deduped by player_id/season/group_type/split_code. Live table untouched.' };
 }
 function nextIncrementalTempStep(step) { return ({ stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
 async function runIncrementalTempScheduledTick(input, env) {
@@ -5593,8 +5634,11 @@ async function runIncrementalTempScheduledTick(input, env) {
 async function checkIncrementalTempData(input, env) {
   await ensureIncrementalTempTables(env);
   const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
+  const duplicateTempLogs = await sampleRows(env, `SELECT player_id, game_pk, group_type, COUNT(*) AS rows_count FROM player_game_logs_temp GROUP BY player_id, game_pk, group_type HAVING COUNT(*) > 1 LIMIT 20`);
+  const duplicateTempSplits = await sampleRows(env, `SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits_temp GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`);
   const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-  return { ok:true, data_ok:true, job:input.job || 'check_incremental_temp_all', version:SYSTEM_VERSION, status:'pass', counts, latest_temp_refresh:latestRun, live_tables_touched:false };
+  const dataOk = duplicateTempLogs.length === 0 && duplicateTempSplits.length === 0;
+  return { ok:true, data_ok:dataOk, job:input.job || 'check_incremental_temp_all', version:SYSTEM_VERSION, status:dataOk?'pass':'needs_review', counts, quality:{ duplicate_temp_logs:duplicateTempLogs, duplicate_temp_splits:duplicateTempSplits }, latest_temp_refresh:latestRun, live_tables_touched:false };
 }
 async function auditIncrementalTempCertification(input, env) {
   await ensureIncrementalTempTables(env);
@@ -5604,6 +5648,10 @@ async function auditIncrementalTempCertification(input, env) {
   if (!latestRun || latestRun.current_step !== 'audit') failures.push({ code:'TEMP_REFRESH_NOT_READY_FOR_AUDIT', latest_run:latestRun });
   if ((m.player_game_logs_temp || 0) < 10000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:10000 });
   if ((m.ref_player_splits_temp || 0) < 1000) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:1000 });
+  const duplicateTempLogs = await sampleRows(env, `SELECT player_id, game_pk, group_type, COUNT(*) AS rows_count FROM player_game_logs_temp GROUP BY player_id, game_pk, group_type HAVING COUNT(*) > 1 LIMIT 20`);
+  const duplicateTempSplits = await sampleRows(env, `SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits_temp GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`);
+  if (duplicateTempLogs.length) failures.push({ code:'DUPLICATE_TEMP_GAME_LOG_KEYS', rows:duplicateTempLogs });
+  if (duplicateTempSplits.length) failures.push({ code:'DUPLICATE_TEMP_SPLIT_KEYS', rows:duplicateTempSplits });
   const grade = failures.length ? 'F' : warnings.length ? 'A' : 'A+'; const dataOk = grade === 'A+' || grade === 'A'; const auditId = crypto.randomUUID();
   const result = { ok:true, data_ok:dataOk, job:input.job || 'audit_incremental_temp_certification', version:SYSTEM_VERSION, status:dataOk?'certified':'blocked', certification_grade:grade, promotion_allowed:dataOk, temp_refresh:latestRun, counts, quality:{ failures, warnings }, live_tables_touched:false };
   await env.DB.prepare(`INSERT OR REPLACE INTO incremental_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, grade, dataOk?1:0, result.status, latestRun?.request_id || null, JSON.stringify(counts), JSON.stringify(failures), JSON.stringify(warnings), JSON.stringify(result)).run();
@@ -5620,9 +5668,12 @@ async function promoteIncrementalTempToLive(input, env) {
   if (!latestRun || latestRun.current_step !== 'promote') return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_temp_refresh_not_ready_for_promotion', latest_temp_refresh:latestRun, live_tables_touched:false };
   if (!audit || !['A+','A'].includes(String(audit.grade || '')) || audit.temp_refresh_request_id !== latestRun.request_id) return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_no_valid_certified_audit', latest_audit:audit, live_tables_touched:false };
   const before = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
-  await env.DB.batch([env.DB.prepare(`DELETE FROM player_game_logs`), env.DB.prepare(`INSERT INTO player_game_logs SELECT * FROM player_game_logs_temp`), env.DB.prepare(`DELETE FROM ref_player_splits`), env.DB.prepare(`INSERT INTO ref_player_splits SELECT * FROM ref_player_splits_temp`)]);
+  const dedupe = await dedupeIncrementalTempTables(env);
+  const tempCounts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
+  const logPromote = await env.DB.prepare(`INSERT OR REPLACE INTO player_game_logs SELECT * FROM player_game_logs_temp`).run();
+  const splitPromote = await env.DB.prepare(`INSERT OR REPLACE INTO ref_player_splits SELECT * FROM ref_player_splits_temp`).run();
   const after = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
-  return { ok:true, data_ok:true, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'promoted', certification_grade:audit.grade, audit_id:audit.audit_id, temp_refresh_request_id:latestRun.request_id, before_counts:before, after_counts:after, live_tables_touched:true, note:'Certified incremental temp tables promoted. Derived metrics rebuild is next step.' };
+  return { ok:true, data_ok:true, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'promoted_idempotent', certification_grade:audit.grade, audit_id:audit.audit_id, temp_refresh_request_id:latestRun.request_id, before_counts:before, temp_counts:tempCounts, after_counts:after, dedupe, promote_meta:{ game_logs:logPromote?.meta || null, splits:splitPromote?.meta || null }, live_tables_touched:true, note:'Certified incremental temp tables promoted with idempotent INSERT OR REPLACE after temp dedupe. Safe to rerun without UNIQUE crashes. Derived metrics rebuild is next step.' };
 }
 async function cleanIncrementalTempTables(input, env) {
   await ensureIncrementalTempTables(env);
