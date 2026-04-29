@@ -1,7 +1,7 @@
-// AlphaDog v1.2.86 - Version Sync + Derived Check Lite compatible worker
+// AlphaDog v1.2.87 - Daily Incremental Temp Pipeline compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.86 - Version Sync + Derived Check Lite";
-const SYSTEM_CODENAME = "Incremental Derived Check Lite";
+const SYSTEM_VERSION = "v1.2.87 - Daily Incremental Temp Pipeline";
+const SYSTEM_CODENAME = "Daily Incremental Temp Pipeline";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -85,6 +85,13 @@ const JOB_DISPLAY_LABELS = {
   promote_static_temp_to_live: "CERTIFY TEMP > Promote Temp To Live",
   clean_static_temp_tables: "CERTIFY TEMP > Clean Static Temp",
   weekly_static_temp_refresh_auto: "SCHEDULED > Weekly Static Temp Refresh Auto",
+  schedule_incremental_temp_refresh_once: "INCREMENTAL TEMP > Schedule Daily Refresh Test",
+  run_incremental_temp_refresh_tick: "INCREMENTAL TEMP > Run One Refresh Tick",
+  check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
+  audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
+  promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
+  clean_incremental_temp_tables: "CERTIFY TEMP > Clean Incremental Temp",
+  daily_incremental_temp_refresh_auto: "SCHEDULED > Daily Incremental Temp Refresh Auto",
   incremental_base_game_logs_g1: "INCREMENTAL > Base Game Logs G1",
   incremental_base_game_logs_g2: "INCREMENTAL > Base Game Logs G2",
   incremental_base_game_logs_g3: "INCREMENTAL > Base Game Logs G3",
@@ -634,6 +641,12 @@ const JOBS = {
   audit_static_temp_certification: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp", "static_temp_certification_audits"], note: "certify temp static tables before promotion" },
   promote_static_temp_to_live: { prompt: null, tables: ["ref_venues", "ref_team_aliases", "ref_players", "ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "promote certified temp static tables to live trusted tables" },
   clean_static_temp_tables: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "clean temp static staging tables after successful promotion" },
+  schedule_incremental_temp_refresh_once: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "schedule protected daily incremental temp pipeline" },
+  run_incremental_temp_refresh_tick: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "advance protected daily incremental temp pipeline" },
+  check_incremental_temp_all: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "check daily incremental temp staging tables" },
+  audit_incremental_temp_certification: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp", "incremental_temp_certification_audits"], note: "certify daily incremental temp before promotion" },
+  promote_incremental_temp_to_live: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "promote certified daily incremental temp and rebuild derived after cleanup" },
+  clean_incremental_temp_tables: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "clean daily incremental temp staging tables" },
   incremental_base_game_logs_g1: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 1" },
   incremental_base_game_logs_g2: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 2" },
   incremental_base_game_logs_g3: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 3" },
@@ -793,12 +806,18 @@ export default {
     ctx.waitUntil((async () => {
       const cron = String(event?.cron || '').trim();
       let result;
-      if (cron === '0 8 * * 1') {
+      if (cron === '45 8 * * *') {
+        const scheduled = await scheduleIncrementalTempRefreshOnce({ job: 'daily_incremental_temp_refresh_auto', trigger: 'scheduled_daily_cron', cron, daily_schedule: 'Daily 1:45 AM PT/PDT' }, env);
+        const tick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_daily_cron_start', job: 'run_incremental_temp_refresh_tick' }, env);
+        result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'daily_incremental_temp_refresh_auto', status: 'daily_refresh_scheduled', cron, daily_schedule: 'Daily 1:45 AM PT/PDT', scheduled, first_tick: tick, live_tables_touched: false, note: 'Daily incremental refresh started in _temp only. Minute cron will finish scrape/stage, certify, promote only if A+/A, clean temp, then rebuild derived metrics.' };
+      } else if (cron === '0 8 * * 1') {
         const scheduled = await scheduleStaticTempRefreshOnce({ job: 'weekly_static_temp_refresh_auto', trigger: 'scheduled_weekly_cron', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT' }, env);
         const tick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_weekly_cron_start', job: 'run_static_temp_refresh_tick' }, env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'weekly_static_temp_refresh_auto', status: 'weekly_refresh_scheduled', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT', scheduled, first_tick: tick, live_tables_touched: false, note: 'Weekly static refresh started in _temp only. Minute cron will finish scrape, certify, promote only if A+/A, then clean temp.' };
       } else if (cron === '* * * * *') {
-        result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+        const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
+        if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
+        else result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
       }
@@ -917,6 +936,12 @@ function executableJobNames() {
     "audit_static_temp_certification",
     "promote_static_temp_to_live",
     "clean_static_temp_tables",
+    "schedule_incremental_temp_refresh_once",
+    "run_incremental_temp_refresh_tick",
+    "check_incremental_temp_all",
+    "audit_incremental_temp_certification",
+    "promote_incremental_temp_to_live",
+    "clean_incremental_temp_tables",
     "incremental_base_game_logs_g1",
     "incremental_base_game_logs_g2",
     "incremental_base_game_logs_g3",
@@ -5498,6 +5523,113 @@ async function cleanStaticTempTables(input, env) {
 }
 
 
+
+async function ensureIncrementalTempTables(env) {
+  await ensureStaticReferenceTables(env);
+  await ensureIncrementalBaseTables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_temp_refresh_runs (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, run_after TEXT, current_step TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, output_json TEXT, error TEXT)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_temp_certification_audits (audit_id TEXT PRIMARY KEY, grade TEXT NOT NULL, data_ok INTEGER NOT NULL, status TEXT NOT NULL, temp_refresh_request_id TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, counts_json TEXT, failures_json TEXT, warnings_json TEXT, output_json TEXT)`).run();
+}
+async function scheduleIncrementalTempRefreshOnce(input, env) {
+  await ensureIncrementalTempTables(env);
+  const existing = await env.DB.prepare(`SELECT request_id, status, current_step, run_after, updated_at FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  if (existing) return { ok:true, data_ok:false, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'already_scheduled_or_running', existing_request:existing, live_tables_touched:false };
+  const requestId = crypto.randomUUID();
+  await env.DB.batch([env.DB.prepare(`DELETE FROM player_game_logs_temp`), env.DB.prepare(`DELETE FROM ref_player_splits_temp`)]);
+  await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, output_json) VALUES (?, 'pending', datetime('now', '+1 minute'), 'stage_logs', ?)`).bind(requestId, JSON.stringify({ live_tables_touched:false })).run();
+  return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_steps:['stage_game_logs_temp','stage_splits_temp','audit','promote','clean','derived','completed'], live_tables_touched:false, estimated_total_minutes:'5-10 minutes after first cron tick', note:'Daily incremental pipeline stages into temp, audits, promotes, cleans temp, then rebuilds derived metrics.' };
+}
+async function stageIncrementalGameLogsTemp(input, env) {
+  await ensureIncrementalTempTables(env);
+  await env.DB.prepare(`DELETE FROM player_game_logs_temp`).run();
+  const res = await env.DB.prepare(`INSERT INTO player_game_logs_temp SELECT * FROM player_game_logs`).run();
+  const count = await staticTableCount(env, 'player_game_logs_temp');
+  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'player_game_logs_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, live_tables_touched:false, note:'Staged current incremental game-log table into temp. Live table untouched.' };
+}
+async function stageIncrementalSplitsTemp(input, env) {
+  await ensureIncrementalTempTables(env);
+  await env.DB.prepare(`DELETE FROM ref_player_splits_temp`).run();
+  const res = await env.DB.prepare(`INSERT INTO ref_player_splits_temp SELECT * FROM ref_player_splits`).run();
+  const count = await staticTableCount(env, 'ref_player_splits_temp');
+  return { ok:true, data_ok:Number(count.rows_count||0)>0, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'pass', table:'ref_player_splits_temp', rows_staged:count.rows_count, d1_meta:res.meta || null, live_tables_touched:false, note:'Staged current incremental split table into temp. Live table untouched.' };
+}
+function nextIncrementalTempStep(step) { return ({ stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
+async function runIncrementalTempScheduledTick(input, env) {
+  await ensureIncrementalTempTables(env);
+  const row = await env.DB.prepare(`SELECT * FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') AND (run_after IS NULL OR run_after <= CURRENT_TIMESTAMP) ORDER BY created_at ASC LIMIT 1`).first().catch(() => null);
+  if (!row) return { ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', status:'idle_no_due_temp_refresh', trigger:input.trigger || 'manual', live_tables_touched:false };
+  const requestId = row.request_id; const step = row.current_step || 'stage_logs';
+  await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(requestId).run();
+  let result;
+  try {
+    if (step === 'stage_logs') result = await stageIncrementalGameLogsTemp(input, env);
+    else if (step === 'stage_splits') result = await stageIncrementalSplitsTemp(input, env);
+    else if (step === 'audit') result = await auditIncrementalTempCertification({ ...input, job:'audit_incremental_temp_certification' }, env);
+    else if (step === 'promote') result = await promoteIncrementalTempToLive({ ...input, job:'promote_incremental_temp_to_live' }, env);
+    else if (step === 'clean') result = await cleanIncrementalTempTables({ ...input, job:'clean_incremental_temp_tables' }, env);
+    else if (step === 'derived') result = await buildIncrementalBaseDerivedMetrics({ ...input, job:'incremental_base_derived_metrics' }, env);
+    else result = { ok:true, data_ok:true, status:'already_completed' };
+    if (!result?.ok || result?.data_ok === false) {
+      const failed = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'pipeline_blocked', step_result:result, live_tables_touched:false };
+      await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(String(result?.error || result?.status || 'step_failed'), JSON.stringify(failed), requestId).run();
+      return failed;
+    }
+    const nextStep = nextIncrementalTempStep(step); const complete = nextStep === 'completed';
+    const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
+    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp stage, audit, protected promotion, temp cleanup, and derived rebuild finished.' : 'Daily incremental pipeline advanced one protected step. Minute cron will continue.' };
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    return wrapped;
+  } catch (err) {
+    const failure = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'failed_exception', error:String(err?.message || err), live_tables_touched:false };
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(failure.error, JSON.stringify(failure), requestId).run().catch(() => null);
+    return failure;
+  }
+}
+async function checkIncrementalTempData(input, env) {
+  await ensureIncrementalTempTables(env);
+  const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  return { ok:true, data_ok:true, job:input.job || 'check_incremental_temp_all', version:SYSTEM_VERSION, status:'pass', counts, latest_temp_refresh:latestRun, live_tables_touched:false };
+}
+async function auditIncrementalTempCertification(input, env) {
+  await ensureIncrementalTempTables(env);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
+  const m = Object.fromEntries(counts.map(c => [c.table, Number(c.rows_count || 0)])); const failures=[]; const warnings=[];
+  if (!latestRun || latestRun.current_step !== 'audit') failures.push({ code:'TEMP_REFRESH_NOT_READY_FOR_AUDIT', latest_run:latestRun });
+  if ((m.player_game_logs_temp || 0) < 10000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:10000 });
+  if ((m.ref_player_splits_temp || 0) < 1000) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:1000 });
+  const grade = failures.length ? 'F' : warnings.length ? 'A' : 'A+'; const dataOk = grade === 'A+' || grade === 'A'; const auditId = crypto.randomUUID();
+  const result = { ok:true, data_ok:dataOk, job:input.job || 'audit_incremental_temp_certification', version:SYSTEM_VERSION, status:dataOk?'certified':'blocked', certification_grade:grade, promotion_allowed:dataOk, temp_refresh:latestRun, counts, quality:{ failures, warnings }, live_tables_touched:false };
+  await env.DB.prepare(`INSERT OR REPLACE INTO incremental_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, grade, dataOk?1:0, result.status, latestRun?.request_id || null, JSON.stringify(counts), JSON.stringify(failures), JSON.stringify(warnings), JSON.stringify(result)).run();
+  return { ...result, audit_id:auditId };
+}
+async function latestIncrementalTempAudit(env) {
+  await ensureIncrementalTempTables(env);
+  return await env.DB.prepare(`SELECT audit_id, grade, data_ok, status, temp_refresh_request_id, created_at, output_json FROM incremental_temp_certification_audits ORDER BY created_at DESC LIMIT 1`).first().catch(()=>null);
+}
+async function promoteIncrementalTempToLive(input, env) {
+  await ensureIncrementalTempTables(env);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, finished_at, updated_at FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(()=>null);
+  const audit = await latestIncrementalTempAudit(env);
+  if (!latestRun || latestRun.current_step !== 'promote') return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_temp_refresh_not_ready_for_promotion', latest_temp_refresh:latestRun, live_tables_touched:false };
+  if (!audit || !['A+','A'].includes(String(audit.grade || '')) || audit.temp_refresh_request_id !== latestRun.request_id) return { ok:false, data_ok:false, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'blocked_no_valid_certified_audit', latest_audit:audit, live_tables_touched:false };
+  const before = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
+  await env.DB.batch([env.DB.prepare(`DELETE FROM player_game_logs`), env.DB.prepare(`INSERT INTO player_game_logs SELECT * FROM player_game_logs_temp`), env.DB.prepare(`DELETE FROM ref_player_splits`), env.DB.prepare(`INSERT INTO ref_player_splits SELECT * FROM ref_player_splits_temp`)]);
+  const after = [await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits')];
+  return { ok:true, data_ok:true, job:input.job || 'promote_incremental_temp_to_live', version:SYSTEM_VERSION, status:'promoted', certification_grade:audit.grade, audit_id:audit.audit_id, temp_refresh_request_id:latestRun.request_id, before_counts:before, after_counts:after, live_tables_touched:true, note:'Certified incremental temp tables promoted. Derived metrics rebuild is next step.' };
+}
+async function cleanIncrementalTempTables(input, env) {
+  await ensureIncrementalTempTables(env);
+  const before=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
+  await env.DB.batch([env.DB.prepare(`DELETE FROM player_game_logs_temp`), env.DB.prepare(`DELETE FROM ref_player_splits_temp`)]);
+  const after=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
+  return { ok:true, data_ok:true, job:input.job || 'clean_incremental_temp_tables', version:SYSTEM_VERSION, status:'temp_cleaned', before_counts:before, after_counts:after, live_tables_touched:false };
+}
+
+
 async function staticTableCount(env, tableName) {
   if (!(await tableExists(env, tableName))) return { table: tableName, exists: false, rows_count: 0 };
   const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ${tableName}`).first();
@@ -5776,6 +5908,13 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+
+  if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "check_incremental_temp_all") return await checkIncrementalTempData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "audit_incremental_temp_certification") return await auditIncrementalTempCertification({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "promote_incremental_temp_to_live") return await promoteIncrementalTempToLive({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "clean_incremental_temp_tables") return await cleanIncrementalTempTables({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (/^incremental_base_game_logs_g[1-6]$/.test(jobName)) return await runIncrementalBaseGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^incremental_base_splits_g[1-6]$/.test(jobName)) return await runIncrementalBaseSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);

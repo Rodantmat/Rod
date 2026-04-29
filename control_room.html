@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.86 - Version Sync + Derived Check Lite</div>
+<div id="versionTag">v1.2.87 - Version Sync + Derived Check Lite</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -135,6 +135,15 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="warn" onclick="runJobButton('INCREMENTAL > Base Splits G6','incremental_base_splits_g6')">Splits G6</button>
 <button class="audit" onclick="runJobButton('INCREMENTAL > Build Base Derived Metrics','incremental_base_derived_metrics')">Build Derived</button>
 </div><div class="small">Incremental base is the one-time historical fill. Run each G button until remaining_in_group_after is 0. Derived metrics uses stored game logs only: no Gemini and no external calls.</div></div>
+<div class="card"><h2>Daily Incremental Temp</h2><div class="grid">
+<button class="warn" onclick="runJobButton('INCREMENTAL TEMP > Schedule Daily Refresh Test','schedule_incremental_temp_refresh_once')">Schedule Daily Temp Test</button>
+<button class="warn" onclick="runJobButton('INCREMENTAL TEMP > Run One Refresh Tick','run_incremental_temp_refresh_tick')">Run Temp Tick</button>
+<button class="check" onclick="runJobButton('CHECK TEMP > All Incremental Temp','check_incremental_temp_all')">Check Incremental Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Audit Incremental Temp','audit_incremental_temp_certification')">Audit Incremental Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Promote Incremental Temp To Live','promote_incremental_temp_to_live')">Promote Incremental Temp</button>
+<button class="danger" onclick="runJobButton('CERTIFY TEMP > Clean Incremental Temp','clean_incremental_temp_tables')">Clean Incremental Temp</button>
+</div><div class="small">Daily flow: temp stage/scrape → audit → promote → clean temp → rebuild derived metrics. Scheduled daily at 1:45 AM PT/PDT.</div></div>
+
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -193,7 +202,7 @@ function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_U
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine")return false;return true}}return false}
-async function requestJobWithRetry(l,j){if(j==="board_queue_auto_mine")return requestAutoMineLoop(l,j);const a=[],d=resolveSlateDate(),isLongStatic=/^scrape_static_game_logs_g[1-6]$/.test(j)||/^incremental_base_game_logs_g[1-6]$/.test(j)||j==="scrape_static_bvp_current_slate",maxTries=isLongStatic?1:3;for(let i=1;i<=maxTries;i++){loading(l,"Try "+i+" of "+maxTries+" started.\nSlate: "+d);const r=await rawRequest(l+" try "+i,JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});a.push({try:i,result:r});if(isLongStatic||!shouldRetry(r,j)){
+async function requestJobWithRetry(l,j){if(j==="board_queue_auto_mine")return requestAutoMineLoop(l,j);const a=[],d=resolveSlateDate(),isLongStatic=/^scrape_static_game_logs_g[1-6]$/.test(j)||/^incremental_base_game_logs_g[1-6]$/.test(j)||j==="scrape_static_bvp_current_slate"||j==="run_incremental_temp_refresh_tick",maxTries=isLongStatic?1:3;for(let i=1;i<=maxTries;i++){loading(l,"Try "+i+" of "+maxTries+" started.\nSlate: "+d);const r=await rawRequest(l+" try "+i,JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});a.push({try:i,result:r});if(isLongStatic||!shouldRetry(r,j)){
   const isOk = r && r.http_status && r.http_status < 400 && (!r.body || r.body.ok !== false);
   setStatus((isOk ? "DONE: " : "FAILED: ") + l);
   setOutput(l,{final:isOk ? "success" : "failed",slate_date:d,attempts:a});
@@ -554,7 +563,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.86 - Version Sync + Derived Check Lite",
+    version: "v1.2.87 - Version Sync + Derived Check Lite",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
