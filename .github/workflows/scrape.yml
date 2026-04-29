@@ -1,7 +1,8 @@
 name: MLB Automatic Scraper
 on:
   schedule:
-    - cron: '0 12,18,0,6 * * *' # Runs at 5am, 11am, 5pm, and 11pm (California Time)
+
+  - cron: '0 12,15,18,21,0,6 * * *' # Runs at 5am, 8am, 11am, 2pm, 5pm, and 11pm California Time
   workflow_dispatch: # This adds the manual "Run Now" button for testing
 
 jobs:
