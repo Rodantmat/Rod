@@ -1,6 +1,6 @@
-// AlphaDog v1.2.85 - Incremental Derived Check Lite compatible worker
+// AlphaDog v1.2.86 - Version Sync + Derived Check Lite compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.85 - Incremental Derived Check Lite";
+const SYSTEM_VERSION = "v1.2.86 - Version Sync + Derived Check Lite";
 const SYSTEM_CODENAME = "Incremental Derived Check Lite";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -5622,7 +5622,7 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
   const skipped = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players p LEFT JOIN incremental_player_metrics m ON m.player_id = p.player_id AND m.season = ? WHERE p.active=1 AND m.player_id IS NULL`).bind(season).first().catch(() => ({ c: 0 }));
   const samples = await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, last10_hits, last10_ab, total_rbi, total_home_runs FROM incremental_player_metrics WHERE season=? ORDER BY games_logged DESC, player_name LIMIT 10`).bind(season).all();
 
-  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.84 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
+  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.86 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
 }
 async function checkIncrementalBaseData(input, env, target = 'all') {
   await ensureStaticReferenceTables(env);
@@ -5697,11 +5697,11 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
       check_mode:'DERIVED_LITE_D1_SAFE',
       counts,
       coverage:{ active_players:active, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] },
-      quality:{ failures, warnings, full_table_duplicate_scan_skipped:true, reason:'v1.2.85 avoids heavy D1 timeout scans for derived-only check' },
+      quality:{ failures, warnings, full_table_duplicate_scan_skipped:true, reason:'v1.2.86 avoids heavy D1 timeout scans for derived-only check' },
       samples,
       external_api_calls:0,
       live_tables_touched:false,
-      note:'v1.2.85 derived check is lightweight: count, coverage, null/zero integrity, role split, and 10-row sample only. No heavy full-table duplicate scan.'
+      note:'v1.2.86 derived check is lightweight: count, coverage, null/zero integrity, role split, and 10-row sample only. No heavy full-table duplicate scan.'
     };
   }
 
@@ -5749,7 +5749,7 @@ async function checkIncrementalBaseData(input, env, target = 'all') {
   if (Number(gameCoverage?.players_with_logs || 0) < Number(activePlayers?.c || 0) && (target === 'game_logs' || target === 'all')) warnings.push('some_active_players_have_no_game_logs_this_season');
   if (target === 'all') warnings.push('all_incremental_check_is_lite; run individual checks for deeper duplicate scans');
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.85 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
+  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, check_mode: target === 'all' ? 'ALL_LITE_D1_SAFE' : 'TARGETED_D1_SAFE', counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'v1.2.86 incremental checks avoid heavy D1 timeout paths. Derived-only check is lite and safe.' };
 }
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
