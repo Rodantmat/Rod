@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.97 - OpenWeather Dual Endpoint Repair</div>
+<div id="versionTag">v1.2.98 - Phase 2B Lineup Confirmation Shell</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -154,6 +154,10 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('EVERYDAY PHASE 2A > Run Weather/Roof','scrape_phase2_weather_context')">Run Weather/Roof</button>
 <button onclick="runJobButton('EVERYDAY PHASE 2A > Check Weather/Roof','check_phase2_weather_context')">Check Weather/Roof</button>
 </div><div class="small">Phase 2A weather/wind/roof context: OpenWeather primary using OPENWEATHER_API_KEY, Open-Meteo no-key fallback. Today slate only. No Gemini and no scoring.</div></div>
+<div class="card"><h2>Everyday Phase 2B</h2><div class="grid">
+<button onclick="runJobButton('EVERYDAY PHASE 2B > Run Lineup/Scratch','scrape_phase2_lineup_context')">Run Lineup/Scratch</button>
+<button onclick="runJobButton('EVERYDAY PHASE 2B > Check Lineup/Scratch','check_phase2_lineup_context')">Check Lineup/Scratch</button>
+</div><div class="small">Phase 2B lineup confirmation/top-order completeness plus late-scratch shell. Today slate only. No Gemini, no scoring, and no news scraping yet.</div></div>
 
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
