@@ -1,7 +1,7 @@
-// AlphaDog v1.2.81 - Static Temp Certification Audit compatible worker
+// AlphaDog v1.2.82 - Weekly Static Auto Refresh compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.81 - Static Temp Certification Audit";
-const SYSTEM_CODENAME = "Static Temp Certification Audit";
+const SYSTEM_VERSION = "v1.2.82 - Weekly Static Auto Refresh";
+const SYSTEM_CODENAME = "Weekly Static Auto Refresh";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -84,6 +84,7 @@ const JOB_DISPLAY_LABELS = {
   audit_static_temp_certification: "CERTIFY TEMP > Audit Static Temp",
   promote_static_temp_to_live: "CERTIFY TEMP > Promote Temp To Live",
   clean_static_temp_tables: "CERTIFY TEMP > Clean Static Temp",
+  weekly_static_temp_refresh_auto: "SCHEDULED > Weekly Static Temp Refresh Auto",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -750,15 +751,21 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    // v1.2.81: all old scheduled mining/full-run work stays paused.
-    // Only the protected temp-only static staging refresh is allowed to run on cron.
+    // v1.2.82: all old scheduled mining/full-run work stays paused.
+    // Allowed cron behavior only:
+    //   * * * * *  => advances one protected static-temp pipeline step if a request is due.
+    //   0 8 * * 1  => schedules the weekly Monday 1:00 AM PT/PDT static-temp certification pipeline.
     ctx.waitUntil((async () => {
-      const cron = event?.cron || null;
+      const cron = String(event?.cron || '').trim();
       let result;
-      if (String(cron || '').trim() === '* * * * *') {
-        result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled' }, env);
+      if (cron === '0 8 * * 1') {
+        const scheduled = await scheduleStaticTempRefreshOnce({ job: 'weekly_static_temp_refresh_auto', trigger: 'scheduled_weekly_cron', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT' }, env);
+        const tick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_weekly_cron_start', job: 'run_static_temp_refresh_tick' }, env);
+        result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'weekly_static_temp_refresh_auto', status: 'weekly_refresh_scheduled', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT', scheduled, first_tick: tick, live_tables_touched: false, note: 'Weekly static refresh started in _temp only. Minute cron will finish scrape, certify, promote only if A+/A, then clean temp.' };
+      } else if (cron === '* * * * *') {
+        result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
       } else {
-        result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No live static tables, mining queues, full-run jobs, or slate tables were mutated.' };
+        result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
       }
       console.log(JSON.stringify(result));
     })());
@@ -5213,13 +5220,20 @@ async function scheduleStaticTempRefreshOnce(input, env) {
   if (existing) return { ok: true, data_ok: false, job: input.job || 'schedule_static_temp_refresh_once', version: SYSTEM_VERSION, status: 'already_scheduled_or_running', existing_request: existing, live_tables_touched: false, note: 'A temp-only static refresh is already pending/running. Do not schedule another one.' };
   const requestId = crypto.randomUUID();
   await env.DB.prepare(`INSERT INTO static_temp_refresh_runs (request_id, status, run_after, current_step, created_at, updated_at, output_json) VALUES (?, 'pending', datetime('now', '+1 minute'), 'venues', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`).bind(requestId, JSON.stringify({ created_by: 'control_room', requested_job: input.job || 'schedule_static_temp_refresh_once', live_tables_touched: false })).run();
-  return { ok: true, data_ok: true, job: input.job || 'schedule_static_temp_refresh_once', version: SYSTEM_VERSION, status: 'scheduled_for_next_minute', request_id: requestId, run_after: 'about 1 minute from now', refresh_steps: ['venues_temp','team_aliases_temp','players_temp_g1','players_temp_g2','players_temp_g3','players_temp_g4','players_temp_g5','players_temp_g6','completed'], live_tables_touched: false, estimated_total_minutes: '8-12 minutes after the first cron tick', note: 'Cron will fill only _temp tables. Live trusted tables are protected and untouched.' };
+  return { ok: true, data_ok: true, job: input.job || 'schedule_static_temp_refresh_once', version: SYSTEM_VERSION, status: 'scheduled_for_next_minute', request_id: requestId, run_after: 'about 1 minute from now', refresh_steps: ['venues_temp','team_aliases_temp','players_temp_g1','players_temp_g2','players_temp_g3','players_temp_g4','players_temp_g5','players_temp_g6','audit_certification','promote_if_certified','clean_temp','completed'], live_tables_touched: false, estimated_total_minutes: '10-15 minutes after the first cron tick', note: 'Cron will fill only _temp tables, certify them, promote only after A+/A audit, then clean temp. Live trusted tables are protected until certification passes.' };
 }
 
 function nextStaticTempStep(step) {
-  const order = ['venues','aliases','players_g1','players_g2','players_g3','players_g4','players_g5','players_g6','completed'];
+  const order = ['venues','aliases','players_g1','players_g2','players_g3','players_g4','players_g5','players_g6','audit','promote','clean','completed'];
   const i = order.indexOf(String(step || 'venues'));
   return order[Math.min(i + 1, order.length - 1)] || 'completed';
+}
+
+function staticTempRefreshReadyForAuditOrPromotion(run) {
+  if (!run) return false;
+  const status = String(run.status || '');
+  const step = String(run.current_step || '');
+  return status === 'completed' || (status === 'running' && ['audit','promote','clean','completed'].includes(step));
 }
 
 async function runStaticTempScheduledTick(input, env) {
@@ -5241,13 +5255,24 @@ async function runStaticTempScheduledTick(input, env) {
     } else if (/^players_g[1-6]$/.test(step)) {
       const group = Number(step.match(/g([1-6])$/)[1]);
       result = await syncStaticPlayersTemp({ ...input, job: `scrape_static_temp_players_g${group}` }, env, group);
+    } else if (step === 'audit') {
+      result = await auditStaticTempCertification({ ...input, job: 'audit_static_temp_certification', allow_running_refresh: true }, env);
+    } else if (step === 'promote') {
+      result = await promoteStaticTempToLive({ ...input, job: 'promote_static_temp_to_live', allow_running_refresh: true }, env);
+    } else if (step === 'clean') {
+      result = await cleanStaticTempTables({ ...input, job: 'clean_static_temp_tables' }, env);
     } else {
       result = { ok: true, data_ok: true, job: input.job || 'run_static_temp_refresh_tick', version: SYSTEM_VERSION, status: 'already_completed', request_id: requestId, live_tables_touched: false };
+    }
+    if (!result || result.ok === false || result.data_ok === false) {
+      const failed = { ok: false, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, status: 'pipeline_blocked', step_result: result, live_tables_touched: false, note: 'Weekly static pipeline stopped before promotion/cleanup because this step did not pass. Live trusted tables are protected unless certification and promotion both pass.' };
+      await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(String(result?.error || result?.status || 'step_failed'), JSON.stringify(failed), requestId).run().catch(() => null);
+      return failed;
     }
     const nextStep = nextStaticTempStep(step);
     const complete = nextStep === 'completed';
     const counts = await staticTempCounts(env).catch(() => null);
-    const wrapped = { ok: !!result.ok, data_ok: !!result.data_ok || !!result.ok, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, next_step: nextStep, refresh_complete: complete, step_result: result, counts, live_tables_touched: false, note: complete ? 'Temp-only weekly static refresh completed. Run CHECK TEMP > All Static Temp next. No live tables were touched.' : 'Temp-only refresh advanced one step. Wait for the next minute tick or click Run One Refresh Tick.' };
+    const wrapped = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, next_step: nextStep, refresh_complete: complete, step_result: result, counts, live_tables_touched: step === 'promote' ? true : false, note: complete ? 'Weekly static pipeline completed: temp scrape, certification, protected promotion, and temp cleanup finished.' : 'Weekly static pipeline advanced one protected step. Minute cron will continue the next step automatically.' };
     await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
   } catch (err) {
@@ -5328,7 +5353,7 @@ async function auditStaticTempCertification(input, env) {
   const vRows = counts.ref_venues_temp.rows_count;
   const aRows = counts.ref_team_aliases_temp.rows_count;
   const pRows = counts.ref_players_temp.rows_count;
-  if (!latestRun || latestRun.status !== 'completed') failures.push({ code: 'LATEST_TEMP_REFRESH_NOT_COMPLETED', detail: latestRun || null });
+  if (!staticTempRefreshReadyForAuditOrPromotion(latestRun)) failures.push({ code: 'LATEST_TEMP_REFRESH_NOT_READY_FOR_CERTIFICATION', detail: latestRun || null });
   if (!counts.ref_venues_temp.exists || vRows < 30) failures.push({ code: 'VENUES_TEMP_ROW_COUNT_LOW', rows_count: vRows, required_min: 30 });
   if (!counts.ref_team_aliases_temp.exists || aRows < 120) failures.push({ code: 'ALIASES_TEMP_ROW_COUNT_LOW', rows_count: aRows, required_min: 120 });
   if (!counts.ref_players_temp.exists || pRows < 750) failures.push({ code: 'PLAYERS_TEMP_ROW_COUNT_LOW', rows_count: pRows, required_min: 750 });
@@ -5391,9 +5416,9 @@ async function latestStaticTempAudit(env) {
 
 async function promoteStaticTempToLive(input, env) {
   await ensureStaticTempReferenceTables(env);
-  const latestRun = await env.DB.prepare(`SELECT request_id, status, finished_at FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, finished_at FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
   const audit = await latestStaticTempAudit(env);
-  if (!latestRun || latestRun.status !== 'completed') return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_no_completed_temp_refresh', latest_temp_refresh: latestRun, live_tables_touched: false };
+  if (!staticTempRefreshReadyForAuditOrPromotion(latestRun)) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_temp_refresh_not_ready_for_promotion', latest_temp_refresh: latestRun, live_tables_touched: false };
   if (!audit || !['A+','A'].includes(String(audit.grade || ''))) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_no_certified_audit', latest_audit: audit, live_tables_touched: false };
   if (audit.temp_refresh_request_id !== latestRun.request_id) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_audit_not_for_latest_refresh', latest_temp_refresh: latestRun, latest_audit: audit, live_tables_touched: false };
   const before = [await staticTableCount(env, 'ref_venues'), await staticTableCount(env, 'ref_team_aliases'), await staticTableCount(env, 'ref_players')];
