@@ -134,6 +134,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="warn" onclick="runJobButton('INCREMENTAL > Base Splits G5','incremental_base_splits_g5')">Splits G5</button>
 <button class="warn" onclick="runJobButton('INCREMENTAL > Base Splits G6','incremental_base_splits_g6')">Splits G6</button>
 <button class="audit" onclick="runJobButton('INCREMENTAL > Build Base Derived Metrics','incremental_base_derived_metrics')">Build Derived</button>
+<button class="audit" onclick="runJobButton('INCREMENTAL > Repair Missing Ref Players', 'repair_missing_ref_players')">Repair Ref Players</button>
 </div><div class="small">Incremental base is the one-time historical fill. Run each G button until remaining_in_group_after is 0. Derived metrics uses stored game logs only: no Gemini and no external calls.</div></div>
 <div class="card"><h2>Daily Incremental Temp</h2><div class="grid">
 <button class="warn" onclick="runJobButton('INCREMENTAL TEMP > Schedule Daily Refresh Test','schedule_incremental_temp_refresh_once')">Schedule Daily Temp Test</button>

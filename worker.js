@@ -1,7 +1,7 @@
-// AlphaDog v1.2.87 - Daily Incremental Temp Pipeline compatible worker
+// AlphaDog v1.2.88 - Missing Ref Player Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.87 - Daily Incremental Temp Pipeline";
-const SYSTEM_CODENAME = "Daily Incremental Temp Pipeline";
+const SYSTEM_VERSION = "v1.2.88 - Missing Ref Player Repair";
+const SYSTEM_CODENAME = "Missing Ref Player Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -105,6 +105,7 @@ const JOB_DISPLAY_LABELS = {
   incremental_base_splits_g5: "INCREMENTAL > Base Splits G5",
   incremental_base_splits_g6: "INCREMENTAL > Base Splits G6",
   incremental_base_derived_metrics: "INCREMENTAL > Build Base Derived Metrics",
+  repair_missing_ref_players: "INCREMENTAL > Repair Missing Ref Players",
   check_incremental_game_logs: "CHECK > Incremental Game Logs",
   check_incremental_player_splits: "CHECK > Incremental Player Splits",
   check_incremental_derived_metrics: "CHECK > Incremental Derived Metrics",
@@ -660,6 +661,7 @@ const JOBS = {
   incremental_base_splits_g5: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 5" },
   incremental_base_splits_g6: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 6" },
   incremental_base_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "derive rolling player metrics from game logs" },
+  repair_missing_ref_players: { prompt: null, tables: ["ref_players", "player_game_logs", "ref_player_splits"], note: "repair missing reference-player rows for valid historical game-log/split rows" },
   check_incremental_game_logs: { prompt: null, tables: ["player_game_logs"], note: "check incremental game log base coverage" },
   check_incremental_player_splits: { prompt: null, tables: ["ref_player_splits"], note: "check incremental player split base coverage" },
   check_incremental_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "check derived incremental metrics coverage" },
@@ -955,6 +957,7 @@ function executableJobNames() {
     "incremental_base_splits_g5",
     "incremental_base_splits_g6",
     "incremental_base_derived_metrics",
+    "repair_missing_ref_players",
     "check_incremental_game_logs",
     "check_incremental_player_splits",
     "check_incremental_derived_metrics",
@@ -5756,6 +5759,143 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
 
   return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.86 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
 }
+async function repairMissingRefPlayers(input, env) {
+  await ensureStaticReferenceTables(env);
+  const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
+  const limit = Math.max(1, Math.min(50, Number(input?.limit || 25)));
+  const beforeDistinct = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM (
+      SELECT DISTINCT g.player_id
+      FROM player_game_logs g
+      LEFT JOIN ref_players p ON p.player_id = g.player_id
+      WHERE g.season = ? AND p.player_id IS NULL
+      UNION
+      SELECT DISTINCT s.player_id
+      FROM ref_player_splits s
+      LEFT JOIN ref_players p ON p.player_id = s.player_id
+      WHERE s.season = ? AND p.player_id IS NULL
+    )
+  `).bind(season, season).first().catch(() => ({ c: 0 }));
+  const orphans = await env.DB.prepare(`
+    SELECT player_id, MAX(game_date) AS latest_game_date, MAX(team_id) AS latest_team_id, MAX(group_type) AS latest_group_type
+    FROM player_game_logs
+    WHERE season = ?
+      AND player_id NOT IN (SELECT player_id FROM ref_players)
+    GROUP BY player_id
+    UNION
+    SELECT s.player_id, NULL AS latest_game_date, NULL AS latest_team_id, MAX(s.group_type) AS latest_group_type
+    FROM ref_player_splits s
+    WHERE s.season = ?
+      AND s.player_id NOT IN (SELECT player_id FROM ref_players)
+    GROUP BY s.player_id
+    LIMIT ?
+  `).bind(season, season, limit).all();
+  const rows = orphans.results || [];
+  const insertStmt = env.DB.prepare(`
+    INSERT OR REPLACE INTO ref_players (
+      player_id, mlb_id, player_name, team_id, primary_position, role,
+      bats, throws, birth_date, age, active, source_name, source_confidence, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `);
+  const repaired = [];
+  const failed = [];
+  let apiFetches = 0;
+  for (const o of rows) {
+    const playerId = Number(o.player_id || 0);
+    if (!playerId) continue;
+    let person = null;
+    let sourceName = 'mlb_statsapi_people_orphan_repair';
+    let sourceConfidence = 'MEDIUM_REPAIRED_REFERENCE_FOR_HISTORICAL_LOGS';
+    try {
+      apiFetches++;
+      const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(playerId)}?hydrate=currentTeam`;
+      const fetched = await fetchJsonWithRetry(url, {}, 2, `repair_missing_ref_player_${playerId}`);
+      if (fetched.ok && fetched.data?.people?.length) {
+        person = fetched.data.people[0];
+        sourceConfidence = 'HIGH_FOR_MLB_PEOPLE_IDENTITY_MEDIUM_FOR_ACTIVE_STATUS';
+      } else {
+        failed.push({ player_id: playerId, stage: 'fetch_people', error: fetched.error || 'no_people_row' });
+      }
+    } catch (e) {
+      failed.push({ player_id: playerId, stage: 'fetch_people_exception', error: String(e?.message || e) });
+    }
+
+    const fallback = await env.DB.prepare(`
+      SELECT team_id, group_type,
+             CASE WHEN raw_json IS NOT NULL AND json_valid(raw_json) THEN json_extract(raw_json, '$.player.fullName') ELSE NULL END AS raw_player_name
+      FROM player_game_logs
+      WHERE player_id = ? AND season = ?
+      ORDER BY date(game_date) DESC
+      LIMIT 1
+    `).bind(playerId, season).first().catch(() => null);
+
+    const primary = person?.primaryPosition?.abbreviation || person?.primaryPosition?.code || null;
+    const currentTeamId = person?.currentTeam?.id ? MLB_TEAM_ABBR[Number(person.currentTeam.id)] : null;
+    const teamId = currentTeamId || fallback?.team_id || o.latest_team_id || null;
+    const role = normalizeRoleFromPosition(primary, person?.pitchHand?.code) || (String(fallback?.group_type || o.latest_group_type || '').toLowerCase() === 'pitching' ? 'PITCHER' : 'BATTER');
+    const playerName = person?.fullName || fallback?.raw_player_name || `MLB Player ${playerId}`;
+    const active = Number(input?.activate_repaired_players || 0) === 1 ? 1 : 0;
+
+    try {
+      const res = await insertStmt.bind(
+        playerId,
+        playerId,
+        playerName,
+        teamId,
+        primary,
+        role,
+        person?.batSide?.code || null,
+        person?.pitchHand?.code || null,
+        person?.birthDate || null,
+        ageFromBirthDate(person?.birthDate),
+        active,
+        sourceName,
+        sourceConfidence
+      ).run();
+      repaired.push({ player_id: playerId, player_name: playerName, team_id: teamId, role, active, changes: Number(res?.meta?.changes || 0), latest_game_date: o.latest_game_date || null });
+    } catch (e) {
+      failed.push({ player_id: playerId, stage: 'insert_ref_players', error: String(e?.message || e) });
+    }
+  }
+
+  const afterDistinct = await env.DB.prepare(`
+    SELECT COUNT(*) AS c FROM (
+      SELECT DISTINCT g.player_id
+      FROM player_game_logs g
+      LEFT JOIN ref_players p ON p.player_id = g.player_id
+      WHERE g.season = ? AND p.player_id IS NULL
+      UNION
+      SELECT DISTINCT s.player_id
+      FROM ref_player_splits s
+      LEFT JOIN ref_players p ON p.player_id = s.player_id
+      WHERE s.season = ? AND p.player_id IS NULL
+    )
+  `).bind(season, season).first().catch(() => ({ c: 0 }));
+  const afterLogRows = await env.DB.prepare(`
+    SELECT COUNT(*) AS c
+    FROM player_game_logs g
+    LEFT JOIN ref_players p ON p.player_id = g.player_id
+    WHERE g.season = ? AND p.player_id IS NULL
+  `).bind(season).first().catch(() => ({ c: 0 }));
+  const dataOk = Number(afterDistinct?.c || 0) === 0 && failed.length === 0;
+  return {
+    ok: dataOk,
+    data_ok: dataOk,
+    job: input.job || 'repair_missing_ref_players',
+    version: SYSTEM_VERSION,
+    status: dataOk ? 'pass' : 'partial_retry_needed',
+    season,
+    before_orphan_distinct_players: Number(beforeDistinct?.c || 0),
+    repaired_count: repaired.length,
+    after_orphan_distinct_players: Number(afterDistinct?.c || 0),
+    after_orphan_game_log_rows: Number(afterLogRows?.c || 0),
+    external_api_calls: apiFetches,
+    repaired,
+    errors: failed,
+    live_tables_touched: true,
+    note: 'Repairs missing ref_players rows for valid historical incremental logs/splits. Repaired rows default active=0 so the active roster universe stays stable; rerun derived metrics after this job.'
+  };
+}
 async function checkIncrementalBaseData(input, env, target = 'all') {
   await ensureStaticReferenceTables(env);
   await ensureIncrementalBaseTables(env);
@@ -5919,6 +6059,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (/^incremental_base_game_logs_g[1-6]$/.test(jobName)) return await runIncrementalBaseGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (/^incremental_base_splits_g[1-6]$/.test(jobName)) return await runIncrementalBaseSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "incremental_base_derived_metrics") return await buildIncrementalBaseDerivedMetrics({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "repair_missing_ref_players") return await repairMissingRefPlayers({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "check_incremental_game_logs") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'game_logs');
   if (jobName === "check_incremental_player_splits") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'splits');
   if (jobName === "check_incremental_derived_metrics") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'derived');
