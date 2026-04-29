@@ -1,7 +1,7 @@
-// AlphaDog v1.2.77 - Static Game Logs Resume Repair compatible worker
+// AlphaDog v1.2.78 - Static Game Logs Throttle Guard compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.77 - Static Game Logs Resume Repair";
-const SYSTEM_CODENAME = "Static Game Logs Resume Repair";
+const SYSTEM_VERSION = "v1.2.78 - Static Game Logs Throttle Guard";
+const SYSTEM_CODENAME = "Static Game Logs Throttle Guard";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -4783,7 +4783,7 @@ async function syncStaticPlayerGameLogs(input, env) {
   await ensureStaticReferenceTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const group = staticGroupFromJob(input.job, 'scrape_static_game_logs') || 1;
-  const hardLimit = Math.max(1, Math.min(Number(input?.limit || 10), 15));
+  const hardLimit = Math.max(1, Math.min(Number(input?.limit || 5), 5));
 
   let resetPerformed = false;
   let resetReason = null;
@@ -4900,13 +4900,13 @@ async function syncStaticPlayerGameLogs(input, env) {
     remaining_in_group_after: remainingInGroup,
     needs_continue: remainingInGroup > 0,
     api_endpoint_pattern: "/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}",
-    root_cause_fixed: "v1.2.76 selected a full 130-player static group and fetched until Cloudflare subrequest exhaustion. v1.2.77 changes game logs to the same resumable small-batch progress model as v1.2.75 splits, with G1 wiping only on a fresh rebuild start.",
+    root_cause_fixed: "v1.2.76 selected a full 130-player static group and fetched until Cloudflare subrequest exhaustion. v1.2.77 added resumable 10-player batches. v1.2.78 reduces game-log batches to 5 players and adds a same-job running guard to stop duplicate Safari retry tasks.",
     reset_performed: resetPerformed,
     reset_reason: resetReason,
     errors: errors.slice(0, 10),
     no_log_samples: noLogSamples.slice(0, 10),
-    estimated_seconds: "10-35 seconds per resumable batch",
-    note: "Resumable static game-log scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. G1 wipes only on a fresh G1 start with no existing G1 progress, then resumes safely on repeated clicks. Rolling 20/10/5 windows should be derived internally from this table later."
+    estimated_seconds: "8-25 seconds per 5-player resumable batch",
+    note: "Resumable static game-log scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. v1.2.78 uses 5-player batches to avoid Safari/Worker load failures. G1 wipes only on a fresh G1 start with no existing G1 progress. Rolling 20/10/5 windows should be derived internally later."
   };
 }
 
@@ -5093,6 +5093,29 @@ async function executeTaskJob(jobName, body, slate, env) {
   return await runJob({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 }
 
+async function guardLongStaticJobAlreadyRunning(env, jobName) {
+  if (!/^scrape_static_game_logs_g[1-6]$/.test(String(jobName || ""))) return null;
+  await env.DB.prepare(`
+    UPDATE task_runs
+    SET status='stale_reset',
+        finished_at=CURRENT_TIMESTAMP,
+        error='v1.2.78 static game-log same-job stale reset before new manual run'
+    WHERE job_name=?
+      AND status='running'
+      AND started_at < datetime('now','-2 minutes')
+  `).bind(jobName).run().catch(() => null);
+  const row = await env.DB.prepare(`
+    SELECT task_id, job_name, status, started_at
+    FROM task_runs
+    WHERE job_name=?
+      AND status='running'
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).bind(jobName).first().catch(() => null);
+  if (!row) return null;
+  return { ok: true, data_ok: false, job: jobName, version: SYSTEM_VERSION, status: 'already_running_wait', active_task_id: row.task_id, active_started_at: row.started_at, retry_instruction: 'Do not tap again yet. Wait 60-90 seconds, then check task_runs or run the same button once.', root_cause_fixed: 'v1.2.78 prevents duplicate same-group static game-log tasks when Safari/control-room retries after a load failure.', note: 'No new task was started because the same static game-log group is already running.' };
+}
+
 async function handleTaskRun(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   const body = await safeJson(request);
@@ -5113,6 +5136,12 @@ async function handleTaskRun(request, env) {
       registry_audit: jobRegistryRequiredAudit(),
       note: "Rejected before task_runs insert. No failed task_run was created for this invalid job name."
     }, { status: 400 });
+  }
+
+  const longStaticGuard = await guardLongStaticJobAlreadyRunning(env, jobName);
+  if (longStaticGuard) {
+    await logSystemEvent(env, { trigger_source: "control_room_button", action_label: displayLabelForJob(jobName), job_name: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "already_running_wait", http_status: 200, task_id: taskId, input_json: input, output_preview: longStaticGuard });
+    return Response.json(longStaticGuard, { status: 200 });
   }
 
   await env.DB.prepare(`
