@@ -1,7 +1,7 @@
-// AlphaDog v1.2.94 - Phase 1 Route Repair compatible worker
+// AlphaDog v1.2.95 - Phase 1 Auto Runner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.94 - Phase 1 Route Repair";
-const SYSTEM_CODENAME = "Phase 1 Route Repair";
+const SYSTEM_VERSION = "v1.2.95 - Phase 1 Auto Runner";
+const SYSTEM_CODENAME = "Phase 1 Auto Runner";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -6195,10 +6195,22 @@ async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
   const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Phase 1 Tick or wait for a cron if wired later." };
+  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
   const requestId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)").bind(requestId, slate.slate_date).run();
-  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"4-9 minutes if advanced by repeated ticks", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. No Gemini, no weather/news, no final scoring." };
+  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually or let the scheduler call it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"usually 10-30 seconds after one auto tick; lineups may return retry_later and not block", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
+}
+
+function everydayPhase1JobForStep(step) {
+  if (step === "games_markets") return "scrape_games_markets";
+  if (step === "starters") return "scrape_starters_mlb_api";
+  if (step === "bullpens") return "scrape_bullpens_mlb_api";
+  if (step === "lineups") return "scrape_lineups_mlb_api";
+  if (step === "usage") return "scrape_recent_usage_mlb_api";
+  if (step === "candidates_hits") return "build_edge_candidates_hits";
+  if (step === "candidates_rbi") return "build_edge_candidates_rbi";
+  if (step === "candidates_rfi") return "build_edge_candidates_rfi";
+  return null;
 }
 
 async function runEverydayPhase1Tick(input, env) {
@@ -6207,53 +6219,53 @@ async function runEverydayPhase1Tick(input, env) {
   const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
   if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
   const requestId = row.request_id;
-  const step = row.current_step || "games_markets";
+  let currentStep = row.current_step || "games_markets";
+  const startedAt = Date.now();
+  const maxSteps = Number(input?.max_steps || 8);
+  const maxMs = Number(input?.max_ms || 22000);
+  const processed = [];
   if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
-  let jobName;
-  if (step === "games_markets") jobName = "scrape_games_markets";
-  else if (step === "starters") jobName = "scrape_starters_mlb_api";
-  else if (step === "bullpens") jobName = "scrape_bullpens_mlb_api";
-  else if (step === "lineups") jobName = "scrape_lineups_mlb_api";
-  else if (step === "usage") jobName = "scrape_recent_usage_mlb_api";
-  else if (step === "candidates_hits") jobName = "build_edge_candidates_hits";
-  else if (step === "candidates_rbi") jobName = "build_edge_candidates_rbi";
-  else if (step === "candidates_rfi") jobName = "build_edge_candidates_rfi";
-  else if (step === "completed") {
-    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
-    return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"already_completed", request_id:requestId, slate_date:slate.slate_date, live_tables_touched:false };
-  } else {
-    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?").bind("unknown_step_" + step, requestId).run();
-    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_unknown_step", request_id:requestId, step, live_tables_touched:false };
-  }
   try {
-    const result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
-    if (!result || result.ok === false) throw new Error(String(result?.error || result?.status || "step_failed"));
-    const nextStep = nextEverydayPhase1Step(step);
-    const complete = nextStep === "completed";
-    await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(nextStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed_step:step, jobName, result }).slice(0, 4000), requestId).run();
-    const check = complete ? await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env) : null;
-    return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, request_id:requestId, slate_date:slate.slate_date, processed_step:step, routed_job:jobName, next_step:nextStep, phase1_complete:complete, step_result:result, final_check:check, live_tables_touched:true, note: complete ? "Everyday Phase 1 baseline completed. Run Check Baseline to verify readiness." : "Everyday Phase 1 advanced one bounded step. Run tick again for the next step." };
+    for (let i = 0; i < maxSteps; i++) {
+      if (currentStep === "completed") break;
+      if ((Date.now() - startedAt) > maxMs) break;
+      const step = currentStep;
+      const jobName = everydayPhase1JobForStep(step);
+      if (!jobName) {
+        await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?").bind("unknown_step_" + step, requestId).run();
+        return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_unknown_step", request_id:requestId, step, processed, live_tables_touched:false };
+      }
+      const t0 = Date.now();
+      const result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
+      const duration_ms = Date.now() - t0;
+      if (!result || result.ok === false) throw new Error(String(result?.error || result?.status || "step_failed"));
+      const nextStep = nextEverydayPhase1Step(step);
+      processed.push({ step, routed_job:jobName, next_step:nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, live_tables_touched:true });
+      currentStep = nextStep;
+      const complete = currentStep === "completed";
+      await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed, last_result:result }).slice(0,4000), requestId).run();
+      if (complete) break;
+    }
+    const complete = currentStep === "completed";
+    const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:complete ? "completed" : "partial_continue", request_id:requestId, slate_date:slate.slate_date, processed_steps:processed.length, processed, next_step:currentStep, phase1_complete:complete, final_check:check, elapsed_ms:Date.now()-startedAt, live_tables_touched:processed.length>0, note:complete ? "Everyday Phase 1 auto-run completed. Lineups can be retry-later/non-blocking if not posted." : "Everyday Phase 1 auto-run stopped at safety budget. Run Baseline Tick again to continue." };
   } catch (err) {
     const error = String(err?.message || err);
-    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=? WHERE request_id=?").bind(error, JSON.stringify({ processed_step:step, jobName, error }).slice(0,4000), requestId).run().catch(() => null);
-    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_exception", request_id:requestId, slate_date:slate.slate_date, processed_step:step, routed_job:jobName, error, live_tables_touched:false };
+    await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=? WHERE request_id=?").bind(error, JSON.stringify({ processed, error }).slice(0,4000), requestId).run().catch(() => null);
+    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_exception", request_id:requestId, slate_date:slate.slate_date, processed, error, live_tables_touched:processed.length>0 };
   }
 }
 
 async function runEverydayPhase1Direct(input, env) {
   const slate = resolveSlateDate(input || {});
   const scheduled = await scheduleEverydayPhase1Once({ ...(input || {}), job:"everyday_phase1_all_direct", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-  const ticks = [];
-  for (let i = 0; i < 8; i++) {
-    const tick = await runEverydayPhase1Tick({ ...(input || {}), job:"run_everyday_phase1_tick", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-    ticks.push(tick);
-    if (!tick.ok || tick.phase1_complete || tick.status === "idle_no_due_phase1_run") break;
-  }
+  const tick = await runEverydayPhase1Tick({ ...(input || {}), job:"run_everyday_phase1_tick", slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:8, max_ms:26000 }, env);
   const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-  return { ok:ticks.every(t => t.ok !== false) && check.ok, data_ok:!!check.data_ok, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:check.data_ok ? "pass" : "needs_review", slate_date:slate.slate_date, scheduled, ticks, check, live_tables_touched:true, warning:"Direct mode can be heavier. Prefer Schedule Baseline Test + Run Baseline Tick on iPhone." };
+  return { ok:tick.ok !== false && check.ok, data_ok:!!check.data_ok, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:check.data_ok ? "pass" : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, live_tables_touched:true, warning:"Direct mode runs the same bounded auto-run path. Schedule + Tick is still preferred for iPhone testing." };
 }
 
 async function checkEverydayPhase1(input, env) {
+  await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
   const d = slate.slate_date;
   const counts = {};
@@ -6270,7 +6282,7 @@ async function checkEverydayPhase1(input, env) {
   await c("rbi_candidates", "SELECT COUNT(*) FROM edge_candidates_rbi WHERE slate_date=?", d);
   await c("rfi_candidates", "SELECT COUNT(*) FROM edge_candidates_rfi WHERE slate_date=?", d);
   await c("board_queue_rows", "SELECT COUNT(*) FROM board_factor_queue WHERE slate_date=?", d);
-  const latestRun = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 1").bind(d).first().catch(() => null);
+  const latestRun = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_preview,1,1800) AS output_preview FROM everyday_phase1_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 1").bind(d).first().catch(() => null);
   const expectedTeams = counts.games * 2;
   const failures = [];
   const warnings = [];
@@ -6284,8 +6296,14 @@ async function checkEverydayPhase1(input, env) {
   if (counts.hits_candidates <= 0) warnings.push("HITS_CANDIDATES_EMPTY");
   if (counts.rbi_candidates <= 0) warnings.push("RBI_CANDIDATES_EMPTY");
   if (counts.rfi_candidates <= 0) warnings.push("RFI_CANDIDATES_EMPTY");
+  let phase1AgeSeconds = null;
+  if (latestRun?.started_at && !latestRun?.finished_at) {
+    const ageRow = await env.DB.prepare("SELECT ROUND((julianday(CURRENT_TIMESTAMP)-julianday(?))*86400,1) AS age_seconds").bind(latestRun.started_at).first().catch(() => null);
+    phase1AgeSeconds = Number(ageRow?.age_seconds || 0);
+    if (phase1AgeSeconds > 600) warnings.push("PHASE1_RUNNING_LONGER_THAN_EXPECTED_RUN_TICK_AGAIN_OR_PATCH");
+  }
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE", counts, expected_teams:expectedTeams, latest_phase1_run:latestRun, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Weather, news/scratch context, line movement scoring, final math, and final candidate ranking are later phases." };
+  return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE_AUTO_RUNNER", counts, expected_teams:expectedTeams, latest_phase1_run:latestRun, phase1_age_seconds:phase1AgeSeconds, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Today-slate only; no static remine, no incremental history, no Gemini, no weather/news, no final scoring. Lineups may be retry-later/non-blocking if not posted." };
 }
 
 async function executeTaskJob(jobName, body, slate, env) {
@@ -6319,7 +6337,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "schedule_everyday_phase1_once") return await scheduleEverydayPhase1Once({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_everyday_phase1_tick") return await runEverydayPhase1Tick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_everyday_phase1") return await checkEverydayPhase1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "everyday_phase1_all_direct") return await runEverydayPhase1AllDirect({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "everyday_phase1_all_direct") return await runEverydayPhase1Direct({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
