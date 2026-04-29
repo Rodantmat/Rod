@@ -1,7 +1,7 @@
-// AlphaDog v1.2.80 - Static Temp Staging Refresh compatible worker
+// AlphaDog v1.2.81 - Static Temp Certification Audit compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.80 - Static Temp Staging Refresh";
-const SYSTEM_CODENAME = "Static Temp Staging Refresh";
+const SYSTEM_VERSION = "v1.2.81 - Static Temp Certification Audit";
+const SYSTEM_CODENAME = "Static Temp Certification Audit";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -81,6 +81,9 @@ const JOB_DISPLAY_LABELS = {
   check_static_temp_team_aliases: "CHECK TEMP > Team Aliases Temp",
   check_static_temp_players: "CHECK TEMP > Players Temp",
   check_static_temp_all: "CHECK TEMP > All Static Temp",
+  audit_static_temp_certification: "CERTIFY TEMP > Audit Static Temp",
+  promote_static_temp_to_live: "CERTIFY TEMP > Promote Temp To Live",
+  clean_static_temp_tables: "CERTIFY TEMP > Clean Static Temp",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -610,6 +613,9 @@ const JOBS = {
   check_static_temp_team_aliases: { prompt: null, tables: ["ref_team_aliases_temp"], note: "check static temp team alias staging table" },
   check_static_temp_players: { prompt: null, tables: ["ref_players_temp"], note: "check static temp player staging table" },
   check_static_temp_all: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "check all static temp staging tables" },
+  audit_static_temp_certification: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp", "static_temp_certification_audits"], note: "certify temp static tables before promotion" },
+  promote_static_temp_to_live: { prompt: null, tables: ["ref_venues", "ref_team_aliases", "ref_players", "ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "promote certified temp static tables to live trusted tables" },
+  clean_static_temp_tables: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "clean temp static staging tables after successful promotion" },
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
   check_static_players: { prompt: null, tables: ["ref_players"], note: "check static player reference" },
@@ -744,7 +750,7 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    // v1.2.80: all old scheduled mining/full-run work stays paused.
+    // v1.2.81: all old scheduled mining/full-run work stays paused.
     // Only the protected temp-only static staging refresh is allowed to run on cron.
     ctx.waitUntil((async () => {
       const cron = event?.cron || null;
@@ -866,6 +872,9 @@ function executableJobNames() {
     "check_static_temp_team_aliases",
     "check_static_temp_players",
     "check_static_temp_all",
+    "audit_static_temp_certification",
+    "promote_static_temp_to_live",
+    "clean_static_temp_tables",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -5109,7 +5118,9 @@ async function ensureStaticTempReferenceTables(env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_team_aliases_temp (alias_type TEXT NOT NULL, raw_alias TEXT NOT NULL, canonical_name TEXT, canonical_team_id TEXT, mlb_id INTEGER, confidence TEXT, action TEXT, notes TEXT, source_name TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (alias_type, raw_alias))`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_players_temp (player_id INTEGER PRIMARY KEY, mlb_id INTEGER, player_name TEXT, team_id TEXT, primary_position TEXT, role TEXT, bats TEXT, throws TEXT, birth_date TEXT, age INTEGER, active INTEGER DEFAULT 1, source_name TEXT, source_confidence TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS static_temp_refresh_runs (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, run_after TEXT, current_step TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, output_json TEXT, error TEXT)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS static_temp_certification_audits (audit_id TEXT PRIMARY KEY, grade TEXT NOT NULL, data_ok INTEGER NOT NULL, status TEXT NOT NULL, temp_refresh_request_id TEXT, temp_refresh_finished_at TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, counts_json TEXT, failures_json TEXT, warnings_json TEXT, output_json TEXT)`).run();
 }
+
 
 async function syncStaticVenuesTemp(input, env) {
   await ensureStaticTempReferenceTables(env);
@@ -5268,7 +5279,145 @@ async function checkStaticTempData(input, env, target) {
     samples[c.table] = rows.results || [];
   }
   const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-  return { ok: true, data_ok: dataOk, job: input.job || `check_static_temp_${target}`, version: SYSTEM_VERSION, status: dataOk ? 'pass' : 'needs_scrape_or_review', counts, quality, latest_temp_refresh: latestRun, samples, live_tables_touched: false, note: 'Temp checks are read-only. They validate staging tables only. No promotion to live exists in this build.' };
+  return { ok: true, data_ok: dataOk, job: input.job || `check_static_temp_${target}`, version: SYSTEM_VERSION, status: dataOk ? 'pass' : 'needs_scrape_or_review', counts, quality, latest_temp_refresh: latestRun, samples, live_tables_touched: false, note: 'Temp checks are read-only. They validate staging tables only. Use CERTIFY TEMP > Audit Static Temp before promotion.' };
+}
+
+
+function pctDiff(a, b) {
+  const x = Number(a || 0), y = Number(b || 0);
+  if (!x && !y) return 0;
+  const base = Math.max(1, Math.max(Math.abs(x), Math.abs(y)));
+  return Math.abs(x - y) / base;
+}
+
+async function countFirst(env, sql, binds = []) {
+  let q = env.DB.prepare(sql);
+  for (const b of binds) q = q.bind(b);
+  const row = await q.first().catch(() => null);
+  return Number(row?.c || row?.rows_count || 0);
+}
+
+async function sampleRows(env, sql, binds = []) {
+  let q = env.DB.prepare(sql);
+  for (const b of binds) q = q.bind(b);
+  const rows = await q.all().catch(() => ({ results: [] }));
+  return rows.results || [];
+}
+
+function auditGradeFromFailuresWarnings(failures, warnings) {
+  if (failures.length > 0) return 'FAIL';
+  const serious = warnings.filter(w => w.severity === 'HIGH').length;
+  if (serious > 0) return 'B';
+  if (warnings.length > 0) return 'A';
+  return 'A+';
+}
+
+async function auditStaticTempCertification(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const counts = {
+    ref_venues_temp: await staticTableCount(env, 'ref_venues_temp'),
+    ref_team_aliases_temp: await staticTableCount(env, 'ref_team_aliases_temp'),
+    ref_players_temp: await staticTableCount(env, 'ref_players_temp'),
+    ref_venues_live: await staticTableCount(env, 'ref_venues'),
+    ref_team_aliases_live: await staticTableCount(env, 'ref_team_aliases'),
+    ref_players_live: await staticTableCount(env, 'ref_players')
+  };
+  const failures = [];
+  const warnings = [];
+  const vRows = counts.ref_venues_temp.rows_count;
+  const aRows = counts.ref_team_aliases_temp.rows_count;
+  const pRows = counts.ref_players_temp.rows_count;
+  if (!latestRun || latestRun.status !== 'completed') failures.push({ code: 'LATEST_TEMP_REFRESH_NOT_COMPLETED', detail: latestRun || null });
+  if (!counts.ref_venues_temp.exists || vRows < 30) failures.push({ code: 'VENUES_TEMP_ROW_COUNT_LOW', rows_count: vRows, required_min: 30 });
+  if (!counts.ref_team_aliases_temp.exists || aRows < 120) failures.push({ code: 'ALIASES_TEMP_ROW_COUNT_LOW', rows_count: aRows, required_min: 120 });
+  if (!counts.ref_players_temp.exists || pRows < 750) failures.push({ code: 'PLAYERS_TEMP_ROW_COUNT_LOW', rows_count: pRows, required_min: 750 });
+
+  const duplicatePlayers = await sampleRows(env, `SELECT player_id, COUNT(*) AS rows_count FROM ref_players_temp GROUP BY player_id HAVING COUNT(*) > 1 LIMIT 20`);
+  const duplicateAliases = await sampleRows(env, `SELECT alias_type, raw_alias, COUNT(*) AS rows_count FROM ref_team_aliases_temp GROUP BY alias_type, raw_alias HAVING COUNT(*) > 1 LIMIT 20`);
+  const duplicateVenues = await sampleRows(env, `SELECT team_id, COUNT(*) AS rows_count FROM ref_venues_temp GROUP BY team_id HAVING COUNT(*) > 1 LIMIT 20`);
+  if (duplicatePlayers.length) failures.push({ code: 'DUPLICATE_PLAYER_IDS', rows: duplicatePlayers });
+  if (duplicateAliases.length) failures.push({ code: 'DUPLICATE_ALIASES', rows: duplicateAliases });
+  if (duplicateVenues.length) failures.push({ code: 'DUPLICATE_VENUE_TEAM_IDS', rows: duplicateVenues });
+
+  const venueCriticalNulls = await countFirst(env, `SELECT COUNT(*) AS c FROM ref_venues_temp WHERE venue_id IS NULL OR team_id IS NULL OR TRIM(team_id)='' OR mlb_venue_name IS NULL OR TRIM(mlb_venue_name)=''`);
+  const aliasCriticalNulls = await countFirst(env, `SELECT COUNT(*) AS c FROM ref_team_aliases_temp WHERE raw_alias IS NULL OR TRIM(raw_alias)='' OR action IS NULL OR TRIM(action)='' OR (action='map' AND (canonical_team_id IS NULL OR TRIM(canonical_team_id)=''))`);
+  const playerCriticalNulls = await countFirst(env, `SELECT COUNT(*) AS c FROM ref_players_temp WHERE player_id IS NULL OR player_name IS NULL OR TRIM(player_name)='' OR team_id IS NULL OR TRIM(team_id)='' OR role IS NULL OR TRIM(role)=''`);
+  if (venueCriticalNulls) failures.push({ code: 'VENUE_CRITICAL_NULLS', rows_count: venueCriticalNulls });
+  if (aliasCriticalNulls) failures.push({ code: 'ALIAS_CRITICAL_NULLS', rows_count: aliasCriticalNulls });
+  if (playerCriticalNulls) failures.push({ code: 'PLAYER_CRITICAL_NULLS', rows_count: playerCriticalNulls });
+
+  const invalidRoles = await sampleRows(env, `SELECT role, COUNT(*) AS rows_count FROM ref_players_temp WHERE role NOT IN ('BATTER','PITCHER') OR role IS NULL GROUP BY role LIMIT 20`);
+  const invalidPlayerTeams = await sampleRows(env, `SELECT p.team_id, COUNT(*) AS rows_count FROM ref_players_temp p LEFT JOIN ref_team_aliases_temp a ON a.alias_type='team' AND a.raw_alias=p.team_id AND a.action='map' WHERE a.raw_alias IS NULL GROUP BY p.team_id LIMIT 20`);
+  if (invalidRoles.length) failures.push({ code: 'INVALID_PLAYER_ROLES', rows: invalidRoles });
+  if (invalidPlayerTeams.length) failures.push({ code: 'PLAYER_TEAM_IDS_NOT_IN_TEMP_ALIASES', rows: invalidPlayerTeams });
+
+  const roleSplit = await sampleRows(env, `SELECT role, COUNT(*) AS rows_count FROM ref_players_temp GROUP BY role ORDER BY role`);
+  const teamRosterCounts = await sampleRows(env, `SELECT team_id, COUNT(*) AS rows_count FROM ref_players_temp GROUP BY team_id ORDER BY team_id`);
+  const lowRosterTeams = teamRosterCounts.filter(r => Number(r.rows_count || 0) < 20);
+  const distinctTeams = teamRosterCounts.length;
+  if (distinctTeams < 30) failures.push({ code: 'PLAYER_TEAM_COVERAGE_LOW', distinct_teams: distinctTeams, required_min: 30 });
+  if (lowRosterTeams.length) warnings.push({ code: 'LOW_ROSTER_TEAM_COUNTS', severity: 'HIGH', rows: lowRosterTeams });
+  const batterCount = roleSplit.find(r => r.role === 'BATTER')?.rows_count || 0;
+  const pitcherCount = roleSplit.find(r => r.role === 'PITCHER')?.rows_count || 0;
+  if (Number(batterCount) < 300 || Number(pitcherCount) < 300) failures.push({ code: 'PLAYER_ROLE_BALANCE_BAD', role_split: roleSplit });
+
+  const venueLiveDiff = Math.abs(vRows - counts.ref_venues_live.rows_count);
+  const aliasLiveDiffPct = pctDiff(aRows, counts.ref_team_aliases_live.rows_count);
+  const playerLiveDiffPct = pctDiff(pRows, counts.ref_players_live.rows_count);
+  if (venueLiveDiff > 0) warnings.push({ code: 'VENUE_TEMP_LIVE_COUNT_DIFF', severity: 'LOW', temp_rows: vRows, live_rows: counts.ref_venues_live.rows_count });
+  if (aliasLiveDiffPct > 0.05) warnings.push({ code: 'ALIAS_TEMP_LIVE_COUNT_DIFF_OVER_5_PERCENT', severity: 'MEDIUM', temp_rows: aRows, live_rows: counts.ref_team_aliases_live.rows_count });
+  if (playerLiveDiffPct > 0.05) warnings.push({ code: 'PLAYER_TEMP_LIVE_COUNT_DIFF_OVER_5_PERCENT', severity: 'MEDIUM', temp_rows: pRows, live_rows: counts.ref_players_live.rows_count });
+  const staleRows = await countFirst(env, `SELECT COUNT(*) AS c FROM ref_players_temp WHERE updated_at IS NULL OR datetime(updated_at) < datetime('now', '-2 days')`);
+  if (staleRows) warnings.push({ code: 'STALE_PLAYER_TEMP_TIMESTAMPS', severity: 'MEDIUM', rows_count: staleRows });
+
+  const grade = auditGradeFromFailuresWarnings(failures, warnings);
+  const dataOk = grade === 'A+' || grade === 'A';
+  const status = dataOk ? 'certified' : 'blocked';
+  const auditId = crypto.randomUUID();
+  const result = { ok: true, data_ok: dataOk, job: input.job || 'audit_static_temp_certification', version: SYSTEM_VERSION, status, certification_grade: grade, promotion_allowed: dataOk, temp_refresh: latestRun, counts: Object.values(counts), quality: { duplicate_players: duplicatePlayers, duplicate_aliases: duplicateAliases, duplicate_venues: duplicateVenues, role_split: roleSplit, team_roster_counts: teamRosterCounts, failures, warnings }, live_tables_touched: false, note: dataOk ? 'Static temp certification passed. Promotion is allowed in this build.' : 'Static temp certification blocked promotion. Fix failures before promotion.' };
+  await env.DB.prepare(`INSERT OR REPLACE INTO static_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, temp_refresh_finished_at, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, grade, dataOk ? 1 : 0, status, latestRun?.request_id || null, latestRun?.finished_at || null, JSON.stringify(Object.values(counts)), JSON.stringify(failures), JSON.stringify(warnings), JSON.stringify(result)).run();
+  return { ...result, audit_id: auditId };
+}
+
+async function latestStaticTempAudit(env) {
+  await ensureStaticTempReferenceTables(env);
+  const row = await env.DB.prepare(`SELECT audit_id, grade, data_ok, status, temp_refresh_request_id, temp_refresh_finished_at, created_at, output_json FROM static_temp_certification_audits ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  if (!row) return null;
+  let parsed = null;
+  try { parsed = JSON.parse(row.output_json || '{}'); } catch (_) {}
+  return { ...row, parsed };
+}
+
+async function promoteStaticTempToLive(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, finished_at FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const audit = await latestStaticTempAudit(env);
+  if (!latestRun || latestRun.status !== 'completed') return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_no_completed_temp_refresh', latest_temp_refresh: latestRun, live_tables_touched: false };
+  if (!audit || !['A+','A'].includes(String(audit.grade || ''))) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_no_certified_audit', latest_audit: audit, live_tables_touched: false };
+  if (audit.temp_refresh_request_id !== latestRun.request_id) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_audit_not_for_latest_refresh', latest_temp_refresh: latestRun, latest_audit: audit, live_tables_touched: false };
+  const before = [await staticTableCount(env, 'ref_venues'), await staticTableCount(env, 'ref_team_aliases'), await staticTableCount(env, 'ref_players')];
+  const tempCounts = [await staticTableCount(env, 'ref_venues_temp'), await staticTableCount(env, 'ref_team_aliases_temp'), await staticTableCount(env, 'ref_players_temp')];
+  const tempMap = Object.fromEntries(tempCounts.map(c => [c.table, c.rows_count]));
+  if ((tempMap.ref_venues_temp || 0) < 30 || (tempMap.ref_team_aliases_temp || 0) < 120 || (tempMap.ref_players_temp || 0) < 750) return { ok: false, data_ok: false, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'blocked_temp_counts_dropped_after_audit', temp_counts: tempCounts, live_tables_touched: false };
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM ref_venues`),
+    env.DB.prepare(`INSERT INTO ref_venues (venue_id, team_id, mlb_venue_name, city, state, roof_status, surface_type, altitude_ft, left_field_dimension_ft, center_field_dimension_ft, right_field_dimension_ft, source_name, source_confidence, notes, updated_at) SELECT venue_id, team_id, mlb_venue_name, city, state, roof_status, surface_type, altitude_ft, left_field_dimension_ft, center_field_dimension_ft, right_field_dimension_ft, source_name, source_confidence, notes, updated_at FROM ref_venues_temp`),
+    env.DB.prepare(`DELETE FROM ref_team_aliases`),
+    env.DB.prepare(`INSERT INTO ref_team_aliases (alias_type, raw_alias, canonical_name, canonical_team_id, mlb_id, confidence, action, notes, source_name, updated_at) SELECT alias_type, raw_alias, canonical_name, canonical_team_id, mlb_id, confidence, action, notes, source_name, updated_at FROM ref_team_aliases_temp`),
+    env.DB.prepare(`DELETE FROM ref_players`),
+    env.DB.prepare(`INSERT INTO ref_players (player_id, mlb_id, player_name, team_id, primary_position, role, bats, throws, birth_date, age, active, source_name, source_confidence, updated_at) SELECT player_id, mlb_id, player_name, team_id, primary_position, role, bats, throws, birth_date, age, active, source_name, source_confidence, updated_at FROM ref_players_temp`)
+  ]);
+  const after = [await staticTableCount(env, 'ref_venues'), await staticTableCount(env, 'ref_team_aliases'), await staticTableCount(env, 'ref_players')];
+  return { ok: true, data_ok: true, job: input.job || 'promote_static_temp_to_live', version: SYSTEM_VERSION, status: 'promoted', certification_grade: audit.grade, audit_id: audit.audit_id, temp_refresh_request_id: latestRun.request_id, before_counts: before, temp_counts: tempCounts, after_counts: after, live_tables_touched: true, note: 'Certified temp static tables were promoted to live trusted static tables. Temp tables were not cleaned yet; run Clean Static Temp after confirming promotion.' };
+}
+
+async function cleanStaticTempTables(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const before = [await staticTableCount(env, 'ref_venues_temp'), await staticTableCount(env, 'ref_team_aliases_temp'), await staticTableCount(env, 'ref_players_temp')];
+  await env.DB.batch([env.DB.prepare(`DELETE FROM ref_venues_temp`), env.DB.prepare(`DELETE FROM ref_team_aliases_temp`), env.DB.prepare(`DELETE FROM ref_players_temp`)]);
+  const after = [await staticTableCount(env, 'ref_venues_temp'), await staticTableCount(env, 'ref_team_aliases_temp'), await staticTableCount(env, 'ref_players_temp')];
+  return { ok: true, data_ok: true, job: input.job || 'clean_static_temp_tables', version: SYSTEM_VERSION, status: 'temp_cleaned', before_counts: before, after_counts: after, live_tables_touched: false, note: 'Only _temp staging tables were cleaned. Certification audit logs and live trusted tables were preserved.' };
 }
 
 
@@ -5332,6 +5481,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "check_static_temp_team_aliases") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_team_aliases_temp");
   if (jobName === "check_static_temp_players") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_players_temp");
   if (jobName === "check_static_temp_all") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "all");
+  if (jobName === "audit_static_temp_certification") return await auditStaticTempCertification({ ...(body || {}), job: jobName }, env);
+  if (jobName === "promote_static_temp_to_live") return await promoteStaticTempToLive({ ...(body || {}), job: jobName }, env);
+  if (jobName === "clean_static_temp_tables") return await cleanStaticTempTables({ ...(body || {}), job: jobName }, env);
   if (jobName === "check_static_venues") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_venues");
   if (jobName === "check_static_team_aliases") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_team_aliases");
   if (jobName === "check_static_players") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_players");

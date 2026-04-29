@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.2.80 - Static Temp Staging Refresh</div>
+<div id="versionTag">v1.2.81 - Static Temp Certification Audit</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -116,6 +116,9 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('STATIC > Scrape BvP Current Slate','scrape_static_bvp_current_slate')">BvP Slate</button>
 <button class="audit" onclick="runJobButton('STATIC TEMP > Schedule Weekly Refresh Test','schedule_static_temp_refresh_once')">Schedule Static Temp</button>
 <button class="audit" onclick="runJobButton('STATIC TEMP > Run One Refresh Tick','run_static_temp_refresh_tick')">Run Temp Tick</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Audit Static Temp','audit_static_temp_certification')">Audit Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Promote Temp To Live','promote_static_temp_to_live')">Promote Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Clean Static Temp','clean_static_temp_tables')">Clean Temp</button>
 </div><div class="small">Static jobs are manual. Players G1 wipes ref_players and G2-G6 append. Splits are resumable small batches. Run Test 5 first. Then run the same Splits G button until remaining_in_group_after is 0 before moving on. Logs G1 wipes the target table, then G2-G6 append.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
@@ -140,6 +143,9 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="audit" onclick="runJobButton('CHECK TEMP > Static Venues Temp','check_static_temp_venues')">Temp Venues</button>
 <button class="audit" onclick="runJobButton('CHECK TEMP > Team Aliases Temp','check_static_temp_team_aliases')">Temp Aliases</button>
 <button class="audit" onclick="runJobButton('CHECK TEMP > Players Temp','check_static_temp_players')">Temp Players</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Audit Static Temp','audit_static_temp_certification')">Audit Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Promote Temp To Live','promote_static_temp_to_live')">Promote Temp</button>
+<button class="audit" onclick="runJobButton('CERTIFY TEMP > Clean Static Temp','clean_static_temp_tables')">Clean Temp</button>
 </div></div>
 
 <div class="section"><h3>MANUAL SQL</h3><div class="muted">Output guard active: max 50 rows, long text cells truncated to prevent browser/app crashes.</div><textarea id="sqlInput" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="none" inputmode="text"></textarea><button class="sql" onclick="runManualSQL()">Run SQL</button>
@@ -164,7 +170,7 @@ function clearMinePulse(){const el=document.getElementById("minePulse");if(el){e
 function loading(l,e){setStatus("RUNNING: "+l);if(l.indexOf("Board Queue Auto Mine Raw")>=0)setMinePulse("MINER PULSE\nStarting...\n"+(e||""));else clearMinePulse();setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_80_static_temp_staging_refresh",deferred_full_run_url:DEFER_FULL_RUN_URL})}
+function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_2_81_static_temp_certification_audit",deferred_full_run_url:DEFER_FULL_RUN_URL})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine")return false;return true}}return false}
@@ -529,7 +535,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.2.80 - Static Temp Staging Refresh",
+    version: "v1.2.81 - Static Temp Certification Audit",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
