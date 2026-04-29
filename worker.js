@@ -1,7 +1,7 @@
-// AlphaDog v1.2.76 - Static Logs BvP Resume compatible worker
+// AlphaDog v1.2.77 - Static Game Logs Resume Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.76 - Static Logs BvP Resume";
-const SYSTEM_CODENAME = "Static Logs BvP Resume";
+const SYSTEM_VERSION = "v1.2.77 - Static Game Logs Resume Repair";
+const SYSTEM_CODENAME = "Static Game Logs Resume Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -4783,23 +4783,62 @@ async function syncStaticPlayerGameLogs(input, env) {
   await ensureStaticReferenceTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const group = staticGroupFromJob(input.job, 'scrape_static_game_logs') || 1;
-  if (group === 1) await env.DB.prepare("DELETE FROM player_game_logs").run();
+  const hardLimit = Math.max(1, Math.min(Number(input?.limit || 10), 15));
+
+  let resetPerformed = false;
+  let resetReason = null;
+  if (group === 1) {
+    const progressCountRow = await env.DB.prepare("SELECT COUNT(*) AS rows_count FROM static_scrape_progress WHERE scrape_domain='player_game_logs' AND season=? AND group_no=1").bind(season).first();
+    const progressRowsBefore = Number(progressCountRow?.rows_count || 0);
+    const logCountBefore = await staticTableCount(env, "player_game_logs");
+
+    // G1 is both the rebuild starter and the resumable first group.
+    // It must wipe only before the first real G1 batch. Repeated G1 clicks must resume.
+    if (progressRowsBefore === 0 || (progressRowsBefore > 0 && Number(logCountBefore.rows_count || 0) === 0)) {
+      await env.DB.prepare("DELETE FROM player_game_logs").run();
+      await env.DB.prepare("DELETE FROM static_scrape_progress WHERE scrape_domain='player_game_logs' AND season=?").bind(season).run();
+      resetPerformed = true;
+      resetReason = progressRowsBefore === 0
+        ? "fresh_group_1_start_no_existing_group_1_progress"
+        : "progress_existed_but_game_log_table_was_empty_forced_clean_restart";
+    }
+  }
+
   const all = await env.DB.prepare("SELECT player_id, player_name, team_id, role FROM ref_players WHERE active=1 ORDER BY player_name").all();
-  const selected = selectStaticGroupRows(all.results || [], group);
+  const baseRows = selectStaticGroupRows(all.results || [], group);
+  const progress = await staticProgressMap(env, 'player_game_logs', season, group);
+  const eligible = baseRows.filter(p => !['COMPLETED','NO_DATA'].includes(progress.get(Number(p.player_id))));
+  const selected = eligible.slice(0, hardLimit);
+
   const stmt = env.DB.prepare(`
     INSERT OR REPLACE INTO player_game_logs (player_id, game_pk, season, game_date, team_id, opponent_team, group_type, is_home, pa, ab, hits, doubles, triples, home_runs, strikeouts, walks, innings_pitched, raw_json, source_name, source_confidence, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mlb_statsapi_gameLog', 'HIGH', CURRENT_TIMESTAMP)
   `);
-  let inserted = 0, fetchedPlayers = 0, skipped = 0;
+
+  let inserted = 0, successfulFetches = 0, failedFetches = 0, skippedNoLogs = 0, playersCompleted = 0;
   const errors = [];
+  const noLogSamples = [];
+
   for (const player of selected) {
     const groupType = player.role === 'PITCHER' ? 'pitching' : 'hitting';
     const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(player.player_id)}/stats?stats=gameLog&group=${groupType}&season=${season}`;
-    const fetched = await fetchJsonWithRetry(url, {}, 2, `static_gamelog_${player.player_id}_${groupType}`);
-    if (!fetched.ok) { errors.push({ player_id: player.player_id, player_name: player.player_name, error: fetched.error }); continue; }
-    fetchedPlayers += 1;
+    const fetched = await fetchJsonWithRetry(url, {}, 1, `static_gamelog_${player.player_id}_${groupType}`);
+    if (!fetched.ok) {
+      failedFetches += 1;
+      errors.push({ player_id: player.player_id, player_name: player.player_name, group_type: groupType, error: fetched.error });
+      await markStaticProgress(env, 'player_game_logs', season, group, player, 'ERROR_RETRYABLE', fetched.error);
+      continue;
+    }
+    successfulFetches += 1;
     const logs = fetched.data?.stats?.[0]?.splits || [];
-    if (!logs.length) { skipped += 1; continue; }
+    if (!logs.length) {
+      skippedNoLogs += 1;
+      noLogSamples.push({ player_id: player.player_id, player_name: player.player_name, group_type: groupType });
+      await markStaticProgress(env, 'player_game_logs', season, group, player, 'NO_DATA', 'StatsAPI returned zero gameLog splits for this player/season/group');
+      continue;
+    }
+
+    let playerInserted = 0;
     for (const split of logs) {
       const st = split.stat || {};
       const gamePk = Number(split?.game?.gamePk || split?.game?.pk || 0);
@@ -4820,10 +4859,55 @@ async function syncStaticPlayerGameLogs(input, env) {
         st.inningsPitched ?? null,
         JSON.stringify(split).slice(0, 10000)
       ).run();
-      inserted += Number(res?.meta?.changes || 0);
+      const changes = Number(res?.meta?.changes || 0);
+      inserted += changes;
+      playerInserted += changes;
+    }
+
+    if (playerInserted > 0) {
+      playersCompleted += 1;
+      await markStaticProgress(env, 'player_game_logs', season, group, player, 'COMPLETED', `${playerInserted} game log rows inserted`);
+    } else {
+      skippedNoLogs += 1;
+      await markStaticProgress(env, 'player_game_logs', season, group, player, 'NO_INSERT', 'StatsAPI returned logs but no recognized game_pk rows inserted');
     }
   }
-  return { ok: true, job: input.job || "scrape_static_game_logs_g1", version: SYSTEM_VERSION, status: inserted > 0 ? "pass" : "partial_or_empty", table: "player_game_logs", season, group, group_count: STATIC_GROUP_COUNT, selected_players: selected.length, fetched_players: fetchedPlayers, inserted_rows: inserted, skipped_players_no_logs: skipped, errors: errors.slice(0,20), estimated_seconds: "45-120 seconds per group", note: "Group 1 wipes player_game_logs, then groups append. Rolling 20/10/5 windows should be derived internally from this table later." };
+
+  const afterCount = await staticTableCount(env, "player_game_logs");
+  const remainingInGroup = Math.max(0, eligible.length - selected.length);
+  const status = failedFetches > 0 ? 'partial_retry_needed' : (remainingInGroup > 0 ? 'partial_continue' : (inserted > 0 || Number(afterCount.rows_count || 0) > 0 ? 'pass' : 'empty_no_data'));
+  const dataOk = Number(afterCount.rows_count || 0) > 0 && failedFetches === 0;
+  return {
+    ok: failedFetches === 0,
+    data_ok: dataOk,
+    job: input.job || "scrape_static_game_logs_g1",
+    version: SYSTEM_VERSION,
+    status,
+    table: "player_game_logs",
+    season,
+    group,
+    group_count: STATIC_GROUP_COUNT,
+    selected_players_total: baseRows.length,
+    eligible_before_this_run: eligible.length,
+    batch_limit: hardLimit,
+    attempted_players: selected.length,
+    successful_fetch_count: successfulFetches,
+    failed_fetch_count: failedFetches,
+    inserted_rows: inserted,
+    total_player_game_logs_after: afterCount.rows_count,
+    players_completed_this_run: playersCompleted,
+    skipped_players_no_logs: skippedNoLogs,
+    remaining_in_group_after: remainingInGroup,
+    needs_continue: remainingInGroup > 0,
+    api_endpoint_pattern: "/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}",
+    root_cause_fixed: "v1.2.76 selected a full 130-player static group and fetched until Cloudflare subrequest exhaustion. v1.2.77 changes game logs to the same resumable small-batch progress model as v1.2.75 splits, with G1 wiping only on a fresh rebuild start.",
+    reset_performed: resetPerformed,
+    reset_reason: resetReason,
+    errors: errors.slice(0, 10),
+    no_log_samples: noLogSamples.slice(0, 10),
+    estimated_seconds: "10-35 seconds per resumable batch",
+    note: "Resumable static game-log scrape. Run the same G button until remaining_in_group_after is 0, then move to the next group. G1 wipes only on a fresh G1 start with no existing G1 progress, then resumes safely on repeated clicks. Rolling 20/10/5 windows should be derived internally from this table later."
+  };
 }
 
 function normalizeNameKey(name) { return String(name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim(); }
