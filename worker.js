@@ -1,7 +1,7 @@
-// AlphaDog v1.2.78 - Static Game Logs Throttle Guard compatible worker
+// AlphaDog v1.2.79 - Static BvP Throttle + Scheduler Pause compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.78 - Static Game Logs Throttle Guard";
-const SYSTEM_CODENAME = "Static Game Logs Throttle Guard";
+const SYSTEM_VERSION = "v1.2.79 - Static BvP Throttle + Scheduler Pause";
+const SYSTEM_CODENAME = "Static BvP Throttle + Scheduler Pause";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -732,7 +732,9 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runScheduled(event, env));
+    // v1.2.79: scheduled backend tasks are intentionally paused.
+    // Manual Control Room actions still work, but cron must not mutate freshly rebuilt static data.
+    ctx.waitUntil(Promise.resolve(console.log(JSON.stringify({ ok: true, version: SYSTEM_VERSION, job: "scheduled_router", status: "paused_disabled", cron: event?.cron || null, note: "Scheduled tasks are paused in v1.2.79. No cron mining, full-run, one-shot, queue, or static-table mutation executed." }))));
   }
 };
 
@@ -4918,12 +4920,44 @@ async function findRefPlayerByNameTeam(env, name, teamId = null) {
   return (rows.results || []).find(r => normalizeNameKey(r.player_name) === target) || null;
 }
 
+function stablePositiveIntKey(value) {
+  const text = String(value || '');
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) || 1;
+}
+
 async function syncStaticBvpCurrentSlate(input, env) {
   await ensureStaticReferenceTables(env);
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
-  await env.DB.prepare("DELETE FROM ref_bvp_history WHERE slate_date=?").bind(slateDate).run();
-  const legs = await env.DB.prepare("SELECT player_name, team, opponent FROM mlb_stats WHERE COALESCE(player_name,'') NOT LIKE '%+%' AND COALESCE(team,'') <> '' GROUP BY player_name, team, opponent ORDER BY player_name LIMIT 250").all().catch(() => ({ results: [] }));
+  const slateKey = Number(String(slateDate).replace(/-/g, ''));
+  const hardLimit = Math.max(1, Math.min(Number(input?.limit || 5), 5));
+
+  let resetPerformed = false;
+  let resetReason = null;
+  const progressCountRow = await env.DB.prepare("SELECT COUNT(*) AS rows_count FROM static_scrape_progress WHERE scrape_domain='bvp_current_slate' AND season=? AND group_no=0").bind(slateKey).first().catch(() => ({ rows_count: 0 }));
+  const progressRowsBefore = Number(progressCountRow?.rows_count || 0);
+  const existingRows = await env.DB.prepare("SELECT COUNT(*) AS rows_count FROM ref_bvp_history WHERE slate_date=?").bind(slateDate).first().catch(() => ({ rows_count: 0 }));
+  if (progressRowsBefore === 0 || (progressRowsBefore > 0 && Number(existingRows?.rows_count || 0) === 0)) {
+    await env.DB.prepare("DELETE FROM ref_bvp_history WHERE slate_date=?").bind(slateDate).run();
+    await env.DB.prepare("DELETE FROM static_scrape_progress WHERE scrape_domain='bvp_current_slate' AND season=? AND group_no=0").bind(slateKey).run();
+    resetPerformed = true;
+    resetReason = progressRowsBefore === 0 ? 'fresh_bvp_slate_start_no_existing_progress' : 'progress_existed_but_bvp_table_empty_forced_clean_restart';
+  }
+
+  const rawLegs = await env.DB.prepare("SELECT player_name, team, opponent FROM mlb_stats WHERE COALESCE(player_name,'') NOT LIKE '%+%' AND COALESCE(team,'') <> '' GROUP BY player_name, team, opponent ORDER BY player_name LIMIT 500").all().catch(() => ({ results: [] }));
+  const candidates = (rawLegs.results || []).map((leg, idx) => {
+    const keyText = `${slateDate}|${idx}|${leg.player_name}|${leg.team}|${leg.opponent}`;
+    return { ...leg, pair_key: stablePositiveIntKey(keyText), pair_label: `${leg.player_name || 'UNKNOWN'}|${leg.team || ''}|${leg.opponent || ''}` };
+  });
+  const progress = await staticProgressMap(env, 'bvp_current_slate', slateKey, 0);
+  const eligible = candidates.filter(c => !['COMPLETED','NO_DATA','NO_INSERT'].includes(progress.get(Number(c.pair_key))));
+  const selected = eligible.slice(0, hardLimit);
+
   const games = await env.DB.prepare("SELECT * FROM games WHERE game_date=?").bind(slateDate).all().catch(() => ({ results: [] }));
   const starterRows = await env.DB.prepare("SELECT * FROM starters_current WHERE game_id LIKE ? AND starter_name IS NOT NULL AND starter_name NOT IN ('TBD','TBA','Unknown','Starter')").bind(`${slateDate}_%`).all().catch(() => ({ results: [] }));
   const gameByTeams = new Map();
@@ -4936,22 +4970,41 @@ async function syncStaticBvpCurrentSlate(input, env) {
     INSERT OR REPLACE INTO ref_bvp_history (slate_date, batter_id, pitcher_id, batter_name, pitcher_name, batter_team, pitcher_team, pa, ab, hits, doubles, triples, home_runs, strikeouts, walks, raw_json, source_name, source_confidence, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'mlb_statsapi_vsPlayer', 'HIGH_DATA_LOW_SAMPLE_WARNING', CURRENT_TIMESTAMP)
   `);
-  let inserted = 0, skipped = 0;
+
+  let inserted = 0, skipped = 0, attemptedPairs = 0, successfulFetches = 0, failedFetches = 0, pairsCompleted = 0;
   const errors = [];
-  for (const leg of legs.results || []) {
+  const skippedSamples = [];
+
+  for (const leg of selected) {
+    attemptedPairs += 1;
+    const progressRef = { player_id: leg.pair_key, player_name: leg.pair_label };
     const batter = await findRefPlayerByNameTeam(env, leg.player_name, leg.team);
-    if (!batter) { skipped++; continue; }
+    if (!batter) { skipped++; skippedSamples.push({ pair: leg.pair_label, reason: 'batter_not_found' }); await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_DATA', 'batter_not_found'); continue; }
     const g = gameByTeams.get(`${leg.team}|${leg.opponent}`);
-    if (!g) { skipped++; continue; }
+    if (!g) { skipped++; skippedSamples.push({ pair: leg.pair_label, reason: 'game_not_found' }); await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_DATA', 'game_not_found'); continue; }
     const starter = startersByGameTeam.get(`${g.game_id}|${leg.opponent}`);
-    if (!starter) { skipped++; continue; }
+    if (!starter) { skipped++; skippedSamples.push({ pair: leg.pair_label, reason: 'opponent_starter_not_found' }); await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_DATA', 'opponent_starter_not_found'); continue; }
     const pitcher = await findRefPlayerByNameTeam(env, starter.starter_name, leg.opponent);
-    if (!pitcher) { skipped++; continue; }
+    if (!pitcher) { skipped++; skippedSamples.push({ pair: leg.pair_label, starter: starter.starter_name, reason: 'pitcher_not_found_in_ref_players' }); await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_DATA', 'pitcher_not_found_in_ref_players'); continue; }
+
     const url = `https://statsapi.mlb.com/api/v1/people/${encodeURIComponent(batter.player_id)}/stats?stats=vsPlayer&opposingPlayerId=${encodeURIComponent(pitcher.player_id)}`;
-    const fetched = await fetchJsonWithRetry(url, {}, 2, `bvp_${batter.player_id}_${pitcher.player_id}`);
-    if (!fetched.ok) { errors.push({ batter: batter.player_name, pitcher: pitcher.player_name, error: fetched.error }); continue; }
+    const fetched = await fetchJsonWithRetry(url, {}, 1, `bvp_${batter.player_id}_${pitcher.player_id}`);
+    if (!fetched.ok) {
+      failedFetches += 1;
+      errors.push({ batter: batter.player_name, pitcher: pitcher.player_name, error: fetched.error });
+      await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'ERROR_RETRYABLE', fetched.error);
+      continue;
+    }
+    successfulFetches += 1;
     const split = fetched.data?.stats?.[0]?.splits?.[0] || {};
     const st = split.stat || {};
+    const hasAnyHistory = Object.keys(st).length > 0 && (st.plateAppearances !== undefined || st.atBats !== undefined || st.hits !== undefined || st.homeRuns !== undefined || st.strikeOuts !== undefined || st.baseOnBalls !== undefined);
+    if (!hasAnyHistory) {
+      skipped++;
+      skippedSamples.push({ batter: batter.player_name, pitcher: pitcher.player_name, reason: 'no_bvp_history_returned' });
+      await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_DATA', 'StatsAPI returned no BvP history for this pair');
+      continue;
+    }
     const res = await stmt.bind(
       slateDate, Number(batter.player_id), Number(pitcher.player_id), batter.player_name, pitcher.player_name, leg.team, leg.opponent,
       st.plateAppearances !== undefined ? Number(st.plateAppearances) : null,
@@ -4964,9 +5017,48 @@ async function syncStaticBvpCurrentSlate(input, env) {
       st.baseOnBalls !== undefined ? Number(st.baseOnBalls) : null,
       JSON.stringify(fetched.data || {}).slice(0,10000)
     ).run();
-    inserted += Number(res?.meta?.changes || 0);
+    const changes = Number(res?.meta?.changes || 0);
+    inserted += changes;
+    if (changes > 0) {
+      pairsCompleted += 1;
+      await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'COMPLETED', `${changes} BvP row inserted`);
+    } else {
+      skipped++;
+      await markStaticProgress(env, 'bvp_current_slate', slateKey, 0, progressRef, 'NO_INSERT', 'BvP fetched but no DB change; likely duplicate existing row');
+    }
   }
-  return { ok: true, job: input.job || "scrape_static_bvp_current_slate", version: SYSTEM_VERSION, status: inserted > 0 ? "pass" : "partial_or_empty", table: "ref_bvp_history", slate_date: slateDate, candidate_pairs: (legs.results || []).length, inserted_rows: inserted, skipped_pairs: skipped, errors: errors.slice(0,20), estimated_seconds: "30-120 seconds depending slate size", note: "Wiped and rebuilt BvP only for current slate board-player vs probable-starter pairs. BvP is persisted history but fetched on-demand, not all possible pairs." };
+
+  const afterCount = await env.DB.prepare("SELECT COUNT(*) AS rows_count FROM ref_bvp_history WHERE slate_date=?").bind(slateDate).first().catch(() => ({ rows_count: 0 }));
+  const remainingPairs = Math.max(0, eligible.length - selected.length);
+  const status = failedFetches > 0 ? 'partial_retry_needed' : (remainingPairs > 0 ? 'partial_continue' : (Number(afterCount?.rows_count || 0) > 0 ? 'pass' : 'empty_no_bvp_history'));
+  return {
+    ok: failedFetches === 0,
+    data_ok: Number(afterCount?.rows_count || 0) > 0 && failedFetches === 0,
+    job: input.job || "scrape_static_bvp_current_slate",
+    version: SYSTEM_VERSION,
+    status,
+    table: "ref_bvp_history",
+    slate_date: slateDate,
+    candidate_pairs: candidates.length,
+    eligible_before_this_run: eligible.length,
+    batch_limit: hardLimit,
+    attempted_pairs: attemptedPairs,
+    successful_fetch_count: successfulFetches,
+    failed_fetch_count: failedFetches,
+    inserted_rows: inserted,
+    total_ref_bvp_history_after: Number(afterCount?.rows_count || 0),
+    pairs_completed_this_run: pairsCompleted,
+    skipped_pairs: skipped,
+    remaining_pairs_after: remainingPairs,
+    needs_continue: remainingPairs > 0,
+    reset_performed: resetPerformed,
+    reset_reason: resetReason,
+    root_cause_fixed: "v1.2.78 tried up to 250 BvP pairs in one request, hit Cloudflare subrequest limits, and falsely returned pass. v1.2.79 uses 5-pair resumable batches plus same-job guard and scheduler pause.",
+    errors: errors.slice(0, 10),
+    skipped_samples: skippedSamples.slice(0, 10),
+    estimated_seconds: "8-25 seconds per 5-pair resumable batch",
+    note: "Resumable current-slate BvP scrape. Run BvP Slate until remaining_pairs_after is 0. BvP is a low-sample tiebreaker source; missing history is normal and marked NO_DATA. Static data is protected from scheduled tasks in v1.2.79."
+  };
 }
 
 async function syncStaticAllFast(input, env) {
@@ -5094,12 +5186,12 @@ async function executeTaskJob(jobName, body, slate, env) {
 }
 
 async function guardLongStaticJobAlreadyRunning(env, jobName) {
-  if (!/^scrape_static_game_logs_g[1-6]$/.test(String(jobName || ""))) return null;
+  if (!(/^scrape_static_game_logs_g[1-6]$/.test(String(jobName || "")) || String(jobName || "") === "scrape_static_bvp_current_slate")) return null;
   await env.DB.prepare(`
     UPDATE task_runs
     SET status='stale_reset',
         finished_at=CURRENT_TIMESTAMP,
-        error='v1.2.78 static game-log same-job stale reset before new manual run'
+        error='v1.2.79 static long-job same-job stale reset before new manual run'
     WHERE job_name=?
       AND status='running'
       AND started_at < datetime('now','-2 minutes')
@@ -5113,7 +5205,7 @@ async function guardLongStaticJobAlreadyRunning(env, jobName) {
     LIMIT 1
   `).bind(jobName).first().catch(() => null);
   if (!row) return null;
-  return { ok: true, data_ok: false, job: jobName, version: SYSTEM_VERSION, status: 'already_running_wait', active_task_id: row.task_id, active_started_at: row.started_at, retry_instruction: 'Do not tap again yet. Wait 60-90 seconds, then check task_runs or run the same button once.', root_cause_fixed: 'v1.2.78 prevents duplicate same-group static game-log tasks when Safari/control-room retries after a load failure.', note: 'No new task was started because the same static game-log group is already running.' };
+  return { ok: true, data_ok: false, job: jobName, version: SYSTEM_VERSION, status: 'already_running_wait', active_task_id: row.task_id, active_started_at: row.started_at, retry_instruction: 'Do not tap again yet. Wait 60-90 seconds, then check task_runs or run the same button once.', root_cause_fixed: 'v1.2.79 prevents duplicate static game-log/BvP tasks when Safari/control-room retries after a load failure.', note: 'No new task was started because the same static long job is already running.' };
 }
 
 async function handleTaskRun(request, env) {
