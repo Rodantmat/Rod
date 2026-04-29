@@ -1,7 +1,7 @@
-// AlphaDog v1.2.83 - Incremental Base Control compatible worker
+// AlphaDog v1.2.84 - Incremental Derived D1 Repair compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.83 - Incremental Base Control";
-const SYSTEM_CODENAME = "Incremental Base Control";
+const SYSTEM_VERSION = "v1.2.84 - Incremental Derived D1 Repair";
+const SYSTEM_CODENAME = "Incremental Derived D1 Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -5542,31 +5542,87 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
   await ensureStaticReferenceTables(env);
   await ensureIncrementalBaseTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
-  const players = await env.DB.prepare(`SELECT player_id, player_name, team_id, role FROM ref_players WHERE active=1 ORDER BY player_name`).all();
-  const upsert = env.DB.prepare(`INSERT OR REPLACE INTO incremental_player_metrics (player_id, player_name, team_id, role, season, games_logged, first_game_date, last_game_date, total_pa, total_ab, total_hits, total_rbi, total_home_runs, total_walks, total_strikeouts, last3_games, last3_hits, last3_ab, last5_games, last5_hits, last5_ab, last10_games, last10_hits, last10_ab, last20_games, last20_hits, last20_ab, source_name, source_confidence, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'derived_from_player_game_logs', 'HIGH_DETERMINISTIC_FROM_MLB_GAMELOGS', CURRENT_TIMESTAMP)`);
-  let inserted = 0, skippedNoLogs = 0;
-  const samples = [];
-  for (const p of (players.results || [])) {
-    const logs = await env.DB.prepare(`SELECT game_date, COALESCE(pa,0) AS pa, COALESCE(ab,0) AS ab, COALESCE(hits,0) AS hits, COALESCE(home_runs,0) AS home_runs, COALESCE(walks,0) AS walks, COALESCE(strikeouts,0) AS strikeouts, raw_json FROM player_game_logs WHERE player_id=? AND season=? ORDER BY date(game_date) DESC, game_pk DESC`).bind(p.player_id, season).all();
-    const rows = logs.results || [];
-    if (!rows.length) { skippedNoLogs++; continue; }
-    const total = { pa:0, ab:0, hits:0, rbi:0, hr:0, walks:0, k:0 };
-    const win = { 3:{g:0,h:0,ab:0}, 5:{g:0,h:0,ab:0}, 10:{g:0,h:0,ab:0}, 20:{g:0,h:0,ab:0} };
-    for (let i=0;i<rows.length;i++) {
-      const r = rows[i];
-      let rbi = 0;
-      try { rbi = Number(JSON.parse(r.raw_json || '{}')?.stat?.rbi || 0); } catch (_) { rbi = 0; }
-      total.pa += Number(r.pa || 0); total.ab += Number(r.ab || 0); total.hits += Number(r.hits || 0); total.rbi += rbi; total.hr += Number(r.home_runs || 0); total.walks += Number(r.walks || 0); total.k += Number(r.strikeouts || 0);
-      for (const n of [3,5,10,20]) if (i < n) { win[n].g += 1; win[n].h += Number(r.hits || 0); win[n].ab += Number(r.ab || 0); }
-    }
-    const first = rows[rows.length-1]?.game_date || null;
-    const last = rows[0]?.game_date || null;
-    await upsert.bind(p.player_id, p.player_name, p.team_id, p.role, season, rows.length, first, last, total.pa, total.ab, total.hits, total.rbi, total.hr, total.walks, total.k, win[3].g, win[3].h, win[3].ab, win[5].g, win[5].h, win[5].ab, win[10].g, win[10].h, win[10].ab, win[20].g, win[20].h, win[20].ab).run();
-    inserted++;
-    if (samples.length < 10) samples.push({ player_id:p.player_id, player_name:p.player_name, role:p.role, games_logged:rows.length, last_game_date:last, last10_hits:win[10].h, last10_ab:win[10].ab });
-  }
-  const count = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM incremental_player_metrics`).first();
-  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, players_processed:inserted, skipped_players_no_logs:skippedNoLogs, total_incremental_player_metrics_after:Number(count?.rows_count || 0), samples, source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'Derived incremental metrics were rebuilt from MLB game logs already stored in D1. No Gemini calls. No external subrequests.' };
+  const before = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM incremental_player_metrics`).first().catch(() => ({ rows_count: 0 }));
+
+  await env.DB.prepare(`DELETE FROM incremental_player_metrics WHERE season = ?`).bind(season).run();
+
+  const insertResult = await env.DB.prepare(`
+    INSERT OR REPLACE INTO incremental_player_metrics (
+      player_id, player_name, team_id, role, season,
+      games_logged, first_game_date, last_game_date,
+      total_pa, total_ab, total_hits, total_rbi, total_home_runs, total_walks, total_strikeouts,
+      last3_games, last3_hits, last3_ab,
+      last5_games, last5_hits, last5_ab,
+      last10_games, last10_hits, last10_ab,
+      last20_games, last20_hits, last20_ab,
+      source_name, source_confidence, updated_at
+    )
+    WITH ordered_logs AS (
+      SELECT
+        g.player_id,
+        g.season,
+        g.game_date,
+        g.game_pk,
+        COALESCE(g.pa, 0) AS pa,
+        COALESCE(g.ab, 0) AS ab,
+        COALESCE(g.hits, 0) AS hits,
+        COALESCE(g.home_runs, 0) AS home_runs,
+        COALESCE(g.walks, 0) AS walks,
+        COALESCE(g.strikeouts, 0) AS strikeouts,
+        CASE WHEN g.raw_json IS NOT NULL AND json_valid(g.raw_json) THEN COALESCE(json_extract(g.raw_json, '$.stat.rbi'), 0) ELSE 0 END AS rbi,
+        ROW_NUMBER() OVER (PARTITION BY g.player_id ORDER BY date(g.game_date) DESC, g.game_pk DESC) AS rn
+      FROM player_game_logs g
+      WHERE g.season = ?
+    ), player_rollups AS (
+      SELECT
+        player_id,
+        COUNT(*) AS games_logged,
+        MIN(game_date) AS first_game_date,
+        MAX(game_date) AS last_game_date,
+        SUM(pa) AS total_pa,
+        SUM(ab) AS total_ab,
+        SUM(hits) AS total_hits,
+        SUM(rbi) AS total_rbi,
+        SUM(home_runs) AS total_home_runs,
+        SUM(walks) AS total_walks,
+        SUM(strikeouts) AS total_strikeouts,
+        SUM(CASE WHEN rn <= 3 THEN 1 ELSE 0 END) AS last3_games,
+        SUM(CASE WHEN rn <= 3 THEN hits ELSE 0 END) AS last3_hits,
+        SUM(CASE WHEN rn <= 3 THEN ab ELSE 0 END) AS last3_ab,
+        SUM(CASE WHEN rn <= 5 THEN 1 ELSE 0 END) AS last5_games,
+        SUM(CASE WHEN rn <= 5 THEN hits ELSE 0 END) AS last5_hits,
+        SUM(CASE WHEN rn <= 5 THEN ab ELSE 0 END) AS last5_ab,
+        SUM(CASE WHEN rn <= 10 THEN 1 ELSE 0 END) AS last10_games,
+        SUM(CASE WHEN rn <= 10 THEN hits ELSE 0 END) AS last10_hits,
+        SUM(CASE WHEN rn <= 10 THEN ab ELSE 0 END) AS last10_ab,
+        SUM(CASE WHEN rn <= 20 THEN 1 ELSE 0 END) AS last20_games,
+        SUM(CASE WHEN rn <= 20 THEN hits ELSE 0 END) AS last20_hits,
+        SUM(CASE WHEN rn <= 20 THEN ab ELSE 0 END) AS last20_ab
+      FROM ordered_logs
+      GROUP BY player_id
+    )
+    SELECT
+      p.player_id, p.player_name, p.team_id, p.role, ? AS season,
+      r.games_logged, r.first_game_date, r.last_game_date,
+      r.total_pa, r.total_ab, r.total_hits, r.total_rbi, r.total_home_runs, r.total_walks, r.total_strikeouts,
+      r.last3_games, r.last3_hits, r.last3_ab,
+      r.last5_games, r.last5_hits, r.last5_ab,
+      r.last10_games, r.last10_hits, r.last10_ab,
+      r.last20_games, r.last20_hits, r.last20_ab,
+      'derived_from_player_game_logs_d1_set_based',
+      'HIGH_DETERMINISTIC_FROM_MLB_GAMELOGS_NO_EXTERNAL_CALLS',
+      CURRENT_TIMESTAMP
+    FROM player_rollups r
+    JOIN ref_players p ON p.player_id = r.player_id
+    WHERE p.active = 1
+  `).bind(season, season).run();
+
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM incremental_player_metrics WHERE season = ?`).bind(season).first();
+  const activePlayers = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players WHERE active=1`).first().catch(() => ({ c: 0 }));
+  const skipped = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players p LEFT JOIN incremental_player_metrics m ON m.player_id = p.player_id AND m.season = ? WHERE p.active=1 AND m.player_id IS NULL`).bind(season).first().catch(() => ({ c: 0 }));
+  const samples = await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, last10_hits, last10_ab, total_rbi, total_home_runs FROM incremental_player_metrics WHERE season=? ORDER BY games_logged DESC, player_name LIMIT 10`).bind(season).all();
+
+  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, build_mode:'D1_ONLY_SET_BASED_REBUILD', external_api_calls:0, before_rows:Number(before?.rows_count || 0), total_incremental_player_metrics_after:Number(count?.rows_count || 0), active_players:Number(activePlayers?.c || 0), skipped_players_no_logs:Number(skipped?.c || 0), d1_meta:insertResult?.meta || null, samples:samples.results || [], source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'v1.2.84 derived metrics are rebuilt with one D1 set-based SQL path. No MLB API calls, no Gemini calls, no per-player Worker loop.' };
 }
 async function checkIncrementalBaseData(input, env, target = 'all') {
   await ensureStaticReferenceTables(env);
