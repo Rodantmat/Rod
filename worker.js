@@ -1,7 +1,7 @@
-// AlphaDog v1.2.79 - Static BvP Throttle + Scheduler Pause compatible worker
+// AlphaDog v1.2.80 - Static Temp Staging Refresh compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.79 - Static BvP Throttle + Scheduler Pause";
-const SYSTEM_CODENAME = "Static BvP Throttle + Scheduler Pause";
+const SYSTEM_VERSION = "v1.2.80 - Static Temp Staging Refresh";
+const SYSTEM_CODENAME = "Static Temp Staging Refresh";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -75,6 +75,12 @@ const JOB_DISPLAY_LABELS = {
   scrape_static_game_logs_g6: "STATIC > Scrape Game Logs G6",
   scrape_static_bvp_current_slate: "STATIC > Scrape BvP Current Slate",
   scrape_static_all_fast: "STATIC > Scrape All Fast",
+  schedule_static_temp_refresh_once: "STATIC TEMP > Schedule Weekly Refresh Test",
+  run_static_temp_refresh_tick: "STATIC TEMP > Run One Refresh Tick",
+  check_static_temp_venues: "CHECK TEMP > Static Venues Temp",
+  check_static_temp_team_aliases: "CHECK TEMP > Team Aliases Temp",
+  check_static_temp_players: "CHECK TEMP > Players Temp",
+  check_static_temp_all: "CHECK TEMP > All Static Temp",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -598,6 +604,12 @@ const JOBS = {
     tables: ["ref_venues", "ref_team_aliases", "ref_players"],
     note: "manual fast static foundation rebuild: venues + team aliases + active player reference"
   },
+  schedule_static_temp_refresh_once: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "schedule one protected temp-only weekly static refresh test; live tables are untouched" },
+  run_static_temp_refresh_tick: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "manually execute one temp-only refresh step; live tables are untouched" },
+  check_static_temp_venues: { prompt: null, tables: ["ref_venues_temp"], note: "check static temp venue staging table" },
+  check_static_temp_team_aliases: { prompt: null, tables: ["ref_team_aliases_temp"], note: "check static temp team alias staging table" },
+  check_static_temp_players: { prompt: null, tables: ["ref_players_temp"], note: "check static temp player staging table" },
+  check_static_temp_all: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "check all static temp staging tables" },
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
   check_static_players: { prompt: null, tables: ["ref_players"], note: "check static player reference" },
@@ -732,9 +744,18 @@ export default {
     }
   },
   async scheduled(event, env, ctx) {
-    // v1.2.79: scheduled backend tasks are intentionally paused.
-    // Manual Control Room actions still work, but cron must not mutate freshly rebuilt static data.
-    ctx.waitUntil(Promise.resolve(console.log(JSON.stringify({ ok: true, version: SYSTEM_VERSION, job: "scheduled_router", status: "paused_disabled", cron: event?.cron || null, note: "Scheduled tasks are paused in v1.2.79. No cron mining, full-run, one-shot, queue, or static-table mutation executed." }))));
+    // v1.2.80: all old scheduled mining/full-run work stays paused.
+    // Only the protected temp-only static staging refresh is allowed to run on cron.
+    ctx.waitUntil((async () => {
+      const cron = event?.cron || null;
+      let result;
+      if (String(cron || '').trim() === '* * * * *') {
+        result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled' }, env);
+      } else {
+        result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No live static tables, mining queues, full-run jobs, or slate tables were mutated.' };
+      }
+      console.log(JSON.stringify(result));
+    })());
   }
 };
 
@@ -839,6 +860,12 @@ function executableJobNames() {
     "scrape_static_game_logs_g6",
     "scrape_static_bvp_current_slate",
     "scrape_static_all_fast",
+    "schedule_static_temp_refresh_once",
+    "run_static_temp_refresh_tick",
+    "check_static_temp_venues",
+    "check_static_temp_team_aliases",
+    "check_static_temp_players",
+    "check_static_temp_all",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -5076,6 +5103,175 @@ async function syncStaticAllFast(input, env) {
 }
 
 
+async function ensureStaticTempReferenceTables(env) {
+  await ensureStaticReferenceTables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_venues_temp (venue_id INTEGER PRIMARY KEY, team_id TEXT, mlb_venue_name TEXT, city TEXT, state TEXT, roof_status TEXT, surface_type TEXT, altitude_ft INTEGER, left_field_dimension_ft INTEGER, center_field_dimension_ft INTEGER, right_field_dimension_ft INTEGER, source_name TEXT, source_confidence TEXT, notes TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_team_aliases_temp (alias_type TEXT NOT NULL, raw_alias TEXT NOT NULL, canonical_name TEXT, canonical_team_id TEXT, mlb_id INTEGER, confidence TEXT, action TEXT, notes TEXT, source_name TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (alias_type, raw_alias))`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_players_temp (player_id INTEGER PRIMARY KEY, mlb_id INTEGER, player_name TEXT, team_id TEXT, primary_position TEXT, role TEXT, bats TEXT, throws TEXT, birth_date TEXT, age INTEGER, active INTEGER DEFAULT 1, source_name TEXT, source_confidence TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS static_temp_refresh_runs (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, run_after TEXT, current_step TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, output_json TEXT, error TEXT)`).run();
+}
+
+async function syncStaticVenuesTemp(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const teams = await fetchMlbTeamsForStatic();
+  await env.DB.prepare("DELETE FROM ref_venues_temp").run();
+  const stmt = env.DB.prepare(`INSERT OR REPLACE INTO ref_venues_temp (venue_id, team_id, mlb_venue_name, city, state, roof_status, surface_type, altitude_ft, left_field_dimension_ft, center_field_dimension_ft, right_field_dimension_ft, source_name, source_confidence, notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`);
+  let inserted = 0;
+  const audit = [];
+  for (const t of teams) {
+    const teamId = MLB_TEAM_ABBR[t.id];
+    const venueOverride = STATIC_TEAM_VENUE_OVERRIDES[teamId] || null;
+    let venueId = venueOverride?.venue_id ? Number(venueOverride.venue_id) : Number(t?.venue?.id || 0);
+    let venue = venueOverride ? { id: venueId, name: venueOverride.name, location: { city: venueOverride.city, state: venueOverride.state, stateAbbrev: venueOverride.state }, fieldInfo: { roofType: venueOverride.roof_status, turfType: venueOverride.surface_type } } : (t.venue || {});
+    if (venueId) {
+      const vf = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/venues/${venueId}`, {}, 2, `mlb_venue_temp_${venueId}`);
+      if (vf.ok && Array.isArray(vf.data?.venues) && vf.data.venues[0]) venue = { ...venue, ...vf.data.venues[0] };
+    }
+    if (venueOverride) {
+      venue = { ...venue, name: venueOverride.name, location: { ...(venue.location || {}), city: venueOverride.city, state: venueOverride.state, stateAbbrev: venueOverride.state }, fieldInfo: { ...(venue.fieldInfo || {}), roofType: venueOverride.roof_status, turfType: venueOverride.surface_type } };
+    }
+    const sup = STATIC_VENUE_SUPPLEMENT[venueId] || {};
+    const fieldInfo = venue.fieldInfo || {};
+    const roof = fieldInfo.roofType || fieldInfo.roof || venue.roofType || null;
+    const turf = fieldInfo.turfType || fieldInfo.surface || venue.turfType || null;
+    const loc = venue.location || t.location || {};
+    const res = await stmt.bind(venueId || null, teamId, venue.name || t?.venue?.name || null, loc.city || t?.venue?.location?.city || null, loc.stateAbbrev || loc.state || null, roof, turf, sup.altitude_ft ?? null, sup.left_field_dimension_ft ?? null, sup.center_field_dimension_ft ?? null, sup.right_field_dimension_ft ?? null, sup.altitude_ft ? "mlb_statsapi_plus_controlled_static_venue_source" : "mlb_statsapi_venue_basic", sup.altitude_ft ? "HIGH_FOR_API_FIELDS_MEDIUM_FOR_SUPPLEMENTAL" : "HIGH_FOR_API_FIELDS", venueOverride?.notes || sup.notes || "MLB StatsAPI venue basic fields; supplemental dimensions not available.").run();
+    inserted += Number(res?.meta?.changes || 0);
+    audit.push({ team_id: teamId, venue_id: venueId, venue_name: venue.name || null, supplemental_static: Boolean(sup.altitude_ft), override_applied: Boolean(venueOverride) });
+  }
+  return { ok: true, data_ok: inserted >= 30, job: input.job || "scrape_static_temp_venues", version: SYSTEM_VERSION, status: inserted >= 30 ? "pass" : "needs_review", table: "ref_venues_temp", fetched_teams: teams.length, inserted_rows: inserted, audit, live_tables_touched: false, estimated_seconds: "5-15 seconds", note: "Wiped and rebuilt ref_venues_temp only. Live ref_venues was not touched." };
+}
+
+async function syncStaticTeamAliasesTemp(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const teams = await fetchMlbTeamsForStatic();
+  await env.DB.prepare("DELETE FROM ref_team_aliases_temp").run();
+  const stmt = env.DB.prepare(`INSERT OR REPLACE INTO ref_team_aliases_temp (alias_type, raw_alias, canonical_name, canonical_team_id, mlb_id, confidence, action, notes, source_name, updated_at) VALUES ('team', ?, ?, ?, ?, ?, ?, ?, 'mlb_statsapi_team_alias_seed', CURRENT_TIMESTAMP)`);
+  let inserted = 0;
+  for (const t of teams) {
+    const teamId = MLB_TEAM_ABBR[t.id];
+    const aliases = [teamId, t.abbreviation, t.teamName, t.name, t.shortName, t.fileCode].filter(Boolean);
+    const seen = new Set();
+    for (const a of aliases) {
+      const raw = String(a).trim();
+      if (!raw || seen.has(raw.toLowerCase())) continue;
+      seen.add(raw.toLowerCase());
+      const res = await stmt.bind(raw, t.name || null, teamId, Number(t.id), "HIGH", "map", "Official or direct MLB StatsAPI team alias.").run();
+      inserted += Number(res?.meta?.changes || 0);
+    }
+  }
+  for (const r of [["LA", "Los Angeles Dodgers / Los Angeles Angels", null, null, "MEDIUM", "review", "Ambiguous; requires source context."], ["NY", "New York Mets / New York Yankees", null, null, "MEDIUM", "review", "Ambiguous; requires source context."], ["AZ", "Arizona Diamondbacks", "ARI", 109, "HIGH", "map", "Common non-MLB shorthand for ARI."]]) {
+    const res = await stmt.bind(...r).run();
+    inserted += Number(res?.meta?.changes || 0);
+  }
+  return { ok: true, data_ok: inserted >= 100, job: input.job || "scrape_static_temp_team_aliases", version: SYSTEM_VERSION, status: inserted >= 100 ? "pass" : "needs_review", table: "ref_team_aliases_temp", teams: teams.length, inserted_rows: inserted, live_tables_touched: false, estimated_seconds: "3-10 seconds", note: "Wiped and rebuilt ref_team_aliases_temp only. Live ref_team_aliases was not touched." };
+}
+
+async function syncStaticPlayersTemp(input, env, group) {
+  await ensureStaticTempReferenceTables(env);
+  const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
+  const allTeams = await fetchMlbTeamsForStatic();
+  const teams = group ? groupSlice(allTeams, group) : allTeams;
+  const stmt = env.DB.prepare(`INSERT OR REPLACE INTO ref_players_temp (player_id, mlb_id, player_name, team_id, primary_position, role, bats, throws, birth_date, age, active, source_name, source_confidence, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'mlb_statsapi_active_roster_reference', 'HIGH', CURRENT_TIMESTAMP)`);
+  let inserted = 0;
+  const audit = [];
+  for (const t of teams) {
+    const teamId = MLB_TEAM_ABBR[t.id];
+    const url = `https://statsapi.mlb.com/api/v1/teams/${encodeURIComponent(t.id)}/roster?rosterType=active&hydrate=person`;
+    const fetched = await fetchJsonWithRetry(url, {}, 3, `static_temp_roster_${teamId}`);
+    audit.push({ team_id: teamId, ok: fetched.ok, error: fetched.error || null, roster_rows: fetched.data?.roster?.length || 0 });
+    if (!fetched.ok) continue;
+    for (const entry of (fetched.data?.roster || [])) {
+      const person = entry.person || {};
+      const pos = entry.position || person.primaryPosition || {};
+      const playerId = Number(person.id || 0);
+      if (!playerId || !person.fullName) continue;
+      const primary = pos.abbreviation || pos.code || null;
+      const res = await stmt.bind(playerId, playerId, person.fullName, teamId, primary, normalizeRoleFromPosition(primary, person?.pitchHand?.code), person?.batSide?.code || null, person?.pitchHand?.code || null, person?.birthDate || null, ageFromBirthDate(person?.birthDate)).run();
+      inserted += Number(res?.meta?.changes || 0);
+    }
+  }
+  const afterCount = await staticTableCount(env, "ref_players_temp");
+  const failedTeams = audit.filter(a => !a.ok).length;
+  return { ok: failedTeams === 0 && inserted > 0, data_ok: failedTeams === 0 && afterCount.rows_count > 0, job: input.job || `scrape_static_temp_players_g${group || 'all'}`, version: SYSTEM_VERSION, status: failedTeams ? "partial_retry_needed" : "pass", table: "ref_players_temp", season, group, teams_total: allTeams.length, teams_checked: teams.length, inserted_rows: inserted, total_ref_players_temp_after: afterCount.rows_count, failed_teams: failedTeams, team_audit: audit, live_tables_touched: false, estimated_seconds: "10-25 seconds per group", note: "Chunked static player scrape into ref_players_temp only. Live ref_players was not touched." };
+}
+
+async function scheduleStaticTempRefreshOnce(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const existing = await env.DB.prepare(`SELECT request_id, status, current_step, run_after, updated_at FROM static_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  if (existing) return { ok: true, data_ok: false, job: input.job || 'schedule_static_temp_refresh_once', version: SYSTEM_VERSION, status: 'already_scheduled_or_running', existing_request: existing, live_tables_touched: false, note: 'A temp-only static refresh is already pending/running. Do not schedule another one.' };
+  const requestId = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO static_temp_refresh_runs (request_id, status, run_after, current_step, created_at, updated_at, output_json) VALUES (?, 'pending', datetime('now', '+1 minute'), 'venues', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`).bind(requestId, JSON.stringify({ created_by: 'control_room', requested_job: input.job || 'schedule_static_temp_refresh_once', live_tables_touched: false })).run();
+  return { ok: true, data_ok: true, job: input.job || 'schedule_static_temp_refresh_once', version: SYSTEM_VERSION, status: 'scheduled_for_next_minute', request_id: requestId, run_after: 'about 1 minute from now', refresh_steps: ['venues_temp','team_aliases_temp','players_temp_g1','players_temp_g2','players_temp_g3','players_temp_g4','players_temp_g5','players_temp_g6','completed'], live_tables_touched: false, estimated_total_minutes: '8-12 minutes after the first cron tick', note: 'Cron will fill only _temp tables. Live trusted tables are protected and untouched.' };
+}
+
+function nextStaticTempStep(step) {
+  const order = ['venues','aliases','players_g1','players_g2','players_g3','players_g4','players_g5','players_g6','completed'];
+  const i = order.indexOf(String(step || 'venues'));
+  return order[Math.min(i + 1, order.length - 1)] || 'completed';
+}
+
+async function runStaticTempScheduledTick(input, env) {
+  await ensureStaticTempReferenceTables(env);
+  const row = await env.DB.prepare(`SELECT * FROM static_temp_refresh_runs WHERE status IN ('pending','running') AND (run_after IS NULL OR run_after <= CURRENT_TIMESTAMP) ORDER BY created_at ASC LIMIT 1`).first().catch(() => null);
+  if (!row) return { ok: true, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', status: 'idle_no_due_temp_refresh', trigger: input.trigger || 'manual', live_tables_touched: false, note: 'No due temp-only static refresh request was found.' };
+  const requestId = row.request_id;
+  const step = String(row.current_step || 'venues');
+  await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(requestId).run();
+  let result;
+  try {
+    if (step === 'venues') {
+      await env.DB.prepare('DELETE FROM ref_venues_temp').run();
+      await env.DB.prepare('DELETE FROM ref_team_aliases_temp').run();
+      await env.DB.prepare('DELETE FROM ref_players_temp').run();
+      result = await syncStaticVenuesTemp({ ...input, job: 'scrape_static_temp_venues' }, env);
+    } else if (step === 'aliases') {
+      result = await syncStaticTeamAliasesTemp({ ...input, job: 'scrape_static_temp_team_aliases' }, env);
+    } else if (/^players_g[1-6]$/.test(step)) {
+      const group = Number(step.match(/g([1-6])$/)[1]);
+      result = await syncStaticPlayersTemp({ ...input, job: `scrape_static_temp_players_g${group}` }, env, group);
+    } else {
+      result = { ok: true, data_ok: true, job: input.job || 'run_static_temp_refresh_tick', version: SYSTEM_VERSION, status: 'already_completed', request_id: requestId, live_tables_touched: false };
+    }
+    const nextStep = nextStaticTempStep(step);
+    const complete = nextStep === 'completed';
+    const counts = await staticTempCounts(env).catch(() => null);
+    const wrapped = { ok: !!result.ok, data_ok: !!result.data_ok || !!result.ok, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, next_step: nextStep, refresh_complete: complete, step_result: result, counts, live_tables_touched: false, note: complete ? 'Temp-only weekly static refresh completed. Run CHECK TEMP > All Static Temp next. No live tables were touched.' : 'Temp-only refresh advanced one step. Wait for the next minute tick or click Run One Refresh Tick.' };
+    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    return wrapped;
+  } catch (err) {
+    const failure = { ok: false, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, status: 'failed_exception', error: String(err?.message || err), live_tables_touched: false };
+    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(failure.error, JSON.stringify(failure), requestId).run().catch(() => null);
+    return failure;
+  }
+}
+
+async function staticTempCounts(env) {
+  return [await staticTableCount(env, 'ref_venues_temp'), await staticTableCount(env, 'ref_team_aliases_temp'), await staticTableCount(env, 'ref_players_temp')];
+}
+
+async function checkStaticTempData(input, env, target) {
+  await ensureStaticTempReferenceTables(env);
+  const targets = target === 'all' ? ['ref_venues_temp','ref_team_aliases_temp','ref_players_temp'] : [target];
+  const counts = [];
+  for (const t of targets) counts.push(await staticTableCount(env, t));
+  const countMap = Object.fromEntries(counts.map(c => [c.table, c.rows_count]));
+  const roleRows = await env.DB.prepare(`SELECT role, COUNT(*) AS rows_count FROM ref_players_temp GROUP BY role ORDER BY role`).all().catch(() => ({ results: [] }));
+  const duplicatePlayers = await env.DB.prepare(`SELECT player_id, COUNT(*) AS rows_count FROM ref_players_temp GROUP BY player_id HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
+  const duplicateAliases = await env.DB.prepare(`SELECT alias_type, raw_alias, COUNT(*) AS rows_count FROM ref_team_aliases_temp GROUP BY alias_type, raw_alias HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
+  const quality = { venues_rows_ok: (countMap.ref_venues_temp || 0) >= 30, aliases_rows_ok: (countMap.ref_team_aliases_temp || 0) >= 120, players_rows_ok: (countMap.ref_players_temp || 0) >= 750, duplicate_players: duplicatePlayers.results || [], duplicate_aliases: duplicateAliases.results || [], player_role_split: roleRows.results || [] };
+  const dataOk = counts.every(c => c.exists && c.rows_count > 0) && (target !== 'all' || (quality.venues_rows_ok && quality.aliases_rows_ok && quality.players_rows_ok && quality.duplicate_players.length === 0 && quality.duplicate_aliases.length === 0));
+  const samples = {};
+  for (const c of counts) {
+    if (!c.exists || c.rows_count <= 0) continue;
+    const rows = await env.DB.prepare(`SELECT * FROM ${c.table} LIMIT 10`).all();
+    samples[c.table] = rows.results || [];
+  }
+  const latestRun = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM static_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  return { ok: true, data_ok: dataOk, job: input.job || `check_static_temp_${target}`, version: SYSTEM_VERSION, status: dataOk ? 'pass' : 'needs_scrape_or_review', counts, quality, latest_temp_refresh: latestRun, samples, live_tables_touched: false, note: 'Temp checks are read-only. They validate staging tables only. No promotion to live exists in this build.' };
+}
+
+
 async function staticTableCount(env, tableName) {
   if (!(await tableExists(env, tableName))) return { table: tableName, exists: false, rows_count: 0 };
   const row = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ${tableName}`).first();
@@ -5130,6 +5326,12 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (/^scrape_static_game_logs_g[1-6]$/.test(jobName)) return await syncStaticPlayerGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_bvp_current_slate") return await syncStaticBvpCurrentSlate({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_all_fast") return await syncStaticAllFast({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "schedule_static_temp_refresh_once") return await scheduleStaticTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_static_temp_refresh_tick") return await runStaticTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "check_static_temp_venues") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_venues_temp");
+  if (jobName === "check_static_temp_team_aliases") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_team_aliases_temp");
+  if (jobName === "check_static_temp_players") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_players_temp");
+  if (jobName === "check_static_temp_all") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "all");
   if (jobName === "check_static_venues") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_venues");
   if (jobName === "check_static_team_aliases") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_team_aliases");
   if (jobName === "check_static_players") return await checkStaticData({ ...(body || {}), job: jobName }, env, "ref_players");
