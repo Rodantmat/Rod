@@ -1,7 +1,7 @@
-// AlphaDog v1.2.75 - Static Splits Resume Repair compatible worker
+// AlphaDog v1.2.76 - Static Logs BvP Resume compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.75 - Static Splits Resume Repair";
-const SYSTEM_CODENAME = "Static Splits Subrequest Repair";
+const SYSTEM_VERSION = "v1.2.76 - Static Logs BvP Resume";
+const SYSTEM_CODENAME = "Static Logs BvP Resume";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
