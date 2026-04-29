@@ -1,7 +1,7 @@
-// AlphaDog v1.2.82 - Weekly Static Auto Refresh compatible worker
+// AlphaDog v1.2.83 - Incremental Base Control compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.82 - Weekly Static Auto Refresh";
-const SYSTEM_CODENAME = "Weekly Static Auto Refresh";
+const SYSTEM_VERSION = "v1.2.83 - Incremental Base Control";
+const SYSTEM_CODENAME = "Incremental Base Control";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -85,6 +85,23 @@ const JOB_DISPLAY_LABELS = {
   promote_static_temp_to_live: "CERTIFY TEMP > Promote Temp To Live",
   clean_static_temp_tables: "CERTIFY TEMP > Clean Static Temp",
   weekly_static_temp_refresh_auto: "SCHEDULED > Weekly Static Temp Refresh Auto",
+  incremental_base_game_logs_g1: "INCREMENTAL > Base Game Logs G1",
+  incremental_base_game_logs_g2: "INCREMENTAL > Base Game Logs G2",
+  incremental_base_game_logs_g3: "INCREMENTAL > Base Game Logs G3",
+  incremental_base_game_logs_g4: "INCREMENTAL > Base Game Logs G4",
+  incremental_base_game_logs_g5: "INCREMENTAL > Base Game Logs G5",
+  incremental_base_game_logs_g6: "INCREMENTAL > Base Game Logs G6",
+  incremental_base_splits_g1: "INCREMENTAL > Base Splits G1",
+  incremental_base_splits_g2: "INCREMENTAL > Base Splits G2",
+  incremental_base_splits_g3: "INCREMENTAL > Base Splits G3",
+  incremental_base_splits_g4: "INCREMENTAL > Base Splits G4",
+  incremental_base_splits_g5: "INCREMENTAL > Base Splits G5",
+  incremental_base_splits_g6: "INCREMENTAL > Base Splits G6",
+  incremental_base_derived_metrics: "INCREMENTAL > Build Base Derived Metrics",
+  check_incremental_game_logs: "CHECK > Incremental Game Logs",
+  check_incremental_player_splits: "CHECK > Incremental Player Splits",
+  check_incremental_derived_metrics: "CHECK > Incremental Derived Metrics",
+  check_incremental_all: "CHECK > Incremental All",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -617,6 +634,24 @@ const JOBS = {
   audit_static_temp_certification: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp", "static_temp_certification_audits"], note: "certify temp static tables before promotion" },
   promote_static_temp_to_live: { prompt: null, tables: ["ref_venues", "ref_team_aliases", "ref_players", "ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "promote certified temp static tables to live trusted tables" },
   clean_static_temp_tables: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "clean temp static staging tables after successful promotion" },
+  incremental_base_game_logs_g1: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 1" },
+  incremental_base_game_logs_g2: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 2" },
+  incremental_base_game_logs_g3: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 3" },
+  incremental_base_game_logs_g4: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 4" },
+  incremental_base_game_logs_g5: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 5" },
+  incremental_base_game_logs_g6: { prompt: null, tables: ["player_game_logs"], note: "incremental history base game logs group 6" },
+  incremental_base_splits_g1: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 1" },
+  incremental_base_splits_g2: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 2" },
+  incremental_base_splits_g3: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 3" },
+  incremental_base_splits_g4: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 4" },
+  incremental_base_splits_g5: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 5" },
+  incremental_base_splits_g6: { prompt: null, tables: ["ref_player_splits"], note: "incremental history base player splits group 6" },
+  incremental_base_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "derive rolling player metrics from game logs" },
+  check_incremental_game_logs: { prompt: null, tables: ["player_game_logs"], note: "check incremental game log base coverage" },
+  check_incremental_player_splits: { prompt: null, tables: ["ref_player_splits"], note: "check incremental player split base coverage" },
+  check_incremental_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "check derived incremental metrics coverage" },
+  check_incremental_all: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "check all incremental base tables" },
+
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
   check_static_players: { prompt: null, tables: ["ref_players"], note: "check static player reference" },
@@ -882,6 +917,23 @@ function executableJobNames() {
     "audit_static_temp_certification",
     "promote_static_temp_to_live",
     "clean_static_temp_tables",
+    "incremental_base_game_logs_g1",
+    "incremental_base_game_logs_g2",
+    "incremental_base_game_logs_g3",
+    "incremental_base_game_logs_g4",
+    "incremental_base_game_logs_g5",
+    "incremental_base_game_logs_g6",
+    "incremental_base_splits_g1",
+    "incremental_base_splits_g2",
+    "incremental_base_splits_g3",
+    "incremental_base_splits_g4",
+    "incremental_base_splits_g5",
+    "incremental_base_splits_g6",
+    "incremental_base_derived_metrics",
+    "check_incremental_game_logs",
+    "check_incremental_player_splits",
+    "check_incremental_derived_metrics",
+    "check_incremental_all",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -5466,6 +5518,93 @@ async function checkStaticData(input, env, target) {
   return { ok: true, data_ok: dataOk, job: input.job || `check_static_${target}`, version: SYSTEM_VERSION, status: dataOk ? 'pass' : 'needs_scrape', counts, samples, note: "Static checks are read-only. Missing/zero tables are not HTTP failures; fix them with the matching STATIC scrape button." };
 }
 
+
+async function ensureIncrementalBaseTables(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_player_metrics (player_id INTEGER PRIMARY KEY, player_name TEXT, team_id TEXT, role TEXT, season INTEGER, games_logged INTEGER, first_game_date TEXT, last_game_date TEXT, total_pa INTEGER, total_ab INTEGER, total_hits INTEGER, total_rbi INTEGER, total_home_runs INTEGER, total_walks INTEGER, total_strikeouts INTEGER, last3_games INTEGER, last3_hits INTEGER, last3_ab INTEGER, last5_games INTEGER, last5_hits INTEGER, last5_ab INTEGER, last10_games INTEGER, last10_hits INTEGER, last10_ab INTEGER, last20_games INTEGER, last20_hits INTEGER, last20_ab INTEGER, source_name TEXT, source_confidence TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
+}
+function incrementalGroupFromJob(jobName, prefix) {
+  const m = String(jobName || '').match(new RegExp('^' + prefix + '_g([1-6])$'));
+  return m ? Number(m[1]) : 1;
+}
+async function runIncrementalBaseGameLogs(input, env) {
+  const requestedJob = String(input?.job || 'incremental_base_game_logs_g1');
+  const group = incrementalGroupFromJob(requestedJob, 'incremental_base_game_logs');
+  const result = await syncStaticPlayerGameLogs({ ...(input || {}), job: `scrape_static_game_logs_g${group}` }, env);
+  return { ...result, job: requestedJob, mode: 'incremental_history_base_game_logs', source_job: `scrape_static_game_logs_g${group}`, note: 'Run the same Incremental Game Logs G button until remaining_in_group_after is 0, then move to the next group. This is the one-time historical base fill path; future daily updater should only add new deltas.' };
+}
+async function runIncrementalBaseSplits(input, env) {
+  const requestedJob = String(input?.job || 'incremental_base_splits_g1');
+  const group = incrementalGroupFromJob(requestedJob, 'incremental_base_splits');
+  const result = await syncStaticPlayerSplits({ ...(input || {}), job: `scrape_static_player_splits_g${group}` }, env);
+  return { ...result, job: requestedJob, mode: 'incremental_history_base_player_splits', source_job: `scrape_static_player_splits_g${group}`, note: 'Run the same Incremental Splits G button until remaining_in_group_after is 0, then move to the next group. Splits are season-evolving incremental data, not true static data.' };
+}
+async function buildIncrementalBaseDerivedMetrics(input, env) {
+  await ensureStaticReferenceTables(env);
+  await ensureIncrementalBaseTables(env);
+  const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
+  const players = await env.DB.prepare(`SELECT player_id, player_name, team_id, role FROM ref_players WHERE active=1 ORDER BY player_name`).all();
+  const upsert = env.DB.prepare(`INSERT OR REPLACE INTO incremental_player_metrics (player_id, player_name, team_id, role, season, games_logged, first_game_date, last_game_date, total_pa, total_ab, total_hits, total_rbi, total_home_runs, total_walks, total_strikeouts, last3_games, last3_hits, last3_ab, last5_games, last5_hits, last5_ab, last10_games, last10_hits, last10_ab, last20_games, last20_hits, last20_ab, source_name, source_confidence, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'derived_from_player_game_logs', 'HIGH_DETERMINISTIC_FROM_MLB_GAMELOGS', CURRENT_TIMESTAMP)`);
+  let inserted = 0, skippedNoLogs = 0;
+  const samples = [];
+  for (const p of (players.results || [])) {
+    const logs = await env.DB.prepare(`SELECT game_date, COALESCE(pa,0) AS pa, COALESCE(ab,0) AS ab, COALESCE(hits,0) AS hits, COALESCE(home_runs,0) AS home_runs, COALESCE(walks,0) AS walks, COALESCE(strikeouts,0) AS strikeouts, raw_json FROM player_game_logs WHERE player_id=? AND season=? ORDER BY date(game_date) DESC, game_pk DESC`).bind(p.player_id, season).all();
+    const rows = logs.results || [];
+    if (!rows.length) { skippedNoLogs++; continue; }
+    const total = { pa:0, ab:0, hits:0, rbi:0, hr:0, walks:0, k:0 };
+    const win = { 3:{g:0,h:0,ab:0}, 5:{g:0,h:0,ab:0}, 10:{g:0,h:0,ab:0}, 20:{g:0,h:0,ab:0} };
+    for (let i=0;i<rows.length;i++) {
+      const r = rows[i];
+      let rbi = 0;
+      try { rbi = Number(JSON.parse(r.raw_json || '{}')?.stat?.rbi || 0); } catch (_) { rbi = 0; }
+      total.pa += Number(r.pa || 0); total.ab += Number(r.ab || 0); total.hits += Number(r.hits || 0); total.rbi += rbi; total.hr += Number(r.home_runs || 0); total.walks += Number(r.walks || 0); total.k += Number(r.strikeouts || 0);
+      for (const n of [3,5,10,20]) if (i < n) { win[n].g += 1; win[n].h += Number(r.hits || 0); win[n].ab += Number(r.ab || 0); }
+    }
+    const first = rows[rows.length-1]?.game_date || null;
+    const last = rows[0]?.game_date || null;
+    await upsert.bind(p.player_id, p.player_name, p.team_id, p.role, season, rows.length, first, last, total.pa, total.ab, total.hits, total.rbi, total.hr, total.walks, total.k, win[3].g, win[3].h, win[3].ab, win[5].g, win[5].h, win[5].ab, win[10].g, win[10].h, win[10].ab, win[20].g, win[20].h, win[20].ab).run();
+    inserted++;
+    if (samples.length < 10) samples.push({ player_id:p.player_id, player_name:p.player_name, role:p.role, games_logged:rows.length, last_game_date:last, last10_hits:win[10].h, last10_ab:win[10].ab });
+  }
+  const count = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM incremental_player_metrics`).first();
+  return { ok:true, data_ok:Number(count?.rows_count || 0) > 0, job:input.job || 'incremental_base_derived_metrics', version:SYSTEM_VERSION, status:'pass', table:'incremental_player_metrics', season, players_processed:inserted, skipped_players_no_logs:skippedNoLogs, total_incremental_player_metrics_after:Number(count?.rows_count || 0), samples, source_tables:['player_game_logs','ref_players'], live_tables_touched:true, note:'Derived incremental metrics were rebuilt from MLB game logs already stored in D1. No Gemini calls. No external subrequests.' };
+}
+async function checkIncrementalBaseData(input, env, target = 'all') {
+  await ensureStaticReferenceTables(env);
+  await ensureIncrementalBaseTables(env);
+  const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
+  const counts = [];
+  async function addCount(table) {
+    try { const r = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM ${table}`).first(); counts.push({ table, exists:true, rows_count:Number(r?.rows_count || 0) }); }
+    catch (e) { counts.push({ table, exists:false, rows_count:0, error:String(e?.message || e) }); }
+  }
+  if (target === 'game_logs' || target === 'all') await addCount('player_game_logs');
+  if (target === 'splits' || target === 'all') await addCount('ref_player_splits');
+  if (target === 'derived' || target === 'all') await addCount('incremental_player_metrics');
+  const activePlayers = await env.DB.prepare(`SELECT COUNT(*) AS c FROM ref_players WHERE active=1`).first().catch(() => ({ c: 0 }));
+  const gameCoverage = await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_logs, COUNT(*) AS log_rows, MIN(game_date) AS first_game_date, MAX(game_date) AS last_game_date FROM player_game_logs WHERE season=?`).bind(season).first().catch(() => null);
+  const splitCoverage = await env.DB.prepare(`SELECT COUNT(DISTINCT player_id) AS players_with_splits, COUNT(*) AS split_rows FROM ref_player_splits WHERE season=?`).bind(season).first().catch(() => null);
+  const derivedCoverage = await env.DB.prepare(`SELECT COUNT(*) AS players_with_metrics, MIN(last_game_date) AS oldest_last_game, MAX(last_game_date) AS newest_last_game FROM incremental_player_metrics WHERE season=?`).bind(season).first().catch(() => null);
+  const duplicateLogs = await env.DB.prepare(`SELECT player_id, season, game_pk, COUNT(*) AS rows_count FROM player_game_logs GROUP BY player_id, season, game_pk HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
+  const duplicateSplits = await env.DB.prepare(`SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`).all().catch(() => ({ results: [] }));
+  const orphanLogs = await env.DB.prepare(`SELECT COUNT(*) AS c FROM player_game_logs g LEFT JOIN ref_players p ON p.player_id=g.player_id WHERE p.player_id IS NULL`).first().catch(() => ({ c: 0 }));
+  const roleSplit = await env.DB.prepare(`SELECT p.role, COUNT(DISTINCT g.player_id) AS players_with_logs, COUNT(g.game_pk) AS log_rows FROM player_game_logs g JOIN ref_players p ON p.player_id=g.player_id WHERE g.season=? GROUP BY p.role ORDER BY p.role`).bind(season).all().catch(() => ({ results: [] }));
+  const samples = {};
+  if (target === 'game_logs' || target === 'all') samples.player_game_logs = (await env.DB.prepare(`SELECT player_id, season, game_date, team_id, opponent_team, group_type, pa, ab, hits, home_runs, strikeouts, walks, source_confidence, updated_at FROM player_game_logs ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
+  if (target === 'splits' || target === 'all') samples.ref_player_splits = (await env.DB.prepare(`SELECT player_id, season, group_type, split_code, pa, ab, hits, home_runs, strikeouts, walks, avg, obp, slg, ops, source_confidence, updated_at FROM ref_player_splits ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
+  if (target === 'derived' || target === 'all') samples.incremental_player_metrics = (await env.DB.prepare(`SELECT player_id, player_name, role, games_logged, last_game_date, total_ab, total_hits, total_rbi, last10_hits, last10_ab, source_confidence, updated_at FROM incremental_player_metrics ORDER BY updated_at DESC LIMIT 10`).all().catch(() => ({ results: [] }))).results || [];
+  const failures = [], warnings = [];
+  const minCov = Math.max(700, Math.floor(Number(activePlayers?.c || 0) * 0.85));
+  if ((target === 'game_logs' || target === 'all') && Number(gameCoverage?.players_with_logs || 0) < minCov) failures.push('game_log_player_coverage_low');
+  if ((target === 'splits' || target === 'all') && Number(splitCoverage?.players_with_splits || 0) < minCov) failures.push('split_player_coverage_low');
+  if ((target === 'derived' || target === 'all') && Number(derivedCoverage?.players_with_metrics || 0) < minCov) failures.push('derived_metric_player_coverage_low');
+  if ((duplicateLogs.results || []).length) failures.push('duplicate_player_game_logs');
+  if ((duplicateSplits.results || []).length) failures.push('duplicate_player_splits');
+  if (Number(orphanLogs?.c || 0) > 0) failures.push('orphan_game_logs_without_ref_player');
+  if (Number(gameCoverage?.players_with_logs || 0) < Number(activePlayers?.c || 0)) warnings.push('some_active_players_have_no_game_logs_this_season');
+  const dataOk = failures.length === 0;
+  return { ok:true, data_ok:dataOk, job:input.job || `check_incremental_${target}`, version:SYSTEM_VERSION, status:dataOk ? 'pass' : 'needs_review', season, counts, coverage:{ active_players:Number(activePlayers?.c || 0), game_logs:gameCoverage, player_splits:splitCoverage, derived_metrics:derivedCoverage, role_split:roleSplit.results || [] }, quality:{ duplicate_logs:duplicateLogs.results || [], duplicate_splits:duplicateSplits.results || [], orphan_logs_without_ref_player:Number(orphanLogs?.c || 0), failures, warnings }, samples, note:'Incremental checks are read-only and avoid large raw_json payloads. Build derived metrics after game logs/splits are fully mined.' };
+}
+
 async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -5491,6 +5630,14 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+
+  if (/^incremental_base_game_logs_g[1-6]$/.test(jobName)) return await runIncrementalBaseGameLogs({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (/^incremental_base_splits_g[1-6]$/.test(jobName)) return await runIncrementalBaseSplits({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "incremental_base_derived_metrics") return await buildIncrementalBaseDerivedMetrics({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "check_incremental_game_logs") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'game_logs');
+  if (jobName === "check_incremental_player_splits") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'splits');
+  if (jobName === "check_incremental_derived_metrics") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'derived');
+  if (jobName === "check_incremental_all") return await checkIncrementalBaseData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'all');
 
   if (jobName === "scrape_static_venues") return await syncStaticVenues({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_team_aliases") return await syncStaticTeamAliases({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -5565,7 +5712,7 @@ async function executeTaskJob(jobName, body, slate, env) {
 }
 
 async function guardLongStaticJobAlreadyRunning(env, jobName) {
-  if (!(/^scrape_static_game_logs_g[1-6]$/.test(String(jobName || "")) || String(jobName || "") === "scrape_static_bvp_current_slate")) return null;
+  if (!(/^scrape_static_game_logs_g[1-6]$/.test(String(jobName || "")) || /^incremental_base_game_logs_g[1-6]$/.test(String(jobName || "")) || String(jobName || "") === "scrape_static_bvp_current_slate")) return null;
   await env.DB.prepare(`
     UPDATE task_runs
     SET status='stale_reset',
