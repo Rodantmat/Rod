@@ -1,7 +1,7 @@
 // AlphaDog v1.2.96 - Phase 2A Weather/Roof Context compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.96 - Phase 2A Weather/Roof Context";
-const SYSTEM_CODENAME = "Phase 2A Weather/Roof Context";
+const SYSTEM_VERSION = "v1.2.97 - OpenWeather Dual Endpoint Repair";
+const SYSTEM_CODENAME = "OpenWeather Dual Endpoint Repair";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -6344,19 +6344,76 @@ function phase2RoofContext(teamId, roofType) {
   return 'ROOF_CONTEXT_UNKNOWN';
 }
 
-async function fetchOpenWeatherContext(env, loc) {
-  const key = env.OPENWEATHER_API_KEY;
-  if (!key) return { ok:false, missing_key:true, error:'OPENWEATHER_API_KEY missing' };
-  const url = 'https://api.openweathermap.org/data/2.5/weather?lat=' + encodeURIComponent(loc.lat) + '&lon=' + encodeURIComponent(loc.lon) + '&appid=' + encodeURIComponent(key) + '&units=imperial';
-  const res = await fetchJsonWithRetry(url, {}, 2, 'openweather_current');
-  if (!res.ok) return { ok:false, error:res.error || 'openweather_failed' };
-  const d = res.data || {};
-  return { ok:true, data:{
-    source_name:'openweather_current', source_status:'primary_success',
+function getOpenWeatherKey(env) {
+  return env.OPENWEATHER_API_KEY || env.OPEN_WEATHER_API_KEY || env.OPENWEATHERMAP_API_KEY || null;
+}
+
+async function fetchJsonWithDiagnostics(url, options = {}, retries = 2, label = "fetch_json") {
+  let last = { ok:false, status:null, error:label + ' failed', body_preview:null, code:null, message:null };
+  for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "accept": "application/json", ...(options.headers || {}) }, ...options });
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+      if (res.ok) return { ok:true, status:res.status, data, attempt };
+      last = {
+        ok:false,
+        status:res.status,
+        error: label + ' HTTP ' + res.status,
+        body_preview: String(text || '').slice(0, 300),
+        code: data?.cod || data?.code || null,
+        message: data?.message || data?.error || null,
+        attempt
+      };
+      if (![408, 425, 429, 500, 502, 503, 504].includes(Number(res.status))) break;
+    } catch (err) {
+      last = { ok:false, status:null, error:String(err?.message || err || label + ' failed'), body_preview:null, code:null, message:null, attempt };
+    }
+    if (attempt < retries) await sleepMs(250 * attempt);
+  }
+  return last;
+}
+
+function normalizeOpenWeather25(d) {
+  return {
+    source_name:'openweather_current_2_5', source_status:'primary_success_2_5_weather',
     temp_f: d.main?.temp ?? null, feels_like_f: d.main?.feels_like ?? null, humidity_pct: d.main?.humidity ?? null, pressure_hpa: d.main?.pressure ?? null,
     wind_speed_mph: d.wind?.speed ?? null, wind_direction_deg: d.wind?.deg ?? null, precipitation_1h_in: d.rain?.['1h'] ?? d.snow?.['1h'] ?? 0, cloud_pct: d.clouds?.all ?? null,
-    raw_json: JSON.stringify({ provider:'openweather', sample:{ weather:d.weather, main:d.main, wind:d.wind, rain:d.rain, snow:d.snow, clouds:d.clouds } })
-  }};
+    raw_json: JSON.stringify({ provider:'openweather', endpoint:'2.5/weather', sample:{ weather:d.weather, main:d.main, wind:d.wind, rain:d.rain, snow:d.snow, clouds:d.clouds } })
+  };
+}
+
+function normalizeOpenWeather30(d) {
+  const c = d.current || {};
+  return {
+    source_name:'openweather_onecall_3_0', source_status:'primary_success_3_0_onecall',
+    temp_f: c.temp ?? null, feels_like_f: c.feels_like ?? null, humidity_pct: c.humidity ?? null, pressure_hpa: c.pressure ?? null,
+    wind_speed_mph: c.wind_speed ?? null, wind_direction_deg: c.wind_deg ?? null, precipitation_1h_in: c.rain?.['1h'] ?? c.snow?.['1h'] ?? 0, cloud_pct: c.clouds ?? null,
+    raw_json: JSON.stringify({ provider:'openweather', endpoint:'3.0/onecall', sample:{ current:c, alerts_count:Array.isArray(d.alerts) ? d.alerts.length : 0 } })
+  };
+}
+
+async function fetchOpenWeatherContext(env, loc) {
+  const key = getOpenWeatherKey(env);
+  if (!key) return { ok:false, missing_key:true, error:'OPENWEATHER_API_KEY missing' };
+
+  const lat = encodeURIComponent(loc.lat);
+  const lon = encodeURIComponent(loc.lon);
+  const keyParam = encodeURIComponent(key);
+  const failures = [];
+
+  const url25 = 'https://api.openweathermap.org/data/2.5/weather?lat=' + lat + '&lon=' + lon + '&appid=' + keyParam + '&units=imperial';
+  const res25 = await fetchJsonWithDiagnostics(url25, {}, 2, 'openweather_2_5_weather');
+  if (res25.ok) return { ok:true, data:normalizeOpenWeather25(res25.data || {}), endpoint_used:'2.5/weather' };
+  failures.push({ endpoint:'2.5/weather', status:res25.status, code:res25.code, message:res25.message, error:res25.error, body_preview:res25.body_preview });
+
+  const url30 = 'https://api.openweathermap.org/data/3.0/onecall?lat=' + lat + '&lon=' + lon + '&appid=' + keyParam + '&units=imperial&exclude=minutely,hourly,daily,alerts';
+  const res30 = await fetchJsonWithDiagnostics(url30, {}, 2, 'openweather_3_0_onecall');
+  if (res30.ok) return { ok:true, data:normalizeOpenWeather30(res30.data || {}), endpoint_used:'3.0/onecall', prior_failures:failures };
+  failures.push({ endpoint:'3.0/onecall', status:res30.status, code:res30.code, message:res30.message, error:res30.error, body_preview:res30.body_preview });
+
+  return { ok:false, error:'openweather_failed_all_endpoints', failures };
 }
 
 async function fetchOpenMeteoContext(loc) {
@@ -6395,12 +6452,12 @@ async function scrapePhase2WeatherContext(input, env) {
     let fetched = await fetchOpenWeatherContext(env, { lat:coords.lat, lon:coords.lon });
     if (!fetched.ok) {
       if (fetched.missing_key) warnings.push('OPENWEATHER_API_KEY_MISSING_USED_OPEN_METEO_FALLBACK');
-      else warnings.push('OPENWEATHER_FAILED_USED_OPEN_METEO_FALLBACK:' + home);
+      else { const f=(fetched.failures||[]).map(x => x.endpoint + ':' + (x.status || 'NO_STATUS') + ':' + (x.code || '') + ':' + String(x.message || x.error || '').slice(0,80)).join('|'); warnings.push('OPENWEATHER_FAILED_USED_OPEN_METEO_FALLBACK:' + home + ':' + f); }
       fetched = await fetchOpenMeteoContext({ lat:coords.lat, lon:coords.lon });
     }
     if (!fetched.ok) { skipped++; errors.push({ game_id:g.game_id, home_team:home, error:fetched.error || 'weather_fetch_failed' }); continue; }
     const data = fetched.data || {};
-    if (data.source_name === 'openweather_current') openWeatherCount++; else openMeteoCount++;
+    if (String(data.source_name || '').startsWith('openweather')) openWeatherCount++; else openMeteoCount++;
     const roofType = String(coords.roof || v.roof_status || 'UNKNOWN').toUpperCase();
     const row = { context_id:d + '|' + g.game_id + '|weather', slate_date:d, game_id:g.game_id, away_team:g.away_team, home_team:home, venue_id:v.venue_id ?? null, venue_name:v.mlb_venue_name || g.venue || null, city:v.city || null, state:v.state || null, latitude:coords.lat, longitude:coords.lon, roof_type:roofType, roof_context:phase2RoofContext(home, roofType), ...data };
     row.weather_risk = phase2WeatherRisk(row);
@@ -6409,7 +6466,7 @@ async function scrapePhase2WeatherContext(input, env) {
     if (samples.length < 5) samples.push({ game_id:row.game_id, home_team:row.home_team, venue_name:row.venue_name, source_name:row.source_name, temp_f:row.temp_f, wind_speed_mph:row.wind_speed_mph, wind_direction_deg:row.wind_direction_deg, roof_type:row.roof_type, weather_risk:row.weather_risk });
   }
   const check = await checkPhase2WeatherContext({ ...(input || {}), job:'check_phase2_weather_context', slate_date:d }, env);
-  return { ok:true, data_ok:check.data_ok, job:input.job || 'scrape_phase2_weather_context', version:SYSTEM_VERSION, status:check.data_ok ? 'pass' : 'pass_with_warnings', slate_date:d, source_policy:'OPENWEATHER_API_KEY primary; Open-Meteo no-key fallback', games_checked:games.length, inserted:{ game_weather_context:inserted }, source_counts:{ openweather_current:openWeatherCount, open_meteo_current_no_key:openMeteoCount }, skipped_count:skipped, warnings:[...new Set(warnings)], errors, samples, final_check:check, live_tables_touched:true, note:'Phase 2A weather/roof context only. Today slate only. No scoring, no Gemini, no static/incremental remine. Roof open/closed is not auto-confirmed; retractable parks are marked roof-dependent.' };
+  return { ok:true, data_ok:check.data_ok, job:input.job || 'scrape_phase2_weather_context', version:SYSTEM_VERSION, status:check.data_ok ? 'pass' : 'pass_with_warnings', slate_date:d, source_policy:'OpenWeather primary uses 2.5/weather first, then 3.0/onecall; Open-Meteo no-key fallback', games_checked:games.length, inserted:{ game_weather_context:inserted }, source_counts:{ openweather_any:openWeatherCount, open_meteo_current_no_key:openMeteoCount }, skipped_count:skipped, warnings:[...new Set(warnings)], errors, samples, final_check:check, live_tables_touched:true, note:'Phase 2A weather/roof context only. Today slate only. No scoring, no Gemini, no static/incremental remine. Roof open/closed is not auto-confirmed; retractable parks are marked roof-dependent.' };
 }
 
 async function checkPhase2WeatherContext(input, env) {
