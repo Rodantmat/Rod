@@ -1,7 +1,7 @@
-// AlphaDog v1.2.98 - Phase 2B Lineup Confirmation + Late Scratch Shell compatible worker
+// AlphaDog v1.2.99 - Phase 2B Last Lineup Fallback compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.2.98 - Phase 2B Lineup Confirmation Shell";
-const SYSTEM_CODENAME = "Phase 2B Lineup Confirmation Shell";
+const SYSTEM_VERSION = "v1.2.99 - Phase 2B Last Lineup Fallback";
+const SYSTEM_CODENAME = "Phase 2B Last Lineup Fallback";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -681,8 +681,8 @@ const JOBS = {
   everyday_phase1_all_direct: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "direct one-request phase 1 baseline runner; use scheduled/tick path first on iPhone" },
   scrape_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games", "ref_venues"], note: "Phase 2A today-slate weather/wind/roof context. OpenWeather primary, Open-Meteo no-key fallback. No scoring." },
   check_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games"], note: "Check Phase 2A weather/wind/roof context coverage for today slate" },
-  scrape_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Phase 2B today-slate lineup confirmation, top-order completeness, and late-scratch shell. No scoring and no Gemini." },
-  check_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Check Phase 2B lineup confirmation and late-scratch shell readiness" },
+  scrape_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Phase 2B today-slate lineup confirmation with last-available lineup fallback, top-order completeness, and late-scratch shell. No scoring and no Gemini." },
+  check_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Check Phase 2B lineup confirmation, last-lineup fallback, and late-scratch shell readiness" },
 
   check_static_venues: { prompt: null, tables: ["ref_venues"], note: "check static venue reference" },
   check_static_team_aliases: { prompt: null, tables: ["ref_team_aliases"], note: "check static team alias dictionary" },
@@ -6326,16 +6326,25 @@ async function ensureGameLineupContextTable(env) {
     "context_id TEXT PRIMARY KEY, slate_date TEXT NOT NULL, game_id TEXT NOT NULL, team_id TEXT NOT NULL, opponent_team TEXT, side TEXT, " +
     "lineup_rows INTEGER DEFAULT 0, top3_rows INTEGER DEFAULT 0, top5_rows INTEGER DEFAULT 0, top9_rows INTEGER DEFAULT 0, confirmed_rows INTEGER DEFAULT 0, " +
     "is_confirmed INTEGER DEFAULT 0, confirmation_status TEXT, top3_complete INTEGER DEFAULT 0, top5_complete INTEGER DEFAULT 0, lineup_quality TEXT, " +
+    "fallback_used INTEGER DEFAULT 0, fallback_game_id TEXT, fallback_game_date TEXT, " +
     "late_scratch_flag INTEGER DEFAULT 0, injury_news_flag INTEGER DEFAULT 0, scratch_context TEXT, warnings_json TEXT, source_name TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
   ).run();
+  await env.DB.prepare("ALTER TABLE game_lineup_context ADD COLUMN fallback_used INTEGER DEFAULT 0").run().catch(()=>null);
+  await env.DB.prepare("ALTER TABLE game_lineup_context ADD COLUMN fallback_game_id TEXT").run().catch(()=>null);
+  await env.DB.prepare("ALTER TABLE game_lineup_context ADD COLUMN fallback_game_date TEXT").run().catch(()=>null);
   await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_game_lineup_context_slate ON game_lineup_context (slate_date, game_id)").run().catch(()=>null);
 }
 
-function phase2bLineupQuality(lineupRows, top3Rows, top5Rows, confirmedRows) {
+function phase2bLineupQuality(lineupRows, top3Rows, top5Rows, confirmedRows, fallbackUsed) {
   const rows = Number(lineupRows || 0);
   const t3 = Number(top3Rows || 0);
   const t5 = Number(top5Rows || 0);
   const conf = Number(confirmedRows || 0);
+  const fb = Number(fallbackUsed || 0) === 1;
+  if (fb && rows >= 9) return { status:'LAST_AVAILABLE_FALLBACK_FULL', quality:'FALLBACK_LAST_GAME_FULL' };
+  if (fb && t3 >= 3 && t5 >= 5) return { status:'LAST_AVAILABLE_FALLBACK_TOP5', quality:'FALLBACK_LAST_GAME_TOP5' };
+  if (fb && t3 >= 3) return { status:'LAST_AVAILABLE_FALLBACK_TOP3', quality:'FALLBACK_LAST_GAME_TOP3' };
+  if (fb && rows > 0) return { status:'LAST_AVAILABLE_FALLBACK_PARTIAL', quality:'FALLBACK_LAST_GAME_PARTIAL' };
   if (rows >= 9 && conf >= 9) return { status:'FULL_CONFIRMED', quality:'READY_FULL_CONFIRMED' };
   if (rows >= 9) return { status:'FULL_AVAILABLE', quality:'READY_FULL_AVAILABLE' };
   if (t3 >= 3 && t5 >= 5) return { status:'PARTIAL_TOP5_CONFIRMED', quality:'USABLE_TOP5_PARTIAL' };
@@ -6344,15 +6353,76 @@ function phase2bLineupQuality(lineupRows, top3Rows, top5Rows, confirmedRows) {
   return { status:'NO_LINEUP_POSTED', quality:'MISSING_LINEUP' };
 }
 
+function phase2bLineupRowsFromBoxscore(box, side, teamId, targetGameId, sourceGameId, sourceGameDate) {
+  const team = box?.teams?.[side];
+  const battingOrder = team?.battingOrder || [];
+  const players = team?.players || {};
+  const rows = [];
+  for (let i = 0; i < battingOrder.length && i < 9; i++) {
+    const playerKey = `ID${battingOrder[i]}`;
+    const player = players[playerKey];
+    const person = player?.person || {};
+    const playerName = person.fullName || null;
+    if (!playerName) continue;
+    rows.push({
+      game_id: targetGameId,
+      team_id: teamId,
+      slot: i + 1,
+      player_name: playerName,
+      bats: player?.battingHand?.code || null,
+      k_rate: null,
+      is_confirmed: 0,
+      source: 'mlb_statsapi_last_available_lineup_fallback',
+      confidence: `fallback_from_${sourceGameDate || sourceGameId || 'last_available'}`
+    });
+  }
+  return rows;
+}
+
+async function phase2bFindLastAvailableLineup(env, teamId, slateDate, targetGameId) {
+  const cleanTeamId = String(teamId || '').toUpperCase();
+  const mlbTeamId = MLB_TEAM_ID_BY_ABBR[cleanTeamId];
+  if (!mlbTeamId) return { rows: [], fallback_game_id: null, fallback_game_date: null, source: 'team_id_not_mapped' };
+
+  const startDate = addDaysISO(slateDate, -10);
+  const endDate = addDaysISO(slateDate, -1);
+  const games = await fetchMlbScheduleForTeam(mlbTeamId, startDate, endDate);
+  const finals = games
+    .filter(g => String(g?.status?.abstractGameState || '').toLowerCase() === 'final')
+    .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate));
+
+  for (const g of finals) {
+    const side = Number(g?.teams?.away?.team?.id) === Number(mlbTeamId) ? 'away' : 'home';
+    const sourceDate = String((g?.officialDate || g?.gameDate || '').slice(0,10));
+    const away = MLB_TEAM_ABBR[g?.teams?.away?.team?.id] || 'UNK';
+    const home = MLB_TEAM_ABBR[g?.teams?.home?.team?.id] || 'UNK';
+    const sourceGameId = sourceDate ? `${sourceDate}_${away}_${home}` : String(g?.gamePk || 'last_game');
+    const box = await fetchMlbBoxscore(g.gamePk);
+    if (!box) continue;
+    const rows = phase2bLineupRowsFromBoxscore(box, side, cleanTeamId, targetGameId, sourceGameId, sourceDate);
+    if (rows.length >= 3) return { rows, fallback_game_id: sourceGameId, fallback_game_date: sourceDate, source: 'mlb_statsapi_last_available_boxscore_lineup' };
+  }
+  return { rows: [], fallback_game_id: null, fallback_game_date: null, source: 'no_recent_final_lineup_found' };
+}
+
+async function phase2bUpsertFallbackLineupRows(env, rows) {
+  if (!rows.length) return 0;
+  const validated = validateRows('lineups_current', rows);
+  if (!validated.ok) return 0;
+  return await upsertRows(env, 'lineups_current', validated.rows);
+}
+
 async function scrapePhase2LineupContext(input, env) {
   await ensureGameLineupContextTable(env);
   const slate = resolveSlateDate(input || {});
   const d = String(input?.slate_date || slate.slate_date);
   const games = (await env.DB.prepare('SELECT game_id, game_date, away_team, home_team, start_time_utc, venue FROM games WHERE game_date=? ORDER BY game_id').bind(d).all()).results || [];
-  const stmtAgg = env.DB.prepare("SELECT COUNT(*) AS lineup_rows, SUM(CASE WHEN slot BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3_rows, SUM(CASE WHEN slot BETWEEN 1 AND 5 THEN 1 ELSE 0 END) AS top5_rows, SUM(CASE WHEN slot BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS top9_rows, SUM(CASE WHEN COALESCE(is_confirmed,0)=1 THEN 1 ELSE 0 END) AS confirmed_rows FROM lineups_current WHERE game_id=? AND team_id=?");
-  const upsert = env.DB.prepare("INSERT OR REPLACE INTO game_lineup_context (context_id, slate_date, game_id, team_id, opponent_team, side, lineup_rows, top3_rows, top5_rows, top9_rows, confirmed_rows, is_confirmed, confirmation_status, top3_complete, top5_complete, lineup_quality, late_scratch_flag, injury_news_flag, scratch_context, warnings_json, source_name, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)");
+  const stmtAgg = env.DB.prepare("SELECT COUNT(*) AS lineup_rows, SUM(CASE WHEN slot BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS top3_rows, SUM(CASE WHEN slot BETWEEN 1 AND 5 THEN 1 ELSE 0 END) AS top5_rows, SUM(CASE WHEN slot BETWEEN 1 AND 9 THEN 1 ELSE 0 END) AS top9_rows, SUM(CASE WHEN COALESCE(is_confirmed,0)=1 THEN 1 ELSE 0 END) AS confirmed_rows, SUM(CASE WHEN source='mlb_statsapi_last_available_lineup_fallback' THEN 1 ELSE 0 END) AS fallback_rows FROM lineups_current WHERE game_id=? AND team_id=?");
+  const upsert = env.DB.prepare("INSERT OR REPLACE INTO game_lineup_context (context_id, slate_date, game_id, team_id, opponent_team, side, lineup_rows, top3_rows, top5_rows, top9_rows, confirmed_rows, is_confirmed, confirmation_status, top3_complete, top5_complete, lineup_quality, fallback_used, fallback_game_id, fallback_game_date, late_scratch_flag, injury_news_flag, scratch_context, warnings_json, source_name, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)");
   let inserted = 0;
   let teamsProcessed = 0;
+  let fallbackTeams = 0;
+  let fallbackRowsInserted = 0;
   const warnings = [];
   const samples = [];
   for (const g of games) {
@@ -6363,30 +6433,42 @@ async function scrapePhase2LineupContext(input, env) {
     for (const side of sides) {
       if (!side.team_id) continue;
       teamsProcessed++;
-      const a = await stmtAgg.bind(g.game_id, side.team_id).first().catch(()=>({}));
-      const lineupRows = Number(a?.lineup_rows || 0);
+      let fallbackInfo = { rows: [], fallback_game_id: null, fallback_game_date: null, source: null };
+      let a = await stmtAgg.bind(g.game_id, side.team_id).first().catch(()=>({}));
+      let lineupRows = Number(a?.lineup_rows || 0);
+      if (lineupRows <= 0) {
+        fallbackInfo = await phase2bFindLastAvailableLineup(env, side.team_id, d, g.game_id);
+        if (fallbackInfo.rows.length > 0) {
+          const wrote = await phase2bUpsertFallbackLineupRows(env, fallbackInfo.rows);
+          fallbackRowsInserted += Number(wrote || 0);
+          fallbackTeams++;
+          a = await stmtAgg.bind(g.game_id, side.team_id).first().catch(()=>({}));
+          lineupRows = Number(a?.lineup_rows || 0);
+        }
+      }
       const top3Rows = Number(a?.top3_rows || 0);
       const top5Rows = Number(a?.top5_rows || 0);
       const top9Rows = Number(a?.top9_rows || 0);
       const confirmedRows = Number(a?.confirmed_rows || 0);
-      const q = phase2bLineupQuality(lineupRows, top3Rows, top5Rows, confirmedRows);
+      const fallbackUsed = Number(a?.fallback_rows || 0) > 0 ? 1 : 0;
+      const q = phase2bLineupQuality(lineupRows, top3Rows, top5Rows, confirmedRows, fallbackUsed);
       const rowWarnings = [];
+      if (fallbackUsed) rowWarnings.push('CURRENT_LINEUP_MISSING_USED_LAST_AVAILABLE');
       if (lineupRows <= 0) rowWarnings.push('NO_LINEUP_POSTED');
       if (top3Rows < 3) rowWarnings.push('TOP3_INCOMPLETE');
       if (top5Rows < 5) rowWarnings.push('TOP5_INCOMPLETE');
       if (lineupRows > 0 && lineupRows < 9) rowWarnings.push('LINEUP_NOT_FULL_9');
-      rowWarnings.push('LATE_SCRATCH_NEWS_SOURCE_NOT_CONNECTED_YET');
       warnings.push(...rowWarnings.map(w => w + ':' + side.team_id));
       const contextId = d + '|' + g.game_id + '|' + side.team_id;
       const scratchContext = 'SHELL_ONLY_NO_LATE_SCRATCH_NEWS_SOURCE_CONNECTED';
-      const sourceName = 'mlb_statsapi_lineups_current_plus_scratch_shell';
-      const res = await upsert.bind(contextId, d, g.game_id, side.team_id, side.opponent_team, side.side, lineupRows, top3Rows, top5Rows, top9Rows, confirmedRows, confirmedRows >= 9 ? 1 : 0, q.status, top3Rows >= 3 ? 1 : 0, top5Rows >= 5 ? 1 : 0, q.quality, 0, 0, scratchContext, JSON.stringify(rowWarnings), sourceName).run();
+      const sourceName = fallbackUsed ? 'mlb_statsapi_current_or_last_available_lineup_fallback' : 'mlb_statsapi_lineups_current_plus_scratch_shell';
+      const res = await upsert.bind(contextId, d, g.game_id, side.team_id, side.opponent_team, side.side, lineupRows, top3Rows, top5Rows, top9Rows, confirmedRows, confirmedRows >= 9 ? 1 : 0, q.status, top3Rows >= 3 ? 1 : 0, top5Rows >= 5 ? 1 : 0, q.quality, fallbackUsed, fallbackUsed ? fallbackInfo.fallback_game_id : null, fallbackUsed ? fallbackInfo.fallback_game_date : null, 0, 0, scratchContext, JSON.stringify(rowWarnings), sourceName).run();
       inserted += Number(res?.meta?.changes || 0);
-      if (samples.length < 10) samples.push({ game_id:g.game_id, team_id:side.team_id, side:side.side, lineup_rows:lineupRows, top3_rows:top3Rows, top5_rows:top5Rows, confirmation_status:q.status, lineup_quality:q.quality, late_scratch_flag:0, scratch_context:scratchContext, warnings:rowWarnings });
+      if (samples.length < 10) samples.push({ game_id:g.game_id, team_id:side.team_id, side:side.side, lineup_rows:lineupRows, top3_rows:top3Rows, top5_rows:top5Rows, confirmation_status:q.status, lineup_quality:q.quality, fallback_used:fallbackUsed, fallback_game_date:fallbackUsed ? fallbackInfo.fallback_game_date : null, late_scratch_flag:0, scratch_context:scratchContext, warnings:rowWarnings });
     }
   }
   const check = await checkPhase2LineupContext({ ...(input || {}), job:'check_phase2_lineup_context', slate_date:d }, env);
-  return { ok:true, data_ok:check.data_ok, job:input.job || 'scrape_phase2_lineup_context', version:SYSTEM_VERSION, status:check.data_ok ? (check.quality?.warnings?.length ? 'pass_with_warnings' : 'pass') : 'fail', slate_date:d, games_checked:games.length, teams_processed:teamsProcessed, inserted:{ game_lineup_context: inserted }, warning_count:warnings.length, warnings:[...new Set(warnings)].slice(0,40), samples, final_check:check, live_tables_touched:true, note:'Phase 2B lineup confirmation and late-scratch shell only. Today slate only. No scoring, no Gemini, no news scraping yet; late scratch fields are safe shell defaults until a news source is added.' };
+  return { ok:true, data_ok:check.data_ok, job:input.job || 'scrape_phase2_lineup_context', version:SYSTEM_VERSION, status:check.data_ok ? (check.quality?.warnings?.length ? 'pass_with_warnings' : 'pass') : 'fail', slate_date:d, games_checked:games.length, teams_processed:teamsProcessed, inserted:{ game_lineup_context: inserted, fallback_lineups_current: fallbackRowsInserted }, fallback_teams:fallbackTeams, warning_count:warnings.length, warnings:[...new Set(warnings)].slice(0,40), samples, final_check:check, live_tables_touched:true, note:'Phase 2B lineup confirmation with last-available lineup fallback. If today lineup is missing, the system uses the team last available MLB boxscore lineup as non-confirmed fallback. Today slate only. No scoring, no Gemini, no news scraping yet.' };
 }
 
 async function checkPhase2LineupContext(input, env) {
@@ -6397,6 +6479,8 @@ async function checkPhase2LineupContext(input, env) {
   const expectedTeams = Number(games || 0) * 2;
   const contextRows = await countScalar(env, 'SELECT COUNT(*) AS c FROM game_lineup_context WHERE slate_date=?', d).catch(()=>0);
   const lineupRows = await countScalar(env, 'SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ?', d + '_%').catch(()=>0);
+  const fallbackTeams = await countScalar(env, 'SELECT COUNT(*) AS c FROM game_lineup_context WHERE slate_date=? AND fallback_used=1', d).catch(()=>0);
+  const fallbackLineupRows = await countScalar(env, "SELECT COUNT(*) AS c FROM lineups_current WHERE game_id LIKE ? AND source='mlb_statsapi_last_available_lineup_fallback'", d + '_%').catch(()=>0);
   const fullConfirmedTeams = await countScalar(env, "SELECT COUNT(*) AS c FROM game_lineup_context WHERE slate_date=? AND confirmation_status IN ('FULL_CONFIRMED','FULL_AVAILABLE')", d).catch(()=>0);
   const usableTop3Teams = await countScalar(env, 'SELECT COUNT(*) AS c FROM game_lineup_context WHERE slate_date=? AND top3_complete=1', d).catch(()=>0);
   const missingLineupTeams = await countScalar(env, "SELECT COUNT(*) AS c FROM game_lineup_context WHERE slate_date=? AND confirmation_status='NO_LINEUP_POSTED'", d).catch(()=>0);
@@ -6406,20 +6490,20 @@ async function checkPhase2LineupContext(input, env) {
   const statusSplit = (await env.DB.prepare('SELECT confirmation_status, COUNT(*) AS rows_count FROM game_lineup_context WHERE slate_date=? GROUP BY confirmation_status ORDER BY rows_count DESC, confirmation_status').bind(d).all().catch(()=>({results:[]}))).results || [];
   const qualitySplit = (await env.DB.prepare('SELECT lineup_quality, COUNT(*) AS rows_count FROM game_lineup_context WHERE slate_date=? GROUP BY lineup_quality ORDER BY rows_count DESC, lineup_quality').bind(d).all().catch(()=>({results:[]}))).results || [];
   const missingGames = (await env.DB.prepare('SELECT g.game_id, g.away_team, g.home_team, COUNT(c.team_id) AS context_teams FROM games g LEFT JOIN game_lineup_context c ON c.game_id=g.game_id AND c.slate_date=? WHERE g.game_date=? GROUP BY g.game_id HAVING context_teams < 2 ORDER BY g.game_id').bind(d,d).all().catch(()=>({results:[]}))).results || [];
-  const samples = (await env.DB.prepare('SELECT game_id, team_id, side, lineup_rows, top3_rows, top5_rows, confirmed_rows, confirmation_status, lineup_quality, late_scratch_flag, injury_news_flag, scratch_context, warnings_json, updated_at FROM game_lineup_context WHERE slate_date=? ORDER BY game_id, side LIMIT 12').bind(d).all().catch(()=>({results:[]}))).results || [];
+  const samples = (await env.DB.prepare('SELECT game_id, team_id, side, lineup_rows, top3_rows, top5_rows, confirmed_rows, confirmation_status, lineup_quality, fallback_used, fallback_game_date, late_scratch_flag, injury_news_flag, scratch_context, warnings_json, updated_at FROM game_lineup_context WHERE slate_date=? ORDER BY game_id, side LIMIT 12').bind(d).all().catch(()=>({results:[]}))).results || [];
   const failures = [];
   const warnings = [];
   if (games <= 0) failures.push('GAMES_EMPTY');
   if (contextRows < expectedTeams) failures.push('LINEUP_CONTEXT_ROWS_MISSING');
   if (missingGames.length) failures.push('LINEUP_CONTEXT_MISSING_GAMES');
-  if (lineupRows <= 0) warnings.push('NO_LINEUPS_POSTED_YET');
-  if (missingLineupTeams > 0) warnings.push('SOME_TEAMS_HAVE_NO_LINEUP_POSTED');
+  if (lineupRows <= 0) warnings.push('NO_LINEUPS_AVAILABLE_YET');
+  if (fallbackTeams > 0) warnings.push('SOME_TEAMS_USING_LAST_AVAILABLE_LINEUP_FALLBACK');
+  if (missingLineupTeams > 0) warnings.push('SOME_TEAMS_HAVE_NO_CURRENT_OR_FALLBACK_LINEUP');
   if (top3IncompleteTeams > 0) warnings.push('SOME_TOP3_LINEUPS_INCOMPLETE');
   if (fullConfirmedTeams < expectedTeams) warnings.push('NOT_ALL_TEAMS_FULL_CONFIRMED');
   if (staleRows > 0) warnings.push('STALE_LINEUP_CONTEXT_OVER_4H');
-  warnings.push('LATE_SCRATCH_NEWS_SOURCE_NOT_CONNECTED_YET');
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || 'check_phase2_lineup_context', version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? 'pass_with_warnings' : 'pass') : 'fail', slate_date:d, check_mode:'EVERYDAY_PHASE2B_LINEUP_CONFIRMATION_SHELL', counts:{ games, expected_teams:expectedTeams, lineup_context_rows:contextRows, lineups_current_rows:lineupRows, full_confirmed_teams:fullConfirmedTeams, usable_top3_teams:usableTop3Teams, missing_lineup_teams:missingLineupTeams, top3_incomplete_teams:top3IncompleteTeams, late_scratch_flags:lateScratchFlags, stale_rows_over_4h:staleRows }, status_split:statusSplit, quality_split:qualitySplit, missing_games:missingGames, samples, quality:{ failures, warnings }, live_tables_touched:false, note:'Phase 2B validates lineup confirmation/top-order completeness and provides a late-scratch/injury-news shell. No Gemini/news source is connected yet; late-scratch flags default to 0 until Phase 2C/2D news source work.' };
+  return { ok:true, data_ok:dataOk, job:input.job || 'check_phase2_lineup_context', version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? 'pass_with_warnings' : 'pass') : 'fail', slate_date:d, check_mode:'EVERYDAY_PHASE2B_LINEUP_CONFIRMATION_LAST_AVAILABLE_FALLBACK', counts:{ games, expected_teams:expectedTeams, lineup_context_rows:contextRows, lineups_current_rows:lineupRows, fallback_lineup_teams:fallbackTeams, fallback_lineup_rows:fallbackLineupRows, full_confirmed_teams:fullConfirmedTeams, usable_top3_teams:usableTop3Teams, missing_lineup_teams:missingLineupTeams, top3_incomplete_teams:top3IncompleteTeams, late_scratch_flags:lateScratchFlags, stale_rows_over_4h:staleRows }, status_split:statusSplit, quality_split:qualitySplit, missing_games:missingGames, samples, quality:{ failures, warnings }, live_tables_touched:false, note:'Phase 2B validates current lineup confirmation and fills missing teams with the last available MLB boxscore lineup as non-confirmed fallback. No Gemini/news source is connected yet; late-scratch flags default to 0 until news source work.' };
 }
 
 const PHASE2_STADIUM_COORDS = {
