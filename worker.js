@@ -1,4 +1,4 @@
-// AlphaDog v1.3.13 - Sleeper Ingest + Phase 3A/B Scheduler Merge compatible worker
+// AlphaDog v1.3.16 - Gemini Compact Governor compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 const SYSTEM_VERSION = "v1.3.16 - Gemini Compact Governor";
 const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
@@ -895,7 +895,7 @@ export default {
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '* * * * *') {
-        // v1.3.14: Phase 3A/3B deferred work has priority on minute ticks.
+        // v1.3.16: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
         const phase3DueTick = await runDuePhase3abFullRun(env);
         if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
