@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.05 - Phase 3A/3B Build-First Scheduler Test</div>
+<div id="versionTag">v1.3.06 - Phase 3A/3B Daily Schedule Lock</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -164,6 +164,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </div><div class="small">Phase 2C-I current PrizePicks board market/projection context from the latest mlb_stats capture window. Processes in safe chunks; keep pressing Run Market Context until completed. No scoring, no external odds, no Gemini, and no cron.</div></div>
 <div class="card"><h2>Phase 3A/3B Full Run Test</h2><div class="grid">
 <button class="warn" onclick="runJobButton('PHASE 3A/3B > Schedule Full Run Test','schedule_phase3ab_full_run_test')">Schedule Full Run Test</button>
+<button class="warn" onclick="runJobButton('PHASE 3A/3B > Schedule Daily 4AM','schedule_phase3ab_daily_4am')">Schedule Daily 4AM</button>
 <button class="warn" onclick="runJobButton('PHASE 3A/3B > Run Full Run Tick','run_phase3ab_full_run_tick')">Run Full Run Tick</button>
 <button class="check" onclick="runJobButton('PHASE 3A/3B > Check Full Run','check_phase3ab_full_run')">Check Full Run</button>
 </div><div class="small">Phase 3A/3B test: schedule for next minute, acquire global no-parallel lock, build board_factor_queue temp rows, mine/promote raw Gemini results into board_factor_results, clean completed temp rows when complete. If another job is running, postpone/retry later.</div></div>

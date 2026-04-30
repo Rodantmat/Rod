@@ -1,7 +1,7 @@
-// AlphaDog v1.3.05 - Phase 3A/3B Build-First Scheduler Test compatible worker
+// AlphaDog v1.3.06 - Phase 3A/3B Daily Schedule Lock compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.05 - Phase 3A/3B Build-First Scheduler Test";
-const SYSTEM_CODENAME = "Phase 3A/3B Build-First Scheduler Test";
+const SYSTEM_VERSION = "v1.3.06 - Phase 3A/3B Daily Schedule Lock";
+const SYSTEM_CODENAME = "Phase 3A/3B Daily Schedule Lock";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -121,6 +121,7 @@ const JOB_DISPLAY_LABELS = {
   scrape_phase2c_market_context: "EVERYDAY PHASE 2C > Run Market Context",
   check_phase2c_market_context: "EVERYDAY PHASE 2C > Check Market Context",
   schedule_phase3ab_full_run_test: "PHASE 3A/3B > Schedule Full Run Test",
+  schedule_phase3ab_daily_4am: "PHASE 3A/3B > Schedule Daily 4AM",
   run_phase3ab_full_run_tick: "PHASE 3A/3B > Run Full Run Tick",
   check_phase3ab_full_run: "PHASE 3A/3B > Check Full Run",
   check_static_venues: "CHECK > Static Venues",
@@ -470,6 +471,10 @@ const JOBS = {
     prompt: null,
     tables: ["deferred_full_run_once", "pipeline_locks", "board_factor_queue", "board_factor_results"],
     note: "schedules the Phase 3A/3B protected full-run test for the next minute; cron/tick mines to queue, promotes valid raw results, and cleans completed queue rows when complete"
+  },
+  schedule_phase3ab_daily_4am: {
+    prompt: null,
+    note: "schedules the Phase 3A/3B protected daily full run for current slate; real cron uses 0 11 * * * UTC / 4:00 AM PDT and minute cron continues postponed/partial work"
   },
   run_phase3ab_full_run_tick: {
     prompt: null,
@@ -855,6 +860,10 @@ export default {
         const scheduled = await scheduleStaticTempRefreshOnce({ job: 'weekly_static_temp_refresh_auto', trigger: 'scheduled_weekly_cron', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT' }, env);
         const tick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_weekly_cron_start', job: 'run_static_temp_refresh_tick' }, env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'weekly_static_temp_refresh_auto', status: 'weekly_refresh_scheduled', cron, weekly_schedule: 'Monday 1:00 AM PT/PDT', scheduled, first_tick: tick, live_tables_touched: false, note: 'Weekly static refresh started in _temp only. Minute cron will finish scrape, certify, promote only if A+/A, then clean temp.' };
+      } else if (cron === '0 11 * * *') {
+        const scheduled = await schedulePhase3abDaily4am({ job: 'schedule_phase3ab_daily_4am', trigger: 'scheduled_phase3ab_4am_cron', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC' }, env);
+        const firstTick = await runDuePhase3abFullRun(env);
+        result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '* * * * *') {
         const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
         if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
@@ -1016,6 +1025,7 @@ function executableJobNames() {
     "scrape_phase2c_market_context",
     "check_phase2c_market_context",
     "schedule_phase3ab_full_run_test",
+    "schedule_phase3ab_daily_4am",
     "run_phase3ab_full_run_tick",
     "check_phase3ab_full_run",
     "check_static_venues",
@@ -1649,6 +1659,32 @@ async function schedulePhase3abFullRunTest(input, env) {
   return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_full_run_test', status: 'scheduled_for_next_minute', request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, wait_instruction: 'Wait about 2 minutes, then run PHASE 3A/3B > Check Full Run. If it says partial_continue, wait another 2 minutes and check again.', protected_flow: ['acquire global lock', 'auto-build board_factor_queue', 'mine bounded Gemini raw rows', 'write/promote valid raw rows to board_factor_results', 'clean completed queue temp rows only when fully complete', 'release lock'], note: 'This is the one-minute full-run test version. It uses the same queue/results tables as the existing Phase 3A/3B flow and never runs in parallel.' };
 }
 
+async function schedulePhase3abDaily4am(input, env) {
+  await ensureDeferredFullRunTable(env);
+  await ensurePipelineLocksTable(env);
+  const slate = resolveSlateDate(input || {});
+  const existing = await env.DB.prepare(`
+    SELECT request_id, job_name, status, run_after, requested_at, started_at, finished_at
+    FROM deferred_full_run_once
+    WHERE job_name=?
+      AND slate_date=?
+      AND status IN ('PENDING','RUNNING')
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first();
+  if (existing) {
+    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: 'already_scheduled_or_running', slate_date: slate.slate_date, existing_request: existing, next_action: 'Minute cron will continue the existing Phase 3A/3B request. Use PHASE 3A/3B > Check Full Run to monitor.', note: 'No duplicate daily Phase 3A/3B request was created.' };
+  }
+  const requestId = `phase3ab_daily_4am|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
+  const runAfter = phase3abTimestampForSql(new Date(Date.now() - 1000));
+  await env.DB.prepare(`
+    INSERT INTO deferred_full_run_once (request_id, job_name, slate_date, slate_mode, status, run_after, requested_by)
+    VALUES (?, ?, ?, ?, 'PENDING', ?, 'scheduled_phase3ab_daily_4am')
+  `).bind(requestId, PHASE3AB_DEFERRED_JOB, slate.slate_date, slate.slate_mode, runAfter).run();
+  await logSystemEvent(env, { trigger_source: input.trigger || 'scheduled_phase3ab_4am_cron', action_label: displayLabelForJob(input.job || 'schedule_phase3ab_daily_4am'), job_name: 'schedule_phase3ab_daily_4am', slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: 'scheduled', task_id: requestId, input_json: { request_id: requestId, run_after: runAfter, cron: input.cron || null, daily_schedule: input.daily_schedule || 'Daily 4:00 AM PDT / 11:00 UTC' } });
+  return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: 'scheduled_due_now', request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, daily_schedule: input.daily_schedule || 'Daily 4:00 AM PDT / 11:00 UTC', protected_flow: ['acquire global lock', 'build all queue families first', 'mine bounded Gemini raw rows', 'write/promote valid raw rows to board_factor_results', 'clean completed queue temp rows only when fully complete', 'release lock'], postpone_rule: 'If another Phase 3 job is running, postpone this request 15 minutes and retry through minute cron.', note: 'Daily Phase 3A/3B run scheduled. It uses the same protected build-first tick loop as the tested manual flow.' };
+}
+
 async function postponePhase3abRequest(env, row, reason, minutes = 15) {
   const nextRetry = phase3abTimestampForSql(new Date(Date.now() + Math.max(1, minutes) * 60 * 1000));
   await env.DB.prepare(`
@@ -1753,7 +1789,7 @@ async function runPhase3abFullRunOnce(input, env) {
     data_ok: dataOk,
     version: SYSTEM_VERSION,
     job: input.job || 'run_phase3ab_full_run_tick',
-    phase: 'Phase 3A/3B Build-First Scheduler Test',
+    phase: 'Phase 3A/3B Daily Schedule Lock',
     slate_date: slateDate,
     status,
     action_taken: actionTaken,
@@ -1770,7 +1806,7 @@ async function runPhase3abFullRunOnce(input, env) {
     needs_continue: status === 'partial_continue',
     steps,
     next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
-    note: 'v1.3.05 builds all queue families before mining, then mines one bounded wave per tick to stay under Cloudflare single-invocation API limits. No scoring or final candidate ranking is added.'
+    note: 'v1.3.06 schedules the daily 4AM Phase 3A/3B run, builds all queue families before mining, then mines one bounded wave per tick with global no-parallel lock and 15-minute postpone safety. No scoring or final candidate ranking is added.'
   };
 }
 
@@ -7457,6 +7493,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "check_phase2_lineup_context") return await checkPhase2LineupContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_phase2c_market_context") return await scrapePhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "check_phase2c_market_context") return await checkPhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "schedule_phase3ab_daily_4am") return await schedulePhase3abDaily4am({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_schedule" }, env);
   if (jobName === "schedule_phase3ab_full_run_test") return await schedulePhase3abFullRunTest({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_phase3ab_full_run_tick") return await runPhase3abFullRunTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_phase3ab_full_run") return await checkPhase3abFullRun({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
