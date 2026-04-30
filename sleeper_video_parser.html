@@ -5,188 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>AlphaDog Sleeper Video Parser</title>
   <style>
-    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; }
+    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; --bar:#74f0a7; }
     * { box-sizing: border-box; }
-    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: radial-gradient(circle at top, #18334b 0, var(--bg) 42%); color:var(--text); }
-    main { max-width: 980px; margin: 0 auto; padding: 22px 14px 44px; }
-    h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.03em; }
-    h2 { margin-top:0; }
-    .sub { color: var(--muted); margin: 0 0 18px; line-height:1.35; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",sans-serif; background:radial-gradient(circle at top,#18334b 0,var(--bg) 42%); color:var(--text); }
+    main { max-width:980px; margin:0 auto; padding:22px 14px 44px; }
+    h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.03em; } h2 { margin-top:0; }
+    .sub { color:var(--muted); margin:0 0 18px; line-height:1.35; }
     .grid { display:grid; gap:14px; }
-    .card { background: rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow: 0 14px 34px rgba(0,0,0,.26); }
+    .card { background:rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 14px 34px rgba(0,0,0,.26); }
     label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }
-    input, textarea { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }
-    input[type="file"] { padding: 14px; }
+    input { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }
+    input[type="file"] { padding:14px; }
     button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }
     button:disabled { opacity:.55; cursor:not-allowed; }
-    .status { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }
-    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin: 4px 6px 0 0; font-size:12px; }
-    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height:1.35; }
-    .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
-    pre { max-height: 420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }
-    .small { font-size: 12px; color: var(--muted); }
-    @media (max-width: 720px) { h1 { font-size:23px; } }
+    .status { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }
+    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin:4px 6px 0 0; font-size:12px; }
+    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.35; }
+    .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }
+    pre { max-height:420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }
+    .small { font-size:12px; color:var(--muted); }
+    .progressWrap { background:#071018; border:1px solid var(--line); border-radius:999px; overflow:hidden; height:18px; }
+    .progressInner { height:100%; width:0%; background:var(--bar); transition:width .15s ease; }
+    .progressText { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px; }
+    @media (max-width:720px){ h1{font-size:23px;} }
   </style>
 </head>
 <body>
-  <main>
-    <h1>AlphaDog Sleeper Video Parser</h1>
-    <p class="sub">Upload a Sleeper screen recording. Gemini 3.1 Pro parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>
-
-    <section class="card grid">
-      <div>
-        <label>Video file</label>
-        <input id="video" type="file" accept="video/mp4,video/quicktime,video/*" />
-      </div>
-      <div id="meta" class="status">No video selected.</div>
-      <button id="run">Parse Video With Gemini 3.1 Pro</button>
-      <div id="status" class="status">Ready.</div>
-      <div id="configStatus" class="small">Config will load automatically from the AlphaDog control-room config.</div>
-    </section>
-
-    <section class="card">
-      <h2>Parsed Lines</h2>
-      <div id="summary"><span class="pill">Waiting for parse</span></div>
-      <div id="lines"></div>
-    </section>
-
-    <section class="card">
-      <h2>Raw JSON</h2>
-      <pre id="json">{}</pre>
-    </section>
-
-    <section class="card">
-      <h2>Event Log</h2>
-      <pre id="eventLog">[]</pre>
-    </section>
-  </main>
+<main>
+  <h1>AlphaDog Sleeper Video Parser</h1>
+  <p class="sub">Upload a Sleeper screen recording. Gemini 3.1 Pro parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>
+  <section class="card grid">
+    <div><label>Video file</label><input id="video" type="file" accept="video/mp4,video/quicktime,video/*" /></div>
+    <div id="meta" class="status">No video selected.</div>
+    <div>
+      <div class="progressWrap"><div id="progressInner" class="progressInner"></div></div>
+      <div class="progressText"><span id="progressStage">Idle</span><span id="progressPercent">0%</span></div>
+    </div>
+    <button id="run">Upload + Parse With Gemini 3.1 Pro</button>
+    <div id="status" class="status">Ready.</div>
+    <div id="configStatus" class="small">Config will load automatically from the AlphaDog control-room config.</div>
+  </section>
+  <section class="card"><h2>Parsed Lines</h2><div id="summary"><span class="pill">Waiting for parse</span></div><div id="lines"></div></section>
+  <section class="card"><h2>Raw JSON</h2><pre id="json">{}</pre></section>
+  <section class="card"><h2>Event Log</h2><pre id="eventLog">[]</pre></section>
+</main>
 <script>
 const BASE = "https://prop-ingestion-git.rodolfoaamattos.workers.dev";
-const PARSE_URL = BASE + "/sleeper/video/parse";
+const UPLOAD_URL = BASE + "/sleeper/video/upload";
+const STATUS_URL = BASE + "/sleeper/video/status";
+const GENERATE_URL = BASE + "/sleeper/video/generate";
 const CONFIG_URL = "https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt";
-const $ = (id) => document.getElementById(id);
-const videoInput = $('video');
-const runBtn = $('run');
-let selectedFile = null;
-let TOKEN = "";
-let CONFIG_LOADED = false;
-const EVENTS = [];
-
-function addEvent(stage, detail) {
-  const item = { time: new Date().toISOString(), stage, detail: detail || null };
-  EVENTS.push(item);
-  $('eventLog').textContent = JSON.stringify(EVENTS, null, 2);
-}
+const $ = id => document.getElementById(id);
+const videoInput = $('video'); const runBtn = $('run');
+let selectedFile = null; let TOKEN = ""; let CONFIG_LOADED = false; const EVENTS = [];
+function addEvent(stage, detail){ const item={time:new Date().toISOString(),stage,detail:detail||null}; EVENTS.push(item); $('eventLog').textContent=JSON.stringify(EVENTS,null,2); }
+function setProgress(p, stage){ const v=Math.max(0,Math.min(100,Number(p)||0)); $('progressInner').style.width=v.toFixed(0)+'%'; $('progressPercent').textContent=v.toFixed(0)+'%'; if(stage) $('progressStage').textContent=stage; }
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
-async function loadConfig(){
-  addEvent('config_load_start', { url: CONFIG_URL });
-  try {
-    const r = await fetch(CONFIG_URL + '?t=' + Date.now(), { cache: 'no-store' });
-    const t = await r.text();
-    const m = t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);
-    if (m && m[1].trim()) {
-      TOKEN = m[1].trim().replace(/^["']|["']$/g, '');
-      CONFIG_LOADED = true;
-      $('configStatus').innerHTML = '<span class="good">Config loaded. Token fingerprint: ' + JSON.stringify(tokenFingerprint()) + '</span>';
-      addEvent('config_loaded', tokenFingerprint());
-    } else {
-      TOKEN = '';
-      CONFIG_LOADED = false;
-      $('configStatus').innerHTML = '<span class="warn">Config loaded but TOKEN line was not found.</span>';
-      addEvent('config_missing_token', null);
-    }
-  } catch (err) {
-    TOKEN = '';
-    CONFIG_LOADED = false;
-    $('configStatus').innerHTML = '<span class="bad">Config load failed: ' + String(err && err.message || err) + '</span>';
-    addEvent('config_load_error', String(err && err.message || err));
-  }
-}
-
-videoInput.addEventListener('change', () => {
-  selectedFile = videoInput.files && videoInput.files[0] ? videoInput.files[0] : null;
-  if (!selectedFile) { $('meta').textContent = 'No video selected.'; addEvent('video_cleared'); return; }
-  const mb = selectedFile.size / 1024 / 1024;
-  $('meta').textContent = `Selected: ${selectedFile.name}\nType: ${selectedFile.type || 'unknown'}\nSize: ${mb.toFixed(2)} MB`;
-  addEvent('video_selected', { name: selectedFile.name, type: selectedFile.type || 'unknown', size_mb: Number(mb.toFixed(2)) });
-});
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-function renderResult(data) {
-  $('json').textContent = JSON.stringify(data, null, 2);
-  const legs = Array.isArray(data.legs) ? data.legs : [];
-  $('summary').innerHTML = `
-    <span class="pill">ok: ${data.ok}</span>
-    <span class="pill">data_ok: ${data.data_ok}</span>
-    <span class="pill">model: ${data.model || 'unknown'}</span>
-    <span class="pill">parsed: ${legs.length}</span>
-  `;
-  $('lines').innerHTML = '';
-  const lines = Array.isArray(data.lines) ? data.lines : legs.map(l => [l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - '));
-  if (!lines.length) {
-    $('lines').innerHTML = '<div class="lineOut warn">No parsed lines returned.</div>';
-    return;
-  }
-  for (const line of lines) {
-    const div = document.createElement('div');
-    div.className = 'lineOut';
-    div.textContent = line;
-    $('lines').appendChild(div);
-  }
-}
-
-runBtn.addEventListener('click', async () => {
-  if (!selectedFile) { $('status').innerHTML = '<span class="bad">Select a video first.</span>'; addEvent('parse_blocked_no_video'); return; }
-  runBtn.disabled = true;
-  const started = Date.now();
-  $('status').textContent = 'Loading config/token...';
-  addEvent('parse_clicked', { endpoint: PARSE_URL });
-  try {
-    if (!CONFIG_LOADED || !TOKEN) await loadConfig();
-    $('status').textContent = 'Reading video locally...';
-    addEvent('local_read_start', { file_name: selectedFile.name, size_bytes: selectedFile.size });
-    const base64 = await fileToBase64(selectedFile);
-    addEvent('local_read_done', { base64_chars: base64.length });
-    $('status').textContent = 'Uploading to Worker and parsing with Gemini. Do not close this page...';
-    const headers = { 'content-type': 'application/json' };
-    if (TOKEN) headers['x-ingest-token'] = TOKEN;
-    addEvent('worker_request_start', { url: PARSE_URL, has_token: Boolean(TOKEN), mime_type: selectedFile.type || 'video/mp4' });
-    const res = await fetch(PARSE_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        file_name: selectedFile.name,
-        mime_type: selectedFile.type || 'video/mp4',
-        video_base64: base64
-      })
-    });
-    addEvent('worker_response_received', { http_status: res.status, ok: res.ok, elapsed_sec: Number(((Date.now()-started)/1000).toFixed(1)) });
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); }
-    catch(e) { data = { ok:false, data_ok:false, error:'Response was not JSON', response_preview: text.slice(0, 1200) }; }
-    addEvent('worker_response_parsed', { ok: data.ok, data_ok: data.data_ok, parsed_count: data.parsed_count || (Array.isArray(data.legs) ? data.legs.length : 0), model: data.model || null });
-    renderResult(data);
-    $('status').innerHTML = res.ok && data.ok ? '<span class="good">Parse complete.</span>' : `<span class="bad">Parse failed: ${data.error || res.status}</span>`;
-  } catch (err) {
-    addEvent('parse_exception', String(err && err.message || err));
-    $('status').innerHTML = `<span class="bad">${String(err && err.message || err)}</span>`;
-  } finally {
-    addEvent('parse_finished', { elapsed_sec: Number(((Date.now()-started)/1000).toFixed(1)) });
-    runBtn.disabled = false;
-  }
-});
-
-addEvent('page_loaded', { endpoint: PARSE_URL });
-loadConfig();
+async function loadConfig(){ addEvent('config_load_start',{url:CONFIG_URL}); try{ const r=await fetch(CONFIG_URL+'?t='+Date.now(),{cache:'no-store'}); const t=await r.text(); const m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m); if(m&&m[1].trim()){ TOKEN=m[1].trim().replace(/^["']|["']$/g,''); CONFIG_LOADED=true; $('configStatus').innerHTML='<span class="good">Config loaded. Token fingerprint: '+JSON.stringify(tokenFingerprint())+'</span>'; addEvent('config_loaded',tokenFingerprint()); } else { TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class="warn">Config loaded but TOKEN line was not found.</span>'; addEvent('config_missing_token'); } } catch(err){ TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class="bad">Config load failed: '+String(err&&err.message||err)+'</span>'; addEvent('config_load_error',String(err&&err.message||err)); } }
+videoInput.addEventListener('change',()=>{ selectedFile=videoInput.files&&videoInput.files[0]?videoInput.files[0]:null; setProgress(0,'Idle'); if(!selectedFile){$('meta').textContent='No video selected.'; addEvent('video_cleared'); return;} const mb=selectedFile.size/1024/1024; const warn=mb>50?'\nWARNING: file is over 50MB; parsing can take up to 2 minutes or more.':''; $('meta').textContent=`Selected: ${selectedFile.name}\nType: ${selectedFile.type||'unknown'}\nSize: ${mb.toFixed(2)} MB${warn}`; addEvent('video_selected',{name:selectedFile.name,type:selectedFile.type||'unknown',size_mb:Number(mb.toFixed(2)),over_50mb:mb>50}); });
+function uploadWithProgress(file){ return new Promise((resolve,reject)=>{ const form=new FormData(); form.append('video',file,file.name); form.append('file_name',file.name); form.append('mime_type',file.type||'video/mp4'); const xhr=new XMLHttpRequest(); xhr.open('POST',UPLOAD_URL,true); if(TOKEN) xhr.setRequestHeader('x-ingest-token',TOKEN); xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=(e.loaded/e.total)*100; setProgress(pct,'Uploading video to Worker/Gemini File API'); }}); xhr.onreadystatechange=()=>{ if(xhr.readyState===4){ let data; try{data=JSON.parse(xhr.responseText||'{}');}catch(e){data={ok:false,error:'Upload response was not JSON',response_preview:(xhr.responseText||'').slice(0,1000)}} if(xhr.status>=200&&xhr.status<300&&data.ok) resolve(data); else reject(new Error(data.error||('Upload failed HTTP '+xhr.status+': '+(xhr.responseText||'').slice(0,500)))); }}; xhr.onerror=()=>reject(new Error('Network upload error')); xhr.send(form); }); }
+async function pollFileActive(fileName){ const started=Date.now(); let last=null; for(let i=0;i<80;i++){ const elapsed=(Date.now()-started)/1000; setProgress(100,'Processing video file in Gemini: '+Math.round(elapsed)+'s'); const r=await fetch(STATUS_URL+'?file_name='+encodeURIComponent(fileName),{headers:TOKEN?{'x-ingest-token':TOKEN}:{}}); const data=await r.json().catch(()=>({ok:false,error:'status response not json'})); last=data; addEvent('file_status_poll',{try:i+1,state:data.state||null,ok:data.ok}); if(data.state==='ACTIVE') return data; if(data.state==='FAILED') throw new Error('Gemini file processing failed'); await new Promise(res=>setTimeout(res,3000)); } throw new Error('Timed out waiting for Gemini file ACTIVE. Last status: '+JSON.stringify(last)); }
+async function generateFromFile(uploadData){ setProgress(100,'Asking Gemini to parse cards'); const r=await fetch(GENERATE_URL,{method:'POST',headers:{'content-type':'application/json',...(TOKEN?{'x-ingest-token':TOKEN}:{})},body:JSON.stringify({file_name:uploadData.file_name,file_uri:uploadData.file_uri,mime_type:uploadData.mime_type})}); const text=await r.text(); let data; try{data=JSON.parse(text);}catch(e){data={ok:false,error:'Generate response was not JSON',response_preview:text.slice(0,1200)}} if(!r.ok||!data.ok) throw new Error(data.error||('Generate failed HTTP '+r.status)); return data; }
+function renderResult(data){ $('json').textContent=JSON.stringify(data,null,2); const legs=Array.isArray(data.legs)?data.legs:[]; $('summary').innerHTML=`<span class="pill">ok: ${data.ok}</span><span class="pill">data_ok: ${data.data_ok}</span><span class="pill">model: ${data.model||'unknown'}</span><span class="pill">parsed: ${legs.length}</span>`; $('lines').innerHTML=''; const lines=Array.isArray(data.lines)?data.lines:legs.map(l=>[l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - ')); if(!lines.length){$('lines').innerHTML='<div class="lineOut warn">No parsed lines returned.</div>'; return;} for(const line of lines){ const div=document.createElement('div'); div.className='lineOut'; div.textContent=line; $('lines').appendChild(div); }}
+runBtn.addEventListener('click',async()=>{ if(!selectedFile){$('status').innerHTML='<span class="bad">Select a video first.</span>'; addEvent('parse_blocked_no_video'); return;} runBtn.disabled=true; const started=Date.now(); $('json').textContent='{}'; $('lines').innerHTML=''; $('summary').innerHTML='<span class="pill">Running</span>'; try{ if(!CONFIG_LOADED||!TOKEN) await loadConfig(); addEvent('upload_start',{endpoint:UPLOAD_URL,file:selectedFile.name,size_bytes:selectedFile.size}); $('status').textContent='Uploading video with real progress...'; setProgress(0,'Starting upload'); const uploadData=await uploadWithProgress(selectedFile); addEvent('upload_done',{file_name:uploadData.file_name,state:uploadData.state,uri:uploadData.file_uri}); $('status').textContent='Upload complete. Waiting for Gemini file processing...'; const active=uploadData.state==='ACTIVE'?uploadData:await pollFileActive(uploadData.file_name); addEvent('file_active',{file_name:active.file_name||uploadData.file_name,state:active.state}); $('status').textContent='Gemini file is active. Parsing RBI/RFI cards...'; const result=await generateFromFile(uploadData); if(Array.isArray(result.event_log)) for(const e of result.event_log) addEvent('server_'+e.stage,e.detail); renderResult(result); $('status').innerHTML='<span class="good">Parse complete.</span>'; addEvent('parse_complete',{parsed_count:result.parsed_count||0,elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); }catch(err){ const msg=String(err&&err.message||err); $('status').innerHTML='<span class="bad">Parse failed: '+msg+'</span>'; $('json').textContent=JSON.stringify({ok:false,error:msg},null,2); addEvent('parse_error',msg); } finally{ addEvent('parse_finished',{elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); runBtn.disabled=false; }});
+addEvent('page_loaded',{upload_endpoint:UPLOAD_URL,status_endpoint:STATUS_URL,generate_endpoint:GENERATE_URL}); loadConfig();
 </script>
 </body>
 </html>
