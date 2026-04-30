@@ -1,6 +1,6 @@
 // AlphaDog v1.3.13 - Sleeper Ingest + Phase 3A/B Scheduler Merge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.15 - Phase 3A/B Stale Lock Recovery";
+const SYSTEM_VERSION = "v1.3.16 - Gemini Compact Governor";
 const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -13,6 +13,20 @@ const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
 const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
 const SLEEPER_VIDEO_MODEL = "gemini-3.1-pro-preview";
+
+const GEMINI_LIMIT_GUARD_ENABLED = true;
+const GEMINI_LIMIT_GUARD_RATIO = 0.75;
+const GEMINI_LIMIT_GUARD_WAIT_MS = 30000;
+const GEMINI_DEFAULT_TOKEN_CAP = 8192;
+const GEMINI_MODEL_LIMITS = {
+  "gemini-2.5-pro": { rpm: 1000, tpm: 5000000 },
+  "gemini-2.5-flash": { rpm: 2000, tpm: 3000000 },
+  "gemini-3-flash": { rpm: 2000, tpm: 3000000 },
+  "gemini-3.1-pro": { rpm: 1000, tpm: 5000000 },
+  "gemini-3.1-pro-preview": { rpm: 1000, tpm: 5000000 },
+  "gemini-3.1-flash-lite": { rpm: 10000, tpm: 10000000 },
+  "gemini-2-flash": { rpm: 10000, tpm: 10000000 }
+};
 
 const SLEEPER_VIDEO_PARSER_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Sleeper Video Parser</title>\n  <style>\n    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; --bar:#74f0a7; }\n    * { box-sizing: border-box; }\n    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,\"SF Pro Display\",\"Segoe UI\",sans-serif; background:radial-gradient(circle at top,#18334b 0,var(--bg) 42%); color:var(--text); }\n    main { max-width:980px; margin:0 auto; padding:22px 14px 44px; }\n    h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.03em; } h2 { margin-top:0; }\n    .sub { color:var(--muted); margin:0 0 18px; line-height:1.35; }\n    .grid { display:grid; gap:14px; }\n    .card { background:rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 14px 34px rgba(0,0,0,.26); }\n    label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }\n    input { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }\n    input[type=\"file\"] { padding:14px; }\n    button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }\n    button:disabled { opacity:.55; cursor:not-allowed; }\n    .status { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }\n    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin:4px 6px 0 0; font-size:12px; }\n    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.35; }\n    .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }\n    pre { max-height:420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }\n    .small { font-size:12px; color:var(--muted); }\n    .progressWrap { background:#071018; border:1px solid var(--line); border-radius:999px; overflow:hidden; height:18px; }\n    .progressInner { height:100%; width:0%; background:var(--bar); transition:width .15s ease; }\n    .progressText { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px; }\n    @media (max-width:720px){ h1{font-size:23px;} }\n  </style>\n</head>\n<body>\n<main>\n  <h1>AlphaDog Sleeper Video Parser</h1>\n  <p class=\"sub\">Upload a Sleeper screen recording. Gemini 3.1 Pro parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>\n  <section class=\"card grid\">\n    <div><label>Video file</label><input id=\"video\" type=\"file\" accept=\"video/mp4,video/quicktime,video/*\" /></div>\n    <div id=\"meta\" class=\"status\">No video selected.</div>\n    <div>\n      <div class=\"progressWrap\"><div id=\"progressInner\" class=\"progressInner\"></div></div>\n      <div class=\"progressText\"><span id=\"progressStage\">Idle</span><span id=\"progressPercent\">0%</span></div>\n    </div>\n    <button id=\"run\">Upload + Parse With Gemini 3.1 Pro</button>\n    <div id=\"status\" class=\"status\">Ready.</div>\n    <div id=\"configStatus\" class=\"small\">Config will load automatically from the AlphaDog control-room config.</div>\n  </section>\n  <section class=\"card\"><h2>Parsed Lines</h2><div id=\"summary\"><span class=\"pill\">Waiting for parse</span></div><div id=\"lines\"></div></section>\n  <section class=\"card\"><h2>Raw JSON</h2><pre id=\"json\">{}</pre></section>\n  <section class=\"card\"><h2>Event Log</h2><pre id=\"eventLog\">[]</pre></section>\n</main>\n<script>\nconst BASE = \"https://prop-ingestion-git.rodolfoaamattos.workers.dev\";\nconst UPLOAD_URL = BASE + \"/sleeper/video/upload\";\nconst STATUS_URL = BASE + \"/sleeper/video/status\";\nconst GENERATE_URL = BASE + \"/sleeper/video/generate\";\nconst CONFIG_URL = \"https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt\";\nconst $ = id => document.getElementById(id);\nconst videoInput = $('video'); const runBtn = $('run');\nlet selectedFile = null; let TOKEN = \"\"; let CONFIG_LOADED = false; const EVENTS = [];\nfunction addEvent(stage, detail){ const item={time:new Date().toISOString(),stage,detail:detail||null}; EVENTS.push(item); $('eventLog').textContent=JSON.stringify(EVENTS,null,2); }\nfunction setProgress(p, stage){ const v=Math.max(0,Math.min(100,Number(p)||0)); $('progressInner').style.width=v.toFixed(0)+'%'; $('progressPercent').textContent=v.toFixed(0)+'%'; if(stage) $('progressStage').textContent=stage; }\nfunction tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}\nasync function loadConfig(){ addEvent('config_load_start',{url:CONFIG_URL}); try{ const r=await fetch(CONFIG_URL+'?t='+Date.now(),{cache:'no-store'}); const t=await r.text(); const m=t.match(/^\\s*TOKEN\\s*=\\s*(.+?)\\s*$/m); if(m&&m[1].trim()){ TOKEN=m[1].trim().replace(/^[\"']|[\"']$/g,''); CONFIG_LOADED=true; $('configStatus').innerHTML='<span class=\"good\">Config loaded. Token fingerprint: '+JSON.stringify(tokenFingerprint())+'</span>'; addEvent('config_loaded',tokenFingerprint()); } else { TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"warn\">Config loaded but TOKEN line was not found.</span>'; addEvent('config_missing_token'); } } catch(err){ TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"bad\">Config load failed: '+String(err&&err.message||err)+'</span>'; addEvent('config_load_error',String(err&&err.message||err)); } }\nvideoInput.addEventListener('change',()=>{ selectedFile=videoInput.files&&videoInput.files[0]?videoInput.files[0]:null; setProgress(0,'Idle'); if(!selectedFile){$('meta').textContent='No video selected.'; addEvent('video_cleared'); return;} const mb=selectedFile.size/1024/1024; const warn=mb>50?'\\nWARNING: file is over 50MB; parsing can take up to 2 minutes or more.':''; $('meta').textContent=`Selected: ${selectedFile.name}\\nType: ${selectedFile.type||'unknown'}\\nSize: ${mb.toFixed(2)} MB${warn}`; addEvent('video_selected',{name:selectedFile.name,type:selectedFile.type||'unknown',size_mb:Number(mb.toFixed(2)),over_50mb:mb>50}); });\nfunction uploadWithProgress(file){ return new Promise((resolve,reject)=>{ const form=new FormData(); form.append('video',file,file.name); form.append('file_name',file.name); form.append('mime_type',file.type||'video/mp4'); const xhr=new XMLHttpRequest(); xhr.open('POST',UPLOAD_URL,true); if(TOKEN) xhr.setRequestHeader('x-ingest-token',TOKEN); xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=(e.loaded/e.total)*100; setProgress(pct,'Uploading video to Worker/Gemini File API'); }}); xhr.onreadystatechange=()=>{ if(xhr.readyState===4){ let data; try{data=JSON.parse(xhr.responseText||'{}');}catch(e){data={ok:false,error:'Upload response was not JSON',response_preview:(xhr.responseText||'').slice(0,1000)}} if(xhr.status>=200&&xhr.status<300&&data.ok) resolve(data); else reject(new Error(data.error||('Upload failed HTTP '+xhr.status+': '+(xhr.responseText||'').slice(0,500)))); }}; xhr.onerror=()=>reject(new Error('Network upload error')); xhr.send(form); }); }\nasync function pollFileActive(fileName){ const started=Date.now(); let last=null; for(let i=0;i<80;i++){ const elapsed=(Date.now()-started)/1000; setProgress(100,'Processing video file in Gemini: '+Math.round(elapsed)+'s'); const r=await fetch(STATUS_URL+'?file_name='+encodeURIComponent(fileName),{headers:TOKEN?{'x-ingest-token':TOKEN}:{}}); const data=await r.json().catch(()=>({ok:false,error:'status response not json'})); last=data; addEvent('file_status_poll',{try:i+1,state:data.state||null,ok:data.ok}); if(data.state==='ACTIVE') return data; if(data.state==='FAILED') throw new Error('Gemini file processing failed'); await new Promise(res=>setTimeout(res,3000)); } throw new Error('Timed out waiting for Gemini file ACTIVE. Last status: '+JSON.stringify(last)); }\nasync function generateFromFile(uploadData){ setProgress(100,'Asking Gemini to parse cards'); const r=await fetch(GENERATE_URL,{method:'POST',headers:{'content-type':'application/json',...(TOKEN?{'x-ingest-token':TOKEN}:{})},body:JSON.stringify({file_name:uploadData.file_name,file_uri:uploadData.file_uri,mime_type:uploadData.mime_type})}); const text=await r.text(); let data; try{data=JSON.parse(text);}catch(e){data={ok:false,error:'Generate response was not JSON',response_preview:text.slice(0,1200)}} if(!r.ok||!data.ok) throw new Error(JSON.stringify(data)); return data; }\nfunction renderResult(data){ $('json').textContent=JSON.stringify(data,null,2); const legs=Array.isArray(data.legs)?data.legs:[]; $('summary').innerHTML=`<span class=\"pill\">ok: ${data.ok}</span><span class=\"pill\">data_ok: ${data.data_ok}</span><span class=\"pill\">model: ${data.model||'unknown'}</span><span class=\"pill\">parsed: ${legs.length}</span>`; $('lines').innerHTML=''; const lines=Array.isArray(data.lines)?data.lines:legs.map(l=>[l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - ')); if(!lines.length){$('lines').innerHTML='<div class=\"lineOut warn\">No parsed lines returned.</div>'; return;} for(const line of lines){ const div=document.createElement('div'); div.className='lineOut'; div.textContent=line; $('lines').appendChild(div); }}\nrunBtn.addEventListener('click',async()=>{ if(!selectedFile){$('status').innerHTML='<span class=\"bad\">Select a video first.</span>'; addEvent('parse_blocked_no_video'); return;} runBtn.disabled=true; const started=Date.now(); $('json').textContent='{}'; $('lines').innerHTML=''; $('summary').innerHTML='<span class=\"pill\">Running</span>'; try{ if(!CONFIG_LOADED||!TOKEN) await loadConfig(); addEvent('upload_start',{endpoint:UPLOAD_URL,file:selectedFile.name,size_bytes:selectedFile.size}); $('status').textContent='Uploading video with real progress...'; setProgress(0,'Starting upload'); const uploadData=await uploadWithProgress(selectedFile); addEvent('upload_done',{file_name:uploadData.file_name,state:uploadData.state,uri:uploadData.file_uri}); $('status').textContent='Upload complete. Waiting for Gemini file processing...'; const active=uploadData.state==='ACTIVE'?uploadData:await pollFileActive(uploadData.file_name); addEvent('file_active',{file_name:active.file_name||uploadData.file_name,state:active.state}); $('status').textContent='Gemini file is active. Parsing RBI/RFI cards...'; const result=await generateFromFile(uploadData); if(Array.isArray(result.event_log)) for(const e of result.event_log) addEvent('server_'+e.stage,e.detail); renderResult(result); $('status').innerHTML='<span class=\"good\">Parse complete.</span>'; addEvent('parse_complete',{parsed_count:result.parsed_count||0,elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); }catch(err){ const msg=String(err&&err.message||err); $('status').innerHTML='<span class=\"bad\">Parse failed: '+msg+'</span>'; $('json').textContent=JSON.stringify({ok:false,error:msg},null,2); addEvent('parse_error',msg); } finally{ addEvent('parse_finished',{elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); runBtn.disabled=false; }});\naddEvent('page_loaded',{upload_endpoint:UPLOAD_URL,status_endpoint:STATUS_URL,generate_endpoint:GENERATE_URL}); loadConfig();\n</script>\n</body>\n</html>\n";
 const JOB_DISPLAY_LABELS = {
@@ -3672,76 +3686,133 @@ function buildCompactBoardPayloadForGemini(queueRow) {
   };
 }
 
+function compactCell(value, max = 220) {
+  if (value === undefined || value === null || value === "") return "NULL";
+  let text = typeof value === "string" ? value : JSON.stringify(value);
+  text = String(text || "").replace(/[|\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+function compactEvidenceText(value, max = 360) {
+  if (value === undefined || value === null || value === "") return "NULL";
+  if (typeof value === "object") return compactCell(value, max);
+  return compactCell(value, max);
+}
+
+function compactBoardPayloadTextForGemini(queueRow, payload, def) {
+  const rows = [];
+  rows.push(["Q", queueRow.queue_id, queueRow.slate_date, queueRow.queue_type, queueRow.scope_type, queueRow.scope_key, queueRow.batch_index].map(x => compactCell(x)).join("|"));
+  rows.push(["F", ...(def.factor_ids || []).map(f => `${f[0]}:${String(f[1] || "").replace(/[|;]+/g, ",")}`)].map(x => compactCell(x, 120)).join("|"));
+  const players = Array.isArray(payload.players) ? payload.players : [];
+  for (let i = 0; i < players.length; i++) {
+    const p = players[i] || {};
+    const prof = p.profile || {};
+    const usage = p.recent_usage || {};
+    const sp = p.opposing_starter || {};
+    const bp = p.opposing_bullpen_context || {};
+    rows.push([
+      "P", i + 1,
+      p.player_name, p.team, p.opponent_sample, p.first_start_time,
+      prof.position, prof.bats, prof.throws, prof.games,
+      prof.ab, prof.hits, prof.avg, prof.obp, prof.slg, prof.strikeouts, prof.walks,
+      usage.last_game_ab, usage.last_game_hits, usage.lineup_slot,
+      sp.starter_name, sp.throws, sp.era, sp.whip, sp.strikeouts, sp.walks, sp.hits_allowed, sp.hr_allowed,
+      bp.fatigue, bp.bullpen_era, bp.bullpen_whip,
+      compactEvidenceText(p.board_stat_type_counts, 220)
+    ].map(x => compactCell(x, 120)).join("|"));
+  }
+  if (payload.game) {
+    const g = payload.game || {};
+    rows.push(["G", queueRow.game_key, queueRow.team_a, queueRow.team_b, queueRow.start_time, compactEvidenceText(g, 900)].map(x => compactCell(x, 900)).join("|"));
+  }
+  return rows.join("\n");
+}
+
 function boardFactorPromptForQueueRow(queueRow, retryMode = false, validationError = "") {
   const payload = buildCompactBoardPayloadForGemini(queueRow);
   const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
-  const retryText = retryMode ? `\nRETRY REPAIR MODE:\n- Previous output failed validation: ${String(validationError || "unknown").slice(0, 500)}\n- Return smaller valid JSON.\n- Do not use markdown.\n- Do not trail off.\n- Do not include nested board_props arrays.\n- raw_data must be a compact object with no more than 8 primitive fields.\n` : "";
-  return `You are AlphaDog's controlled MLB raw factor miner. Return JSON only. No markdown.${retryText}
+  const compactPayload = compactBoardPayloadTextForGemini(queueRow, payload, def);
+  const retryText = retryMode ? `\nRETRY:${compactCell(validationError, 420)}\n` : "";
+  return `AlphaDog raw factor miner. Compact mode. No JSON. No markdown. No labels in returned rows.${retryText}
+RULES
+- Mine all inflow. Do not skip data. Missing is allowed.
+- Use supplied compact payload only. Do not invent MLB, lineup, weather, injury, news, starter, or roster facts.
+- No prop scoring. No picks. No recommendations. No probabilities.
+- Return pipe-delimited rows only.
+- One row per target per locked factor id.
+- Exact output row shape:
+R|TARGET_KEY|TARGET_TYPE|FACTOR_ID|SOURCE_TYPE|AVAILABILITY|RAW_DATA|NOTE|MISSING
+- SOURCE_TYPE only SYSTEM_DATA, GEMINI_EXTRACTED, or MISSING.
+- AVAILABILITY only AVAILABLE, PARTIAL, or MISSING.
+- RAW_DATA must be short, primitive, and compact. Use comma lists, never JSON.
+- If unavailable: RAW_DATA=NULL, SOURCE_TYPE=MISSING, AVAILABILITY=MISSING, MISSING=short missing field list.
+- Preserve target names/teams from input. Do not roster-correct.
 
-ARCHITECTURE LOCK:
-- You do NOT score props.
-- You do NOT rank props.
-- You do NOT make picks.
-- You do NOT calculate final scores.
-- You do NOT invent missing MLB, weather, lineup, injury, or news facts.
-- Your job is raw factor extraction only, correlated to the current PrizePicks board queue row.
-- Keep the locked prompt family and factor IDs.
-- If a factor has usable raw system data, echo compact raw evidence and mark it AVAILABLE.
-- If a factor is unavailable, mark it MISSING and list missing fields.
-- If a factor is partly supported, mark it PARTIAL and include exactly what is present.
-- Never include score_0_100, signal, confidence_0_100, avg_score, min_score, max_score, green/yellow/red, recommendations, pick language, or scoring math.
+META
+${compactCell(def.prompt_id)}|${compactCell(def.family)}|${compactCell(def.target_type)}|${compactCell(queueRow.queue_id)}|${compactCell(queueRow.queue_type)}|${compactCell(queueRow.scope_type)}|${compactCell(queueRow.slate_date)}
 
-LOCKED PROMPT FAMILY:
-${JSON.stringify(def)}
+PAYLOAD
+${compactPayload}
 
-COMPACT QUEUE PAYLOAD:
-${JSON.stringify(payload)}
-
-OUTPUT JSON SCHEMA, EXACT SHAPE:
-{
-  "ok": true,
-  "raw_mode": true,
-  "prompt_id": "${def.prompt_id}",
-  "queue_id": "${queueRow.queue_id}",
-  "queue_type": "${queueRow.queue_type}",
-  "scope_type": "${queueRow.scope_type}",
-  "slate_date": "${queueRow.slate_date}",
-  "factor_family": "${def.family}",
-  "items": [
-    {
-      "target_key": "player name + team OR game_key",
-      "target_type": "${def.target_type}",
-      "raw_factors": [
-        {
-          "factor_id": "A01/B01/D01/E01 etc",
-          "factor_name": "locked factor name",
-          "source_type": "SYSTEM_DATA|GEMINI_EXTRACTED|MISSING",
-          "availability": "AVAILABLE|PARTIAL|MISSING",
-          "raw_data": {},
-          "note": "short raw evidence note, no pick language",
-          "missing_data": []
-        }
-      ],
-      "missing_data": [],
-      "warnings": []
-    }
-  ],
-  "summary": {
-    "raw_mode": true,
-    "item_count": 0,
-    "factor_family": "${def.family}",
-    "missing_data": [],
-    "warnings": [],
-    "ready_for_system_json": true
-  }
+RETURN ONLY R ROWS.`;
 }
 
-TARGET RULES:
-- PLAYER_BATCH_2 or PLAYER_BATCH_4: return exactly one item per player in payload.players.
-- GAME: return exactly one item for payload.game_key.
-- Include locked factor IDs for this family.
-- Use compact raw evidence from supplied payload only.
-- Missing is acceptable. Invalid JSON is not acceptable.`;
+function parseCompactBoardGeminiOutput(raw, queueRow, compactPayload) {
+  const def = boardPromptDefinitionForQueueType(queueRow.queue_type);
+  const factorName = new Map((def.factor_ids || []).map(x => [String(x[0]), String(x[1] || x[0])]));
+  const lines = String(raw || "").replace(/```/g, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  const itemMap = new Map();
+  for (const line of lines) {
+    if (!line.startsWith("R|")) continue;
+    const parts = line.split("|");
+    if (parts.length < 9) continue;
+    const targetKey = parts[1].trim();
+    const targetType = parts[2].trim() || def.target_type;
+    const factorId = parts[3].trim();
+    const sourceType = parts[4].trim();
+    const availability = parts[5].trim();
+    const rawData = parts[6].trim();
+    const note = parts[7].trim();
+    const missingText = parts.slice(8).join("|").trim();
+    if (!targetKey || !factorId) continue;
+    if (!itemMap.has(targetKey)) {
+      itemMap.set(targetKey, { target_key: targetKey, target_type: targetType, raw_factors: [], missing_data: [], warnings: [] });
+    }
+    const missing = missingText && missingText !== "NULL" ? missingText.split(",").map(x => x.trim()).filter(Boolean) : [];
+    const row = {
+      factor_id: factorId,
+      factor_name: factorName.get(factorId) || factorId,
+      source_type: /^(SYSTEM_DATA|GEMINI_EXTRACTED|MISSING)$/.test(sourceType) ? sourceType : "MISSING",
+      availability: /^(AVAILABLE|PARTIAL|MISSING)$/.test(availability) ? availability : "MISSING",
+      raw_data: rawData && rawData !== "NULL" ? { compact: rawData } : {},
+      note: note && note !== "NULL" ? note : "",
+      missing_data: missing
+    };
+    itemMap.get(targetKey).raw_factors.push(row);
+    if (missing.length) itemMap.get(targetKey).missing_data.push(...missing);
+  }
+  const items = Array.from(itemMap.values());
+  return {
+    ok: true,
+    raw_mode: true,
+    compact_mode: true,
+    prompt_id: def.prompt_id,
+    queue_id: String(queueRow.queue_id || ""),
+    queue_type: String(queueRow.queue_type || ""),
+    scope_type: String(queueRow.scope_type || ""),
+    slate_date: String(queueRow.slate_date || ""),
+    factor_family: def.family,
+    items,
+    summary: {
+      raw_mode: true,
+      compact_mode: true,
+      item_count: items.length,
+      factor_family: def.family,
+      missing_data: [],
+      warnings: [],
+      ready_for_system_json: true
+    }
+  };
 }
 
 function factorRowsFromRawPayload(parsed) {
@@ -3829,10 +3900,10 @@ async function callGeminiRawWithValidation(env, queueRow) {
     const prompt = boardFactorPromptForQueueRow(queueRow, i > 0, lastError);
     let raw = "";
     try {
-      raw = await callGeminiWithFallback(env, prompt);
-      const parsed = parseStrictJson(cleanJsonText(raw));
+      raw = await callGeminiCompactWithFallback(env, prompt);
+      const parsed = parseCompactBoardGeminiOutput(raw, queueRow, compactPayload);
       const validation = validateRawGeminiPayload(parsed, queueRow, compactPayload);
-      attempts.push({ attempt: i + 1, parsed_ok: true, validation_ok: validation.ok, error: validation.error || null, raw_length: String(raw || "").length });
+      attempts.push({ attempt: i + 1, compact_mode: true, parsed_ok: true, validation_ok: validation.ok, error: validation.error || null, raw_length: String(raw || "").length });
       if (!validation.ok) {
         lastError = validation.error || "validation failed";
         continue;
@@ -3840,10 +3911,10 @@ async function callGeminiRawWithValidation(env, queueRow) {
       return { parsed, attempts };
     } catch (err) {
       lastError = String(err?.message || err).slice(0, 900);
-      attempts.push({ attempt: i + 1, parsed_ok: false, validation_ok: false, error: lastError, raw_length: String(raw || "").length });
+      attempts.push({ attempt: i + 1, compact_mode: true, parsed_ok: false, validation_ok: false, error: lastError, raw_length: String(raw || "").length });
     }
   }
-  const err = new Error(`Raw Gemini payload failed validation after retry: ${lastError}`);
+  const err = new Error(`Compact Gemini payload failed validation after retry: ${lastError}`);
   err.validation_attempts = attempts;
   throw err;
 }
@@ -9593,6 +9664,81 @@ async function handleSleeperVideoParse(request, env) {
   return json(finalizeSleeperParsedResult({ parsed, gem, prompt, fileName: input.file_name, fileUri: null, mimeType, startedAt, eventLog }));
 }
 
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function geminiMinuteBucket(date = new Date()) {
+  return date.toISOString().slice(0, 16);
+}
+
+function geminiLimitForModel(model) {
+  const key = String(model || "").replace(/^models\//, "");
+  if (GEMINI_MODEL_LIMITS[key]) return GEMINI_MODEL_LIMITS[key];
+  if (key.includes("2.5-pro")) return GEMINI_MODEL_LIMITS["gemini-2.5-pro"];
+  if (key.includes("2.5-flash")) return GEMINI_MODEL_LIMITS["gemini-2.5-flash"];
+  if (key.includes("3.1") && key.includes("lite")) return GEMINI_MODEL_LIMITS["gemini-3.1-flash-lite"];
+  if (key.includes("3.1") && key.includes("pro")) return GEMINI_MODEL_LIMITS["gemini-3.1-pro"];
+  if (key.includes("3") && key.includes("flash")) return GEMINI_MODEL_LIMITS["gemini-3-flash"];
+  if (key.includes("2") && key.includes("flash")) return GEMINI_MODEL_LIMITS["gemini-2-flash"];
+  return GEMINI_MODEL_LIMITS["gemini-2.5-flash"];
+}
+
+function estimateGeminiTokens(prompt, maxOutputTokens = GEMINI_DEFAULT_TOKEN_CAP) {
+  return Math.ceil(String(prompt || "").length / 4) + Number(maxOutputTokens || 0);
+}
+
+async function ensureGeminiRateUsageTable(env) {
+  await env.DB.prepare(`
+    CREATE TABLE IF NOT EXISTS gemini_rate_usage (
+      bucket TEXT NOT NULL,
+      model TEXT NOT NULL,
+      requests INTEGER DEFAULT 0,
+      estimated_tokens INTEGER DEFAULT 0,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (bucket, model)
+    )
+  `).run();
+}
+
+async function reserveGeminiRateBudget(env, model, prompt, options = {}) {
+  if (!GEMINI_LIMIT_GUARD_ENABLED || !env?.DB) return { waited_ms: 0, guarded: false };
+  await ensureGeminiRateUsageTable(env);
+  const limits = geminiLimitForModel(model);
+  const rpmCap = Math.max(1, Math.floor(Number(limits.rpm || 1) * GEMINI_LIMIT_GUARD_RATIO));
+  const tpmCap = Math.max(1, Math.floor(Number(limits.tpm || 1) * GEMINI_LIMIT_GUARD_RATIO));
+  const estimatedTokens = estimateGeminiTokens(prompt, Number(options.maxOutputTokens || GEMINI_DEFAULT_TOKEN_CAP));
+  let waitedMs = 0;
+  let bucket = geminiMinuteBucket();
+  let row = await env.DB.prepare(`SELECT requests, estimated_tokens FROM gemini_rate_usage WHERE bucket=? AND model=?`).bind(bucket, model).first();
+  const wouldRequests = Number(row?.requests || 0) + 1;
+  const wouldTokens = Number(row?.estimated_tokens || 0) + estimatedTokens;
+  if (wouldRequests > rpmCap || wouldTokens > tpmCap) {
+    await sleep(GEMINI_LIMIT_GUARD_WAIT_MS);
+    waitedMs += GEMINI_LIMIT_GUARD_WAIT_MS;
+    bucket = geminiMinuteBucket();
+  }
+  await env.DB.prepare(`
+    INSERT INTO gemini_rate_usage (bucket, model, requests, estimated_tokens, updated_at)
+    VALUES (?, ?, 1, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(bucket, model) DO UPDATE SET
+      requests = requests + 1,
+      estimated_tokens = estimated_tokens + excluded.estimated_tokens,
+      updated_at = CURRENT_TIMESTAMP
+  `).bind(bucket, model, estimatedTokens).run();
+  return { waited_ms: waitedMs, guarded: true, bucket, model, estimated_tokens: estimatedTokens, rpm_cap_75pct: rpmCap, tpm_cap_75pct: tpmCap };
+}
+
+async function callGeminiCompactWithFallback(env, prompt) {
+  try {
+    return await callGemini(env, SCRAPE_MODEL, prompt, { scrape: false, compact: true, maxOutputTokens: 4096 });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (msg.includes("UNAVAILABLE") || msg.includes("503") || msg.includes("high demand")) {
+      return await callGemini(env, SCRAPE_FALLBACK_MODEL, prompt, { scrape: false, compact: true, maxOutputTokens: 4096 });
+    }
+    throw err;
+  }
+}
+
 async function callGeminiWithFallback(env, prompt) {
   try {
     return await callGemini(env, SCRAPE_MODEL, prompt, { scrape: true });
@@ -9607,10 +9753,12 @@ async function callGeminiWithFallback(env, prompt) {
 
 async function callGemini(env, model, prompt, options = {}) {
   if (!env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY secret");
+  const maxOutputTokens = Number(options.maxOutputTokens || GEMINI_DEFAULT_TOKEN_CAP);
+  await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens });
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
   const generationConfig = options.scrape
-    ? { temperature: 0, topP: 0, maxOutputTokens: 8192, responseMimeType: "application/json" }
-    : { temperature: 0, topP: 0, maxOutputTokens: 8192 };
+    ? { temperature: 0, topP: 0, maxOutputTokens, responseMimeType: "application/json" }
+    : { temperature: 0, topP: 0, maxOutputTokens };
 
   const res = await fetch(url, {
     method: "POST",
