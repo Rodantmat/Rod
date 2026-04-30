@@ -1,7 +1,7 @@
-// AlphaDog v1.3.04 - Phase 3A/3B Throttled Full Run Test compatible worker
+// AlphaDog v1.3.05 - Phase 3A/3B Build-First Scheduler Test compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.04 - Phase 3A/3B Throttled Full Run Test";
-const SYSTEM_CODENAME = "Phase 3A/3B Throttled Full Run Test";
+const SYSTEM_VERSION = "v1.3.05 - Phase 3A/3B Build-First Scheduler Test";
+const SYSTEM_CODENAME = "Phase 3A/3B Build-First Scheduler Test";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -1690,36 +1690,45 @@ async function runPhase3abFullRunOnce(input, env) {
   // v1.3.03 tried repair + up to 10 build passes + 3 mining waves in one Worker invocation.
   // Cloudflare rejected that as too many API/D1 requests. This tick now performs ONE bounded unit:
   // A) one queue build pass, OR B) one mining wave with limit 1, OR C) cleanup/check.
-  const hasWorkRows = beforeQueue.total_rows > 0;
-  const hasActiveQueue = (beforeQueue.pending_rows + beforeQueue.retry_later_rows + beforeQueue.running_rows) > 0;
+  const build = await runBoardQueueAutoBuild({
+    ...(input || {}),
+    job: 'board_queue_auto_build',
+    slate_date: slateDate,
+    slate_mode: slate.slate_mode,
+    max_passes: 1,
+    auto_passes: 1
+  }, env);
 
-  if (!hasWorkRows || (!hasActiveQueue && beforeQueue.error_rows === 0 && beforeResults.certified_a_results === 0)) {
-    const build = await runBoardQueueAutoBuild({
-      ...(input || {}),
-      job: 'board_queue_auto_build',
-      slate_date: slateDate,
-      slate_mode: slate.slate_mode,
-      max_passes: 1,
-      auto_passes: 1
-    }, env);
+  const insertedBuildRows = Number(build?.inserted_queue_rows || build?.final_build?.inserted_queue_rows || 0);
+  const buildStillNeedsContinue = !!(build?.needs_continue || build?.status === 'needs_continue' || build?.build_complete === false || build?.final_build?.build_complete === false);
+
+  if (insertedBuildRows > 0 || buildStillNeedsContinue) {
     actionTaken = 'single_queue_build_pass';
     steps.push({ step: 'auto_build_queue_temp_single_pass', result: build });
-  } else if (hasActiveQueue) {
-    const mine = await runBoardQueueAutoMineWaves({
-      ...(input || {}),
-      job: 'board_queue_auto_mine',
-      slate_date: slateDate,
-      slate_mode: slate.slate_mode,
-      trigger: input?.trigger || 'phase3ab_full_run_test',
-      limit: 1,
-      max_rows: 1,
-      max_mines: 1
-    }, env, slateDate, slate, 1);
-    actionTaken = 'single_mining_wave_limit_1';
-    steps.push({ step: 'mine_promote_raw_results_single_wave', result: mine });
   } else {
-    actionTaken = 'check_cleanup_only';
+    const refreshedQueue = await phase3abQueueTotals(env, slateDate);
+    const hasActiveQueue = (refreshedQueue.pending_rows + refreshedQueue.retry_later_rows + refreshedQueue.running_rows) > 0;
+
+    if (hasActiveQueue) {
+      const mine = await runBoardQueueAutoMineWaves({
+        ...(input || {}),
+        job: 'board_queue_auto_mine',
+        slate_date: slateDate,
+        slate_mode: slate.slate_mode,
+        trigger: input?.trigger || 'phase3ab_full_run_test',
+        limit: 1,
+        max_rows: 1,
+        max_mines: 1
+      }, env, slateDate, slate, 1);
+      actionTaken = 'single_mining_wave_limit_1';
+      steps.push({ step: 'queue_build_complete_check', result: { ok: true, build_complete: true, inserted_queue_rows: 0 } });
+      steps.push({ step: 'mine_promote_raw_results_single_wave', result: mine });
+    } else {
+      actionTaken = 'check_cleanup_only';
+      steps.push({ step: 'queue_build_complete_check', result: { ok: true, build_complete: true, inserted_queue_rows: 0 } });
+    }
   }
+
 
   const afterQueue = await phase3abQueueTotals(env, slateDate);
   const afterResults = await phase3abResultTotals(env, slateDate);
@@ -1744,7 +1753,7 @@ async function runPhase3abFullRunOnce(input, env) {
     data_ok: dataOk,
     version: SYSTEM_VERSION,
     job: input.job || 'run_phase3ab_full_run_tick',
-    phase: 'Phase 3A/3B Throttled Full Run Test',
+    phase: 'Phase 3A/3B Build-First Scheduler Test',
     slate_date: slateDate,
     status,
     action_taken: actionTaken,
@@ -1761,7 +1770,7 @@ async function runPhase3abFullRunOnce(input, env) {
     needs_continue: status === 'partial_continue',
     steps,
     next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
-    note: 'v1.3.04 throttles each tick to one build pass or one mining wave to stay under Cloudflare single-invocation API limits. No scoring or final candidate ranking is added.'
+    note: 'v1.3.05 builds all queue families before mining, then mines one bounded wave per tick to stay under Cloudflare single-invocation API limits. No scoring or final candidate ranking is added.'
   };
 }
 
