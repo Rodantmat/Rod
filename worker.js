@@ -1,7 +1,7 @@
-// AlphaDog v1.3.02 - Phase 2C-I Market Context Chunk Runner compatible worker
+// AlphaDog v1.3.03 - Phase 3A/3B Scheduled Full Run Test compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.02 - Phase 2C-I Market Context Chunk Runner";
-const SYSTEM_CODENAME = "Phase 2C-I Market Context Chunk Runner";
+const SYSTEM_VERSION = "v1.3.03 - Phase 3A/3B Scheduled Full Run Test";
+const SYSTEM_CODENAME = "Phase 3A/3B Scheduled Full Run Test";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -120,6 +120,9 @@ const JOB_DISPLAY_LABELS = {
   check_phase2_lineup_context: "EVERYDAY PHASE 2B > Check Lineup/Scratch",
   scrape_phase2c_market_context: "EVERYDAY PHASE 2C > Run Market Context",
   check_phase2c_market_context: "EVERYDAY PHASE 2C > Check Market Context",
+  schedule_phase3ab_full_run_test: "PHASE 3A/3B > Schedule Full Run Test",
+  run_phase3ab_full_run_tick: "PHASE 3A/3B > Run Full Run Tick",
+  check_phase3ab_full_run: "PHASE 3A/3B > Check Full Run",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -462,6 +465,21 @@ const JOBS = {
     prompt: null,
     tables: ["board_factor_queue", "board_factor_results"],
     note: "repairs queue/result status only: completed raw results win, stale running rows return to pending, optional error reset; no Gemini and no scoring"
+  },
+  schedule_phase3ab_full_run_test: {
+    prompt: null,
+    tables: ["deferred_full_run_once", "pipeline_locks", "board_factor_queue", "board_factor_results"],
+    note: "schedules the Phase 3A/3B protected full-run test for the next minute; cron/tick mines to queue, promotes valid raw results, and cleans completed queue rows when complete"
+  },
+  run_phase3ab_full_run_tick: {
+    prompt: null,
+    tables: ["deferred_full_run_once", "pipeline_locks", "board_factor_queue", "board_factor_results"],
+    note: "advances one protected Phase 3A/3B full-run test tick with global no-parallel lock and postpone handling"
+  },
+  check_phase3ab_full_run: {
+    prompt: null,
+    tables: ["deferred_full_run_once", "pipeline_locks", "board_factor_queue", "board_factor_results"],
+    note: "checks latest Phase 3A/3B full-run test request, queue health, result health, certification counts, lock state, and temp cleanup status"
   },
   daily_mlb_slate: {
     prompt: "scrape_daily_mlb_slate_v1.txt",
@@ -840,7 +858,11 @@ export default {
       } else if (cron === '* * * * *') {
         const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
         if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
-        else result = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+        else {
+          const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+          if (staticTick && staticTick.status !== 'idle_no_due_static_refresh') result = staticTick;
+          else result = await runDuePhase3abFullRun(env);
+        }
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
       }
@@ -993,6 +1015,9 @@ function executableJobNames() {
     "check_phase2_lineup_context",
     "scrape_phase2c_market_context",
     "check_phase2c_market_context",
+    "schedule_phase3ab_full_run_test",
+    "run_phase3ab_full_run_tick",
+    "check_phase3ab_full_run",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -1546,6 +1571,290 @@ async function resetStaleDeferredFullRuns(env) {
   return { stale_deferred_reset: Number(res?.meta?.changes || 0) };
 }
 
+
+const PHASE3AB_DEFERRED_JOB = 'phase3ab_full_run_test';
+const PHASE3AB_GLOBAL_LOCK_ID = 'GLOBAL_PHASE3_SCHEDULED_PIPELINE';
+
+function phase3abTimestampForSql(date = new Date()) {
+  return date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+}
+
+async function phase3abRows(env, sql, binds = []) {
+  const stmt = env.DB.prepare(sql);
+  const out = await (binds.length ? stmt.bind(...binds) : stmt).all();
+  return out.results || [];
+}
+
+async function phase3abQueueTotals(env, slateDate) {
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+      SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
+      SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
+      SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
+    FROM board_factor_queue
+    WHERE slate_date=?
+  `).bind(slateDate).first().catch(() => null);
+  return {
+    total_rows: Number(row?.total_rows || 0),
+    pending_rows: Number(row?.pending_rows || 0),
+    retry_later_rows: Number(row?.retry_later_rows || 0),
+    running_rows: Number(row?.running_rows || 0),
+    completed_rows: Number(row?.completed_rows || 0),
+    error_rows: Number(row?.error_rows || 0)
+  };
+}
+
+async function phase3abResultTotals(env, slateDate) {
+  const row = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_results,
+      SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_results,
+      SUM(CASE WHEN status='COMPLETED' AND factor_count > 0 THEN 1 ELSE 0 END) AS certified_a_results,
+      SUM(COALESCE(factor_count,0)) AS raw_factor_rows
+    FROM board_factor_results
+    WHERE slate_date=?
+  `).bind(slateDate).first().catch(() => null);
+  return {
+    total_results: Number(row?.total_results || 0),
+    completed_results: Number(row?.completed_results || 0),
+    certified_a_results: Number(row?.certified_a_results || 0),
+    raw_factor_rows: Number(row?.raw_factor_rows || 0)
+  };
+}
+
+async function schedulePhase3abFullRunTest(input, env) {
+  await ensureDeferredFullRunTable(env);
+  await ensurePipelineLocksTable(env);
+  const slate = resolveSlateDate(input || {});
+  const existing = await env.DB.prepare(`
+    SELECT request_id, job_name, status, run_after, requested_at, started_at, finished_at
+    FROM deferred_full_run_once
+    WHERE job_name=?
+      AND slate_date=?
+      AND status IN ('PENDING','RUNNING')
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first();
+  if (existing) {
+    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_full_run_test', status: 'already_scheduled_or_running', slate_date: slate.slate_date, existing_request: existing, next_action: 'Wait for the minute cron/tick to run, then use PHASE 3A/3B > Check Full Run.', note: 'No duplicate Phase 3A/3B test request was created.' };
+  }
+  const requestId = `phase3ab_full_run_test|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
+  const runAfter = phase3abTimestampForSql(new Date(Date.now() + 60 * 1000));
+  await env.DB.prepare(`
+    INSERT INTO deferred_full_run_once (request_id, job_name, slate_date, slate_mode, status, run_after, requested_by)
+    VALUES (?, ?, ?, ?, 'PENDING', ?, 'control_room_phase3ab_full_run_test')
+  `).bind(requestId, PHASE3AB_DEFERRED_JOB, slate.slate_date, slate.slate_mode, runAfter).run();
+  await logSystemEvent(env, { trigger_source: 'control_room_button', action_label: displayLabelForJob(input.job || 'schedule_phase3ab_full_run_test'), job_name: 'schedule_phase3ab_full_run_test', slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: 'scheduled', task_id: requestId, input_json: { request_id: requestId, run_after: runAfter } });
+  return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_full_run_test', status: 'scheduled_for_next_minute', request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, wait_instruction: 'Wait about 2 minutes, then run PHASE 3A/3B > Check Full Run. If it says partial_continue, wait another 2 minutes and check again.', protected_flow: ['acquire global lock', 'auto-build board_factor_queue', 'mine bounded Gemini raw rows', 'write/promote valid raw rows to board_factor_results', 'clean completed queue temp rows only when fully complete', 'release lock'], note: 'This is the one-minute full-run test version. It uses the same queue/results tables as the existing Phase 3A/3B flow and never runs in parallel.' };
+}
+
+async function postponePhase3abRequest(env, row, reason, minutes = 15) {
+  const nextRetry = phase3abTimestampForSql(new Date(Date.now() + Math.max(1, minutes) * 60 * 1000));
+  await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='PENDING', run_after=?, error=?, output_json=?, started_at=NULL
+    WHERE request_id=?
+  `).bind(nextRetry, String(reason || 'postponed'), JSON.stringify({ postponed: true, reason, next_retry_at: nextRetry }), row.request_id).run();
+  return { ok: true, status: 'POSTPONED_LOCK_BUSY', request_id: row.request_id, next_retry_at: nextRetry, postpone_minutes: minutes, reason };
+}
+
+async function cleanPhase3abCompletedQueueTemp(env, slateDate) {
+  const before = await phase3abQueueTotals(env, slateDate);
+  const res = await env.DB.prepare(`
+    DELETE FROM board_factor_queue
+    WHERE slate_date=?
+      AND status='COMPLETED'
+      AND EXISTS (
+        SELECT 1 FROM board_factor_results r
+        WHERE r.queue_id = board_factor_queue.queue_id
+          AND r.status='COMPLETED'
+          AND COALESCE(r.factor_count,0) > 0
+      )
+  `).bind(slateDate).run();
+  const after = await phase3abQueueTotals(env, slateDate);
+  return { before, deleted_completed_temp_rows: Number(res?.meta?.changes || 0), after };
+}
+
+async function runPhase3abFullRunOnce(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const startedAt = new Date().toISOString();
+  const steps = [];
+  const beforeQueue = await phase3abQueueTotals(env, slateDate);
+  const beforeResults = await phase3abResultTotals(env, slateDate);
+
+  const repairBefore = await runBoardQueueRepair({ ...(input || {}), job: 'board_queue_repair', slate_date: slateDate, slate_mode: slate.slate_mode, reset_errors: false }, env);
+  steps.push({ step: 'repair_before', result: repairBefore });
+
+  const build = await runBoardQueueAutoBuild({ ...(input || {}), job: 'board_queue_auto_build', slate_date: slateDate, slate_mode: slate.slate_mode, max_passes: 10 }, env);
+  steps.push({ step: 'auto_build_queue_temp', result: build });
+
+  const mine = await runBoardQueueAutoMineWaves({ ...(input || {}), job: 'board_queue_auto_mine', slate_date: slateDate, slate_mode: slate.slate_mode, trigger: input?.trigger || 'phase3ab_full_run_test' }, env, slateDate, slate, Number(input?.max_waves || 3));
+  steps.push({ step: 'mine_promote_raw_results', result: mine });
+
+  const afterQueue = await phase3abQueueTotals(env, slateDate);
+  const afterResults = await phase3abResultTotals(env, slateDate);
+  const activeRows = afterQueue.pending_rows + afterQueue.retry_later_rows + afterQueue.running_rows;
+  const completeNoActive = activeRows === 0;
+  const hasErrors = afterQueue.error_rows > 0;
+  let cleanup = null;
+  let status = 'partial_continue';
+  let dataOk = false;
+  if (completeNoActive && !hasErrors) {
+    cleanup = await cleanPhase3abCompletedQueueTemp(env, slateDate);
+    status = 'completed';
+    dataOk = afterResults.certified_a_results > 0;
+  } else if (completeNoActive && hasErrors) {
+    status = 'completed_with_errors_review';
+    dataOk = afterResults.certified_a_results > 0;
+  }
+
+  const finalQueue = await phase3abQueueTotals(env, slateDate);
+  return {
+    ok: true,
+    data_ok: dataOk,
+    version: SYSTEM_VERSION,
+    job: input.job || 'run_phase3ab_full_run_tick',
+    phase: 'Phase 3A/3B Full Run Test',
+    slate_date: slateDate,
+    status,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    before: { queue: beforeQueue, results: beforeResults },
+    after: { queue: afterQueue, results: afterResults },
+    final: { queue: finalQueue, results: await phase3abResultTotals(env, slateDate) },
+    certification_a: {
+      certified_a_results: afterResults.certified_a_results,
+      rule: 'board_factor_results rows with status COMPLETED and factor_count > 0 are treated as certified raw Phase 3A/3B rows for this test run.'
+    },
+    temp_cleanup: cleanup || { skipped: true, reason: status === 'partial_continue' ? 'queue still has active rows' : 'queue has ERROR rows requiring review before temp cleanup' },
+    needs_continue: status === 'partial_continue',
+    steps,
+    next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
+    note: 'Phase 3A/3B test uses existing board_factor_queue as temp/working rows and board_factor_results as promoted main raw-result storage. No scoring or final candidate ranking is added.'
+  };
+}
+
+async function runPhase3abFullRunTick(input, env) {
+  await ensureDeferredFullRunTable(env);
+  await resetStaleDeferredFullRuns(env);
+  const slate = resolveSlateDate(input || {});
+  const manualRow = { request_id: `manual_phase3ab_tick|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`, slate_date: slate.slate_date, slate_mode: slate.slate_mode || 'AUTO', job_name: PHASE3AB_DEFERRED_JOB };
+  return await runPhase3abDeferredRow(env, manualRow, { ...(input || {}), manual_tick: true });
+}
+
+async function runPhase3abDeferredRow(env, row, input = {}) {
+  const slateDate = row.slate_date;
+  const slateMode = row.slate_mode || 'AUTO';
+  const lockedBy = `${input?.trigger || 'phase3ab'}:${crypto.randomUUID()}`;
+  const lock = await acquirePipelineLock(env, PHASE3AB_GLOBAL_LOCK_ID, lockedBy, 20);
+  if (!lock.acquired) {
+    if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) return await postponePhase3abRequest(env, row, 'global phase pipeline lock busy', 15);
+    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_phase3ab_full_run_tick', status: 'postponed_lock_busy', lock_status: lock, retry_after_minutes: 15, note: 'Global Phase 3 scheduled pipeline lock is busy. Manual tick exited without work.' };
+  }
+
+  const taskId = crypto.randomUUID();
+  if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) {
+    const claim = await env.DB.prepare(`
+      UPDATE deferred_full_run_once
+      SET status='RUNNING', started_at=CURRENT_TIMESTAMP, task_id=?
+      WHERE request_id=? AND status IN ('PENDING','RUNNING')
+    `).bind(taskId, row.request_id).run();
+    if (Number(claim?.meta?.changes || 0) === 0) {
+      await releasePipelineLock(env, PHASE3AB_GLOBAL_LOCK_ID, lockedBy);
+      return { ok: true, status: 'already_claimed_or_completed', request_id: row.request_id };
+    }
+  }
+
+  const taskInput = { ...(input || {}), job: 'run_phase3ab_full_run_tick', slate_date: slateDate, slate_mode: slateMode, trigger: input?.trigger || 'phase3ab_tick', request_id: row.request_id };
+  await env.DB.prepare(`INSERT INTO task_runs (task_id, job_name, status, started_at, input_json) VALUES (?, 'run_phase3ab_full_run_tick', 'running', CURRENT_TIMESTAMP, ?)`).bind(taskId, JSON.stringify(taskInput)).run().catch(() => null);
+  await logSystemEvent(env, { trigger_source: taskInput.trigger || 'phase3ab_tick', action_label: displayLabelForJob('run_phase3ab_full_run_tick'), job_name: 'run_phase3ab_full_run_tick', slate_date: slateDate, slate_mode: slateMode, status: 'started', task_id: taskId, input_json: taskInput });
+
+  try {
+    const result = await runPhase3abFullRunOnce(taskInput, env);
+    const nextRun = phase3abTimestampForSql(new Date(Date.now() + 60 * 1000));
+    if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) {
+      if (result.needs_continue) {
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, JSON.stringify(result), row.request_id).run();
+      } else {
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(result.data_ok ? 'COMPLETED' : 'COMPLETED_REVIEW', JSON.stringify(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
+      }
+    }
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(result.ok ? 'success' : 'failed', JSON.stringify(result), taskId).run().catch(() => null);
+    await logSystemEvent(env, { trigger_source: taskInput.trigger || 'phase3ab_tick', action_label: displayLabelForJob('run_phase3ab_full_run_tick'), job_name: 'run_phase3ab_full_run_tick', slate_date: slateDate, slate_mode: slateMode, status: result.ok ? 'success' : 'failed', task_id: taskId, output_preview: result, error: result.ok ? null : String(result.error || result.status || 'phase3ab_failed') });
+    return { ...result, task_id: taskId, request_id: row.request_id, deferred_next_run_after: result.needs_continue ? nextRun : null, lock_status: 'RELEASED' };
+  } catch (err) {
+    const msg = String(err?.message || err);
+    await env.DB.prepare(`UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=? WHERE task_id=?`).bind(msg, taskId).run().catch(() => null);
+    if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) await env.DB.prepare(`UPDATE deferred_full_run_once SET status='FAILED', finished_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?`).bind(msg, row.request_id).run().catch(() => null);
+    await logSystemEvent(env, { trigger_source: taskInput.trigger || 'phase3ab_tick', action_label: displayLabelForJob('run_phase3ab_full_run_tick'), job_name: 'run_phase3ab_full_run_tick', slate_date: slateDate, slate_mode: slateMode, status: 'failed', task_id: taskId, error: msg });
+    return { ok: false, data_ok: false, version: SYSTEM_VERSION, job: 'run_phase3ab_full_run_tick', status: 'FAILED_EXCEPTION', slate_date: slateDate, error: msg, task_id: taskId };
+  } finally {
+    await releasePipelineLock(env, PHASE3AB_GLOBAL_LOCK_ID, lockedBy);
+  }
+}
+
+async function runDuePhase3abFullRun(env) {
+  await ensureDeferredFullRunTable(env);
+  await resetStaleDeferredFullRuns(env);
+  const row = await env.DB.prepare(`
+    SELECT * FROM deferred_full_run_once
+    WHERE job_name=?
+      AND status='PENDING'
+      AND run_after <= CURRENT_TIMESTAMP
+    ORDER BY run_after ASC, requested_at ASC
+    LIMIT 1
+  `).bind(PHASE3AB_DEFERRED_JOB).first();
+  if (!row) return { ok: true, status: 'NO_PHASE3AB_DEFERRED_DUE', checked_at: new Date().toISOString() };
+  return await runPhase3abDeferredRow(env, row, { trigger: 'scheduled_phase3ab_deferred_tick', job: 'run_phase3ab_full_run_tick' });
+}
+
+async function checkPhase3abFullRun(input, env) {
+  await ensureDeferredFullRunTable(env);
+  await ensurePipelineLocksTable(env);
+  const slate = resolveSlateDate(input || {});
+  const latest = await env.DB.prepare(`
+    SELECT request_id, job_name, slate_date, slate_mode, status, requested_at, run_after, started_at, finished_at, task_id, error, output_json
+    FROM deferred_full_run_once
+    WHERE job_name=? AND slate_date=?
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first().catch(() => null);
+  const queue = await phase3abQueueTotals(env, slate.slate_date);
+  const results = await phase3abResultTotals(env, slate.slate_date);
+  const lock = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
+  const queueHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
+  const resultHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
+  const tempClean = queue.total_rows === 0 || (queue.pending_rows + queue.retry_later_rows + queue.running_rows + queue.completed_rows) === 0;
+  const status = latest?.status || 'not_scheduled';
+  const pass = ['COMPLETED','COMPLETED_REVIEW'].includes(status) && results.certified_a_results > 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0 && queue.error_rows === 0;
+  return {
+    ok: pass,
+    data_ok: pass,
+    version: SYSTEM_VERSION,
+    job: input.job || 'check_phase3ab_full_run',
+    phase: 'Phase 3A/3B Full Run Test',
+    slate_date: slate.slate_date,
+    status: pass ? 'pass' : (latest ? 'needs_review_or_continue' : 'not_scheduled'),
+    latest_request: latest ? { ...latest, output_json: latest.output_json ? '[stored_output_json_available_in_db]' : null } : null,
+    queue_totals: queue,
+    result_totals: results,
+    temp_cleanup: { temp_rows_cleaned: tempClean, rule: 'board_factor_queue is the Phase 3A/3B temp/working table; board_factor_results is the promoted main raw-result table.' },
+    certification_a: { certified_a_results: results.certified_a_results, data_ok: results.certified_a_results > 0 },
+    lock_state: lock || null,
+    queue_health: queueHealth,
+    result_health: resultHealth,
+    warnings: [
+      ...(queue.error_rows > 0 ? [`${queue.error_rows} queue rows are ERROR and need review or credits/retry before pass`] : []),
+      ...(latest && latest.status === 'PENDING' ? ['Deferred test is still pending; wait for minute cron/tick or run Run Full Run Tick.'] : []),
+      ...(latest && latest.status === 'RUNNING' ? ['Deferred test is currently running.'] : []),
+      ...(results.certified_a_results <= 0 ? ['No certified A raw result rows found yet.'] : [])
+    ],
+    next_action: pass ? 'Phase 3A/3B full-run test passed. Next: schedule real Phase 3A/3B time window.' : 'If status is pending/partial, wait 2 minutes and check again. If ERROR rows mention Gemini credits, refill Gemini billing before retry.',
+    note: 'This check validates Phase 3A/3B queue/result full-run mechanics only. It does not score final candidates.'
+  };
+}
 async function handleDeferredFullRunRequest(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   await ensureDeferredFullRunTable(env);
@@ -7110,6 +7419,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "check_phase2_lineup_context") return await checkPhase2LineupContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_phase2c_market_context") return await scrapePhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "check_phase2c_market_context") return await checkPhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "schedule_phase3ab_full_run_test") return await schedulePhase3abFullRunTest({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_phase3ab_full_run_tick") return await runPhase3abFullRunTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "check_phase3ab_full_run") return await checkPhase3abFullRun({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);

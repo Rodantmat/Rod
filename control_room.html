@@ -162,6 +162,11 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button onclick="runJobButton('EVERYDAY PHASE 2C > Run Market Context','scrape_phase2c_market_context')">Run Market Context</button>
 <button onclick="runJobButton('EVERYDAY PHASE 2C > Check Market Context','check_phase2c_market_context')">Check Market Context</button>
 </div><div class="small">Phase 2C-I current PrizePicks board market/projection context from the latest mlb_stats capture window. Processes in safe chunks; keep pressing Run Market Context until completed. No scoring, no external odds, no Gemini, and no cron.</div></div>
+<div class="card"><h2>Phase 3A/3B Full Run Test</h2><div class="grid">
+<button class="warn" onclick="runJobButton('PHASE 3A/3B > Schedule Full Run Test','schedule_phase3ab_full_run_test')">Schedule Full Run Test</button>
+<button class="warn" onclick="runJobButton('PHASE 3A/3B > Run Full Run Tick','run_phase3ab_full_run_tick')">Run Full Run Tick</button>
+<button class="check" onclick="runJobButton('PHASE 3A/3B > Check Full Run','check_phase3ab_full_run')">Check Full Run</button>
+</div><div class="small">Phase 3A/3B test: schedule for next minute, acquire global no-parallel lock, build board_factor_queue temp rows, mine/promote raw Gemini results into board_factor_results, clean completed temp rows when complete. If another job is running, postpone/retry later.</div></div>
 
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
