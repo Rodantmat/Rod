@@ -1,7 +1,7 @@
-// AlphaDog v1.3.06 - Phase 3A/3B Daily Schedule Lock compatible worker
+// AlphaDog v1.3.07 - Sleeper Video Parser Side Page compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.06 - Phase 3A/3B Daily Schedule Lock";
-const SYSTEM_CODENAME = "Phase 3A/3B Daily Schedule Lock";
+const SYSTEM_VERSION = "v1.3.07 - Sleeper Video Parser Side Page";
+const SYSTEM_CODENAME = "Sleeper Video Parser Side Page";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -12,6 +12,9 @@ const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
 const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
+const SLEEPER_VIDEO_MODEL = "gemini-3.1-pro";
+
+const SLEEPER_VIDEO_PARSER_HTML = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />\n  <title>AlphaDog Sleeper Video Parser</title>\n  <style>\n    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; }\n    * { box-sizing: border-box; }\n    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: radial-gradient(circle at top, #18334b 0, var(--bg) 42%); color:var(--text); }\n    main { max-width: 980px; margin: 0 auto; padding: 22px 14px 44px; }\n    h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.03em; }\n    .sub { color: var(--muted); margin: 0 0 18px; line-height:1.35; }\n    .grid { display:grid; gap:14px; }\n    .card { background: rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow: 0 14px 34px rgba(0,0,0,.26); }\n    label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }\n    input, textarea { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }\n    input[type="file"] { padding: 14px; }\n    button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }\n    button:disabled { opacity:.55; cursor:not-allowed; }\n    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }\n    .status { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }\n    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin: 4px 6px 0 0; font-size:12px; }\n    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height:1.35; }\n    .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }\n    pre { max-height: 420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }\n    @media (max-width: 720px) { .row { grid-template-columns:1fr; } h1 { font-size:23px; } }\n  </style>\n</head>\n<body>\n  <main>\n    <h1>AlphaDog Sleeper Video Parser</h1>\n    <p class="sub">Upload a Sleeper screen recording. Gemini parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>\n\n    <section class="card grid">\n      <div class="row">\n        <div>\n          <label>Worker endpoint</label>\n          <input id="endpoint" value="/sleeper/video/parse" />\n        </div>\n        <div>\n          <label>Ingest token, only if your Worker requires it</label>\n          <input id="token" placeholder="optional" />\n        </div>\n      </div>\n      <div>\n        <label>Video file</label>\n        <input id="video" type="file" accept="video/mp4,video/quicktime,video/*" />\n      </div>\n      <div id="meta" class="status">No video selected.</div>\n      <button id="run">Parse Video With Gemini 3.1 Pro</button>\n      <div id="status" class="status">Ready.</div>\n    </section>\n\n    <section class="card">\n      <h2>Parsed Lines</h2>\n      <div id="summary"><span class="pill">Waiting for parse</span></div>\n      <div id="lines"></div>\n    </section>\n\n    <section class="card">\n      <h2>Raw JSON</h2>\n      <pre id="json">{}</pre>\n    </section>\n  </main>\n<script>\nconst $ = (id) => document.getElementById(id);\nconst videoInput = $(\'video\');\nconst runBtn = $(\'run\');\nlet selectedFile = null;\n\nvideoInput.addEventListener(\'change\', () => {\n  selectedFile = videoInput.files && videoInput.files[0] ? videoInput.files[0] : null;\n  if (!selectedFile) { $(\'meta\').textContent = \'No video selected.\'; return; }\n  const mb = selectedFile.size / 1024 / 1024;\n  $(\'meta\').textContent = `Selected: ${selectedFile.name}\\nType: ${selectedFile.type || \'unknown\'}\\nSize: ${mb.toFixed(2)} MB`;\n});\n\nfunction fileToBase64(file) {\n  return new Promise((resolve, reject) => {\n    const reader = new FileReader();\n    reader.onload = () => resolve(String(reader.result || \'\').split(\',\')[1] || \'\');\n    reader.onerror = reject;\n    reader.readAsDataURL(file);\n  });\n}\n\nfunction renderResult(data) {\n  $(\'json\').textContent = JSON.stringify(data, null, 2);\n  const legs = Array.isArray(data.legs) ? data.legs : [];\n  $(\'summary\').innerHTML = `\n    <span class="pill">ok: ${data.ok}</span>\n    <span class="pill">data_ok: ${data.data_ok}</span>\n    <span class="pill">model: ${data.model || \'unknown\'}</span>\n    <span class="pill">parsed: ${legs.length}</span>\n  `;\n  $(\'lines\').innerHTML = \'\';\n  const lines = Array.isArray(data.lines) ? data.lines : legs.map(l => [l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(\' - \'));\n  if (!lines.length) {\n    $(\'lines\').innerHTML = \'<div class="lineOut warn">No parsed lines returned.</div>\';\n    return;\n  }\n  for (const line of lines) {\n    const div = document.createElement(\'div\');\n    div.className = \'lineOut\';\n    div.textContent = line;\n    $(\'lines\').appendChild(div);\n  }\n}\n\nrunBtn.addEventListener(\'click\', async () => {\n  if (!selectedFile) { $(\'status\').innerHTML = \'<span class="bad">Select a video first.</span>\'; return; }\n  runBtn.disabled = true;\n  $(\'status\').textContent = \'Reading video locally...\';\n  try {\n    const base64 = await fileToBase64(selectedFile);\n    $(\'status\').textContent = \'Uploading to Worker and parsing with Gemini. Do not close this page...\';\n    const headers = { \'content-type\': \'application/json\' };\n    const token = $(\'token\').value.trim();\n    if (token) headers[\'x-ingest-token\'] = token;\n    const res = await fetch($(\'endpoint\').value.trim() || \'/sleeper/video/parse\', {\n      method: \'POST\',\n      headers,\n      body: JSON.stringify({\n        file_name: selectedFile.name,\n        mime_type: selectedFile.type || \'video/mp4\',\n        video_base64: base64\n      })\n    });\n    const data = await res.json().catch(() => ({ ok:false, error:\'Response was not JSON\' }));\n    renderResult(data);\n    $(\'status\').innerHTML = res.ok && data.ok ? \'<span class="good">Parse complete.</span>\' : `<span class="bad">Parse failed: ${data.error || res.status}</span>`;\n  } catch (err) {\n    $(\'status\').innerHTML = `<span class="bad">${String(err && err.message || err)}</span>`;\n  } finally {\n    runBtn.disabled = false;\n  }\n});\n</script>\n</body>\n</html>\n';
 const JOB_DISPLAY_LABELS = {
   run_full_pipeline: "SCRAPE > FULL RUN",
   scheduled_full_pipeline_plus_board_queue: "SCRAPE > FULL RUN + Board Queue Pipeline",
@@ -838,6 +841,9 @@ export default {
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
       if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
       if (url.pathname === "/ingest/upsert" && request.method === "POST") return withCors(await handleUpsert(request, env));
+
+      if (url.pathname === "/sleeper/video/parse" && request.method === "POST") return withCors(await handleSleeperVideoParse(request, env));
+      if (url.pathname === "/sleeper/video/parser" && request.method === "GET") return withCors(new Response(SLEEPER_VIDEO_PARSER_HTML, { headers: { "content-type": "text/html; charset=utf-8" } }));
 
       return json({ ok: false, error: "Not found", path: url.pathname }, { status: 404 });
     } catch (err) {
@@ -9098,6 +9104,155 @@ async function upsertRows(env, table, rows) {
   }
 
   return inserted;
+}
+
+
+function normalizeSleeperVideoLeg(row) {
+  const marketRaw = String(row?.market || row?.Market || row?.prop_type || "").trim().toUpperCase();
+  let market = marketRaw;
+  if (marketRaw.includes("1ST") || marketRaw.includes("INNING") || marketRaw === "RFI") market = "RFI";
+  if (marketRaw === "RBI" || marketRaw.includes("RUN BATTED")) market = "RBI";
+  const typeRaw = String(row?.type || row?.Type || "").trim().toLowerCase();
+  let type = typeRaw.includes("more") && !typeRaw.includes("less") ? "more only" : (typeRaw.includes("regular") || typeRaw.includes("less") ? "regular" : typeRaw || null);
+  const lineNumber = Number(row?.line ?? row?.Line ?? row?.line_number ?? NaN);
+  return {
+    player_name: String(row?.player_name || row?.player || row?.Player || "").trim(),
+    team: String(row?.team || row?.Team || "").trim().toUpperCase(),
+    opponent: String(row?.opponent || row?.Opponent || "").trim().toUpperCase(),
+    date: String(row?.date || row?.Date || row?.time || "").trim(),
+    market,
+    line: Number.isFinite(lineNumber) ? lineNumber : null,
+    type,
+    raw_text: String(row?.raw_text || row?.raw_fragment || "").trim() || null
+  };
+}
+
+function sleeperLineText(leg) {
+  const bits = [leg.player_name, leg.team, leg.opponent, leg.date, leg.market, leg.line == null ? "" : String(leg.line), leg.type];
+  return bits.map(v => String(v || "").trim()).join(" - ");
+}
+
+function buildSleeperVideoPrompt() {
+  return `Watch this baseball betting app recording. The user will be scrolling through player cards in two categories: RFI (Runs First Inning) and RBI (Runs Batted In).
+
+Extract all unique player cards visible in the video. Read every card independently. Do not rely only on a page header, because headers may scroll out of view.
+
+Return JSON only.
+
+Required card rules:
+1. Market: Identify by reading the text inside or directly below the line number on each individual card. If it says "1st INNING RUNS ALLOWED", market is "RFI". If it says "RBI", market is "RBI".
+2. Line: Read the exact number shown for that card. Do not guess 0.5. RBI can be 0.5 or 1.5. RFI is usually 0.5, but still read what is displayed.
+3. Team: Use the 3-letter abbreviation shown on the card, for example HOU or BAL.
+4. Opponent: Use the opponent abbreviation shown near the team/date area.
+5. Date: Read any date/time string near the opponent abbreviation, for example "Thu 9:35am".
+6. Type: Output "regular" if a LESS button is visible below the line. Output "more only" if there is no LESS button visible.
+7. Layout: Search the whole frame/video. Do not assume a four-box grid, one column, two columns, or any fixed layout.
+8. Deduplicate: If the same player/team/opponent/date/market/line/type card appears multiple times while scrolling, return it once.
+9. Do not invent missing fields. Use null when not visible.
+
+Return this exact JSON shape:
+{
+  "ok": true,
+  "parser": "SLEEPER_VIDEO_RBI_RFI_V1",
+  "video_summary": "short summary",
+  "legs": [
+    {
+      "player_name": "string",
+      "team": "AAA",
+      "opponent": "BBB",
+      "date": "string",
+      "market": "RFI_or_RBI",
+      "line": 0.5,
+      "type": "regular_or_more only",
+      "raw_text": "short literal text seen on card or null"
+    }
+  ],
+  "warnings": [],
+  "uncertain_cards": []
+}
+
+Also ensure each leg can be rendered in this exact format:
+Player Name - Team - Opponent - Date - Market - Line - Type`;
+}
+
+async function callGeminiVideoInline(env, { model, prompt, mimeType, base64Data }) {
+  if (!env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY secret");
+  const chosenModel = String(env.SLEEPER_VIDEO_GEMINI_MODEL || model || SLEEPER_VIDEO_MODEL);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${chosenModel}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: mimeType, data: base64Data } }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        topP: 0.95,
+        maxOutputTokens: 4096,
+        responseMimeType: "application/json"
+      }
+    })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(JSON.stringify(data));
+  const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("\n") || JSON.stringify(data);
+  return { model: chosenModel, raw_text: text, raw_response: data };
+}
+
+async function handleSleeperVideoParse(request, env) {
+  if (!isAuthorized(request, env)) return unauthorized();
+  const input = await safeJson(request);
+  const mimeType = String(input.mime_type || input.mimeType || "video/mp4");
+  let base64Data = String(input.video_base64 || input.base64 || "");
+  base64Data = base64Data.replace(/^data:video\/[^;]+;base64,/i, "").replace(/^data:[^;]+;base64,/i, "").trim();
+  if (!base64Data) return json({ ok: false, data_ok: false, version: SYSTEM_VERSION, job: "sleeper_video_parse", error: "Missing video_base64" }, { status: 400 });
+  const maxBytesEstimate = Math.floor(base64Data.length * 3 / 4);
+  if (maxBytesEstimate > 60 * 1024 * 1024) {
+    return json({ ok: false, data_ok: false, version: SYSTEM_VERSION, job: "sleeper_video_parse", error: "Video is too large for this first inline parser. Trim/compress under about 60 MB for testing.", estimated_bytes: maxBytesEstimate }, { status: 413 });
+  }
+  const prompt = buildSleeperVideoPrompt();
+  const startedAt = new Date().toISOString();
+  const gem = await callGeminiVideoInline(env, { model: SLEEPER_VIDEO_MODEL, prompt, mimeType, base64Data });
+  let parsed;
+  try {
+    parsed = parseStrictJson(cleanJsonText(gem.raw_text));
+  } catch (err) {
+    parsed = { ok: false, parser: "SLEEPER_VIDEO_RBI_RFI_V1", legs: [], warnings: [String(err?.message || err)], raw_text: gem.raw_text };
+  }
+  const legs = Array.isArray(parsed.legs) ? parsed.legs.map(normalizeSleeperVideoLeg).filter(l => l.player_name || l.team || l.market) : [];
+  const seen = new Set();
+  const uniqueLegs = [];
+  for (const leg of legs) {
+    const key = [leg.player_name, leg.team, leg.opponent, leg.date, leg.market, leg.line, leg.type].join("|").toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueLegs.push(leg);
+  }
+  const lines = uniqueLegs.map(sleeperLineText);
+  return json({
+    ok: true,
+    data_ok: uniqueLegs.length > 0,
+    version: SYSTEM_VERSION,
+    job: "sleeper_video_parse",
+    parser: "SLEEPER_VIDEO_RBI_RFI_V1",
+    model: gem.model,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    file_name: input.file_name || null,
+    mime_type: mimeType,
+    parsed_count: uniqueLegs.length,
+    lines,
+    legs: uniqueLegs,
+    warnings: parsed.warnings || [],
+    uncertain_cards: parsed.uncertain_cards || [],
+    video_summary: parsed.video_summary || null,
+    raw_text_preview: String(gem.raw_text || "").slice(0, 2000)
+  });
 }
 
 

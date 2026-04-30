@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>AlphaDog Sleeper Video Parser</title>
+  <style>
+    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif; background: radial-gradient(circle at top, #18334b 0, var(--bg) 42%); color:var(--text); }
+    main { max-width: 980px; margin: 0 auto; padding: 22px 14px 44px; }
+    h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.03em; }
+    .sub { color: var(--muted); margin: 0 0 18px; line-height:1.35; }
+    .grid { display:grid; gap:14px; }
+    .card { background: rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow: 0 14px 34px rgba(0,0,0,.26); }
+    label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }
+    input, textarea { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }
+    input[type="file"] { padding: 14px; }
+    button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .row { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .status { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }
+    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin: 4px 6px 0 0; font-size:12px; }
+    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height:1.35; }
+    .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+    pre { max-height: 420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }
+    @media (max-width: 720px) { .row { grid-template-columns:1fr; } h1 { font-size:23px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>AlphaDog Sleeper Video Parser</h1>
+    <p class="sub">Upload a Sleeper screen recording. Gemini parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>
+
+    <section class="card grid">
+      <div class="row">
+        <div>
+          <label>Worker endpoint</label>
+          <input id="endpoint" value="/sleeper/video/parse" />
+        </div>
+        <div>
+          <label>Ingest token, only if your Worker requires it</label>
+          <input id="token" placeholder="optional" />
+        </div>
+      </div>
+      <div>
+        <label>Video file</label>
+        <input id="video" type="file" accept="video/mp4,video/quicktime,video/*" />
+      </div>
+      <div id="meta" class="status">No video selected.</div>
+      <button id="run">Parse Video With Gemini 3.1 Pro</button>
+      <div id="status" class="status">Ready.</div>
+    </section>
+
+    <section class="card">
+      <h2>Parsed Lines</h2>
+      <div id="summary"><span class="pill">Waiting for parse</span></div>
+      <div id="lines"></div>
+    </section>
+
+    <section class="card">
+      <h2>Raw JSON</h2>
+      <pre id="json">{}</pre>
+    </section>
+  </main>
+<script>
+const $ = (id) => document.getElementById(id);
+const videoInput = $('video');
+const runBtn = $('run');
+let selectedFile = null;
+
+videoInput.addEventListener('change', () => {
+  selectedFile = videoInput.files && videoInput.files[0] ? videoInput.files[0] : null;
+  if (!selectedFile) { $('meta').textContent = 'No video selected.'; return; }
+  const mb = selectedFile.size / 1024 / 1024;
+  $('meta').textContent = `Selected: ${selectedFile.name}\nType: ${selectedFile.type || 'unknown'}\nSize: ${mb.toFixed(2)} MB`;
+});
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderResult(data) {
+  $('json').textContent = JSON.stringify(data, null, 2);
+  const legs = Array.isArray(data.legs) ? data.legs : [];
+  $('summary').innerHTML = `
+    <span class="pill">ok: ${data.ok}</span>
+    <span class="pill">data_ok: ${data.data_ok}</span>
+    <span class="pill">model: ${data.model || 'unknown'}</span>
+    <span class="pill">parsed: ${legs.length}</span>
+  `;
+  $('lines').innerHTML = '';
+  const lines = Array.isArray(data.lines) ? data.lines : legs.map(l => [l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - '));
+  if (!lines.length) {
+    $('lines').innerHTML = '<div class="lineOut warn">No parsed lines returned.</div>';
+    return;
+  }
+  for (const line of lines) {
+    const div = document.createElement('div');
+    div.className = 'lineOut';
+    div.textContent = line;
+    $('lines').appendChild(div);
+  }
+}
+
+runBtn.addEventListener('click', async () => {
+  if (!selectedFile) { $('status').innerHTML = '<span class="bad">Select a video first.</span>'; return; }
+  runBtn.disabled = true;
+  $('status').textContent = 'Reading video locally...';
+  try {
+    const base64 = await fileToBase64(selectedFile);
+    $('status').textContent = 'Uploading to Worker and parsing with Gemini. Do not close this page...';
+    const headers = { 'content-type': 'application/json' };
+    const token = $('token').value.trim();
+    if (token) headers['x-ingest-token'] = token;
+    const res = await fetch($('endpoint').value.trim() || '/sleeper/video/parse', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        file_name: selectedFile.name,
+        mime_type: selectedFile.type || 'video/mp4',
+        video_base64: base64
+      })
+    });
+    const data = await res.json().catch(() => ({ ok:false, error:'Response was not JSON' }));
+    renderResult(data);
+    $('status').innerHTML = res.ok && data.ok ? '<span class="good">Parse complete.</span>' : `<span class="bad">Parse failed: ${data.error || res.status}</span>`;
+  } catch (err) {
+    $('status').innerHTML = `<span class="bad">${String(err && err.message || err)}</span>`;
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
