@@ -1,12 +1,13 @@
-// AlphaDog v1.3.17 - Actionable Backend Prefill compatible worker
+// AlphaDog v1.3.18 - Phase 3 Multi-Wave Window Runner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.17 - Actionable Backend Prefill";
+const SYSTEM_VERSION = "v1.3.18 - Phase 3 Multi-Wave Window Runner";
 const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
-const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
+const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
 const BOARD_QUEUE_RETRY_LIMIT = 5;
-const BOARD_QUEUE_RUNTIME_CUTOFF_MS = 20000;
+const BOARD_QUEUE_RUNTIME_CUTOFF_MS = 25000;
+const PHASE3AB_TICK_RUNTIME_CUTOFF_MS = 26000;
 const WORKER_DEPLOY_TARGET = "alphadog-phase3-starter-groups";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
@@ -897,7 +898,7 @@ export default {
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '* * * * *') {
-        // v1.3.17: Phase 3A/3B deferred work has priority on minute ticks.
+        // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
         const phase3DueTick = await runDuePhase3abFullRun(env);
         if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
@@ -1629,7 +1630,7 @@ async function resetStaleDeferredFullRuns(env) {
 
 const PHASE3AB_DEFERRED_JOB = 'phase3ab_full_run_test';
 const PHASE3AB_GLOBAL_LOCK_ID = 'GLOBAL_PHASE3_SCHEDULED_PIPELINE';
-const PHASE3AB_LOCK_STALE_MINUTES = 2;
+const PHASE3AB_LOCK_STALE_MINUTES = 8;
 
 
 function phase3abTimestampForSql(date = new Date()) {
@@ -1646,9 +1647,31 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
       AND status='RUNNING'
       AND updated_at < datetime('now', '-' || ? || ' minutes')
   `).bind(PHASE3AB_GLOBAL_LOCK_ID, String(staleMinutes)).run();
+  const staleLockReset = Number(res?.meta?.changes || 0);
+  let staleTasksMarked = 0;
+  let staleDeferredReset = 0;
+  if (staleLockReset > 0) {
+    const taskRes = await env.DB.prepare(`
+      UPDATE task_runs
+      SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.18 stale Phase 3 lock recovery marked orphan running task stale'
+      WHERE job_name='run_phase3ab_full_run_tick'
+        AND status='running'
+        AND started_at < datetime('now', '-' || ? || ' minutes')
+    `).bind(String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
+    staleTasksMarked = Number(taskRes?.meta?.changes || 0);
+    const deferredRes = await env.DB.prepare(`
+      UPDATE deferred_full_run_once
+      SET status='PENDING', started_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.18 stale Phase 3 lock recovery reset deferred request to pending'
+      WHERE job_name=?
+        AND status='RUNNING'
+        AND started_at < datetime('now', '-' || ? || ' minutes')
+    `).bind(PHASE3AB_DEFERRED_JOB, String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
+    staleDeferredReset = Number(deferredRes?.meta?.changes || 0);
+  }
   const after = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
-  return { stale_lock_reset: Number(res?.meta?.changes || 0), before, after, stale_minutes: staleMinutes };
+  return { stale_lock_reset: staleLockReset, stale_tasks_marked: staleTasksMarked, stale_deferred_reset: staleDeferredReset, before, after, stale_minutes: staleMinutes };
 }
+
 
 async function phase3abRows(env, sql, binds = []) {
   const stmt = env.DB.prepare(sql);
@@ -1836,17 +1859,20 @@ async function runPhase3abFullRunOnce(input, env) {
     const hasActiveQueue = (refreshedQueue.pending_rows + refreshedQueue.retry_later_rows + refreshedQueue.running_rows) > 0;
 
     if (hasActiveQueue) {
+      const phase3MineLimit = Math.max(1, Math.min(Number(input?.phase3_mine_limit || input?.limit || 12), BOARD_QUEUE_AUTO_MINE_LIMIT));
+      const phase3MaxWaves = Math.max(1, Math.min(Number(input?.phase3_max_waves || 3), 4));
       const mine = await runBoardQueueAutoMineWaves({
         ...(input || {}),
         job: 'board_queue_auto_mine',
         slate_date: slateDate,
         slate_mode: slate.slate_mode,
         trigger: input?.trigger || 'phase3ab_full_run_test',
-        limit: 1,
-        max_rows: 1,
-        max_mines: 1
-      }, env, slateDate, slate, 1);
-      actionTaken = 'single_mining_wave_limit_1';
+        limit: phase3MineLimit,
+        max_rows: phase3MineLimit,
+        max_mines: phase3MineLimit,
+        phase3_tick_runtime_cutoff_ms: PHASE3AB_TICK_RUNTIME_CUTOFF_MS
+      }, env, slateDate, slate, phase3MaxWaves);
+      actionTaken = `multi_wave_mining_limit_${phase3MineLimit}_waves_${phase3MaxWaves}`;
       steps.push({ step: 'queue_build_complete_check', result: { ok: true, build_complete: true, inserted_queue_rows: 0 } });
       steps.push({ step: 'mine_promote_raw_results_single_wave', result: mine });
     } else {
@@ -1896,7 +1922,7 @@ async function runPhase3abFullRunOnce(input, env) {
     needs_continue: status === 'partial_continue',
     steps,
     next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
-    note: 'v1.3.06 schedules the daily 4AM Phase 3A/3B run, builds all queue families before mining, then mines one bounded wave per tick with global no-parallel lock and 15-minute postpone safety. No scoring or final candidate ranking is added.'
+    note: 'v1.3.18 keeps the Phase 3 global no-parallel lock, but replaces single-wave throttling with a multi-wave bounded runner. Backend-prefill rows can complete in larger safe batches while Gemini-required rows remain protected by the governor, runtime cutoff, and stale-task cleanup. No scoring or final candidate ranking is added.'
   };
 }
 
@@ -8021,12 +8047,22 @@ async function repairMissingStartersLockstep(input, env, slateDate, slate, steps
 
 async function runBoardQueueAutoMineWaves(input, env, slateDate, slate, maxWaves = 3) {
   const waves = [];
+  const startedMs = Date.now();
+  const cutoffMs = Math.max(5000, Number(input?.phase3_tick_runtime_cutoff_ms || PHASE3AB_TICK_RUNTIME_CUTOFF_MS));
+  const requestedLimit = Math.max(1, Math.min(Number(input?.limit || input?.max_rows || input?.max_mines || BOARD_QUEUE_AUTO_MINE_LIMIT), BOARD_QUEUE_AUTO_MINE_LIMIT));
   for (let wave = 1; wave <= maxWaves; wave++) {
-    const result = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: BOARD_QUEUE_AUTO_MINE_LIMIT, retry_errors: false, persistent_miner: true }, env);
-    waves.push({ wave, result });
+    const elapsedBefore = Date.now() - startedMs;
+    if (elapsedBefore > cutoffMs) {
+      waves.push({ wave, skipped: true, status: 'phase3_tick_runtime_cutoff_before_wave', elapsed_ms: elapsedBefore, cutoff_ms: cutoffMs });
+      break;
+    }
+    const result = await runBoardQueueAutoMine({ ...(input || {}), job: "board_queue_auto_mine", slate_date: slateDate, slate_mode: slate.slate_mode, limit: requestedLimit, max_rows: requestedLimit, max_mines: requestedLimit, retry_errors: false, persistent_miner: true }, env);
+    const elapsedAfter = Date.now() - startedMs;
+    waves.push({ wave, elapsed_ms: elapsedAfter, result });
     if (!result?.needs_continue) break;
-    if (result?.mined_rows === 0 && result?.retry_later_count === 0 && result?.failed_count === 0) break;
-    await sleepMs(700);
+    if (result?.mined_rows === 0 && result?.completed_by_existing_raw_result === 0 && result?.retry_later_count === 0 && result?.failed_count === 0) break;
+    if (elapsedAfter > cutoffMs) break;
+    await sleepMs(150);
   }
   const totals = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
@@ -8037,8 +8073,9 @@ async function runBoardQueueAutoMineWaves(input, env, slateDate, slate, maxWaves
       SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
     FROM board_factor_queue WHERE slate_date=?
   `).bind(slateDate).first();
-  return { ok: true, job: "board_queue_auto_mine_waves", version: SYSTEM_VERSION, slate_date: slateDate, waves_run: waves.length, waves, totals: { total_rows: Number(totals?.total_rows || 0), pending_rows: Number(totals?.pending_rows || 0), completed_rows: Number(totals?.completed_rows || 0), retry_later_rows: Number(totals?.retry_later_rows || 0), running_rows: Number(totals?.running_rows || 0), error_rows: Number(totals?.error_rows || 0) }, needs_continue: Number(totals?.pending_rows || 0) > 0 || Number(totals?.retry_later_rows || 0) > 0 || Number(totals?.running_rows || 0) > 0 || Number(totals?.error_rows || 0) > 0, note: "Full run runs bounded mining waves only. Remaining rows are normal continuation work for scheduled runs; no data is abandoned." };
+  return { ok: true, job: "board_queue_auto_mine_waves", version: SYSTEM_VERSION, slate_date: slateDate, waves_run: waves.length, requested_limit_per_wave: requestedLimit, tick_cutoff_ms: cutoffMs, waves, totals: { total_rows: Number(totals?.total_rows || 0), pending_rows: Number(totals?.pending_rows || 0), completed_rows: Number(totals?.completed_rows || 0), retry_later_rows: Number(totals?.retry_later_rows || 0), running_rows: Number(totals?.running_rows || 0), error_rows: Number(totals?.error_rows || 0) }, needs_continue: Number(totals?.pending_rows || 0) > 0 || Number(totals?.retry_later_rows || 0) > 0 || Number(totals?.running_rows || 0) > 0 || Number(totals?.error_rows || 0) > 0, note: "v1.3.18 full run runs multiple bounded mining waves per tick when safe. Remaining rows are normal continuation work for scheduled runs; no data is abandoned." };
 }
+
 
 async function runFullPipelineCore(input, env) {
   const slate = resolveSlateDate(input || {});
