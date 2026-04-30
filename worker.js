@@ -1,7 +1,7 @@
-// AlphaDog v1.3.12 - Sleeper Text Board Ingest compatible worker
+// AlphaDog v1.3.13 - Sleeper Ingest + Phase 3A/B Scheduler Merge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.12 - Sleeper Text Board Ingest";
-const SYSTEM_CODENAME = "Sleeper Text Board Ingest";
+const SYSTEM_VERSION = "v1.3.13 - Sleeper Ingest + Phase 3A/B Scheduler Merge";
+const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -881,12 +881,19 @@ export default {
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '* * * * *') {
-        const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
-        if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
-        else {
-          const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
-          if (staticTick && staticTick.status !== 'idle_no_due_static_refresh') result = staticTick;
-          else result = await runDuePhase3abFullRun(env);
+        // v1.3.13: minute cron is also a safe fallback for a missed exact 4AM Phase 3A/3B trigger.
+        const fallbackSchedule = await ensurePhase3abDaily4amFromMinuteFallback(env, cron);
+        if (fallbackSchedule && fallbackSchedule.status === 'scheduled_due_now') {
+          const firstTick = await runDuePhase3abFullRun(env);
+          result = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: 'phase3ab_minute_fallback_daily_4am', status: 'scheduled_and_started', cron, fallback_schedule: fallbackSchedule, first_tick: firstTick, note: 'Minute fallback created the missing daily Phase 3A/3B request and advanced one protected tick.' };
+        } else {
+          const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
+          if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
+          else {
+            const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+            if (staticTick && staticTick.status !== 'idle_no_due_static_refresh') result = staticTick;
+            else result = await runDuePhase3abFullRun(env);
+          }
         }
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
@@ -1673,6 +1680,35 @@ async function schedulePhase3abFullRunTest(input, env) {
   `).bind(requestId, PHASE3AB_DEFERRED_JOB, slate.slate_date, slate.slate_mode, runAfter).run();
   await logSystemEvent(env, { trigger_source: 'control_room_button', action_label: displayLabelForJob(input.job || 'schedule_phase3ab_full_run_test'), job_name: 'schedule_phase3ab_full_run_test', slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: 'scheduled', task_id: requestId, input_json: { request_id: requestId, run_after: runAfter } });
   return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_full_run_test', status: 'scheduled_for_next_minute', request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, wait_instruction: 'Wait about 2 minutes, then run PHASE 3A/3B > Check Full Run. If it says partial_continue, wait another 2 minutes and check again.', protected_flow: ['acquire global lock', 'auto-build board_factor_queue', 'mine bounded Gemini raw rows', 'write/promote valid raw rows to board_factor_results', 'clean completed queue temp rows only when fully complete', 'release lock'], note: 'This is the one-minute full-run test version. It uses the same queue/results tables as the existing Phase 3A/3B flow and never runs in parallel.' };
+}
+
+async function ensurePhase3abDaily4amFromMinuteFallback(env, cron) {
+  const now = new Date();
+  if (now.getUTCHours() < 11) return { ok: true, status: 'not_due_yet', cron, utc_hour: now.getUTCHours() };
+  await ensureDeferredFullRunTable(env);
+  const slate = resolveSlateDate({ slate_mode: 'TODAY' });
+  const existingDaily = await env.DB.prepare(`
+    SELECT request_id, status, requested_at, run_after, started_at, finished_at
+    FROM deferred_full_run_once
+    WHERE slate_date=?
+      AND request_id LIKE ?
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(slate.slate_date, `phase3ab_daily_4am|${slate.slate_date}|%`).first();
+  if (existingDaily) return { ok: true, status: 'daily_request_already_exists', cron, slate_date: slate.slate_date, existing_request: existingDaily };
+
+  const activeAny = await env.DB.prepare(`
+    SELECT request_id, status, requested_at, run_after, started_at, finished_at
+    FROM deferred_full_run_once
+    WHERE job_name=?
+      AND slate_date=?
+      AND status IN ('PENDING','RUNNING')
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first();
+  if (activeAny) return { ok: true, status: 'active_phase3ab_request_exists', cron, slate_date: slate.slate_date, existing_request: activeAny };
+
+  return await schedulePhase3abDaily4am({ job: 'schedule_phase3ab_daily_4am', trigger: 'scheduled_minute_fallback_after_4am', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC + minute fallback' }, env);
 }
 
 async function schedulePhase3abDaily4am(input, env) {
