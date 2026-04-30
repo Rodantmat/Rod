@@ -1,7 +1,7 @@
-// AlphaDog v1.3.10 - Sleeper Video Parser File API Progress compatible worker
+// AlphaDog v1.3.11 - Sleeper Video Parser Active File Diagnostics compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.10 - Sleeper Video Parser File API Progress";
-const SYSTEM_CODENAME = "Sleeper Video Parser File API Progress";
+const SYSTEM_VERSION = "v1.3.11 - Sleeper Video Parser Active File Diagnostics";
+const SYSTEM_CODENAME = "Sleeper Video Parser Active File Diagnostics";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 5;
@@ -14,7 +14,7 @@ const SCRAPE_MODEL = "gemini-2.5-flash";
 const SCRAPE_FALLBACK_MODEL = "gemini-2.5-pro";
 const SLEEPER_VIDEO_MODEL = "gemini-3.1-pro-preview";
 
-const SLEEPER_VIDEO_PARSER_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Sleeper Video Parser</title>\n  <style>\n    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; --bar:#74f0a7; }\n    * { box-sizing: border-box; }\n    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,\"SF Pro Display\",\"Segoe UI\",sans-serif; background:radial-gradient(circle at top,#18334b 0,var(--bg) 42%); color:var(--text); }\n    main { max-width:980px; margin:0 auto; padding:22px 14px 44px; }\n    h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.03em; } h2 { margin-top:0; }\n    .sub { color:var(--muted); margin:0 0 18px; line-height:1.35; }\n    .grid { display:grid; gap:14px; }\n    .card { background:rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 14px 34px rgba(0,0,0,.26); }\n    label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }\n    input { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }\n    input[type=\"file\"] { padding:14px; }\n    button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }\n    button:disabled { opacity:.55; cursor:not-allowed; }\n    .status { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }\n    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin:4px 6px 0 0; font-size:12px; }\n    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.35; }\n    .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }\n    pre { max-height:420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }\n    .small { font-size:12px; color:var(--muted); }\n    .progressWrap { background:#071018; border:1px solid var(--line); border-radius:999px; overflow:hidden; height:18px; }\n    .progressInner { height:100%; width:0%; background:var(--bar); transition:width .15s ease; }\n    .progressText { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px; }\n    @media (max-width:720px){ h1{font-size:23px;} }\n  </style>\n</head>\n<body>\n<main>\n  <h1>AlphaDog Sleeper Video Parser</h1>\n  <p class=\"sub\">Upload a Sleeper screen recording. Gemini 3.1 Pro parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>\n  <section class=\"card grid\">\n    <div><label>Video file</label><input id=\"video\" type=\"file\" accept=\"video/mp4,video/quicktime,video/*\" /></div>\n    <div id=\"meta\" class=\"status\">No video selected.</div>\n    <div>\n      <div class=\"progressWrap\"><div id=\"progressInner\" class=\"progressInner\"></div></div>\n      <div class=\"progressText\"><span id=\"progressStage\">Idle</span><span id=\"progressPercent\">0%</span></div>\n    </div>\n    <button id=\"run\">Upload + Parse With Gemini 3.1 Pro</button>\n    <div id=\"status\" class=\"status\">Ready.</div>\n    <div id=\"configStatus\" class=\"small\">Config will load automatically from the AlphaDog control-room config.</div>\n  </section>\n  <section class=\"card\"><h2>Parsed Lines</h2><div id=\"summary\"><span class=\"pill\">Waiting for parse</span></div><div id=\"lines\"></div></section>\n  <section class=\"card\"><h2>Raw JSON</h2><pre id=\"json\">{}</pre></section>\n  <section class=\"card\"><h2>Event Log</h2><pre id=\"eventLog\">[]</pre></section>\n</main>\n<script>\nconst BASE = \"https://prop-ingestion-git.rodolfoaamattos.workers.dev\";\nconst UPLOAD_URL = BASE + \"/sleeper/video/upload\";\nconst STATUS_URL = BASE + \"/sleeper/video/status\";\nconst GENERATE_URL = BASE + \"/sleeper/video/generate\";\nconst CONFIG_URL = \"https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt\";\nconst $ = id => document.getElementById(id);\nconst videoInput = $('video'); const runBtn = $('run');\nlet selectedFile = null; let TOKEN = \"\"; let CONFIG_LOADED = false; const EVENTS = [];\nfunction addEvent(stage, detail){ const item={time:new Date().toISOString(),stage,detail:detail||null}; EVENTS.push(item); $('eventLog').textContent=JSON.stringify(EVENTS,null,2); }\nfunction setProgress(p, stage){ const v=Math.max(0,Math.min(100,Number(p)||0)); $('progressInner').style.width=v.toFixed(0)+'%'; $('progressPercent').textContent=v.toFixed(0)+'%'; if(stage) $('progressStage').textContent=stage; }\nfunction tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}\nasync function loadConfig(){ addEvent('config_load_start',{url:CONFIG_URL}); try{ const r=await fetch(CONFIG_URL+'?t='+Date.now(),{cache:'no-store'}); const t=await r.text(); const m=t.match(/^\\s*TOKEN\\s*=\\s*(.+?)\\s*$/m); if(m&&m[1].trim()){ TOKEN=m[1].trim().replace(/^[\"']|[\"']$/g,''); CONFIG_LOADED=true; $('configStatus').innerHTML='<span class=\"good\">Config loaded. Token fingerprint: '+JSON.stringify(tokenFingerprint())+'</span>'; addEvent('config_loaded',tokenFingerprint()); } else { TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"warn\">Config loaded but TOKEN line was not found.</span>'; addEvent('config_missing_token'); } } catch(err){ TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"bad\">Config load failed: '+String(err&&err.message||err)+'</span>'; addEvent('config_load_error',String(err&&err.message||err)); } }\nvideoInput.addEventListener('change',()=>{ selectedFile=videoInput.files&&videoInput.files[0]?videoInput.files[0]:null; setProgress(0,'Idle'); if(!selectedFile){$('meta').textContent='No video selected.'; addEvent('video_cleared'); return;} const mb=selectedFile.size/1024/1024; const warn=mb>50?'\\nWARNING: file is over 50MB; parsing can take up to 2 minutes or more.':''; $('meta').textContent=`Selected: ${selectedFile.name}\\nType: ${selectedFile.type||'unknown'}\\nSize: ${mb.toFixed(2)} MB${warn}`; addEvent('video_selected',{name:selectedFile.name,type:selectedFile.type||'unknown',size_mb:Number(mb.toFixed(2)),over_50mb:mb>50}); });\nfunction uploadWithProgress(file){ return new Promise((resolve,reject)=>{ const form=new FormData(); form.append('video',file,file.name); form.append('file_name',file.name); form.append('mime_type',file.type||'video/mp4'); const xhr=new XMLHttpRequest(); xhr.open('POST',UPLOAD_URL,true); if(TOKEN) xhr.setRequestHeader('x-ingest-token',TOKEN); xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=(e.loaded/e.total)*100; setProgress(pct,'Uploading video to Worker/Gemini File API'); }}); xhr.onreadystatechange=()=>{ if(xhr.readyState===4){ let data; try{data=JSON.parse(xhr.responseText||'{}');}catch(e){data={ok:false,error:'Upload response was not JSON',response_preview:(xhr.responseText||'').slice(0,1000)}} if(xhr.status>=200&&xhr.status<300&&data.ok) resolve(data); else reject(new Error(data.error||('Upload failed HTTP '+xhr.status+': '+(xhr.responseText||'').slice(0,500)))); }}; xhr.onerror=()=>reject(new Error('Network upload error')); xhr.send(form); }); }\nasync function pollFileActive(fileName){ const started=Date.now(); let last=null; for(let i=0;i<80;i++){ const elapsed=(Date.now()-started)/1000; setProgress(100,'Processing video file in Gemini: '+Math.round(elapsed)+'s'); const r=await fetch(STATUS_URL+'?file_name='+encodeURIComponent(fileName),{headers:TOKEN?{'x-ingest-token':TOKEN}:{}}); const data=await r.json().catch(()=>({ok:false,error:'status response not json'})); last=data; addEvent('file_status_poll',{try:i+1,state:data.state||null,ok:data.ok}); if(data.state==='ACTIVE') return data; if(data.state==='FAILED') throw new Error('Gemini file processing failed'); await new Promise(res=>setTimeout(res,3000)); } throw new Error('Timed out waiting for Gemini file ACTIVE. Last status: '+JSON.stringify(last)); }\nasync function generateFromFile(uploadData){ setProgress(100,'Asking Gemini to parse cards'); const r=await fetch(GENERATE_URL,{method:'POST',headers:{'content-type':'application/json',...(TOKEN?{'x-ingest-token':TOKEN}:{})},body:JSON.stringify({file_name:uploadData.file_name,file_uri:uploadData.file_uri,mime_type:uploadData.mime_type})}); const text=await r.text(); let data; try{data=JSON.parse(text);}catch(e){data={ok:false,error:'Generate response was not JSON',response_preview:text.slice(0,1200)}} if(!r.ok||!data.ok) throw new Error(data.error||('Generate failed HTTP '+r.status)); return data; }\nfunction renderResult(data){ $('json').textContent=JSON.stringify(data,null,2); const legs=Array.isArray(data.legs)?data.legs:[]; $('summary').innerHTML=`<span class=\"pill\">ok: ${data.ok}</span><span class=\"pill\">data_ok: ${data.data_ok}</span><span class=\"pill\">model: ${data.model||'unknown'}</span><span class=\"pill\">parsed: ${legs.length}</span>`; $('lines').innerHTML=''; const lines=Array.isArray(data.lines)?data.lines:legs.map(l=>[l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - ')); if(!lines.length){$('lines').innerHTML='<div class=\"lineOut warn\">No parsed lines returned.</div>'; return;} for(const line of lines){ const div=document.createElement('div'); div.className='lineOut'; div.textContent=line; $('lines').appendChild(div); }}\nrunBtn.addEventListener('click',async()=>{ if(!selectedFile){$('status').innerHTML='<span class=\"bad\">Select a video first.</span>'; addEvent('parse_blocked_no_video'); return;} runBtn.disabled=true; const started=Date.now(); $('json').textContent='{}'; $('lines').innerHTML=''; $('summary').innerHTML='<span class=\"pill\">Running</span>'; try{ if(!CONFIG_LOADED||!TOKEN) await loadConfig(); addEvent('upload_start',{endpoint:UPLOAD_URL,file:selectedFile.name,size_bytes:selectedFile.size}); $('status').textContent='Uploading video with real progress...'; setProgress(0,'Starting upload'); const uploadData=await uploadWithProgress(selectedFile); addEvent('upload_done',{file_name:uploadData.file_name,state:uploadData.state,uri:uploadData.file_uri}); $('status').textContent='Upload complete. Waiting for Gemini file processing...'; const active=uploadData.state==='ACTIVE'?uploadData:await pollFileActive(uploadData.file_name); addEvent('file_active',{file_name:active.file_name||uploadData.file_name,state:active.state}); $('status').textContent='Gemini file is active. Parsing RBI/RFI cards...'; const result=await generateFromFile(uploadData); if(Array.isArray(result.event_log)) for(const e of result.event_log) addEvent('server_'+e.stage,e.detail); renderResult(result); $('status').innerHTML='<span class=\"good\">Parse complete.</span>'; addEvent('parse_complete',{parsed_count:result.parsed_count||0,elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); }catch(err){ const msg=String(err&&err.message||err); $('status').innerHTML='<span class=\"bad\">Parse failed: '+msg+'</span>'; $('json').textContent=JSON.stringify({ok:false,error:msg},null,2); addEvent('parse_error',msg); } finally{ addEvent('parse_finished',{elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); runBtn.disabled=false; }});\naddEvent('page_loaded',{upload_endpoint:UPLOAD_URL,status_endpoint:STATUS_URL,generate_endpoint:GENERATE_URL}); loadConfig();\n</script>\n</body>\n</html>\n";
+const SLEEPER_VIDEO_PARSER_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Sleeper Video Parser</title>\n  <style>\n    :root { color-scheme: dark; --bg:#071018; --card:#101b26; --card2:#132333; --text:#eaf2ff; --muted:#9fb2c8; --line:#26384d; --good:#74f0a7; --bad:#ff7a7a; --warn:#ffd36e; --bar:#74f0a7; }\n    * { box-sizing: border-box; }\n    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,\"SF Pro Display\",\"Segoe UI\",sans-serif; background:radial-gradient(circle at top,#18334b 0,var(--bg) 42%); color:var(--text); }\n    main { max-width:980px; margin:0 auto; padding:22px 14px 44px; }\n    h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.03em; } h2 { margin-top:0; }\n    .sub { color:var(--muted); margin:0 0 18px; line-height:1.35; }\n    .grid { display:grid; gap:14px; }\n    .card { background:rgba(16,27,38,.92); border:1px solid var(--line); border-radius:18px; padding:16px; box-shadow:0 14px 34px rgba(0,0,0,.26); }\n    label { display:block; color:var(--muted); font-size:13px; margin-bottom:8px; }\n    input { width:100%; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:11px 12px; font-size:15px; outline:none; }\n    input[type=\"file\"] { padding:14px; }\n    button { border:0; border-radius:14px; padding:13px 16px; font-weight:800; font-size:15px; background:#eaf2ff; color:#071018; cursor:pointer; width:100%; }\n    button:disabled { opacity:.55; cursor:not-allowed; }\n    .status { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--muted); white-space:pre-wrap; line-height:1.35; }\n    .pill { display:inline-flex; border:1px solid var(--line); border-radius:999px; padding:5px 9px; color:var(--muted); margin:4px 6px 0 0; font-size:12px; }\n    .lineOut { background:#071018; border:1px solid var(--line); border-radius:12px; padding:10px; margin:8px 0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.35; }\n    .good { color:var(--good); } .bad { color:var(--bad); } .warn { color:var(--warn); }\n    pre { max-height:420px; overflow:auto; background:#071018; border:1px solid var(--line); border-radius:12px; padding:12px; font-size:12px; line-height:1.35; }\n    .small { font-size:12px; color:var(--muted); }\n    .progressWrap { background:#071018; border:1px solid var(--line); border-radius:999px; overflow:hidden; height:18px; }\n    .progressInner { height:100%; width:0%; background:var(--bar); transition:width .15s ease; }\n    .progressText { display:flex; justify-content:space-between; font-size:12px; color:var(--muted); margin-top:6px; }\n    @media (max-width:720px){ h1{font-size:23px;} }\n  </style>\n</head>\n<body>\n<main>\n  <h1>AlphaDog Sleeper Video Parser</h1>\n  <p class=\"sub\">Upload a Sleeper screen recording. Gemini 3.1 Pro parses RBI and RFI cards and returns: Player - Team - Opponent - Date - Market - Line - Type. No database ingest yet.</p>\n  <section class=\"card grid\">\n    <div><label>Video file</label><input id=\"video\" type=\"file\" accept=\"video/mp4,video/quicktime,video/*\" /></div>\n    <div id=\"meta\" class=\"status\">No video selected.</div>\n    <div>\n      <div class=\"progressWrap\"><div id=\"progressInner\" class=\"progressInner\"></div></div>\n      <div class=\"progressText\"><span id=\"progressStage\">Idle</span><span id=\"progressPercent\">0%</span></div>\n    </div>\n    <button id=\"run\">Upload + Parse With Gemini 3.1 Pro</button>\n    <div id=\"status\" class=\"status\">Ready.</div>\n    <div id=\"configStatus\" class=\"small\">Config will load automatically from the AlphaDog control-room config.</div>\n  </section>\n  <section class=\"card\"><h2>Parsed Lines</h2><div id=\"summary\"><span class=\"pill\">Waiting for parse</span></div><div id=\"lines\"></div></section>\n  <section class=\"card\"><h2>Raw JSON</h2><pre id=\"json\">{}</pre></section>\n  <section class=\"card\"><h2>Event Log</h2><pre id=\"eventLog\">[]</pre></section>\n</main>\n<script>\nconst BASE = \"https://prop-ingestion-git.rodolfoaamattos.workers.dev\";\nconst UPLOAD_URL = BASE + \"/sleeper/video/upload\";\nconst STATUS_URL = BASE + \"/sleeper/video/status\";\nconst GENERATE_URL = BASE + \"/sleeper/video/generate\";\nconst CONFIG_URL = \"https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt\";\nconst $ = id => document.getElementById(id);\nconst videoInput = $('video'); const runBtn = $('run');\nlet selectedFile = null; let TOKEN = \"\"; let CONFIG_LOADED = false; const EVENTS = [];\nfunction addEvent(stage, detail){ const item={time:new Date().toISOString(),stage,detail:detail||null}; EVENTS.push(item); $('eventLog').textContent=JSON.stringify(EVENTS,null,2); }\nfunction setProgress(p, stage){ const v=Math.max(0,Math.min(100,Number(p)||0)); $('progressInner').style.width=v.toFixed(0)+'%'; $('progressPercent').textContent=v.toFixed(0)+'%'; if(stage) $('progressStage').textContent=stage; }\nfunction tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}\nasync function loadConfig(){ addEvent('config_load_start',{url:CONFIG_URL}); try{ const r=await fetch(CONFIG_URL+'?t='+Date.now(),{cache:'no-store'}); const t=await r.text(); const m=t.match(/^\\s*TOKEN\\s*=\\s*(.+?)\\s*$/m); if(m&&m[1].trim()){ TOKEN=m[1].trim().replace(/^[\"']|[\"']$/g,''); CONFIG_LOADED=true; $('configStatus').innerHTML='<span class=\"good\">Config loaded. Token fingerprint: '+JSON.stringify(tokenFingerprint())+'</span>'; addEvent('config_loaded',tokenFingerprint()); } else { TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"warn\">Config loaded but TOKEN line was not found.</span>'; addEvent('config_missing_token'); } } catch(err){ TOKEN=''; CONFIG_LOADED=false; $('configStatus').innerHTML='<span class=\"bad\">Config load failed: '+String(err&&err.message||err)+'</span>'; addEvent('config_load_error',String(err&&err.message||err)); } }\nvideoInput.addEventListener('change',()=>{ selectedFile=videoInput.files&&videoInput.files[0]?videoInput.files[0]:null; setProgress(0,'Idle'); if(!selectedFile){$('meta').textContent='No video selected.'; addEvent('video_cleared'); return;} const mb=selectedFile.size/1024/1024; const warn=mb>50?'\\nWARNING: file is over 50MB; parsing can take up to 2 minutes or more.':''; $('meta').textContent=`Selected: ${selectedFile.name}\\nType: ${selectedFile.type||'unknown'}\\nSize: ${mb.toFixed(2)} MB${warn}`; addEvent('video_selected',{name:selectedFile.name,type:selectedFile.type||'unknown',size_mb:Number(mb.toFixed(2)),over_50mb:mb>50}); });\nfunction uploadWithProgress(file){ return new Promise((resolve,reject)=>{ const form=new FormData(); form.append('video',file,file.name); form.append('file_name',file.name); form.append('mime_type',file.type||'video/mp4'); const xhr=new XMLHttpRequest(); xhr.open('POST',UPLOAD_URL,true); if(TOKEN) xhr.setRequestHeader('x-ingest-token',TOKEN); xhr.upload.addEventListener('progress',e=>{ if(e.lengthComputable){ const pct=(e.loaded/e.total)*100; setProgress(pct,'Uploading video to Worker/Gemini File API'); }}); xhr.onreadystatechange=()=>{ if(xhr.readyState===4){ let data; try{data=JSON.parse(xhr.responseText||'{}');}catch(e){data={ok:false,error:'Upload response was not JSON',response_preview:(xhr.responseText||'').slice(0,1000)}} if(xhr.status>=200&&xhr.status<300&&data.ok) resolve(data); else reject(new Error(data.error||('Upload failed HTTP '+xhr.status+': '+(xhr.responseText||'').slice(0,500)))); }}; xhr.onerror=()=>reject(new Error('Network upload error')); xhr.send(form); }); }\nasync function pollFileActive(fileName){ const started=Date.now(); let last=null; for(let i=0;i<80;i++){ const elapsed=(Date.now()-started)/1000; setProgress(100,'Processing video file in Gemini: '+Math.round(elapsed)+'s'); const r=await fetch(STATUS_URL+'?file_name='+encodeURIComponent(fileName),{headers:TOKEN?{'x-ingest-token':TOKEN}:{}}); const data=await r.json().catch(()=>({ok:false,error:'status response not json'})); last=data; addEvent('file_status_poll',{try:i+1,state:data.state||null,ok:data.ok}); if(data.state==='ACTIVE') return data; if(data.state==='FAILED') throw new Error('Gemini file processing failed'); await new Promise(res=>setTimeout(res,3000)); } throw new Error('Timed out waiting for Gemini file ACTIVE. Last status: '+JSON.stringify(last)); }\nasync function generateFromFile(uploadData){ setProgress(100,'Asking Gemini to parse cards'); const r=await fetch(GENERATE_URL,{method:'POST',headers:{'content-type':'application/json',...(TOKEN?{'x-ingest-token':TOKEN}:{})},body:JSON.stringify({file_name:uploadData.file_name,file_uri:uploadData.file_uri,mime_type:uploadData.mime_type})}); const text=await r.text(); let data; try{data=JSON.parse(text);}catch(e){data={ok:false,error:'Generate response was not JSON',response_preview:text.slice(0,1200)}} if(!r.ok||!data.ok) throw new Error(JSON.stringify(data)); return data; }\nfunction renderResult(data){ $('json').textContent=JSON.stringify(data,null,2); const legs=Array.isArray(data.legs)?data.legs:[]; $('summary').innerHTML=`<span class=\"pill\">ok: ${data.ok}</span><span class=\"pill\">data_ok: ${data.data_ok}</span><span class=\"pill\">model: ${data.model||'unknown'}</span><span class=\"pill\">parsed: ${legs.length}</span>`; $('lines').innerHTML=''; const lines=Array.isArray(data.lines)?data.lines:legs.map(l=>[l.player_name,l.team,l.opponent,l.date,l.market,l.line,l.type].join(' - ')); if(!lines.length){$('lines').innerHTML='<div class=\"lineOut warn\">No parsed lines returned.</div>'; return;} for(const line of lines){ const div=document.createElement('div'); div.className='lineOut'; div.textContent=line; $('lines').appendChild(div); }}\nrunBtn.addEventListener('click',async()=>{ if(!selectedFile){$('status').innerHTML='<span class=\"bad\">Select a video first.</span>'; addEvent('parse_blocked_no_video'); return;} runBtn.disabled=true; const started=Date.now(); $('json').textContent='{}'; $('lines').innerHTML=''; $('summary').innerHTML='<span class=\"pill\">Running</span>'; try{ if(!CONFIG_LOADED||!TOKEN) await loadConfig(); addEvent('upload_start',{endpoint:UPLOAD_URL,file:selectedFile.name,size_bytes:selectedFile.size}); $('status').textContent='Uploading video with real progress...'; setProgress(0,'Starting upload'); const uploadData=await uploadWithProgress(selectedFile); addEvent('upload_done',{file_name:uploadData.file_name,state:uploadData.state,uri:uploadData.file_uri}); $('status').textContent='Upload complete. Waiting for Gemini file processing...'; const active=uploadData.state==='ACTIVE'?uploadData:await pollFileActive(uploadData.file_name); addEvent('file_active',{file_name:active.file_name||uploadData.file_name,state:active.state}); $('status').textContent='Gemini file is active. Parsing RBI/RFI cards...'; const result=await generateFromFile(uploadData); if(Array.isArray(result.event_log)) for(const e of result.event_log) addEvent('server_'+e.stage,e.detail); renderResult(result); $('status').innerHTML='<span class=\"good\">Parse complete.</span>'; addEvent('parse_complete',{parsed_count:result.parsed_count||0,elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); }catch(err){ const msg=String(err&&err.message||err); $('status').innerHTML='<span class=\"bad\">Parse failed: '+msg+'</span>'; $('json').textContent=JSON.stringify({ok:false,error:msg},null,2); addEvent('parse_error',msg); } finally{ addEvent('parse_finished',{elapsed_sec:Number(((Date.now()-started)/1000).toFixed(1))}); runBtn.disabled=false; }});\naddEvent('page_loaded',{upload_endpoint:UPLOAD_URL,status_endpoint:STATUS_URL,generate_endpoint:GENERATE_URL}); loadConfig();\n</script>\n</body>\n</html>\n";
 const JOB_DISPLAY_LABELS = {
   run_full_pipeline: "SCRAPE > FULL RUN",
   scheduled_full_pipeline_plus_board_queue: "SCRAPE > FULL RUN + Board Queue Pipeline",
@@ -9227,14 +9227,47 @@ async function getGeminiFile(env, fileName) {
   return data.file || data;
 }
 
+function summarizeGeminiGenerateResponse(data) {
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  return {
+    has_candidates: candidates.length > 0,
+    candidate_count: candidates.length,
+    finish_reasons: candidates.map(c => c?.finishReason || null),
+    safety_ratings: candidates.map(c => c?.safetyRatings || null),
+    prompt_feedback: data?.promptFeedback || null,
+    usage_metadata: data?.usageMetadata || null,
+    response_keys: data && typeof data === "object" ? Object.keys(data) : []
+  };
+}
+
+function extractGeminiTextParts(data) {
+  const out = [];
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  for (const c of candidates) {
+    const parts = Array.isArray(c?.content?.parts) ? c.content.parts : [];
+    for (const part of parts) {
+      if (typeof part?.text === "string" && part.text.trim()) out.push(part.text);
+    }
+  }
+  return out.join("\n").trim();
+}
+
+function geminiSafetySettingsBlockNone() {
+  return [
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+  ];
+}
+
 async function callGeminiVideoFromFile(env, { model, prompt, mimeType, fileUri }) {
   if (!env.GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY secret");
   const chosenModel = String(env.SLEEPER_VIDEO_GEMINI_MODEL || model || SLEEPER_VIDEO_MODEL);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${chosenModel}:generateContent?key=${env.GEMINI_API_KEY}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+
+  async function runGenerate({ responseMimeType, attemptLabel }) {
+    const body = {
       contents: [{
         role: "user",
         parts: [
@@ -9242,18 +9275,44 @@ async function callGeminiVideoFromFile(env, { model, prompt, mimeType, fileUri }
           { text: prompt }
         ]
       }],
+      safetySettings: geminiSafetySettingsBlockNone(),
       generationConfig: {
         temperature: 0.1,
         topP: 0.95,
-        maxOutputTokens: 4096,
-        responseMimeType: "application/json"
+        maxOutputTokens: 4096
       }
-    })
-  });
-  const data = await res.json().catch(async () => ({ raw_text: await res.text().catch(() => "") }));
-  if (!res.ok) throw new Error(JSON.stringify(data));
-  const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("\n") || JSON.stringify(data);
-  return { model: chosenModel, raw_text: text, raw_response: data };
+    };
+    if (responseMimeType) body.generationConfig.responseMimeType = responseMimeType;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(async () => ({ raw_text: await res.text().catch(() => "") }));
+    if (!res.ok) throw new Error(JSON.stringify({ error_type: "GEMINI_GENERATE_HTTP_ERROR", attempt: attemptLabel, status: res.status, response: data }));
+    const rawText = extractGeminiTextParts(data);
+    return { model: chosenModel, raw_text: rawText, raw_response: data, response_summary: summarizeGeminiGenerateResponse(data), attempt: attemptLabel };
+  }
+
+  const first = await runGenerate({ responseMimeType: "application/json", attemptLabel: "json_mime" });
+  if (first.raw_text) return first;
+
+  const second = await runGenerate({ responseMimeType: null, attemptLabel: "plain_text_fallback" });
+  if (second.raw_text) {
+    second.first_empty_response_summary = first.response_summary;
+    return second;
+  }
+
+  throw new Error(JSON.stringify({
+    error_type: "GEMINI_EMPTY_TEXT_RESPONSE",
+    model: chosenModel,
+    mime_type: mimeType,
+    file_uri: fileUri,
+    first_attempt: first.response_summary,
+    second_attempt: second.response_summary,
+    first_raw_response_preview: JSON.stringify(first.raw_response || {}).slice(0, 3000),
+    second_raw_response_preview: JSON.stringify(second.raw_response || {}).slice(0, 3000)
+  }));
 }
 
 async function callGeminiVideoInline(env, { model, prompt, mimeType, base64Data }) {
@@ -9271,6 +9330,7 @@ async function callGeminiVideoInline(env, { model, prompt, mimeType, base64Data 
           { text: prompt }
         ]
       }],
+      safetySettings: geminiSafetySettingsBlockNone(),
       generationConfig: {
         temperature: 0.1,
         topP: 0.95,
@@ -9369,6 +9429,9 @@ function finalizeSleeperParsedResult({ parsed, gem, prompt, fileName, fileUri, m
     uncertain_cards: parsed.uncertain_cards || [],
     video_summary: parsed.video_summary || null,
     raw_text_preview: String(gem.raw_text || "").slice(0, 2000),
+    gemini_response_summary: gem.response_summary || null,
+    gemini_attempt: gem.attempt || null,
+    raw_response_debug: gem.raw_response ? JSON.stringify(gem.raw_response).slice(0, 6000) : null,
     event_log: eventLog
   };
 }
@@ -9381,17 +9444,22 @@ async function handleSleeperVideoGenerate(request, env) {
   let fileUri = String(input.file_uri || input.uri || "");
   let mimeType = String(input.mime_type || input.mimeType || "video/mp4");
   const eventLog = [{ time: startedAt, stage: "generate_request_received", detail: { file_name: fileName || null, has_file_uri: Boolean(fileUri) } }];
-  if (!fileUri && fileName) {
+  if (fileName) {
     const file = await getGeminiFile(env, fileName);
-    fileUri = file.uri || "";
+    const state = normalizeGeminiFileState(file);
+    fileUri = file.uri || fileUri || "";
     mimeType = file.mimeType || file.mime_type || mimeType;
-    eventLog.push({ time: new Date().toISOString(), stage: "file_metadata_loaded", detail: { state: normalizeGeminiFileState(file), uri: fileUri || null } });
+    eventLog.push({ time: new Date().toISOString(), stage: "file_metadata_loaded", detail: { state, uri: fileUri || null, mime_type: mimeType || null, name: file.name || fileName } });
+    if (state !== "ACTIVE") {
+      return json({ ok: false, data_ok: false, version: SYSTEM_VERSION, job: "sleeper_video_generate", error: "Gemini file is not ACTIVE yet", file_state: state, file_name: file.name || fileName, raw_file: file, event_log: eventLog }, { status: 409 });
+    }
   }
   if (!fileUri) return json({ ok: false, data_ok: false, version: SYSTEM_VERSION, job: "sleeper_video_generate", error: "Missing file_uri or file_name" }, { status: 400 });
   const prompt = buildSleeperVideoPrompt();
-  eventLog.push({ time: new Date().toISOString(), stage: "gemini_generate_start", detail: { model: String(env.SLEEPER_VIDEO_GEMINI_MODEL || SLEEPER_VIDEO_MODEL), parser: "SLEEPER_VIDEO_RBI_RFI_V2_FILE_API" } });
+  eventLog.push({ time: new Date().toISOString(), stage: "gemini_generate_start", detail: { model: String(env.SLEEPER_VIDEO_GEMINI_MODEL || SLEEPER_VIDEO_MODEL), parser: "SLEEPER_VIDEO_RBI_RFI_V2_FILE_API", mime_type: mimeType, file_uri_preview: String(fileUri).slice(0, 80) } });
   const gem = await callGeminiVideoFromFile(env, { model: SLEEPER_VIDEO_MODEL, prompt, mimeType, fileUri });
-  eventLog.push({ time: new Date().toISOString(), stage: "gemini_generate_done", detail: { model: gem.model, raw_text_chars: String(gem.raw_text || "").length } });
+  eventLog.push({ time: new Date().toISOString(), stage: "gemini_generate_done", detail: { model: gem.model, attempt: gem.attempt || null, raw_text_chars: String(gem.raw_text || "").length, response_summary: gem.response_summary || null, first_empty_response_summary: gem.first_empty_response_summary || null } });
+
   let parsed;
   try {
     parsed = parseStrictJson(cleanJsonText(gem.raw_text));
