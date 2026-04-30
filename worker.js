@@ -1,6 +1,6 @@
 // AlphaDog v1.3.13 - Sleeper Ingest + Phase 3A/B Scheduler Merge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.14 - Phase 3A/B Scheduler Dispatcher Fix";
+const SYSTEM_VERSION = "v1.3.15 - Phase 3A/B Stale Lock Recovery";
 const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1613,9 +1613,25 @@ async function resetStaleDeferredFullRuns(env) {
 
 const PHASE3AB_DEFERRED_JOB = 'phase3ab_full_run_test';
 const PHASE3AB_GLOBAL_LOCK_ID = 'GLOBAL_PHASE3_SCHEDULED_PIPELINE';
+const PHASE3AB_LOCK_STALE_MINUTES = 2;
+
 
 function phase3abTimestampForSql(date = new Date()) {
   return date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+}
+
+async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_STALE_MINUTES) {
+  await ensurePipelineLocksTable(env);
+  const before = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
+  const res = await env.DB.prepare(`
+    UPDATE pipeline_locks
+    SET status='IDLE', locked_by=NULL, updated_at=CURRENT_TIMESTAMP, note='auto-released stale Phase 3A/B lock'
+    WHERE lock_id=?
+      AND status='RUNNING'
+      AND updated_at < datetime('now', '-' || ? || ' minutes')
+  `).bind(PHASE3AB_GLOBAL_LOCK_ID, String(staleMinutes)).run();
+  const after = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
+  return { stale_lock_reset: Number(res?.meta?.changes || 0), before, after, stale_minutes: staleMinutes };
 }
 
 async function phase3abRows(env, sql, binds = []) {
@@ -1880,7 +1896,8 @@ async function runPhase3abDeferredRow(env, row, input = {}) {
   const slateDate = row.slate_date;
   const slateMode = row.slate_mode || 'AUTO';
   const lockedBy = `${input?.trigger || 'phase3ab'}:${crypto.randomUUID()}`;
-  const lock = await acquirePipelineLock(env, PHASE3AB_GLOBAL_LOCK_ID, lockedBy, 20);
+  await resetStalePhase3abGlobalLock(env, PHASE3AB_LOCK_STALE_MINUTES);
+  const lock = await acquirePipelineLock(env, PHASE3AB_GLOBAL_LOCK_ID, lockedBy, PHASE3AB_LOCK_STALE_MINUTES);
   if (!lock.acquired) {
     if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) return await postponePhase3abRequest(env, row, 'global phase pipeline lock busy', 15);
     return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_phase3ab_full_run_tick', status: 'postponed_lock_busy', lock_status: lock, retry_after_minutes: 15, note: 'Global Phase 3 scheduled pipeline lock is busy. Manual tick exited without work.' };
@@ -1930,6 +1947,7 @@ async function runPhase3abDeferredRow(env, row, input = {}) {
 async function runDuePhase3abFullRun(env) {
   await ensureDeferredFullRunTable(env);
   await resetStaleDeferredFullRuns(env);
+  await resetStalePhase3abGlobalLock(env, PHASE3AB_LOCK_STALE_MINUTES);
   const row = await env.DB.prepare(`
     SELECT * FROM deferred_full_run_once
     WHERE job_name=?
@@ -1945,6 +1963,7 @@ async function runDuePhase3abFullRun(env) {
 async function checkPhase3abFullRun(input, env) {
   await ensureDeferredFullRunTable(env);
   await ensurePipelineLocksTable(env);
+  await resetStalePhase3abGlobalLock(env, PHASE3AB_LOCK_STALE_MINUTES);
   const slate = resolveSlateDate(input || {});
   const latest = await env.DB.prepare(`
     SELECT request_id, job_name, slate_date, slate_mode, status, requested_at, run_after, started_at, finished_at, task_id, error, output_json
