@@ -1,6 +1,6 @@
-// AlphaDog v1.3.16 - Gemini Compact Governor compatible worker
+// AlphaDog v1.3.17 - Actionable Backend Prefill compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.16 - Gemini Compact Governor";
+const SYSTEM_VERSION = "v1.3.17 - Actionable Backend Prefill";
 const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -18,6 +18,8 @@ const GEMINI_LIMIT_GUARD_ENABLED = true;
 const GEMINI_LIMIT_GUARD_RATIO = 0.75;
 const GEMINI_LIMIT_GUARD_WAIT_MS = 30000;
 const GEMINI_DEFAULT_TOKEN_CAP = 8192;
+const BOARD_ACTIONABLE_START_BUFFER_MINUTES = 15;
+const BACKEND_PREFILL_PLAYER_FAMILIES = new Set(["PLAYER_A_ROLE_RECENT_MATCHUP", "PLAYER_D_ADVANCED_FORM_CONTACT"]);
 const GEMINI_MODEL_LIMITS = {
   "gemini-2.5-pro": { rpm: 1000, tpm: 5000000 },
   "gemini-2.5-flash": { rpm: 2000, tpm: 3000000 },
@@ -895,7 +897,7 @@ export default {
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '* * * * *') {
-        // v1.3.16: Phase 3A/3B deferred work has priority on minute ticks.
+        // v1.3.17: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
         const phase3DueTick = await runDuePhase3abFullRun(env);
         if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
@@ -3310,6 +3312,15 @@ function boardSingleRowWhere(alias = "") {
     AND UPPER(TRIM(${p}team)) <> UPPER(TRIM(${p}opponent))`;
 }
 
+function boardActionableStartWhere(alias = "") {
+  const p = alias ? `${alias}.` : "";
+  return `datetime(${p}start_time) > datetime('now', '+${BOARD_ACTIONABLE_START_BUFFER_MINUTES} minutes')`;
+}
+
+function boardActionableSingleRowWhere(alias = "") {
+  return `(${boardSingleRowWhere(alias)}) AND (${boardActionableStartWhere(alias)})`;
+}
+
 function boardComboRowWhere(alias = "") {
   const p = alias ? `${alias}.` : "";
   return `(COALESCE(${p}player_name,'') LIKE '%+%'
@@ -3351,7 +3362,7 @@ async function runBoardSifterPreview(input, env) {
   const activeBinds = slateRows.value > 0 ? [slateDate] : [];
   const activeMode = slateRows.value > 0 ? "slate_date_start_time_match" : "fallback_all_rows_no_slate_match";
 
-  const singleWhere = boardSingleRowWhere();
+  const singleWhere = boardActionableSingleRowWhere();
   const comboWhere = boardComboRowWhere();
   const gameKeySql = boardNormalizedGameKeySql();
   const activeRows = await boardScalar(env, `SELECT COUNT(*) FROM mlb_stats WHERE ${activeWhere}`, activeBinds);
@@ -3707,14 +3718,15 @@ function compactBoardPayloadTextForGemini(queueRow, payload, def) {
   for (let i = 0; i < players.length; i++) {
     const p = players[i] || {};
     const prof = p.profile || {};
+    const season = p.season || {};
     const usage = p.recent_usage || {};
     const sp = p.opposing_starter || {};
     const bp = p.opposing_bullpen_context || {};
     rows.push([
       "P", i + 1,
-      p.player_name, p.team, p.opponent_sample, p.first_start_time,
-      prof.position, prof.bats, prof.throws, prof.games,
-      prof.ab, prof.hits, prof.avg, prof.obp, prof.slg, prof.strikeouts, prof.walks,
+      p.player_name, p.team, p.opponent || p.opponent_sample, p.start_time || p.first_start_time,
+      prof.position || p.position, prof.bats || p.bats, prof.throws || p.throws, season.games ?? prof.games,
+      season.ab ?? prof.ab, season.hits ?? prof.hits, season.avg ?? prof.avg, season.obp ?? prof.obp, season.slg ?? prof.slg, season.strikeouts ?? prof.strikeouts, season.walks ?? prof.walks,
       usage.last_game_ab, usage.last_game_hits, usage.lineup_slot,
       sp.starter_name, sp.throws, sp.era, sp.whip, sp.strikeouts, sp.walks, sp.hits_allowed, sp.hr_allowed,
       bp.fatigue, bp.bullpen_era, bp.bullpen_whip,
@@ -3892,8 +3904,111 @@ function validateRawGeminiPayload(parsed, queueRow, compactPayload) {
   return { ok: true, error: null };
 }
 
+function backendCompactValue(value) {
+  if (value === undefined || value === null || value === "") return "NULL";
+  return compactCell(value, 220);
+}
+
+function backendRawFactor(factorId, factorName, valueParts, missing = []) {
+  const cleanParts = (Array.isArray(valueParts) ? valueParts : [valueParts]).map(x => backendCompactValue(x)).filter(x => x && x !== "NULL");
+  const missingList = (Array.isArray(missing) ? missing : [missing]).map(x => String(x || "").trim()).filter(Boolean);
+  const availability = cleanParts.length && !missingList.length ? "AVAILABLE" : cleanParts.length ? "PARTIAL" : "MISSING";
+  return {
+    factor_id: factorId,
+    factor_name: factorName || factorId,
+    source_type: availability === "MISSING" ? "MISSING" : "SYSTEM_DATA",
+    availability,
+    raw_data: cleanParts.length ? { compact: cleanParts.join(",") } : {},
+    note: availability === "MISSING" ? "backend_prefill_missing" : "backend_prefill_from_d1_board_payload",
+    missing_data: missingList
+  };
+}
+
+function backendPlayerFactorRows(queueType, player, factorName) {
+  const p = player || {};
+  const season = p.season || {};
+  const usage = p.recent_usage || {};
+  const sp = p.opposing_starter || {};
+  const team = p.team || null;
+  const name = p.player_name || p.player_key || null;
+  const role = p.role || null;
+  const pos = p.position || null;
+  const bats = p.bats || null;
+  const avg = season.avg ?? null;
+  const obp = season.obp ?? null;
+  const slg = season.slg ?? null;
+  const ab = season.ab ?? null;
+  const hits = season.hits ?? null;
+  const k = season.strikeouts ?? null;
+  const bb = season.walks ?? null;
+  const lgab = usage.last_game_ab ?? null;
+  const lgh = usage.last_game_hits ?? null;
+  const slot = usage.lineup_slot ?? null;
+  const spHand = sp.throws ?? null;
+  const spName = sp.starter_name ?? null;
+  const rows = [];
+  if (queueType === "PLAYER_A_ROLE_RECENT_MATCHUP") {
+    rows.push(backendRawFactor("A01", factorName.get("A01"), [name, team, p.game_id], (!name || !team) ? ["identity_or_team"] : []));
+    rows.push(backendRawFactor("A02", factorName.get("A02"), [slot ? `slot=${slot}` : null], slot ? [] : ["lineup_slot"]));
+    rows.push(backendRawFactor("A03", factorName.get("A03"), [role, pos, season.games != null ? `games=${season.games}` : null], (!role && !pos) ? ["role_position"] : []));
+    rows.push(backendRawFactor("A04", factorName.get("A04"), [lgab != null && lgh != null ? `last_game=${lgh}/${lgab}` : null], (lgab == null || lgh == null) ? ["last_game_ab_hits"] : []));
+    rows.push(backendRawFactor("A05", factorName.get("A05"), [lgab != null ? `last_game_ab=${lgab}` : null, ab != null ? `season_ab=${ab}` : null], (lgab == null && ab == null) ? ["plate_appearance_volume"] : []));
+    rows.push(backendRawFactor("A06", factorName.get("A06"), [avg != null ? `avg=${avg}` : null, obp != null ? `obp=${obp}` : null, slg != null ? `slg=${slg}` : null, hits != null && ab != null ? `hits_ab=${hits}/${ab}` : null], (avg == null && hits == null) ? ["season_hit_profile"] : []));
+    rows.push(backendRawFactor("A07", factorName.get("A07"), [bats ? `bats=${bats}` : null, spHand ? `opp_sp_hand=${spHand}` : null], (!bats || !spHand) ? [!bats ? "bats" : "", !spHand ? "opposing_starter_hand" : ""] : []));
+    rows.push(backendRawFactor("A08", factorName.get("A08"), [spName, sp.era != null ? `era=${sp.era}` : null, sp.whip != null ? `whip=${sp.whip}` : null, sp.hits_allowed != null ? `h_allowed=${sp.hits_allowed}` : null], (!spName && sp.era == null && sp.whip == null) ? ["opposing_starter_profile"] : []));
+    rows.push(backendRawFactor("A09", factorName.get("A09"), [k != null && ab != null ? `k_ab=${k}/${ab}` : null, sp.strikeouts != null ? `sp_k=${sp.strikeouts}` : null], (k == null && sp.strikeouts == null) ? ["strikeout_pressure"] : []));
+    rows.push(backendRawFactor("A10", factorName.get("A10"), [bb != null ? `walks=${bb}` : null, obp != null ? `obp=${obp}` : null], (bb == null && obp == null) ? ["walk_obp_support"] : []));
+  } else if (queueType === "PLAYER_D_ADVANCED_FORM_CONTACT") {
+    rows.push(backendRawFactor("D01", factorName.get("D01"), [hits != null && ab != null ? `season_hits_ab=${hits}/${ab}` : null, lgab != null && lgh != null ? `last_game=${lgh}/${lgab}` : null], (hits == null && lgh == null) ? ["hit_efficiency"] : []));
+    rows.push(backendRawFactor("D02", factorName.get("D02"), [lgab != null && lgh != null ? `last_game=${lgh}/${lgab}` : null], (lgab == null || lgh == null) ? ["last3_detail_not_available_in_payload"] : []));
+    rows.push(backendRawFactor("D03", factorName.get("D03"), [avg != null ? `avg=${avg}` : null, ab != null ? `ab=${ab}` : null], avg == null ? ["season_avg"] : []));
+    rows.push(backendRawFactor("D04", factorName.get("D04"), [obp != null ? `obp=${obp}` : null, bb != null ? `walks=${bb}` : null], obp == null ? ["season_obp"] : []));
+    rows.push(backendRawFactor("D05", factorName.get("D05"), [slg != null ? `slg=${slg}` : null, p.board_stat_type_counts ? `board=${backendCompactValue(p.board_stat_type_counts)}` : null], slg == null ? ["season_slg"] : []));
+    rows.push(backendRawFactor("D06", factorName.get("D06"), [hits != null && season.games != null ? `hits_games=${hits}/${season.games}` : null], (hits == null || season.games == null) ? ["hits_per_game"] : []));
+    rows.push(backendRawFactor("D07", factorName.get("D07"), [k != null && ab != null ? `k_ab=${k}/${ab}` : null], k == null ? ["strikeouts"] : []));
+    rows.push(backendRawFactor("D08", factorName.get("D08"), [slg != null ? `slg=${slg}` : null, lgab != null && lgh != null ? `last_game=${lgh}/${lgab}` : null], (slg == null && lgh == null) ? ["total_base_contact"] : []));
+    rows.push(backendRawFactor("D09", factorName.get("D09"), [bb != null && ab != null ? `bb_ab=${bb}/${ab}` : null, obp != null ? `obp=${obp}` : null], bb == null ? ["walk_displacement"] : []));
+    rows.push(backendRawFactor("D10", factorName.get("D10"), [avg != null ? `season_avg=${avg}` : null, lgab != null && lgh != null ? `last_game=${lgh}/${lgab}` : null], (avg == null && lgh == null) ? ["current_vs_season"] : []));
+  }
+  return rows;
+}
+
+function buildBackendPrefilledPlayerRawPayload(queueRow, compactPayload) {
+  const queueType = String(queueRow.queue_type || "");
+  if (!BACKEND_PREFILL_PLAYER_FAMILIES.has(queueType)) return null;
+  const players = Array.isArray(compactPayload?.players) ? compactPayload.players : [];
+  if (!players.length) return null;
+  const def = boardPromptDefinitionForQueueType(queueType);
+  const factorName = new Map((def.factor_ids || []).map(x => [String(x[0]), String(x[1] || x[0])]));
+  const items = players.map(p => {
+    const target = p.player_key || `${p.player_name || ""} ${p.team || ""}`.trim();
+    const rawFactors = backendPlayerFactorRows(queueType, p, factorName);
+    const missing = [];
+    for (const f of rawFactors) for (const m of f.missing_data || []) if (m) missing.push(m);
+    return { target_key: target, target_type: "PLAYER", raw_factors: rawFactors, missing_data: Array.from(new Set(missing)), warnings: [] };
+  });
+  return {
+    ok: true,
+    raw_mode: true,
+    backend_prefill_mode: true,
+    prompt_id: `${def.prompt_id}_BACKEND_PREFILL`,
+    queue_id: String(queueRow.queue_id || ""),
+    queue_type: queueType,
+    scope_type: String(queueRow.scope_type || ""),
+    slate_date: String(queueRow.slate_date || ""),
+    factor_family: def.family,
+    items,
+    summary: { raw_mode: true, backend_prefill_mode: true, item_count: items.length, factor_family: def.family, missing_data: [], warnings: [], ready_for_system_json: true }
+  };
+}
+
 async function callGeminiRawWithValidation(env, queueRow) {
   const compactPayload = buildCompactBoardPayloadForGemini(queueRow);
+  const backendPrefill = buildBackendPrefilledPlayerRawPayload(queueRow, compactPayload);
+  if (backendPrefill) {
+    const validation = validateRawGeminiPayload(backendPrefill, queueRow, compactPayload);
+    if (validation.ok) return { parsed: backendPrefill, attempts: [{ attempt: 1, backend_prefill_mode: true, validation_ok: true, error: null, raw_length: 0 }] };
+  }
   const attempts = [];
   let lastError = "";
   for (let i = 0; i < 2; i++) {
@@ -4359,7 +4474,7 @@ async function enrichBoardPlayer(env, slateDate, playerRow) {
     WHERE substr(start_time, 1, 10) = ?
       AND LOWER(TRIM(player_name)) = LOWER(TRIM(?))
       AND UPPER(TRIM(team)) = ?
-      AND ${boardSingleRowWhere()}
+      AND ${boardActionableSingleRowWhere()}
     ORDER BY updated_at DESC, stat_type ASC, odds_type ASC
     LIMIT 20
   `, [slateDate, playerName, team]);
@@ -4368,7 +4483,7 @@ async function enrichBoardPlayer(env, slateDate, playerRow) {
     FROM mlb_stats
     WHERE LOWER(TRIM(player_name)) = LOWER(TRIM(?))
       AND UPPER(TRIM(team)) = ?
-      AND ${boardSingleRowWhere()}
+      AND ${boardActionableSingleRowWhere()}
     ORDER BY updated_at DESC, stat_type ASC, odds_type ASC
     LIMIT 20
   `, [playerName, team]);
@@ -4448,7 +4563,7 @@ async function enrichBoardGame(env, slateDate, gameRow) {
     SELECT team, opponent, stat_type, odds_type, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line
     FROM mlb_stats
     WHERE substr(start_time, 1, 10) = ?
-      AND ${boardSingleRowWhere()}
+      AND ${boardActionableSingleRowWhere()}
       AND ((UPPER(TRIM(team))=? AND UPPER(TRIM(opponent))=?) OR (UPPER(TRIM(team))=? AND UPPER(TRIM(opponent))=?))
     GROUP BY team, opponent, stat_type, odds_type
     ORDER BY stat_type, odds_type
@@ -4561,7 +4676,7 @@ async function buildBoardQueueRows(input, env) {
   const activeWhere = Number(slateRows.value || 0) > 0 ? "substr(start_time, 1, 10) = ?" : "1=1";
   const activeBinds = Number(slateRows.value || 0) > 0 ? [slateDate] : [];
   const activeMode = Number(slateRows.value || 0) > 0 ? "slate_date_start_time_match" : "fallback_all_rows_no_slate_match";
-  const singleWhere = boardSingleRowWhere();
+  const singleWhere = boardActionableSingleRowWhere();
   const gameKeySql = boardNormalizedGameKeySql();
 
   const players = await boardRows(env, `
@@ -4724,7 +4839,7 @@ async function getBoardQueueBuildPlan(input, env, slateDate) {
   const slateRows = await boardScalar(env, "SELECT COUNT(*) FROM mlb_stats WHERE substr(start_time, 1, 10) = ?", [slateDate]);
   const activeWhere = Number(slateRows.value || 0) > 0 ? "substr(start_time, 1, 10) = ?" : "1=1";
   const activeBinds = Number(slateRows.value || 0) > 0 ? [slateDate] : [];
-  const singleWhere = boardSingleRowWhere();
+  const singleWhere = boardActionableSingleRowWhere();
   const gameKeySql = boardNormalizedGameKeySql();
   const playerCount = await boardScalar(env, `
     SELECT COUNT(*) FROM (
