@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.20 - Sleeper RBI/RFI Board Signal Runner</div>
+<div id="versionTag">v1.3.21 - Sleeper RBI/RFI Insert Arity Fix</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -594,7 +594,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.20 - Sleeper RBI/RFI Board Signal Runner",
+    version: "v1.3.21 - Sleeper RBI/RFI Insert Arity Fix",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
