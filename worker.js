@@ -1,6 +1,6 @@
-// AlphaDog v1.3.34 - Rec Declaration Fix compatible worker
+// AlphaDog v1.3.35 - Score Check Wrapper Fix + Modifier Prep compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.34 - Rec Declaration Fix";
+const SYSTEM_VERSION = "v1.3.35 - Score Check Wrapper Fix + Modifier Prep";
 const SYSTEM_CODENAME = "Freshness Audit Only";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10466,7 +10466,26 @@ async function runMlbScoringV1(input,env){
  }
 }
 
-async function checkMlbScoringV1(input,env){if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',error:'Missing DB binding'}; const slateDate=String(input.slate_date||'').trim()||resolveSlateDate(input||{}).slate_date; await ensureMlbScoringV1Tables(env); const runs=await env.DB.prepare(`SELECT * FROM scoring_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 10`).bind(slateDate).all(); const counts=await env.DB.prepare(`SELECT 'mlb_hits_scores' table_name,COUNT(*) rows_count FROM mlb_hits_scores WHERE slate_date=? UNION ALL SELECT 'mlb_total_bases_scores',COUNT(*) FROM mlb_total_bases_scores WHERE slate_date=? UNION ALL SELECT 'mlb_rbi_scores',COUNT(*) FROM mlb_rbi_scores WHERE slate_date=? UNION ALL SELECT 'active_score_board',COUNT(*) FROM active_score_board WHERE slate_date=? UNION ALL SELECT 'mlb_scoring_scratchpad',COUNT(*) FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate,slateDate,slateDate,slateDate,slateDate).all(); const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) rows_count,ROUND(AVG(final_score),2) avg_score,ROUND(MAX(final_score),2) max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,line_type,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob,updated_at FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 50`).bind(slateDate).all(); return{ok:true,data_ok:(top.results||[]).length>0||(runs.results||[]).length>0,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,latest_runs:runs.results||[],table_counts:counts.results||[],active_distribution:dist.results||[],top_active_scores:top.results||[],scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:(top.results||[]).length?'Scoring V1 active board exists. Next: derived factor modifiers/calibration.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.33 check verifies score tables, active board, audit logs, run lifecycle, scratch cleanup, and freshness-audit-only scoring.'};}
+async function checkMlbScoringV1(input,env){
+  if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',error:'Missing DB binding'};
+  const slateDate=String(input.slate_date||'').trim()||resolveSlateDate(input||{}).slate_date;
+  await ensureMlbScoringV1Tables(env);
+  const runs=await env.DB.prepare(`SELECT * FROM scoring_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 10`).bind(slateDate).all();
+  const counts=await env.DB.prepare(`SELECT 'mlb_hits_scores' table_name,COUNT(*) rows_count FROM mlb_hits_scores WHERE slate_date=? UNION ALL SELECT 'mlb_total_bases_scores',COUNT(*) FROM mlb_total_bases_scores WHERE slate_date=? UNION ALL SELECT 'mlb_rbi_scores',COUNT(*) FROM mlb_rbi_scores WHERE slate_date=? UNION ALL SELECT 'active_score_board',COUNT(*) FROM active_score_board WHERE slate_date=? UNION ALL SELECT 'mlb_scoring_scratchpad',COUNT(*) FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate,slateDate,slateDate,slateDate,slateDate).all();
+  const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) rows_count,ROUND(AVG(final_score),2) avg_score,ROUND(MAX(final_score),2) max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all();
+  const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,line_type,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob,updated_at FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 50`).bind(slateDate).all();
+  const runRows=runs.results||[];
+  const tableRows=counts.results||[];
+  const latestRun=runRows[0]||null;
+  const tableMap=Object.fromEntries(tableRows.map(r=>[r.table_name,Number(r.rows_count||0)]));
+  const latestRunCompleted=!!latestRun&&String(latestRun.status||'').toUpperCase()==='COMPLETED';
+  const scratchClean=(tableMap.mlb_scoring_scratchpad||0)===0;
+  const activeRows=tableMap.active_score_board||0;
+  const activeRowsOk=activeRows>0;
+  const scoringEngineOk=latestRunCompleted&&scratchClean&&activeRowsOk;
+  const dataOk=scoringEngineOk||(top.results||[]).length>0;
+  return{ok:true,data_ok:dataOk,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,scoring_engine_ok:scoringEngineOk,latest_run_completed:latestRunCompleted,scratch_clean:scratchClean,active_rows_ok:activeRowsOk,active_rows:activeRows,check_wrapper_fixed:true,retry_detector_override:'If body.ok=true and latest_run_completed=true, Control Room treats the check as final success, not retry.',modifier_prep:{ready:true,next_layer:'derived_factor_modifiers_calibration',fields_to_fill_next:['lineup_slot_modifier','team_total_modifier','park_modifier','weather_modifier','pitcher_handedness_modifier','market_depth_modifier','line_type_cap','rbi_table_setter_modifier'],rule:'freshness remains audit-only; no stale score penalty or stale hard cap in scoring V1.'},latest_runs:runRows,table_counts:tableRows,active_distribution:dist.results||[],top_active_scores:top.results||[],scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:activeRowsOk?'Scoring V1 active board exists. Next: derived factor modifiers/calibration.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.35 check wrapper fix: completed scoring runs return final success; no false retry on healthy check output. Freshness remains audit-only. Modifier payload is prepped for next calibration layer.'};
+}
 
 async function handleSleeperVideoUpload(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
