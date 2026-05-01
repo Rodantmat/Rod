@@ -1,7 +1,7 @@
-// AlphaDog v1.3.43 - Candidate Board Inspector compatible worker
+// AlphaDog v1.3.44 - Candidate Board Export Layer compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.43 - Candidate Board Inspector";
-const SYSTEM_CODENAME = "Score Candidate Release Board";
+const SYSTEM_VERSION = "v1.3.44 - Candidate Board Export Layer";
+const SYSTEM_CODENAME = "Candidate Board Export Layer";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -177,6 +177,7 @@ const JOB_DISPLAY_LABELS = {
   inspect_mlb_score_audit_v1: "SCORING V1 > Inspect Score Audit",
   build_mlb_score_candidate_board_v1: "SCORING V1 > Build Score Candidate Board",
   inspect_mlb_score_candidate_board_v1: "SCORING V1 > Inspect Candidate Board",
+  export_mlb_score_candidate_board_v1: "SCORING V1 > Export Candidate Board",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -1144,6 +1145,7 @@ function executableJobNames() {
     "inspect_mlb_score_audit_v1",
     "build_mlb_score_candidate_board_v1",
     "inspect_mlb_score_candidate_board_v1",
+    "export_mlb_score_candidate_board_v1",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7932,6 +7934,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "inspect_mlb_score_audit_v1") return await inspectMlbScoreAuditV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "build_mlb_score_candidate_board_v1") return await buildMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_candidate_board_v1") return await inspectMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "export_mlb_score_candidate_board_v1") return await exportMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -10524,7 +10527,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. QUALIFIED requires 80+, B/A confidence, market confidence >=0.55, and 3+ books; PLAYABLE requires 75+, C+ confidence, market confidence >=0.40, and 2+ books.',note:'v1.3.42 builds a read-ready candidate release board from active_score_board only. It does not call external APIs or Gemini. It does not force 80s/90s; it promotes only what the scored audit already supports.'};
+  return{ok:true,data_ok:rank>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. QUALIFIED requires 80+, B/A confidence, market confidence >=0.55, and 3+ books; PLAYABLE requires 75+, C+ confidence, market confidence >=0.40, and 2+ books.',note:'v1.3.44 builds a read-ready candidate release board from active_score_board only. It does not call external APIs or Gemini. It does not force 80s/90s; it promotes only what the scored audit already supports.'};
 }
 
 async function ensureMlbScoringV1Tables(env){
@@ -10553,7 +10556,7 @@ async function inspectMlbScoreCandidateBoardV1(input, env){
   const guard=await resolveScoringSlateDate(env, input||{});
   const slateDate=guard.slate_date;
   const tableExists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='score_candidate_board'").first();
-  if(!tableExists){return{ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,table_exists:false,candidates_seen:0,next_action:'Run SCORING V1 > Build Score Candidate Board.',note:'v1.3.43 Candidate Board Inspector is read-only. score_candidate_board does not exist yet.'};}
+  if(!tableExists){return{ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,table_exists:false,candidates_seen:0,next_action:'Run SCORING V1 > Build Score Candidate Board.',note:'v1.3.44 Candidate Board Export Layer is read-only. score_candidate_board does not exist yet.'};}
   const rows=(await env.DB.prepare(`SELECT * FROM score_candidate_board WHERE slate_date=? ORDER BY candidate_rank ASC, final_score DESC LIMIT 100`).bind(slateDate).all()).results||[];
   const summaryRows=(await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) AS rows_count, ROUND(AVG(final_score),2) AS avg_score, ROUND(MAX(final_score),2) AS max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY CASE candidate_status WHEN 'QUALIFIED' THEN 1 WHEN 'PLAYABLE' THEN 2 WHEN 'WATCHLIST' THEN 3 ELSE 9 END, max_score DESC`).bind(slateDate).all()).results||[];
   const statusRows=(await env.DB.prepare(`SELECT candidate_status, COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status ORDER BY CASE candidate_status WHEN 'QUALIFIED' THEN 1 WHEN 'PLAYABLE' THEN 2 WHEN 'WATCHLIST' THEN 3 ELSE 9 END`).bind(slateDate).all()).results||[];
@@ -10566,7 +10569,28 @@ async function inspectMlbScoreCandidateBoardV1(input, env){
   const playable=(statusRows.find(r=>r.candidate_status==='PLAYABLE')||{}).rows_count||0;
   const qualified=(statusRows.find(r=>r.candidate_status==='QUALIFIED')||{}).rows_count||0;
   const release_health=total>0&&(playable+qualified)>0?'PASS_HAS_RELEASE_CANDIDATES':(total>0?'PASS_WATCHLIST_ONLY':'EMPTY');
-  return{ok:true,data_ok:total>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health,summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:'Use score_candidate_board as the release/read model. Next build can wire the UI display/export layer or keep tuning scoring gates.',note:'v1.3.43 Candidate Board Inspector is read-only. It verifies score_candidate_board, summarizes release status, prop distribution, top candidates, and risk tags. No external API or Gemini is called.'};
+  return{ok:true,data_ok:total>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health,summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:'Use score_candidate_board as the release/read model. Next build can wire the UI display/export layer or keep tuning scoring gates.',note:'v1.3.44 Candidate Board Export Layer is read-only. It verifies score_candidate_board, summarizes release status, prop distribution, top candidates, and risk tags. No external API or Gemini is called.'};
+}
+
+async function exportMlbScoreCandidateBoardV1(input, env){
+  if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',error:'Missing DB binding'};
+  const guard=await resolveScoringSlateDate(env, input||{});
+  const slateDate=guard.slate_date;
+  const tableExists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='score_candidate_board'").first();
+  if(!tableExists){return{ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,table_exists:false,candidates_exported:0,next_action:'Run SCORING V1 > Build Score Candidate Board first.',note:'v1.3.44 export is read-only and does not call external APIs or Gemini.'};}
+  const rows=(await env.DB.prepare(`SELECT candidate_rank,candidate_status,prop_family,player_name,team,opponent,line_direction,line_number,line_type,final_score,confidence_grade,market_confidence,no_vig_prob,risk_notes,updated_at FROM score_candidate_board WHERE slate_date=? ORDER BY candidate_rank ASC, final_score DESC LIMIT 100`).bind(slateDate).all()).results||[];
+  const esc=(v)=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const headers=['rank','status','prop_family','player','team','opponent','side','line','line_type','score','grade','market_confidence','no_vig_prob','book_count','risks','caps','base_score','derived_modifier_total','updated_at'];
+  const csv=[headers.join(',')];
+  const compact=rows.map(r=>{let risk={};try{risk=JSON.parse(r.risk_notes||'{}')||{};}catch(e){risk={};}
+    const out={rank:Number(r.candidate_rank||0),status:r.candidate_status,prop_family:r.prop_family,player:r.player_name,team:r.team,opponent:r.opponent,side:r.line_direction,line:Number(r.line_number),line_type:r.line_type,score:Number(r.final_score),grade:r.confidence_grade,market_confidence:Number(r.market_confidence),no_vig_prob:Number(r.no_vig_prob),book_count:risk.book_count||null,risks:risk.risks||[],caps:risk.caps||[],base_score:risk.base_score??null,derived_modifier_total:risk.derived_modifier_total??null,updated_at:r.updated_at};
+    csv.push([out.rank,out.status,out.prop_family,out.player,out.team,out.opponent,out.side,out.line,out.line_type,out.score,out.grade,out.market_confidence,out.no_vig_prob,out.book_count,(out.risks||[]).join('|'),(out.caps||[]).join('|'),out.base_score,out.derived_modifier_total,out.updated_at].map(esc).join(','));
+    return out;
+  });
+  const playable=compact.filter(r=>r.status==='PLAYABLE').length;
+  const qualified=compact.filter(r=>r.status==='QUALIFIED').length;
+  const watchlist=compact.filter(r=>r.status==='WATCHLIST').length;
+  return{ok:true,data_ok:compact.length>0,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_export_read_only_no_external_api_no_gemini',table_exists:true,candidates_exported:compact.length,summary:{QUALIFIED:qualified,PLAYABLE:playable,WATCHLIST:watchlist},csv_header:headers,copy_paste_csv:csv.join('\n'),rows:compact,next_action:'Copy copy_paste_csv into a spreadsheet or use rows for UI rendering. This is the release/read model export.',note:'v1.3.44 adds a read-only export layer from score_candidate_board. No external API or Gemini is called.'};
 }
 
 async function runMlbScoringV1(input,env){
