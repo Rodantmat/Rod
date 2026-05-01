@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.21 - Sleeper RBI/RFI Insert Arity Fix</div>
+<div id="versionTag">v1.3.22 - Sleeper RBI/RFI Slate Window Runner</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -174,7 +174,10 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Run Board Signal','run_sleeper_rbi_rfi_market_board')">Run Board Signal</button>
 <button class="check" onclick="runJobButton('SLEEPER RBI/RFI > Check Board Signal','check_sleeper_rbi_rfi_market_board')">Check Board Signal</button>
 <button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Schedule Daily 4:30AM','schedule_sleeper_rbi_rfi_daily_430')">Schedule/Run 4:30AM</button>
-</div><div class="small">Sleeper RBI/RFI signal runner: uses sleeper_rbi_rfi_board only, normalizes target line to 0.5, marks regular rows as CERTIFIED_BOARD_PRESENT, rejects more-only rows for under-only targets. No full-slate Gemini scrape, no external odds, no scoring.</div></div>
+<button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Run Morning Window','run_sleeper_rbi_rfi_window_morning')">Run Morning Window</button>
+<button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Run Early Afternoon Window','run_sleeper_rbi_rfi_window_afternoon')">Run Early Afternoon Window</button>
+<button class="check" onclick="runJobButton('SLEEPER RBI/RFI > Check Window Runner','check_sleeper_rbi_rfi_window_runner')">Check Window Runner</button>
+</div><div class="small">Sleeper RBI/RFI signal + window runner: uses Sleeper board only, normalizes target line to 0.5, rejects more-only for under-only targets, excludes already-started rows and rows starting within 15 minutes. No full-slate Gemini scrape, no external odds, no scoring.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -594,7 +597,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.21 - Sleeper RBI/RFI Insert Arity Fix",
+    version: "v1.3.22 - Sleeper RBI/RFI Slate Window Runner",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

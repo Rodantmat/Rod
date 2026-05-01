@@ -1,7 +1,7 @@
-// AlphaDog v1.3.21 - Sleeper RBI/RFI Insert Arity Fix compatible worker
+// AlphaDog v1.3.22 - Sleeper RBI/RFI Slate Window Runner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.21 - Sleeper RBI/RFI Insert Arity Fix";
-const SYSTEM_CODENAME = "Sleeper Board Signal Runner";
+const SYSTEM_VERSION = "v1.3.22 - Sleeper RBI/RFI Slate Window Runner";
+const SYSTEM_CODENAME = "Sleeper Slate Window Runner";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -147,6 +147,9 @@ const JOB_DISPLAY_LABELS = {
   run_sleeper_rbi_rfi_market_board: "SLEEPER RBI/RFI > Run Board Signal",
   check_sleeper_rbi_rfi_market_board: "SLEEPER RBI/RFI > Check Board Signal",
   schedule_sleeper_rbi_rfi_daily_430: "SLEEPER RBI/RFI > Schedule Daily 4:30AM",
+  run_sleeper_rbi_rfi_window_morning: "SLEEPER RBI/RFI > Run Morning Window",
+  run_sleeper_rbi_rfi_window_afternoon: "SLEEPER RBI/RFI > Run Early Afternoon Window",
+  check_sleeper_rbi_rfi_window_runner: "SLEEPER RBI/RFI > Check Window Runner",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -901,7 +904,11 @@ export default {
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
       } else if (cron === '30 11 * * *') {
-        result = await runSleeperRbiRfiMarketBoard({ job: 'run_sleeper_rbi_rfi_market_board', trigger: 'scheduled_sleeper_rbi_rfi_430am_cron', cron, daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
+        const board = await runSleeperRbiRfiMarketBoard({ job: 'run_sleeper_rbi_rfi_market_board', trigger: 'scheduled_sleeper_rbi_rfi_430am_cron', cron, daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
+        const morning = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_morning', trigger: 'scheduled_sleeper_rbi_rfi_morning_window', cron, window_name: 'MORNING', daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
+        result = { ok: true, data_ok: !!morning.data_ok, version: SYSTEM_VERSION, job: 'scheduled_sleeper_rbi_rfi_430am_window', status: 'completed', cron, board, morning, note: 'Sleeper board signal plus morning window runner. No full-slate scrape, no Gemini, no odds, no scoring.' };
+      } else if (cron === '0 18 * * *') {
+        result = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_afternoon', trigger: 'scheduled_sleeper_rbi_rfi_afternoon_window', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 11:00 AM PDT / 18:00 UTC' }, env);
       } else if (cron === '* * * * *') {
         // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
@@ -1082,6 +1089,9 @@ function executableJobNames() {
     "run_sleeper_rbi_rfi_market_board",
     "check_sleeper_rbi_rfi_market_board",
     "schedule_sleeper_rbi_rfi_daily_430",
+    "run_sleeper_rbi_rfi_window_morning",
+    "run_sleeper_rbi_rfi_window_afternoon",
+    "check_sleeper_rbi_rfi_window_runner",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7856,6 +7866,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_sleeper_rbi_rfi_market_board") return await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "schedule_sleeper_rbi_rfi_daily_430") return await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_430" }, env);
   if (jobName === "check_sleeper_rbi_rfi_market_board") return await checkSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_sleeper_rbi_rfi_window_morning") return await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
+  if (jobName === "run_sleeper_rbi_rfi_window_afternoon") return await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
+  if (jobName === "check_sleeper_rbi_rfi_window_runner") return await checkSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -9808,6 +9821,108 @@ async function checkSleeperRbiRfiMarketBoard(input, env) {
   return { ok: true, data_ok: total_signals > 0, version: SYSTEM_VERSION, job: input.job || 'check_sleeper_rbi_rfi_market_board', slate_date: slateDate, source_counts, signal_counts: signalCountsRes.results || [], usable_counts, total_signals, sample: sampleRes.results || [], next_action: total_signals > 0 ? 'Sleeper RBI/RFI board signal table is ready for downstream RBI/RFI jobs.' : 'Run SLEEPER RBI/RFI > Run Board Signal after ingesting Sleeper text board.', note: 'CERTIFIED_BOARD_PRESENT means the row exists on the Sleeper board and is regular/under-capable. REJECT_MORE_ONLY rows are retained but not usable for under-only targets.' };
 }
 
+
+function parseSleeperDateLabelMinutes(dateLabel) {
+  const txt = String(dateLabel || '').trim();
+  const m = txt.match(/(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)/i);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const ap = String(m[3]).toLowerCase();
+  if (ap === 'pm' && h !== 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  if (!Number.isFinite(h) || !Number.isFinite(min)) return null;
+  return h * 60 + min;
+}
+function sleeperWindowNameFromMinutes(minutes) {
+  if (minutes == null) return 'UNKNOWN';
+  if (minutes < 12 * 60) return 'MORNING';
+  if (minutes < 17 * 60) return 'EARLY_AFTERNOON';
+  return 'LATE';
+}
+function sleeperEligibilityForWindow(row, slateDate, windowName, now = new Date()) {
+  const pt = getPTParts(now);
+  const nowMinutes = (() => { const a = String(pt.time || '00:00:00').split(':').map(Number); return (a[0] || 0) * 60 + (a[1] || 0); })();
+  const startMinutes = parseSleeperDateLabelMinutes(row.date_label);
+  const parsedWindow = sleeperWindowNameFromMinutes(startMinutes);
+  const flags = [];
+  let status = 'ELIGIBLE';
+  if (String(row.signal_status || '') !== 'CERTIFIED_BOARD_PRESENT' || Number(row.usable_for_under || 0) !== 1) { status = 'REJECT_NOT_USABLE'; flags.push('NOT_CERTIFIED_OR_NOT_USABLE'); }
+  if (String(row.entry_type || '').toLowerCase() === 'more only') { status = 'REJECT_MORE_ONLY'; flags.push('MORE_ONLY_NOT_UNDER_CAPABLE'); }
+  if (parsedWindow !== windowName) { status = 'SKIPPED_OTHER_WINDOW'; flags.push('OUTSIDE_' + windowName); }
+  if (startMinutes == null) { status = 'SKIPPED_NO_START_TIME'; flags.push('NO_PARSEABLE_START_TIME'); }
+  if (slateDate < pt.date) { status = 'SKIPPED_STARTED'; flags.push('SLATE_DATE_BEFORE_TODAY'); }
+  if (slateDate === pt.date && startMinutes != null) {
+    if (startMinutes <= nowMinutes) { status = 'SKIPPED_STARTED'; flags.push('ALREADY_STARTED'); }
+    else if (startMinutes <= nowMinutes + 15) { status = 'SKIPPED_TOO_CLOSE'; flags.push('STARTS_WITHIN_15_MINUTES'); }
+  }
+  return { status, flags, start_minutes: startMinutes, window_name: parsedWindow, now_pt_date: pt.date, now_pt_time: pt.time };
+}
+async function ensureSleeperWindowTables(env) {
+  await ensureSleeperMarketSignalTables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sleeper_rbi_rfi_window_results (
+    window_result_id TEXT PRIMARY KEY,
+    slate_date TEXT NOT NULL,
+    window_name TEXT NOT NULL,
+    signal_id TEXT NOT NULL,
+    sleeper_leg_id TEXT,
+    player_name TEXT,
+    team TEXT,
+    opponent TEXT,
+    date_label TEXT,
+    market TEXT,
+    normalized_line_score REAL DEFAULT 0.5,
+    target_side TEXT,
+    entry_type TEXT,
+    eligibility_status TEXT NOT NULL,
+    usable_for_window INTEGER DEFAULT 0,
+    start_minutes INTEGER,
+    validation_flags_json TEXT DEFAULT '[]',
+    raw_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_window_results_slate_window ON sleeper_rbi_rfi_window_results (slate_date, window_name, eligibility_status)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_window_results_signal ON sleeper_rbi_rfi_window_results (signal_id)`).run();
+}
+async function runSleeperRbiRfiWindowRunner(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_sleeper_rbi_rfi_window_runner', error:'Missing DB binding' };
+  const slateDate = String(input.slate_date || '').trim() || getPTParts().date;
+  const windowName = String(input.window_name || 'MORNING').toUpperCase();
+  await ensureSleeperWindowTables(env);
+  const signals = await env.DB.prepare(`SELECT * FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? AND market IN ('RBI','RFI') ORDER BY market, player_name, signal_id`).bind(slateDate).all();
+  const stmts = [];
+  const counts = {};
+  const marketCounts = {};
+  const sample = [];
+  for (const r of signals.results || []) {
+    const elig = sleeperEligibilityForWindow(r, slateDate, windowName);
+    counts[elig.status] = (counts[elig.status] || 0) + 1;
+    const mkey = `${r.market || 'UNKNOWN'}|${elig.status}`;
+    marketCounts[mkey] = (marketCounts[mkey] || 0) + 1;
+    const usable = elig.status === 'ELIGIBLE' ? 1 : 0;
+    const id = `sleeper_window|${slateDate}|${windowName}|${simpleHashText(String(r.signal_id || r.sleeper_leg_id || '') + '|' + windowName)}`;
+    const rawJson = JSON.stringify({ source:'sleeper_rbi_rfi_market_signals', rule:'window_filter_no_started_no_within_15_minutes', slate_date:slateDate, window_name:windowName, signal_id:r.signal_id, player_name:r.player_name, market:r.market, date_label:r.date_label, eligibility:elig });
+    stmts.push(env.DB.prepare(`INSERT INTO sleeper_rbi_rfi_window_results (window_result_id,slate_date,window_name,signal_id,sleeper_leg_id,player_name,team,opponent,date_label,market,normalized_line_score,target_side,entry_type,eligibility_status,usable_for_window,start_minutes,validation_flags_json,raw_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0.5,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(window_result_id) DO UPDATE SET eligibility_status=excluded.eligibility_status,usable_for_window=excluded.usable_for_window,start_minutes=excluded.start_minutes,validation_flags_json=excluded.validation_flags_json,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`).bind(id,slateDate,windowName,r.signal_id,r.sleeper_leg_id,r.player_name,r.team,r.opponent,r.date_label,r.market,r.target_side,r.entry_type||'regular',elig.status,usable,elig.start_minutes,JSON.stringify(elig.flags),rawJson));
+    if (sample.length < 50 && usable) sample.push({ player_name:r.player_name, team:r.team, opponent:r.opponent, date_label:r.date_label, market:r.market, target_side:r.target_side, window_name:windowName, eligibility_status:elig.status });
+  }
+  let saved = 0;
+  for (let i=0;i<stmts.length;i+=40) { const chunk = stmts.slice(i,i+40); if (chunk.length) { const res = await env.DB.batch(chunk); saved += res.length; } }
+  const eligible = counts.ELIGIBLE || 0;
+  return { ok:true, data_ok: eligible > 0 || saved > 0, version:SYSTEM_VERSION, job:input.job || 'run_sleeper_rbi_rfi_window_runner', slate_date:slateDate, window_name:windowName, mode:'sleeper_board_window_filter_only_no_gemini_no_odds_no_scoring', source_signals:(signals.results || []).length, saved_rows:saved, counts, market_counts:marketCounts, eligible_rows:eligible, sample, rules:['use_sleeper_board_signals_only','exclude already-started rows','exclude rows within 15 minutes of start','retain rejected/more-only rows as non-usable','normalize target line to 0.5'], note:'Window runner prepares RBI/RFI board rows for downstream market/scoring work. It does not scrape, call Gemini, fetch odds, or score.' };
+}
+async function checkSleeperRbiRfiWindowRunner(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_sleeper_rbi_rfi_window_runner', error:'Missing DB binding' };
+  const slateDate = String(input.slate_date || '').trim() || getPTParts().date;
+  await ensureSleeperWindowTables(env);
+  const countsRes = await env.DB.prepare(`SELECT window_name, eligibility_status, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_window_results WHERE slate_date=? GROUP BY window_name, eligibility_status ORDER BY window_name, eligibility_status`).bind(slateDate).all();
+  const marketRes = await env.DB.prepare(`SELECT window_name, market, eligibility_status, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_window_results WHERE slate_date=? GROUP BY window_name, market, eligibility_status ORDER BY window_name, market, eligibility_status`).bind(slateDate).all();
+  const usableRes = await env.DB.prepare(`SELECT window_name, market, COUNT(*) AS usable_rows FROM sleeper_rbi_rfi_window_results WHERE slate_date=? AND usable_for_window=1 GROUP BY window_name, market ORDER BY window_name, market`).bind(slateDate).all();
+  const sampleRes = await env.DB.prepare(`SELECT player_name,team,opponent,date_label,market,target_side,window_name,eligibility_status,usable_for_window,updated_at FROM sleeper_rbi_rfi_window_results WHERE slate_date=? ORDER BY window_name, eligibility_status, market, player_name LIMIT 60`).bind(slateDate).all();
+  const total = (countsRes.results || []).reduce((a,r)=>a+Number(r.rows_count||0),0);
+  const usable = (usableRes.results || []).reduce((a,r)=>a+Number(r.usable_rows||0),0);
+  return { ok:true, data_ok: total > 0, version:SYSTEM_VERSION, job:input.job || 'check_sleeper_rbi_rfi_window_runner', slate_date:slateDate, counts:countsRes.results || [], market_counts:marketRes.results || [], usable_counts:usableRes.results || [], total_rows:total, usable_rows:usable, sample:sampleRes.results || [], next_action: total ? 'Sleeper RBI/RFI window results ready for downstream jobs.' : 'Run Morning or Early Afternoon window after Board Signal is populated.', note:'Window checks are filtered by start-time rule: no already-started games and no games starting within 15 minutes.' };
+}
 async function handleSleeperVideoUpload(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   const startedAt = new Date().toISOString();
