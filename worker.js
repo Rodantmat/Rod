@@ -1,7 +1,7 @@
-// AlphaDog v1.3.26 - Odds API Split Prop Probe compatible worker
+// AlphaDog v1.3.27 - Odds API Batter Props Sharpener compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.26 - Odds API Split Prop Probe";
-const SYSTEM_CODENAME = "Odds API Split Prop Probe";
+const SYSTEM_VERSION = "v1.3.27 - Odds API Batter Props Sharpener";
+const SYSTEM_CODENAME = "Odds API Batter Props Sharpener";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -23,7 +23,6 @@ const ODDS_API_BOOKMAKERS = "draftkings,fanduel,betmgm,caesars,betrivers,espnbet
 const ODDS_API_GAME_MARKETS = "h2h,spreads,totals";
 const ODDS_API_PROP_MARKETS = "batter_hits,batter_rbis,batter_total_bases";
 const ODDS_API_BATTER_PROP_MARKETS = "batter_hits,batter_rbis,batter_total_bases";
-const ODDS_API_RFI_MARKETS = "1st_inning_run";
 const ODDS_API_ODDS_FORMAT = "american";
 const ODDS_API_WINDOW_SPLIT_MINUTES = 13 * 60;
 const ODDS_API_START_BUFFER_MINUTES = 15;
@@ -169,7 +168,6 @@ const JOB_DISPLAY_LABELS = {
   run_odds_api_morning: "ODDS API > Run Morning Odds",
   run_odds_api_afternoon: "ODDS API > Run Early Afternoon Odds",
   check_odds_api_market_intel: "ODDS API > Check Market Intel",
-  check_odds_api_markets: "ODDS API > Check Odds Markets",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -1121,7 +1119,6 @@ function executableJobNames() {
     "run_odds_api_morning",
     "run_odds_api_afternoon",
     "check_odds_api_market_intel",
-    "check_odds_api_markets",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7905,7 +7902,6 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_odds_api_morning") return await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
   if (jobName === "run_odds_api_afternoon") return await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
   if (jobName === "check_odds_api_market_intel") return await checkOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "check_odds_api_markets") return await checkOddsApiMarkets({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -10124,75 +10120,100 @@ async function runOddsApiMarketIntel(input, env) {
   await ensureOddsApiTables(env);
   const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   const windowName = String(input.window_name || 'MORNING').toUpperCase();
-  const cfg = oddsApiConfig(env);
+  const cfg = { regions:ODDS_API_REGIONS, bookmakers:ODDS_API_BOOKMAKERS, gameMarkets:ODDS_API_GAME_MARKETS, propMarkets:ODDS_API_BATTER_PROP_MARKETS, oddsFormat:ODDS_API_ODDS_FORMAT };
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
   const gameResult = await oddsApiFetchJson(gameUrl);
   await saveOddsApiRequest(env, { slateDate, windowName, requestType:'GAME_ODDS', endpoint:`/${ODDS_API_SPORT_KEY}/odds`, eventId:null, redactedUrl:gameResult.redacted_url, result:gameResult, regions:cfg.regions, markets:cfg.gameMarkets, bookmakers:cfg.bookmakers });
   const allEvents = Array.isArray(gameResult.data) ? gameResult.data : [];
-  const gameSave = await normalizeAndSaveGameOdds(env, slateDate, windowName, allEvents);
+  const gameSave = gameResult.ok ? await normalizeAndSaveGameOdds(env, slateDate, windowName, allEvents) : { events_saved:0, game_market_rows:0 };
   const selected = [];
   const skippedCounts = {};
   for (const ev of allEvents) {
-    const el = oddsEventEligibleForWindow(ev, windowName);
-    const eventSlate = el.pt?.date || ptFromISO(ev.commence_time).date;
-    if (eventSlate && eventSlate !== slateDate) { skippedCounts.SKIPPED_OTHER_SLATE = (skippedCounts.SKIPPED_OTHER_SLATE || 0) + 1; continue; }
-    if (el.eligible) selected.push(ev); else skippedCounts[el.status] = (skippedCounts[el.status] || 0) + 1;
+    const w = oddsEventWindow(ev.commence_time);
+    if (w.pt.date !== slateDate) { skippedCounts.SKIPPED_OTHER_DATE = (skippedCounts.SKIPPED_OTHER_DATE || 0) + 1; continue; }
+    const elig = oddsEventEligibleForWindow(ev, windowName);
+    if (!elig.eligible) { skippedCounts[elig.status] = (skippedCounts[elig.status] || 0) + 1; continue; }
+    selected.push(ev);
   }
   let propRequests = 0, propRows = 0;
   const propMarketCounts = {};
-  const propRequestBreakdown = { batter_bundle:0, rfi_probe:0, batter_bundle_ok:0, rfi_probe_ok:0, batter_bundle_failed:0, rfi_probe_failed:0 };
+  const propRequestBreakdown = { batter_bundle:0, batter_bundle_ok:0, batter_bundle_failed:0 };
   const eventResults = [];
-  const requestGroups = [
-    { key:'BATTER_PROPS', requestType:'EVENT_PROP_ODDS_BATTER', markets:ODDS_API_BATTER_PROP_MARKETS, counter:'batter_bundle' },
-    { key:'RFI_NRFI_PROBE', requestType:'EVENT_PROP_ODDS_RFI_PROBE', markets:ODDS_API_RFI_MARKETS, counter:'rfi_probe' }
-  ];
   for (const ev of selected) {
-    const perEvent = { event_id:ev.id, home_team:ev.home_team, away_team:ev.away_team, commence_time:ev.commence_time, pt:oddsEventWindow(ev.commence_time).pt, requests:[] };
-    for (const group of requestGroups) {
-      const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:group.markets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
-      const propResult = await oddsApiFetchJson(propUrl);
-      propRequests += 1;
-      propRequestBreakdown[group.counter] += 1;
-      if (propResult.ok) propRequestBreakdown[`${group.counter}_ok`] += 1; else propRequestBreakdown[`${group.counter}_failed`] += 1;
-      await saveOddsApiRequest(env, { slateDate, windowName, requestType:group.requestType, endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets:group.markets, bookmakers:cfg.bookmakers });
-      let saved = { prop_rows:0, market_counts:{} };
-      if (propResult.ok) saved = await normalizeAndSavePropOdds(env, slateDate, windowName, propResult.data);
-      propRows += saved.prop_rows || 0;
-      for (const [k,v] of Object.entries(saved.market_counts || {})) propMarketCounts[k] = (propMarketCounts[k] || 0) + Number(v || 0);
-      perEvent.requests.push({ group:group.key, markets:group.markets, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) });
-    }
-    eventResults.push(perEvent);
+    const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:cfg.propMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
+    const propResult = await oddsApiFetchJson(propUrl);
+    propRequests += 1;
+    propRequestBreakdown.batter_bundle += 1;
+    if (propResult.ok) propRequestBreakdown.batter_bundle_ok += 1; else propRequestBreakdown.batter_bundle_failed += 1;
+    await saveOddsApiRequest(env, { slateDate, windowName, requestType:'EVENT_PROP_ODDS_BATTER', endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets:cfg.propMarkets, bookmakers:cfg.bookmakers });
+    let saved = { prop_rows:0, market_counts:{} };
+    if (propResult.ok) saved = await normalizeAndSavePropOdds(env, slateDate, windowName, propResult.data);
+    propRows += saved.prop_rows || 0;
+    for (const [k,v] of Object.entries(saved.market_counts || {})) propMarketCounts[k] = (propMarketCounts[k] || 0) + Number(v || 0);
+    eventResults.push({
+      event_id:ev.id,
+      home_team:ev.home_team,
+      away_team:ev.away_team,
+      commence_time:ev.commence_time,
+      pt:oddsEventWindow(ev.commence_time).pt,
+      request:{ group:'BATTER_PROPS', markets:cfg.propMarkets, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) }
+    });
   }
-  return { ok:true, data_ok:gameResult.ok && (selected.length === 0 || propRows > 0), version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', slate_date:slateDate, window_name:windowName, mode:'odds_api_game_odds_plus_split_event_props_no_scoring', config:{ regions:cfg.regions, bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, batter_prop_markets:ODDS_API_BATTER_PROP_MARKETS, rfi_probe_markets:ODDS_API_RFI_MARKETS, odds_format:cfg.oddsFormat }, game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, saved:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) }, selected_events:selected.length, skipped_counts:skippedCounts, prop_requests:propRequests, prop_request_breakdown:propRequestBreakdown, prop_rows:propRows, prop_market_counts:propMarketCounts, sample_events:eventResults.slice(0,25), rules:['one slate game-odds request first','split prop calls: batter props separate from RFI probe','batter props request uses batter_hits,batter_rbis,batter_total_bases','RFI probe uses 1st_inning_run separately so it cannot poison batter props','logs full failed response payload in odds_api_requests and returns error_preview in sample_events','Morning Odds currently processes all not-started/not-too-close games for debug coverage','Early Afternoon Odds processes games at/after 1:00 PM PT','no Gemini','no scoring','stores raw payloads and normalized odds'], next_action:'Run ODDS API > Check Market Intel. If RFI probe fails but batter props succeed, keep going with RBI/Hits/TB and leave RFI odds disabled until market is confirmed.', note:'Odds API market intelligence layer. v1.3.26 isolates bad market keys instead of letting one bad market kill all props.' };
+  return {
+    ok:true,
+    data_ok:gameResult.ok && (selected.length === 0 || propRows > 0),
+    version:SYSTEM_VERSION,
+    job:input.job || 'run_odds_api_market_intel',
+    slate_date:slateDate,
+    window_name:windowName,
+    mode:'odds_api_game_odds_plus_batter_props_only_no_rfi_no_scoring',
+    config:{ regions:cfg.regions, bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, prop_markets:cfg.propMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
+    game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, saved:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
+    selected_events:selected.length,
+    skipped_counts:skippedCounts,
+    prop_requests:propRequests,
+    prop_request_breakdown:propRequestBreakdown,
+    prop_rows:propRows,
+    prop_market_counts:propMarketCounts,
+    sample_events:eventResults.slice(0,25),
+    rules:['one slate game-odds request first','one batter-prop request per selected game','batter props only: batter_hits,batter_rbis,batter_total_bases','RFI/NRFI Odds API probe disabled after INVALID_MARKET','Morning Odds currently processes all not-started/not-too-close games for debug coverage','Early Afternoon Odds processes games at/after 1:00 PM PT','no Gemini','no scoring','stores raw payloads and normalized odds'],
+    next_action:'Run ODDS API > Check Market Intel. If prop rows are present, odds data is ready for matching/edge wiring.',
+    note:'v1.3.27 removes the bad 1st_inning_run probe and keeps Odds API sharp for game odds, Hits, RBI, and Total Bases only.'
+  };
 }
 
-async function checkOddsApiMarkets(input, env) {
-  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_markets', error:'Missing DB binding' };
-  if (!env.ODDS_API_KEY) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_markets', error:'Missing ODDS_API_KEY secret' };
-  await ensureOddsApiTables(env);
+async function checkOddsApiMarketIntel(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_market_intel', error:'Missing DB binding' };
   const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
-  const marketsUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/markets`, env.ODDS_API_KEY, {});
-  const result = await oddsApiFetchJson(marketsUrl);
-  await saveOddsApiRequest(env, { slateDate, windowName:'ALL', requestType:'AVAILABLE_MARKETS_PROBE', endpoint:`/${ODDS_API_SPORT_KEY}/markets`, eventId:null, redactedUrl:result.redacted_url, result, regions:null, markets:null, bookmakers:null });
-  let saved = 0;
-  if (result.ok && Array.isArray(result.data)) {
-    const stmts = [];
-    for (const m of result.data) {
-      const key = String(m.key || m.market_key || '').trim();
-      if (!key) continue;
-      stmts.push(env.DB.prepare(`INSERT INTO odds_api_available_markets (sport_key,market_key,market_name,market_description,raw_json,updated_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(sport_key,market_key) DO UPDATE SET market_name=excluded.market_name,market_description=excluded.market_description,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`).bind(ODDS_API_SPORT_KEY,key,m.name || m.title || null,m.description || null,JSON.stringify(m)));
-      saved += 1;
-    }
-    for (let i=0;i<stmts.length;i+=40) await env.DB.batch(stmts.slice(i,i+40));
-  }
-  const stored = await env.DB.prepare(`SELECT market_key, market_name, market_description, updated_at FROM odds_api_available_markets WHERE sport_key=? ORDER BY market_key LIMIT 100`).bind(ODDS_API_SPORT_KEY).all();
-  const keys = Array.isArray(result.data) ? result.data.map(m => String(m.key || m.market_key || '')).filter(Boolean) : (stored.results || []).map(r => r.market_key);
-  const needed = [ODDS_API_BATTER_PROP_MARKETS, ODDS_API_RFI_MARKETS].join(',').split(',').map(x=>x.trim()).filter(Boolean);
-  const needed_status = needed.map(k => ({ market_key:k, listed:keys.includes(k) }));
-  return { ok:true, data_ok:result.ok, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_markets', slate_date:slateDate, http_status:result.http_status, usage:result.usage, saved_markets:saved, needed_status, market_count:keys.length, sample:(stored.results || []).slice(0,50), error_preview:result.ok ? null : JSON.stringify(result.data || null).slice(0,700), next_action:'Run ODDS API > Run Morning Odds after this probe. If 1st_inning_run is not listed or returns 422, ignore RFI odds for now and use batter props.', note:'Market probe only. No scoring and no event props.' };
+  await ensureOddsApiTables(env);
+  const reqRes = await env.DB.prepare(`SELECT window_name, request_type, COUNT(*) AS rows_count, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS ok_count, MAX(created_at) AS latest_at, MIN(x_requests_remaining) AS min_remaining, MAX(x_requests_used) AS max_used FROM odds_api_requests WHERE slate_date=? GROUP BY window_name, request_type ORDER BY window_name, request_type`).bind(slateDate).all();
+  const evRes = await env.DB.prepare(`SELECT window_bucket, COUNT(*) AS games_count, MIN(commence_time_pt) AS first_pt, MAX(commence_time_pt) AS last_pt FROM odds_api_events WHERE slate_date=? GROUP BY window_bucket ORDER BY window_bucket`).bind(slateDate).all();
+  const gameMarketRes = await env.DB.prepare(`SELECT market_key, bookmaker_key, COUNT(*) AS rows_count FROM odds_api_game_markets WHERE slate_date=? GROUP BY market_key, bookmaker_key ORDER BY market_key, bookmaker_key LIMIT 120`).bind(slateDate).all();
+  const propRes = await env.DB.prepare(`SELECT window_bucket, prop_family, market_key, COUNT(*) AS rows_count FROM odds_api_player_props WHERE slate_date=? GROUP BY window_bucket, prop_family, market_key ORDER BY window_bucket, prop_family, market_key`).bind(slateDate).all();
+  const propBookRes = await env.DB.prepare(`SELECT market_key, bookmaker_key, COUNT(*) AS rows_count FROM odds_api_player_props WHERE slate_date=? GROUP BY market_key, bookmaker_key ORDER BY market_key, bookmaker_key LIMIT 120`).bind(slateDate).all();
+  const sleeperRbiMatchRes = await env.DB.prepare(`SELECT COUNT(DISTINCT s.player_name) AS sleeper_rbi_players, COUNT(DISTINCT p.player_name) AS matched_odds_players FROM sleeper_rbi_rfi_market_signals s LEFT JOIN odds_api_player_props p ON p.slate_date=s.slate_date AND p.prop_family='RBI' AND lower(replace(replace(replace(p.player_name,'.',''),' Jr',''),' jr','')) = lower(replace(replace(replace(s.player_name,'.',''),' Jr',''),' jr','')) WHERE s.slate_date=? AND s.market='RBI' AND s.signal_status='CERTIFIED_BOARD_PRESENT'`).bind(slateDate).all();
+  const missingSleeperRbiRes = await env.DB.prepare(`SELECT s.player_name, s.team, s.opponent, s.date_label FROM sleeper_rbi_rfi_market_signals s LEFT JOIN odds_api_player_props p ON p.slate_date=s.slate_date AND p.prop_family='RBI' AND lower(replace(replace(replace(p.player_name,'.',''),' Jr',''),' jr','')) = lower(replace(replace(replace(s.player_name,'.',''),' Jr',''),' jr','')) WHERE s.slate_date=? AND s.market='RBI' AND s.signal_status='CERTIFIED_BOARD_PRESENT' AND p.player_name IS NULL ORDER BY s.date_label, s.player_name LIMIT 50`).bind(slateDate).all();
+  const sampleRes = await env.DB.prepare(`SELECT event_id, commence_time_pt, window_bucket, bookmaker_key, market_key, player_name, outcome_name, outcome_price, outcome_point, target_side, prop_family, home_team, away_team, updated_at FROM odds_api_player_props WHERE slate_date=? ORDER BY window_bucket, market_key, player_name, bookmaker_key LIMIT 80`).bind(slateDate).all();
+  const propRows = (propRes.results || []).reduce((a,r)=>a+Number(r.rows_count||0),0);
+  return {
+    ok:true,
+    data_ok:propRows > 0 || (evRes.results || []).length > 0,
+    version:SYSTEM_VERSION,
+    job:input.job || 'check_odds_api_market_intel',
+    slate_date:slateDate,
+    request_counts:reqRes.results || [],
+    event_counts:evRes.results || [],
+    game_market_counts:gameMarketRes.results || [],
+    prop_counts:propRes.results || [],
+    prop_book_counts:propBookRes.results || [],
+    sleeper_rbi_match:sleeperRbiMatchRes.results?.[0] || { sleeper_rbi_players:0, matched_odds_players:0 },
+    missing_sleeper_rbi_odds:missingSleeperRbiRes.results || [],
+    prop_rows:propRows,
+    sample:sampleRes.results || [],
+    next_action: propRows ? 'Odds API batter prop data is ready for matching/edge wiring. RFI/NRFI remains disabled here.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.',
+    note:'v1.3.27 check: game odds + Hits/RBI/Total Bases only. No RFI probe, no Gemini, no scoring.'
+  };
 }
-
-async function checkOddsApiMarketIntel(input, env) { if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_market_intel', error:'Missing DB binding' }; const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date; await ensureOddsApiTables(env); const reqRes = await env.DB.prepare(`SELECT window_name, request_type, COUNT(*) AS rows_count, SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END) AS ok_count, MAX(created_at) AS latest_at, MIN(x_requests_remaining) AS min_remaining FROM odds_api_requests WHERE slate_date=? GROUP BY window_name, request_type ORDER BY window_name, request_type`).bind(slateDate).all(); const evRes = await env.DB.prepare(`SELECT window_bucket, COUNT(*) AS games_count, MIN(commence_time_pt) AS first_pt, MAX(commence_time_pt) AS last_pt FROM odds_api_events WHERE slate_date=? GROUP BY window_bucket ORDER BY window_bucket`).bind(slateDate).all(); const gameMarketRes = await env.DB.prepare(`SELECT market_key, bookmaker_key, COUNT(*) AS rows_count FROM odds_api_game_markets WHERE slate_date=? GROUP BY market_key, bookmaker_key ORDER BY market_key, bookmaker_key LIMIT 80`).bind(slateDate).all(); const propRes = await env.DB.prepare(`SELECT window_bucket, prop_family, market_key, COUNT(*) AS rows_count FROM odds_api_player_props WHERE slate_date=? GROUP BY window_bucket, prop_family, market_key ORDER BY window_bucket, prop_family, market_key`).bind(slateDate).all(); const sampleRes = await env.DB.prepare(`SELECT event_id, commence_time_pt, window_bucket, bookmaker_key, market_key, player_name, outcome_name, outcome_price, outcome_point, target_side, prop_family, home_team, away_team, updated_at FROM odds_api_player_props WHERE slate_date=? ORDER BY window_bucket, market_key, player_name, bookmaker_key LIMIT 80`).bind(slateDate).all(); const propRows = (propRes.results || []).reduce((a,r)=>a+Number(r.rows_count||0),0); return { ok:true, data_ok:propRows > 0 || (evRes.results || []).length > 0, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_market_intel', slate_date:slateDate, request_counts:reqRes.results || [], event_counts:evRes.results || [], game_market_counts:gameMarketRes.results || [], prop_counts:propRes.results || [], prop_rows:propRows, sample:sampleRes.results || [], next_action: propRows ? 'Odds data is ready for downstream scoring/edge wiring.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.', note:'Shows stored Odds API game odds and event prop odds. No scoring.' }; }
 
 async function handleSleeperVideoUpload(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
