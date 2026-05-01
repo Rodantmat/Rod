@@ -10337,7 +10337,7 @@ async function runOddsApiMarketIntel(input, env) {
     sample_events:eventResults.slice(0,25),
     rules:['mine Odds API into temp tables first','certify temp before promotion','promote temp to main only when game odds, selected events, Hits, and Total Bases pass','RBI expanded-book rows are useful but not fatal if low/empty','clean temp after certified promotion','keep failed temp rows for debug','Hits/Total Bases use strongest six books only','RBI uses expansion bookmaker list to find maximum available RBI coverage','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','no Gemini','no scoring'],
     next_action: certification.ok ? 'Run ODDS API > Check Market Intel. If check is clean, move to scoring logic wiring.' : 'Certification failed. Check certification.failures and temp rows before rerunning.',
-    note:'v1.3.30 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success. Dedicated cron wiring is locked for 4:30 AM PT morning odds, 6:00 AM PT morning refresh with Sleeper, and 11:00 AM PT early-afternoon odds.'
+    note:'v1.3.31 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success. Dedicated cron wiring is locked for 4:30 AM PT morning odds, 6:00 AM PT morning refresh with Sleeper, and 11:00 AM PT early-afternoon odds.'
   };
 }
 async function checkOddsApiMarketIntel(input, env) {
@@ -10383,7 +10383,7 @@ async function checkOddsApiMarketIntel(input, env) {
     prop_rows:propRows,
     sample:sampleRes.results || [],
     next_action: propRows ? 'Odds API batter prop data is ready for matching/edge wiring. Compare RBI matched_odds_players and prop_book_counts after the expansion.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.',
-    note:'v1.3.30 check: certified main odds tables after temp-stage promotion. Shows latest certifications, temp leftovers, and locked cron plan. No RFI probe, no Gemini, no scoring.'
+    note:'v1.3.31 check: certified main odds tables after temp-stage promotion. Shows latest certifications, temp leftovers, and locked cron plan. No RFI probe, no Gemini, no scoring.'
   };
 }
 
