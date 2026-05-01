@@ -1,7 +1,7 @@
-// AlphaDog v1.3.27 - Odds API Batter Props Sharpener compatible worker
+// AlphaDog v1.3.28 - Odds API RBI Expansion Probe compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.27 - Odds API Batter Props Sharpener";
-const SYSTEM_CODENAME = "Odds API Batter Props Sharpener";
+const SYSTEM_VERSION = "v1.3.28 - Odds API RBI Expansion Probe";
+const SYSTEM_CODENAME = "Odds API RBI Expansion Probe";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -19,9 +19,13 @@ const SLEEPER_RBI_RFI_MORNING_DEBUG_ALL_WINDOWS = true;
 const ODDS_API_BASE_URL = "https://api.the-odds-api.com/v4/sports";
 const ODDS_API_SPORT_KEY = "baseball_mlb";
 const ODDS_API_REGIONS = "us";
-const ODDS_API_BOOKMAKERS = "draftkings,fanduel,betmgm,caesars,betrivers,espnbet,fanatics,bovada,betonline_ag";
+const ODDS_API_BOOKMAKERS = "draftkings,fanduel,betmgm,caesars,betrivers,espnbet,fanatics,bovada,betonlineag";
 const ODDS_API_GAME_MARKETS = "h2h,spreads,totals";
 const ODDS_API_PROP_MARKETS = "batter_hits,batter_rbis,batter_total_bases";
+const ODDS_API_HITS_TB_BOOKMAKERS = "draftkings,fanduel,betmgm,fanatics,betrivers,bovada";
+const ODDS_API_HITS_TB_PROP_MARKETS = "batter_hits,batter_total_bases";
+const ODDS_API_RBI_BOOKMAKERS = "draftkings,fanduel,betmgm,fanatics,betrivers,bovada,espnbet,williamhill_us,betonlineag,betus,lowvig,mybookieag,ballybet,betparx,hardrockbet,rebet";
+const ODDS_API_RBI_PROP_MARKETS = "batter_rbis";
 const ODDS_API_BATTER_PROP_MARKETS = "batter_hits,batter_rbis,batter_total_bases";
 const ODDS_API_ODDS_FORMAT = "american";
 const ODDS_API_WINDOW_SPLIT_MINUTES = 13 * 60;
@@ -10090,7 +10094,17 @@ async function checkSleeperRbiRfiWindowMiningPrep(input, env) {
 }
 
 function oddsApiConfig(env) {
-  return { regions:String(env?.ODDS_API_REGIONS || ODDS_API_REGIONS), bookmakers:String(env?.ODDS_API_BOOKMAKERS || ODDS_API_BOOKMAKERS), gameMarkets:String(env?.ODDS_API_GAME_MARKETS || ODDS_API_GAME_MARKETS), propMarkets:String(env?.ODDS_API_PROP_MARKETS || ODDS_API_PROP_MARKETS), oddsFormat:String(env?.ODDS_API_ODDS_FORMAT || ODDS_API_ODDS_FORMAT) };
+  return {
+    regions:String(env?.ODDS_API_REGIONS || ODDS_API_REGIONS),
+    bookmakers:String(env?.ODDS_API_BOOKMAKERS || ODDS_API_BOOKMAKERS),
+    gameMarkets:String(env?.ODDS_API_GAME_MARKETS || ODDS_API_GAME_MARKETS),
+    propMarkets:String(env?.ODDS_API_PROP_MARKETS || ODDS_API_PROP_MARKETS),
+    hitsTbBookmakers:String(env?.ODDS_API_HITS_TB_BOOKMAKERS || ODDS_API_HITS_TB_BOOKMAKERS),
+    hitsTbPropMarkets:String(env?.ODDS_API_HITS_TB_PROP_MARKETS || ODDS_API_HITS_TB_PROP_MARKETS),
+    rbiBookmakers:String(env?.ODDS_API_RBI_BOOKMAKERS || ODDS_API_RBI_BOOKMAKERS),
+    rbiPropMarkets:String(env?.ODDS_API_RBI_PROP_MARKETS || ODDS_API_RBI_PROP_MARKETS),
+    oddsFormat:String(env?.ODDS_API_ODDS_FORMAT || ODDS_API_ODDS_FORMAT)
+  };
 }
 function oddsPathWithKey(path, apiKey, params = {}) { const u = new URL(ODDS_API_BASE_URL + path); u.searchParams.set('apiKey', apiKey); for (const [k,v] of Object.entries(params)) if (v !== undefined && v !== null && String(v).trim() !== '') u.searchParams.set(k, String(v)); return u; }
 function stripApiKeyFromUrl(url) { try { const u = new URL(url); if (u.searchParams.has('apiKey')) u.searchParams.set('apiKey', '[REDACTED]'); return u.toString(); } catch { return '[url_parse_failed]'; } }
@@ -10117,10 +10131,10 @@ async function normalizeAndSavePropOdds(env, slateDate, windowName, eventObj) { 
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
   if (!env.ODDS_API_KEY) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing ODDS_API_KEY secret' };
-  await ensureOddsApiTables(env);
   const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   const windowName = String(input.window_name || 'MORNING').toUpperCase();
-  const cfg = { regions:ODDS_API_REGIONS, bookmakers:ODDS_API_BOOKMAKERS, gameMarkets:ODDS_API_GAME_MARKETS, propMarkets:ODDS_API_BATTER_PROP_MARKETS, oddsFormat:ODDS_API_ODDS_FORMAT };
+  await ensureOddsApiTables(env);
+  const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
   const gameResult = await oddsApiFetchJson(gameUrl);
   await saveOddsApiRequest(env, { slateDate, windowName, requestType:'GAME_ODDS', endpoint:`/${ODDS_API_SPORT_KEY}/odds`, eventId:null, redactedUrl:gameResult.redacted_url, result:gameResult, regions:cfg.regions, markets:cfg.gameMarkets, bookmakers:cfg.bookmakers });
@@ -10137,27 +10151,27 @@ async function runOddsApiMarketIntel(input, env) {
   }
   let propRequests = 0, propRows = 0;
   const propMarketCounts = {};
-  const propRequestBreakdown = { batter_bundle:0, batter_bundle_ok:0, batter_bundle_failed:0 };
+  const propRequestBreakdown = { hits_tb_bundle:0, hits_tb_bundle_ok:0, hits_tb_bundle_failed:0, rbi_expansion:0, rbi_expansion_ok:0, rbi_expansion_failed:0 };
   const eventResults = [];
-  for (const ev of selected) {
-    const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:cfg.propMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
+  async function runPropGroup(ev, groupName, requestType, markets, bookmakers) {
+    const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets, oddsFormat:cfg.oddsFormat, bookmakers });
     const propResult = await oddsApiFetchJson(propUrl);
     propRequests += 1;
-    propRequestBreakdown.batter_bundle += 1;
-    if (propResult.ok) propRequestBreakdown.batter_bundle_ok += 1; else propRequestBreakdown.batter_bundle_failed += 1;
-    await saveOddsApiRequest(env, { slateDate, windowName, requestType:'EVENT_PROP_ODDS_BATTER', endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets:cfg.propMarkets, bookmakers:cfg.bookmakers });
+    await saveOddsApiRequest(env, { slateDate, windowName, requestType, endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets, bookmakers });
     let saved = { prop_rows:0, market_counts:{} };
     if (propResult.ok) saved = await normalizeAndSavePropOdds(env, slateDate, windowName, propResult.data);
     propRows += saved.prop_rows || 0;
     for (const [k,v] of Object.entries(saved.market_counts || {})) propMarketCounts[k] = (propMarketCounts[k] || 0) + Number(v || 0);
-    eventResults.push({
-      event_id:ev.id,
-      home_team:ev.home_team,
-      away_team:ev.away_team,
-      commence_time:ev.commence_time,
-      pt:oddsEventWindow(ev.commence_time).pt,
-      request:{ group:'BATTER_PROPS', markets:cfg.propMarkets, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) }
-    });
+    return { group:groupName, markets, bookmakers, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) };
+  }
+  for (const ev of selected) {
+    const hitsTb = await runPropGroup(ev, 'HITS_TOTAL_BASES_STRONG_6', 'EVENT_PROP_ODDS_HITS_TB_STRONG_6', cfg.hitsTbPropMarkets, cfg.hitsTbBookmakers);
+    propRequestBreakdown.hits_tb_bundle += 1;
+    if (hitsTb.ok) propRequestBreakdown.hits_tb_bundle_ok += 1; else propRequestBreakdown.hits_tb_bundle_failed += 1;
+    const rbi = await runPropGroup(ev, 'RBI_EXPANSION_ALL_BOOKS', 'EVENT_PROP_ODDS_RBI_EXPANSION', cfg.rbiPropMarkets, cfg.rbiBookmakers);
+    propRequestBreakdown.rbi_expansion += 1;
+    if (rbi.ok) propRequestBreakdown.rbi_expansion_ok += 1; else propRequestBreakdown.rbi_expansion_failed += 1;
+    eventResults.push({ event_id:ev.id, home_team:ev.home_team, away_team:ev.away_team, commence_time:ev.commence_time, pt:oddsEventWindow(ev.commence_time).pt, requests:[hitsTb, rbi] });
   }
   return {
     ok:true,
@@ -10166,8 +10180,8 @@ async function runOddsApiMarketIntel(input, env) {
     job:input.job || 'run_odds_api_market_intel',
     slate_date:slateDate,
     window_name:windowName,
-    mode:'odds_api_game_odds_plus_batter_props_only_no_rfi_no_scoring',
-    config:{ regions:cfg.regions, bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, prop_markets:cfg.propMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
+    mode:'odds_api_game_odds_plus_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
+    config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
     game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, saved:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
     selected_events:selected.length,
     skipped_counts:skippedCounts,
@@ -10176,12 +10190,11 @@ async function runOddsApiMarketIntel(input, env) {
     prop_rows:propRows,
     prop_market_counts:propMarketCounts,
     sample_events:eventResults.slice(0,25),
-    rules:['one slate game-odds request first','one batter-prop request per selected game','batter props only: batter_hits,batter_rbis,batter_total_bases','RFI/NRFI Odds API probe disabled after INVALID_MARKET','Morning Odds currently processes all not-started/not-too-close games for debug coverage','Early Afternoon Odds processes games at/after 1:00 PM PT','no Gemini','no scoring','stores raw payloads and normalized odds'],
-    next_action:'Run ODDS API > Check Market Intel. If prop rows are present, odds data is ready for matching/edge wiring.',
-    note:'v1.3.27 removes the bad 1st_inning_run probe and keeps Odds API sharp for game odds, Hits, RBI, and Total Bases only.'
+    rules:['one slate game-odds request first','two event-prop requests per selected game','Hits/Total Bases use strongest six books only','RBI uses expansion bookmaker list to find maximum available RBI coverage','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','Morning Odds currently processes all not-started/not-too-close games for debug coverage','Early Afternoon Odds processes games at/after 1:00 PM PT','no Gemini','no scoring','stores raw payloads and normalized odds'],
+    next_action:'Run ODDS API > Check Market Intel. If RBI rows increase, keep this split-bookmaker strategy for scoring prep.',
+    note:'v1.3.28 splits batter props: strong-six books for Hits/Total Bases, expanded all-book probe for RBI, RFI/NRFI still disabled.'
   };
 }
-
 async function checkOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_market_intel', error:'Missing DB binding' };
   const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
@@ -10210,8 +10223,8 @@ async function checkOddsApiMarketIntel(input, env) {
     missing_sleeper_rbi_odds:missingSleeperRbiRes.results || [],
     prop_rows:propRows,
     sample:sampleRes.results || [],
-    next_action: propRows ? 'Odds API batter prop data is ready for matching/edge wiring. RFI/NRFI remains disabled here.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.',
-    note:'v1.3.27 check: game odds + Hits/RBI/Total Bases only. No RFI probe, no Gemini, no scoring.'
+    next_action: propRows ? 'Odds API batter prop data is ready for matching/edge wiring. Compare RBI matched_odds_players and prop_book_counts after the expansion.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.',
+    note:'v1.3.28 check: game odds + Hits/Total Bases strong-six + RBI expanded books. No RFI probe, no Gemini, no scoring.'
   };
 }
 
