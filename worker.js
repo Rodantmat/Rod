@@ -1,6 +1,6 @@
-// AlphaDog v1.3.45 - Candidate Board UI Renderer compatible worker
+// AlphaDog v1.3.46 - Auto Scoring Trigger Mesh compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.45 - Candidate Board UI Renderer";
+const SYSTEM_VERSION = "v1.3.46 - Auto Scoring Trigger Mesh";
 const SYSTEM_CODENAME = "Candidate Board Export Layer";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -178,6 +178,8 @@ const JOB_DISPLAY_LABELS = {
   build_mlb_score_candidate_board_v1: "SCORING V1 > Build Score Candidate Board",
   inspect_mlb_score_candidate_board_v1: "SCORING V1 > Inspect Candidate Board",
   export_mlb_score_candidate_board_v1: "SCORING V1 > Export Candidate Board",
+  run_full_scoring_refresh_v1: "SCORING V1 > Run Full Score Refresh",
+  check_auto_scoring_mesh_v1: "SCORING V1 > Check Auto Scoring Mesh",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -930,38 +932,41 @@ export default {
       } else if (cron === '0 11 * * *') {
         const scheduled = await schedulePhase3abDaily4am({ job: 'schedule_phase3ab_daily_4am', trigger: 'scheduled_phase3ab_4am_cron', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC' }, env);
         const firstTick = await runDuePhase3abFullRun(env);
-        result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
+        const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_after_phase3ab_4am_first_tick_terminal', cron }, env, firstTick);
+        result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, auto_scoring_refresh: scoring_refresh, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; Auto Scoring Mesh refreshes scores/candidate board once mining reaches terminal completion.' };
       } else if (cron === '30 11 * * *') {
         const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_morning', trigger: 'scheduled_odds_api_morning_430am', cron, window_name: 'MORNING', daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
-        const scoring = odds.data_ok ? await runMlbScoringV1({ job:'run_mlb_scoring_v1', trigger:'scheduled_after_odds_api_morning_430am', cron }, env) : { ok:false, status:'skipped' };
+        const scoring = odds.data_ok ? await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_after_odds_api_morning_430am', cron }, env) : { ok:false, status:'skipped' };
         result = { ok: true, data_ok: !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_odds_api_morning_430am', status: odds.data_ok ? 'promoted_and_scored' : 'needs_review', cron, odds, scoring, note: 'Odds API temp-stage -> promote -> clean, then Scoring V1 temp-stage -> promote -> audit -> active board -> clean. No Gemini.' };
       } else if (cron === '0 13 * * *') {
         const board = await runSleeperRbiRfiMarketBoard({ job: 'run_sleeper_rbi_rfi_market_board', trigger: 'scheduled_sleeper_rbi_rfi_6am_cron', cron, daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
         const morning = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_morning', trigger: 'scheduled_sleeper_rbi_rfi_morning_window', cron, window_name: 'MORNING', daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
         const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_morning', trigger: 'scheduled_odds_api_morning_6am_refresh', cron, window_name: 'MORNING', daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
-        const scoring = odds.data_ok ? await runMlbScoringV1({ job:'run_mlb_scoring_v1', trigger:'scheduled_after_6am_odds_refresh', cron }, env) : { ok:false, status:'skipped' };
+        const scoring = odds.data_ok ? await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_after_6am_odds_refresh', cron }, env) : { ok:false, status:'skipped' };
         result = { ok: true, data_ok: !!morning.data_ok || !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_sleeper_plus_odds_api_morning_6am_refresh', status: 'completed', cron, board, morning, odds, scoring, note: 'Sleeper plus Odds API refresh, then Scoring V1 if odds promoted. No Gemini for scoring.' };
       } else if (cron === '0 17 * * *') {
         const window = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_afternoon', trigger: 'scheduled_sleeper_rbi_rfi_afternoon_window', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 10:00 AM PDT / 17:00 UTC' }, env);
-        const scoring = await runMlbScoringV1({ job:'run_mlb_scoring_v1', trigger:'scheduled_after_sleeper_afternoon_window', cron }, env);
+        const scoring = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_after_sleeper_afternoon_window', cron }, env);
         result = { ok: true, data_ok: !!window.data_ok || !!scoring.data_ok, version: SYSTEM_VERSION, job: 'scheduled_sleeper_afternoon_window_plus_score', status: 'completed_and_scored', cron, window, scoring, note: 'Sleeper board/window refresh triggered a full Scoring V1 update. Freshness is audit-only. No Gemini for scoring.' };
       } else if (cron === '0 18 * * *') {
         const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_afternoon', trigger: 'scheduled_odds_api_afternoon_11am', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 11:00 AM PDT / 18:00 UTC' }, env);
-        const scoring = odds.data_ok ? await runMlbScoringV1({ job:'run_mlb_scoring_v1', trigger:'scheduled_after_odds_api_afternoon_11am', cron }, env) : { ok:false, status:'skipped' };
+        const scoring = odds.data_ok ? await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_after_odds_api_afternoon_11am', cron }, env) : { ok:false, status:'skipped' };
         result = { ok: true, data_ok: !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_odds_api_afternoon_11am', status: odds.data_ok ? 'promoted_and_scored' : 'needs_review', cron, odds, scoring, note: 'Odds API afternoon temp-stage -> promote -> clean, then Scoring V1. No Gemini.' };
       } else if (cron === '35 11 * * *' || cron === '5 13 * * *' || cron === '5 18 * * *') {
-        result = await runMlbScoringV1({ job:'run_mlb_scoring_v1', trigger:'scheduled_scoring_safety_cron', cron }, env);
+        result = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_scoring_safety_cron', cron }, env);
       } else if (cron === '* * * * *') {
         // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
         const phase3DueTick = await runDuePhase3abFullRun(env);
         if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
-          result = { ok: true, data_ok: !!phase3DueTick.data_ok, version: SYSTEM_VERSION, job: 'phase3ab_minute_due_tick', status: 'phase3ab_advanced', cron, phase3_tick: phase3DueTick, note: 'Minute cron advanced one due Phase 3A/3B protected tick before any other minute work.' };
+          const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_minute_after_phase3ab_terminal_mine', cron }, env, phase3DueTick);
+          result = { ok: true, data_ok: !!phase3DueTick.data_ok || !!scoring_refresh.data_ok, version: SYSTEM_VERSION, job: 'phase3ab_minute_due_tick', status: 'phase3ab_advanced', cron, phase3_tick: phase3DueTick, auto_scoring_refresh: scoring_refresh, note: 'Minute cron advanced one due Phase 3A/3B protected tick. Auto Scoring Mesh refreshes scores/candidate board only when the mining tick is terminal complete.' };
         } else {
           const fallbackSchedule = await ensurePhase3abDaily4amFromMinuteFallback(env, cron);
           if (fallbackSchedule && fallbackSchedule.status === 'scheduled_due_now') {
             const firstTick = await runDuePhase3abFullRun(env);
-            result = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: 'phase3ab_minute_fallback_daily_4am', status: 'scheduled_and_started', cron, fallback_schedule: fallbackSchedule, first_tick: firstTick, note: 'Minute fallback created the missing daily Phase 3A/3B request and advanced one protected tick.' };
+            const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_minute_fallback_after_phase3ab_terminal_mine', cron }, env, firstTick);
+            result = { ok: true, data_ok: true || !!scoring_refresh.data_ok, version: SYSTEM_VERSION, job: 'phase3ab_minute_fallback_daily_4am', status: 'scheduled_and_started', cron, fallback_schedule: fallbackSchedule, first_tick: firstTick, auto_scoring_refresh: scoring_refresh, note: 'Minute fallback created the missing daily Phase 3A/3B request and advanced one protected tick. Auto Scoring Mesh refreshes if that tick reaches terminal completion.' };
           } else {
             const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
             if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
@@ -1146,6 +1151,8 @@ function executableJobNames() {
     "build_mlb_score_candidate_board_v1",
     "inspect_mlb_score_candidate_board_v1",
     "export_mlb_score_candidate_board_v1",
+    "run_full_scoring_refresh_v1",
+    "check_auto_scoring_mesh_v1",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7888,13 +7895,17 @@ async function executeTaskJob(jobName, body, slate, env) {
     return await runBoardQueueAutoBuild({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "run_board_queue_pipeline") {
-    return await runBoardQueuePipeline({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    const pipeline = await runBoardQueuePipeline({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    const scoring_refresh = await runFullScoringRefreshIfReady({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_prizepicks_board_queue_pipeline" }, env, null);
+    return { ...pipeline, auto_scoring_refresh: scoring_refresh, note: String(pipeline.note || "") + " Auto Scoring Mesh ran after PrizePicks board queue pipeline to refresh scores/candidate board from stored data." };
   }
   if (jobName === "board_queue_mine_one") {
     return await runBoardQueueMineOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
   if (jobName === "board_queue_auto_mine") {
-    return await runBoardQueueAutoMine({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    const mine = await runBoardQueueAutoMine({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    const scoring_refresh = await runFullScoringRefreshIfReady({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_board_queue_auto_mine_terminal" }, env, mine);
+    return { ...mine, auto_scoring_refresh: scoring_refresh, note: String(mine.note || "") + " Auto Scoring Mesh checked after board queue mining; refresh runs only if mining is terminal complete." };
   }
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -7915,19 +7926,19 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "check_phase2c_market_context") return await checkPhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "schedule_phase3ab_daily_4am") return await schedulePhase3abDaily4am({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_schedule" }, env);
   if (jobName === "schedule_phase3ab_full_run_test") return await schedulePhase3abFullRunTest({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_phase3ab_full_run_tick") return await runPhase3abFullRunTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "run_phase3ab_full_run_tick") { const tick = await runPhase3abFullRunTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env); const scoring_refresh = await runFullScoringRefreshIfReady({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_phase3ab_terminal_mine" }, env, tick); return { ...tick, auto_scoring_refresh: scoring_refresh, note: String(tick.note || "") + " Auto Scoring Mesh checked after Phase 3A/3B tick; refresh runs only if mining is terminal complete." }; }
   if (jobName === "check_phase3ab_full_run") return await checkPhase3abFullRun({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_sleeper_rbi_rfi_market_board") { const board = await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env); const scoring = await runMlbScoringV1({ ...(body || {}), job: "run_mlb_scoring_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_market_board" }, env); return { ...board, auto_scoring: scoring, note: String(board.note || "") + " Full Scoring V1 update triggered after Sleeper board signal update. Freshness audit-only." }; }
+  if (jobName === "run_sleeper_rbi_rfi_market_board") { const board = await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env); const scoring = await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_market_board" }, env); return { ...board, auto_scoring_refresh: scoring, note: String(board.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Sleeper board signal update." }; }
   if (jobName === "schedule_sleeper_rbi_rfi_daily_430") return await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_6am_debug" }, env);
   if (jobName === "check_sleeper_rbi_rfi_market_board") return await checkSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_sleeper_rbi_rfi_window_morning") { const window = await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = await runMlbScoringV1({ ...(body || {}), job: "run_mlb_scoring_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_morning_window" }, env); return { ...window, auto_scoring: scoring, note: String(window.note || "") + " Full Scoring V1 update triggered after Sleeper morning window update. Freshness audit-only." }; }
-  if (jobName === "run_sleeper_rbi_rfi_window_afternoon") { const window = await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = await runMlbScoringV1({ ...(body || {}), job: "run_mlb_scoring_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_afternoon_window" }, env); return { ...window, auto_scoring: scoring, note: String(window.note || "") + " Full Scoring V1 update triggered after Sleeper afternoon window update. Freshness audit-only." }; }
+  if (jobName === "run_sleeper_rbi_rfi_window_morning") { const window = await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_morning_window" }, env); return { ...window, auto_scoring_refresh: scoring, note: String(window.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Sleeper morning window update." }; }
+  if (jobName === "run_sleeper_rbi_rfi_window_afternoon") { const window = await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_sleeper_afternoon_window" }, env); return { ...window, auto_scoring_refresh: scoring, note: String(window.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Sleeper afternoon window update." }; }
   if (jobName === "check_sleeper_rbi_rfi_window_runner") return await checkSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_sleeper_rbi_rfi_prep_morning") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
   if (jobName === "run_sleeper_rbi_rfi_prep_afternoon") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
   if (jobName === "check_sleeper_rbi_rfi_window_prep") return await checkSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_odds_api_morning") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = odds.data_ok ? await runMlbScoringV1({ ...(body || {}), job: "run_mlb_scoring_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_morning" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring: scoring, note: String(odds.note || "") + " Full Scoring V1 update triggered after Morning Odds API promotion when data_ok. Freshness audit-only." }; }
-  if (jobName === "run_odds_api_afternoon") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = odds.data_ok ? await runMlbScoringV1({ ...(body || {}), job: "run_mlb_scoring_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_afternoon" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring: scoring, note: String(odds.note || "") + " Full Scoring V1 update triggered after Afternoon Odds API promotion when data_ok. Freshness audit-only." }; }
+  if (jobName === "run_odds_api_morning") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_morning" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Morning Odds API promotion when data_ok." }; }
+  if (jobName === "run_odds_api_afternoon") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_afternoon" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Afternoon Odds API promotion when data_ok." }; }
   if (jobName === "check_odds_api_market_intel") return await checkOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_mlb_scoring_v1") return await runMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_mlb_scoring_v1") return await checkMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -7935,6 +7946,8 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "build_mlb_score_candidate_board_v1") return await buildMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_candidate_board_v1") return await inspectMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "export_mlb_score_candidate_board_v1") return await exportMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_full_scoring_refresh_v1") return await runFullScoringRefreshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_full_scoring_refresh_button" }, env);
+  if (jobName === "check_auto_scoring_mesh_v1") return await checkAutoScoringMeshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -10478,6 +10491,64 @@ function scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,ctx,prob,spread,max
   let totalMod=mods.reduce((a,m)=>a+Number(m.value||0),0); const maxMod=fam==='RBI'?12:10; if(totalMod>maxMod){mods.push({id:'M_AGGREGATE_POSITIVE_CLAMP',value:+(maxMod-totalMod).toFixed(2),reason:`positive_modifiers_clamped_to_${maxMod}`,source:'anti_inflation_governor'}); totalMod=maxMod;} if(totalMod<-12){mods.push({id:'M_AGGREGATE_NEGATIVE_CLAMP',value:+(-12-totalMod).toFixed(2),reason:'negative_modifiers_clamped_to_-12',source:'anti_inflation_governor'}); totalMod=-12;}
   const confidenceBoost=Math.max(0,Math.min(.25,mods.filter(m=>String(m.id).startsWith('M_')&&Number(m.value)>0).length*.035));
   return {mods,totalMod:+totalMod.toFixed(2),confidenceBoost:+confidenceBoost.toFixed(3),player_context:player,game_total:Number.isFinite(total)?+total.toFixed(2):null,park_context:{home_team:home,park_factor_run:park.park_factor_run??null,park_factor_hr:park.park_factor_hr??null},weather_context:weather||null};
+}
+
+
+function scoringMeshShouldScoreAfterMine(result){
+  const status = String(result?.status || '').toLowerCase();
+  return status === 'completed' || status === 'completed_with_skips' || status === 'completed_with_errors_review' || status === 'pass_complete' || status === 'complete' || result?.needs_continue === false;
+}
+
+async function runFullScoringRefreshV1(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const requestedSlateDate = String(input?.slate_date || slate.slate_date);
+  const trigger = String(input?.trigger || 'manual_full_scoring_refresh');
+  const lockedBy = `${trigger}:${crypto.randomUUID()}`;
+  const lockId = 'AUTO_SCORING_REFRESH_V1';
+  const lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+  if (!lock.acquired) {
+    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'LOCKED_SKIP_SCORING_ALREADY_RUNNING', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Another scoring refresh is already active. This skipped cleanly to avoid overlapping score/candidate-board writes.' };
+  }
+  try {
+    const scoring = await runMlbScoringV1({ ...(input || {}), job: 'run_mlb_scoring_v1', slate_date: requestedSlateDate, slate_mode: slate.slate_mode, trigger }, env);
+    const selectedSlateDate = String(scoring?.slate_date || requestedSlateDate);
+    let candidate_board = { ok: false, data_ok: false, status: 'skipped_scoring_not_data_ok' };
+    let export_board = { ok: false, data_ok: false, status: 'skipped_candidate_board_not_data_ok' };
+    if (scoring && scoring.ok && scoring.data_ok) {
+      candidate_board = await buildMlbScoreCandidateBoardV1({ ...(input || {}), job: 'build_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_candidate_board` }, env);
+      if (candidate_board && candidate_board.ok) export_board = await exportMlbScoreCandidateBoardV1({ ...(input || {}), job: 'export_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_export` }, env);
+    }
+    return { ok: true, data_ok: !!(scoring?.data_ok && candidate_board?.data_ok), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_no_external_api_no_gemini', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring, candidate_board, export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null } : export_board, lock_status: 'RELEASED', next_action: 'Render Candidate Board UI or Export Candidate Board. The release board was rebuilt from the latest stored mining/board/odds data.', note: 'Full scoring refresh runs only stored-data scoring, then immediately rebuilds score_candidate_board so the UI/export read model is not stale. It does not call Odds API, Gemini, MLB API, PrizePicks, or Sleeper.' };
+  } finally {
+    await releasePipelineLock(env, lockId, lockedBy);
+  }
+}
+
+async function runFullScoringRefreshIfReady(input, env, gateResult = null) {
+  const trigger = String(input?.trigger || 'auto_scoring_gate');
+  const shouldRun = gateResult === null ? true : scoringMeshShouldScoreAfterMine(gateResult);
+  if (!shouldRun) return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: 'auto_scoring_gate', status: 'SKIPPED_NOT_FINAL_MINE_OR_BOARD_UPDATE', trigger, gate_status: gateResult?.status || null, gate_needs_continue: gateResult?.needs_continue ?? null, note: 'Scoring refresh runs only after a board/odds update or after mining reaches a terminal state. Partial mining ticks do not refresh candidates.' };
+  return await runFullScoringRefreshV1({ ...(input || {}), job: 'run_full_scoring_refresh_v1', trigger }, env);
+}
+
+async function checkAutoScoringMeshV1(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = String(input?.slate_date || slate.slate_date);
+  const recent = await env.DB.prepare(`
+    SELECT job_name, status, started_at, finished_at,
+           substr(COALESCE(error,''),1,300) AS error_preview,
+           substr(COALESCE(output_json,''),1,900) AS output_preview
+    FROM task_runs
+    WHERE job_name IN ('run_full_scoring_refresh_v1','run_mlb_scoring_v1','build_mlb_score_candidate_board_v1','run_odds_api_morning','run_odds_api_afternoon','run_sleeper_rbi_rfi_market_board','run_sleeper_rbi_rfi_window_morning','run_sleeper_rbi_rfi_window_afternoon','run_phase3ab_full_run_tick','board_queue_auto_mine')
+    ORDER BY started_at DESC
+    LIMIT 25
+  `).all().catch(() => ({ results: [] }));
+  const locks = await env.DB.prepare(`
+    SELECT * FROM pipeline_locks
+    WHERE lock_id IN ('AUTO_SCORING_REFRESH_V1','GLOBAL_PHASE3_SCHEDULED_PIPELINE','BOARD_QUEUE_AUTO_MINE|' || ?)
+    ORDER BY lock_id
+  `).bind(slateDate).all().catch(() => ({ results: [] }));
+  return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input?.job || 'check_auto_scoring_mesh_v1', slate_date: slateDate, mesh_policy: { scoring_refresh_job: 'run_full_scoring_refresh_v1', refresh_steps: ['run_mlb_scoring_v1','build_mlb_score_candidate_board_v1','export summary check'], no_external_calls_from_scoring_refresh: true, triggers: ['after scheduled Odds API morning promotion','after scheduled Odds API afternoon promotion','after manual Odds API promotion','after PrizePicks board queue pipeline','after Sleeper RBI/RFI board signal update','after Sleeper morning/afternoon window update','after Phase 3A/3B mining reaches a terminal complete state','after Board Queue Auto Mine reaches complete/no-continue state','manual Run Full Score Refresh button'], partial_mining_rule: 'No candidate rebuild while Phase 3/board mining is partial_continue; scoring waits for final mine completion or direct board/odds update.' }, cron_plan_locked: ['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety','* * * * * phase3 completion watcher'], recent_runs: recent.results || [], locks: locks.results || [], next_action: 'Run the data update job normally. The mesh refreshes scoring/candidate board automatically after terminal updates. Use Run Full Score Refresh only as a manual safety button.', note: 'v1.3.46 wires scoring to the end of data updates so testing uses the freshest stored board/market/mined data available. Scoring refresh itself is stored-data only.' };
 }
 
 async function buildMlbScoreCandidateBoardV1(input, env){
