@@ -1,7 +1,7 @@
-// AlphaDog v1.3.23 - Sleeper RBI/RFI Debug All-Window Runner compatible worker
+// AlphaDog v1.3.24 - Sleeper RBI/RFI Window Mining Prep compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.23 - Sleeper RBI/RFI Debug All-Window Runner";
-const SYSTEM_CODENAME = "Sleeper Debug All-Window Runner";
+const SYSTEM_VERSION = "v1.3.24 - Sleeper RBI/RFI Window Mining Prep";
+const SYSTEM_CODENAME = "Sleeper Window Mining Prep";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -152,6 +152,9 @@ const JOB_DISPLAY_LABELS = {
   run_sleeper_rbi_rfi_window_morning: "SLEEPER RBI/RFI > Run Morning Window",
   run_sleeper_rbi_rfi_window_afternoon: "SLEEPER RBI/RFI > Run Early Afternoon Window",
   check_sleeper_rbi_rfi_window_runner: "SLEEPER RBI/RFI > Check Window Runner",
+  run_sleeper_rbi_rfi_prep_morning: "SLEEPER RBI/RFI > Run Morning Prep",
+  run_sleeper_rbi_rfi_prep_afternoon: "SLEEPER RBI/RFI > Run Early Afternoon Prep",
+  check_sleeper_rbi_rfi_window_prep: "SLEEPER RBI/RFI > Check Window Prep",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -1094,6 +1097,9 @@ function executableJobNames() {
     "run_sleeper_rbi_rfi_window_morning",
     "run_sleeper_rbi_rfi_window_afternoon",
     "check_sleeper_rbi_rfi_window_runner",
+    "run_sleeper_rbi_rfi_prep_morning",
+    "run_sleeper_rbi_rfi_prep_afternoon",
+    "check_sleeper_rbi_rfi_window_prep",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7871,6 +7877,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_sleeper_rbi_rfi_window_morning") return await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
   if (jobName === "run_sleeper_rbi_rfi_window_afternoon") return await runSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
   if (jobName === "check_sleeper_rbi_rfi_window_runner") return await checkSleeperRbiRfiWindowRunner({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_sleeper_rbi_rfi_prep_morning") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
+  if (jobName === "run_sleeper_rbi_rfi_prep_afternoon") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
+  if (jobName === "check_sleeper_rbi_rfi_window_prep") return await checkSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -9927,6 +9936,137 @@ async function checkSleeperRbiRfiWindowRunner(input, env) {
   const usable = (usableRes.results || []).reduce((a,r)=>a+Number(r.usable_rows||0),0);
   return { ok:true, data_ok: total > 0, version:SYSTEM_VERSION, job:input.job || 'check_sleeper_rbi_rfi_window_runner', slate_date:slateDate, counts:countsRes.results || [], market_counts:marketRes.results || [], usable_counts:usableRes.results || [], total_rows:total, usable_rows:usable, sample:sampleRes.results || [], next_action: total ? 'Sleeper RBI/RFI window results ready for downstream jobs.' : 'Run Morning or Early Afternoon window after Board Signal is populated.', note:'Debug phase: Morning Window is ALL windows except started/too-close; Early Afternoon Window is games at or after 1:00 PM PT. Started/within-15-minute rows are always skipped.' };
 }
+async function ensureSleeperWindowMiningPrepTables(env) {
+  await ensureSleeperWindowTables(env);
+  await ensureBoardFactorResultsTable(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sleeper_rbi_rfi_window_mining_prep (
+    prep_id TEXT PRIMARY KEY,
+    slate_date TEXT NOT NULL,
+    window_name TEXT NOT NULL,
+    window_result_id TEXT NOT NULL,
+    signal_id TEXT,
+    sleeper_leg_id TEXT,
+    player_name TEXT,
+    team TEXT,
+    opponent TEXT,
+    date_label TEXT,
+    market TEXT,
+    target_side TEXT,
+    eligibility_status TEXT,
+    source_window_usable INTEGER DEFAULT 0,
+    matched_player_a INTEGER DEFAULT 0,
+    matched_player_d INTEGER DEFAULT 0,
+    matched_game_b INTEGER DEFAULT 0,
+    matched_weather INTEGER DEFAULT 0,
+    matched_news INTEGER DEFAULT 0,
+    phase3_result_count INTEGER DEFAULT 0,
+    raw_factor_rows INTEGER DEFAULT 0,
+    prep_status TEXT NOT NULL,
+    missing_sources_json TEXT DEFAULT '[]',
+    raw_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_window_prep_slate_window ON sleeper_rbi_rfi_window_mining_prep (slate_date, window_name, prep_status, market)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_window_prep_signal ON sleeper_rbi_rfi_window_mining_prep (signal_id)`).run();
+}
+
+function sleeperPrepLikeTerm(value) {
+  const txt = String(value || '').trim();
+  if (!txt) return null;
+  return `%${txt.replace(/[%_]/g, '')}%`;
+}
+
+async function sleeperPhase3MatchCount(env, slateDate, queueType, row) {
+  const playerLike = sleeperPrepLikeTerm(row.player_name);
+  const teamLike = sleeperPrepLikeTerm(row.team);
+  const opponentClean = String(row.opponent || '').replace(/^(vs|@)\s+/i, '').trim();
+  const oppLike = sleeperPrepLikeTerm(opponentClean);
+  let where = `slate_date=? AND status='COMPLETED' AND queue_type=?`;
+  const binds = [slateDate, queueType];
+  if (String(queueType || '').startsWith('PLAYER_') && playerLike) {
+    where += ` AND raw_json LIKE ?`;
+    binds.push(playerLike);
+  } else if (String(queueType || '').startsWith('GAME_')) {
+    const parts = [];
+    if (teamLike) { parts.push(`raw_json LIKE ?`); binds.push(teamLike); }
+    if (oppLike) { parts.push(`raw_json LIKE ?`); binds.push(oppLike); }
+    if (parts.length) where += ` AND (` + parts.join(' OR ') + `)`;
+  }
+  const res = await env.DB.prepare(`SELECT COUNT(*) AS result_count, COALESCE(SUM(factor_count),0) AS raw_factor_rows FROM board_factor_results WHERE ${where}`).bind(...binds).first();
+  return { count: Number(res?.result_count || 0), factors: Number(res?.raw_factor_rows || 0) };
+}
+
+async function runSleeperRbiRfiWindowMiningPrep(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_sleeper_rbi_rfi_window_mining_prep', error:'Missing DB binding' };
+  const slateDate = String(input.slate_date || '').trim() || getPTParts().date;
+  const windowName = String(input.window_name || 'MORNING').toUpperCase();
+  await ensureSleeperWindowMiningPrepTables(env);
+  const rowsRes = await env.DB.prepare(`SELECT * FROM sleeper_rbi_rfi_window_results WHERE slate_date=? AND window_name=? ORDER BY market, date_label, player_name`).bind(slateDate, windowName).all();
+  const rows = rowsRes.results || [];
+  const stmts = [];
+  const counts = {};
+  const marketCounts = {};
+  const sample = [];
+  let eligibleRows = 0, readyRows = 0, notReadyRows = 0, totalMatchedResults = 0, totalRawFactorRows = 0;
+  for (const r of rows) {
+    const sourceUsable = Number(r.usable_for_window || 0) === 1 && String(r.eligibility_status || '') === 'ELIGIBLE';
+    if (sourceUsable) eligibleRows += 1;
+    const a = sourceUsable && r.market === 'RBI' ? await sleeperPhase3MatchCount(env, slateDate, 'PLAYER_A_ROLE_RECENT_MATCHUP', r) : {count:0,factors:0};
+    const d = sourceUsable && r.market === 'RBI' ? await sleeperPhase3MatchCount(env, slateDate, 'PLAYER_D_ADVANCED_FORM_CONTACT', r) : {count:0,factors:0};
+    const b = sourceUsable ? await sleeperPhase3MatchCount(env, slateDate, 'GAME_B_TEAM_BULLPEN_ENVIRONMENT', r) : {count:0,factors:0};
+    const w = sourceUsable ? await sleeperPhase3MatchCount(env, slateDate, 'GAME_WEATHER_CONTEXT', r) : {count:0,factors:0};
+    const n = sourceUsable ? await sleeperPhase3MatchCount(env, slateDate, 'GAME_NEWS_INJURY_CONTEXT', r) : {count:0,factors:0};
+    const missing = [];
+    if (!sourceUsable) missing.push('WINDOW_ROW_NOT_ELIGIBLE');
+    if (r.market === 'RBI') {
+      if (!a.count) missing.push('PLAYER_A_ROLE_RECENT_MATCHUP');
+      if (!d.count) missing.push('PLAYER_D_ADVANCED_FORM_CONTACT');
+    }
+    if (r.market === 'RFI') {
+      if (!b.count) missing.push('GAME_B_TEAM_BULLPEN_ENVIRONMENT');
+      if (!w.count) missing.push('GAME_WEATHER_CONTEXT');
+      if (!n.count) missing.push('GAME_NEWS_INJURY_CONTEXT');
+    }
+    const phase3Count = a.count + d.count + b.count + w.count + n.count;
+    const rawFactors = a.factors + d.factors + b.factors + w.factors + n.factors;
+    totalMatchedResults += phase3Count;
+    totalRawFactorRows += rawFactors;
+    let prepStatus = 'NOT_ELIGIBLE';
+    if (sourceUsable) {
+      if (r.market === 'RBI') prepStatus = (a.count && d.count) ? 'READY_FOR_DOWNSTREAM' : 'MISSING_PHASE3_FACTORS';
+      else if (r.market === 'RFI') prepStatus = (b.count || w.count || n.count) ? 'READY_PARTIAL_GAME_CONTEXT' : 'MISSING_PHASE3_FACTORS';
+      else prepStatus = 'UNKNOWN_MARKET';
+    }
+    if (prepStatus === 'READY_FOR_DOWNSTREAM' || prepStatus === 'READY_PARTIAL_GAME_CONTEXT') readyRows += 1;
+    if (sourceUsable && prepStatus === 'MISSING_PHASE3_FACTORS') notReadyRows += 1;
+    counts[prepStatus] = (counts[prepStatus] || 0) + 1;
+    const mkey = `${r.market || 'UNKNOWN'}|${prepStatus}`;
+    marketCounts[mkey] = (marketCounts[mkey] || 0) + 1;
+    const prepId = `sleeper_prep|${slateDate}|${windowName}|${simpleHashText(String(r.window_result_id || r.signal_id || '') + '|prep')}`;
+    const rawJson = JSON.stringify({ source:'sleeper_rbi_rfi_window_results', slate_date:slateDate, window_name:windowName, window_result_id:r.window_result_id, signal_id:r.signal_id, market:r.market, target_side:r.target_side, phase3_matches:{ player_a:a, player_d:d, game_b:b, weather:w, news:n }, missing_sources:missing, prep_status:prepStatus, no_scoring:true, no_external_odds:true });
+    stmts.push(env.DB.prepare(`INSERT INTO sleeper_rbi_rfi_window_mining_prep (prep_id,slate_date,window_name,window_result_id,signal_id,sleeper_leg_id,player_name,team,opponent,date_label,market,target_side,eligibility_status,source_window_usable,matched_player_a,matched_player_d,matched_game_b,matched_weather,matched_news,phase3_result_count,raw_factor_rows,prep_status,missing_sources_json,raw_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(prep_id) DO UPDATE SET eligibility_status=excluded.eligibility_status,source_window_usable=excluded.source_window_usable,matched_player_a=excluded.matched_player_a,matched_player_d=excluded.matched_player_d,matched_game_b=excluded.matched_game_b,matched_weather=excluded.matched_weather,matched_news=excluded.matched_news,phase3_result_count=excluded.phase3_result_count,raw_factor_rows=excluded.raw_factor_rows,prep_status=excluded.prep_status,missing_sources_json=excluded.missing_sources_json,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`).bind(prepId,slateDate,windowName,r.window_result_id,r.signal_id,r.sleeper_leg_id,r.player_name,r.team,r.opponent,r.date_label,r.market,r.target_side,r.eligibility_status,sourceUsable?1:0,a.count,d.count,b.count,w.count,n.count,phase3Count,rawFactors,prepStatus,JSON.stringify(missing),rawJson));
+    if (sample.length < 40 && sourceUsable) sample.push({ player_name:r.player_name, team:r.team, opponent:r.opponent, date_label:r.date_label, market:r.market, target_side:r.target_side, prep_status:prepStatus, matched_player_a:a.count, matched_player_d:d.count, matched_game_b:b.count, matched_weather:w.count, matched_news:n.count, missing_sources:missing });
+  }
+  let saved = 0;
+  for (let i=0;i<stmts.length;i+=35) { const chunk = stmts.slice(i,i+35); if (chunk.length) { const res = await env.DB.batch(chunk); saved += res.length; } }
+  return { ok:true, data_ok:saved > 0, version:SYSTEM_VERSION, job:input.job || 'run_sleeper_rbi_rfi_window_mining_prep', slate_date:slateDate, window_name:windowName, mode:'window_mining_prep_no_scoring_no_external_odds_no_new_gemini', source_window_rows:rows.length, eligible_rows:eligibleRows, saved_rows:saved, ready_rows:readyRows, not_ready_rows:notReadyRows, total_matched_phase3_results:totalMatchedResults, total_raw_factor_rows:totalRawFactorRows, counts, market_counts:marketCounts, sample, rules:['uses sleeper_rbi_rfi_window_results only','uses eligible window rows only for prep readiness','joins existing board_factor_results where available','does not call Gemini','does not fetch odds','does not score'], next_action:'Run SLEEPER RBI/RFI > Check Window Prep. Missing Phase 3 factors should be mined/backfilled before scoring.', note:'This is the mining-prep/coverage layer only. It prepares eligible RBI/RFI rows for downstream scoring by showing which existing Phase 3 raw factor families are present or missing.' };
+}
+
+async function checkSleeperRbiRfiWindowMiningPrep(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_sleeper_rbi_rfi_window_mining_prep', error:'Missing DB binding' };
+  const slateDate = String(input.slate_date || '').trim() || getPTParts().date;
+  await ensureSleeperWindowMiningPrepTables(env);
+  const countsRes = await env.DB.prepare(`SELECT window_name, prep_status, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_window_mining_prep WHERE slate_date=? GROUP BY window_name, prep_status ORDER BY window_name, prep_status`).bind(slateDate).all();
+  const marketRes = await env.DB.prepare(`SELECT window_name, market, prep_status, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_window_mining_prep WHERE slate_date=? GROUP BY window_name, market, prep_status ORDER BY window_name, market, prep_status`).bind(slateDate).all();
+  const coverageRes = await env.DB.prepare(`SELECT window_name, market, COUNT(*) AS source_rows, SUM(source_window_usable) AS eligible_rows, SUM(CASE WHEN prep_status IN ('READY_FOR_DOWNSTREAM','READY_PARTIAL_GAME_CONTEXT') THEN 1 ELSE 0 END) AS ready_rows, SUM(CASE WHEN prep_status='MISSING_PHASE3_FACTORS' THEN 1 ELSE 0 END) AS missing_rows, SUM(raw_factor_rows) AS raw_factor_rows FROM sleeper_rbi_rfi_window_mining_prep WHERE slate_date=? GROUP BY window_name, market ORDER BY window_name, market`).bind(slateDate).all();
+  const sampleRes = await env.DB.prepare(`SELECT player_name,team,opponent,date_label,market,target_side,window_name,prep_status,matched_player_a,matched_player_d,matched_game_b,matched_weather,matched_news,raw_factor_rows,missing_sources_json,updated_at FROM sleeper_rbi_rfi_window_mining_prep WHERE slate_date=? ORDER BY window_name, prep_status, market, player_name LIMIT 80`).bind(slateDate).all();
+  const total = (countsRes.results || []).reduce((a,r)=>a+Number(r.rows_count||0),0);
+  const ready = (coverageRes.results || []).reduce((a,r)=>a+Number(r.ready_rows||0),0);
+  const missing = (coverageRes.results || []).reduce((a,r)=>a+Number(r.missing_rows||0),0);
+  return { ok:true, data_ok:total > 0, version:SYSTEM_VERSION, job:input.job || 'check_sleeper_rbi_rfi_window_mining_prep', slate_date:slateDate, counts:countsRes.results || [], market_counts:marketRes.results || [], coverage:coverageRes.results || [], total_rows:total, ready_rows:ready, missing_rows:missing, sample:sampleRes.results || [], next_action: missing ? 'Mine/backfill missing Phase 3 families before scoring.' : 'Prep coverage is ready for downstream scoring design.', note:'Read-only check of the window mining-prep table. No scoring, no Gemini, no external odds.' };
+}
+
 async function handleSleeperVideoUpload(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   const startedAt = new Date().toISOString();
