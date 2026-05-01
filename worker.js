@@ -1,7 +1,7 @@
-// AlphaDog v1.3.18 - Phase 3 Multi-Wave Window Runner compatible worker
+// AlphaDog v1.3.19 - Phase 3 Stale Pending Finalizer compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.18 - Phase 3 Multi-Wave Window Runner";
-const SYSTEM_CODENAME = "Sleeper Ingest + Phase 3A/B Scheduler Merge";
+const SYSTEM_VERSION = "v1.3.19 - Phase 3 Stale Pending Finalizer";
+const SYSTEM_CODENAME = "Stale Pending Finalizer";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1683,20 +1683,47 @@ async function phase3abQueueTotals(env, slateDate) {
   const row = await env.DB.prepare(`
     SELECT COUNT(*) AS total_rows,
       SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending_rows,
+      SUM(CASE WHEN status='PENDING' AND datetime(start_time) > datetime('now', '+' || ? || ' minutes') THEN 1 ELSE 0 END) AS actionable_pending_rows,
+      SUM(CASE WHEN status='SKIPPED_STALE' THEN 1 ELSE 0 END) AS skipped_stale_rows,
       SUM(CASE WHEN status='RETRY_LATER' THEN 1 ELSE 0 END) AS retry_later_rows,
       SUM(CASE WHEN status='RUNNING' THEN 1 ELSE 0 END) AS running_rows,
       SUM(CASE WHEN status='COMPLETED' THEN 1 ELSE 0 END) AS completed_rows,
       SUM(CASE WHEN status='ERROR' THEN 1 ELSE 0 END) AS error_rows
     FROM board_factor_queue
     WHERE slate_date=?
-  `).bind(slateDate).first().catch(() => null);
+  `).bind(BOARD_ACTIONABLE_START_BUFFER_MINUTES, slateDate).first().catch(() => null);
   return {
     total_rows: Number(row?.total_rows || 0),
     pending_rows: Number(row?.pending_rows || 0),
+    actionable_pending_rows: Number(row?.actionable_pending_rows || 0),
+    skipped_stale_rows: Number(row?.skipped_stale_rows || 0),
     retry_later_rows: Number(row?.retry_later_rows || 0),
     running_rows: Number(row?.running_rows || 0),
     completed_rows: Number(row?.completed_rows || 0),
     error_rows: Number(row?.error_rows || 0)
+  };
+}
+
+async function phase3abSkipStalePendingRows(env, slateDate) {
+  await ensureBoardFactorQueueTable(env);
+  const before = await phase3abQueueTotals(env, slateDate);
+  const res = await env.DB.prepare(`
+    UPDATE board_factor_queue
+    SET status='SKIPPED_STALE',
+        last_error='skipped_stale_or_too_close_start_time',
+        updated_at=CURRENT_TIMESTAMP,
+        last_processed_at=CURRENT_TIMESTAMP
+    WHERE slate_date=?
+      AND status='PENDING'
+      AND datetime(start_time) <= datetime('now', '+' || ? || ' minutes')
+  `).bind(slateDate, BOARD_ACTIONABLE_START_BUFFER_MINUTES).run();
+  const after = await phase3abQueueTotals(env, slateDate);
+  return {
+    ok: true,
+    rule: `PENDING rows with datetime(start_time) <= now + ${BOARD_ACTIONABLE_START_BUFFER_MINUTES} minutes are not actionable and are finalized as SKIPPED_STALE.`,
+    skipped_this_pass: Number(res?.meta?.changes || 0),
+    before,
+    after
   };
 }
 
@@ -1834,6 +1861,8 @@ async function runPhase3abFullRunOnce(input, env) {
   const beforeResults = await phase3abResultTotals(env, slateDate);
 
   let actionTaken = 'none';
+  const initialStaleFinalize = await phase3abSkipStalePendingRows(env, slateDate);
+  if (initialStaleFinalize.skipped_this_pass > 0) steps.push({ step: 'finalize_stale_pending_start_of_tick', result: initialStaleFinalize });
 
   // v1.3.04 throttle fix:
   // v1.3.03 tried repair + up to 10 build passes + 3 mining waves in one Worker invocation.
@@ -1855,8 +1884,10 @@ async function runPhase3abFullRunOnce(input, env) {
     actionTaken = 'single_queue_build_pass';
     steps.push({ step: 'auto_build_queue_temp_single_pass', result: build });
   } else {
+    const postBuildStaleFinalize = await phase3abSkipStalePendingRows(env, slateDate);
+    if (postBuildStaleFinalize.skipped_this_pass > 0) steps.push({ step: 'finalize_stale_pending_after_build', result: postBuildStaleFinalize });
     const refreshedQueue = await phase3abQueueTotals(env, slateDate);
-    const hasActiveQueue = (refreshedQueue.pending_rows + refreshedQueue.retry_later_rows + refreshedQueue.running_rows) > 0;
+    const hasActiveQueue = (refreshedQueue.actionable_pending_rows + refreshedQueue.retry_later_rows + refreshedQueue.running_rows) > 0;
 
     if (hasActiveQueue) {
       const phase3MineLimit = Math.max(1, Math.min(Number(input?.phase3_mine_limit || input?.limit || 12), BOARD_QUEUE_AUTO_MINE_LIMIT));
@@ -1882,19 +1913,22 @@ async function runPhase3abFullRunOnce(input, env) {
   }
 
 
+  const finalStaleFinalize = await phase3abSkipStalePendingRows(env, slateDate);
+  if (finalStaleFinalize.skipped_this_pass > 0) steps.push({ step: 'finalize_stale_pending_before_completion_gate', result: finalStaleFinalize });
   const afterQueue = await phase3abQueueTotals(env, slateDate);
   const afterResults = await phase3abResultTotals(env, slateDate);
-  const activeRows = afterQueue.pending_rows + afterQueue.retry_later_rows + afterQueue.running_rows;
-  const completeNoActive = activeRows === 0;
+  const actionableActiveRows = afterQueue.actionable_pending_rows + afterQueue.retry_later_rows + afterQueue.running_rows;
+  const completeNoActionable = actionableActiveRows === 0 && afterQueue.pending_rows === 0;
   const hasErrors = afterQueue.error_rows > 0;
+  const hasSkips = afterQueue.skipped_stale_rows > 0;
   let cleanup = null;
   let status = 'partial_continue';
   let dataOk = false;
-  if (completeNoActive && !hasErrors && afterQueue.total_rows > 0) {
+  if (completeNoActionable && !hasErrors && afterQueue.total_rows > 0) {
     cleanup = await cleanPhase3abCompletedQueueTemp(env, slateDate);
-    status = 'completed';
+    status = hasSkips ? 'completed_with_skips' : 'completed';
     dataOk = afterResults.certified_a_results > 0;
-  } else if (completeNoActive && hasErrors) {
+  } else if (completeNoActionable && hasErrors) {
     status = 'completed_with_errors_review';
     dataOk = afterResults.certified_a_results > 0;
   }
@@ -1918,11 +1952,23 @@ async function runPhase3abFullRunOnce(input, env) {
       certified_a_results: afterResults.certified_a_results,
       rule: 'board_factor_results rows with status COMPLETED and factor_count > 0 are treated as certified raw Phase 3A/3B rows for this test run.'
     },
-    temp_cleanup: cleanup || { skipped: true, reason: status === 'partial_continue' ? 'queue still has active rows or queue build needs continuation' : 'queue has ERROR rows requiring review before temp cleanup' },
+    completion_gate: {
+      total_rows: afterQueue.total_rows,
+      completed_rows: afterQueue.completed_rows,
+      actionable_pending_rows: afterQueue.actionable_pending_rows,
+      pending_rows: afterQueue.pending_rows,
+      skipped_stale_rows: afterQueue.skipped_stale_rows,
+      retry_later_rows: afterQueue.retry_later_rows,
+      running_rows: afterQueue.running_rows,
+      error_rows: afterQueue.error_rows,
+      final_status: status,
+      stale_rule: `PENDING rows at or inside now + ${BOARD_ACTIONABLE_START_BUFFER_MINUTES} minutes are finalized as SKIPPED_STALE and do not keep Phase 3 running.`
+    },
+    temp_cleanup: cleanup || { skipped: true, reason: status === 'partial_continue' ? 'queue still has actionable pending/retry/running rows or queue build needs continuation' : 'queue has ERROR rows requiring review before temp cleanup' },
     needs_continue: status === 'partial_continue',
     steps,
     next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
-    note: 'v1.3.18 keeps the Phase 3 global no-parallel lock, but replaces single-wave throttling with a multi-wave bounded runner. Backend-prefill rows can complete in larger safe batches while Gemini-required rows remain protected by the governor, runtime cutoff, and stale-task cleanup. No scoring or final candidate ranking is added.'
+    note: 'v1.3.19 preserves the v1.3.18 multi-wave runner and adds stale-pending finalization: rows too close to game start are marked SKIPPED_STALE and no longer keep Phase 3 looping. No scoring or final candidate ranking is added.'
   };
 }
 
@@ -1969,7 +2015,8 @@ async function runPhase3abDeferredRow(env, row, input = {}) {
       if (result.needs_continue) {
         await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, JSON.stringify(result), row.request_id).run();
       } else {
-        await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(result.data_ok ? 'COMPLETED' : 'COMPLETED_REVIEW', JSON.stringify(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
+        const finalDeferredStatus = result.status === 'completed_with_skips' ? 'COMPLETED_WITH_SKIPS' : (result.data_ok ? 'COMPLETED' : 'COMPLETED_REVIEW');
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(finalDeferredStatus, JSON.stringify(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
       }
     }
     await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(result.ok ? 'success' : 'failed', JSON.stringify(result), taskId).run().catch(() => null);
@@ -2019,9 +2066,9 @@ async function checkPhase3abFullRun(input, env) {
   const lock = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
   const queueHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
   const resultHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
-  const tempClean = queue.total_rows === 0 || (queue.pending_rows + queue.retry_later_rows + queue.running_rows + queue.completed_rows) === 0;
+  const tempClean = queue.total_rows === 0 || (queue.pending_rows + queue.retry_later_rows + queue.running_rows + queue.completed_rows + queue.skipped_stale_rows) === 0;
   const status = latest?.status || 'not_scheduled';
-  const pass = ['COMPLETED','COMPLETED_REVIEW'].includes(status) && results.certified_a_results > 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0 && queue.error_rows === 0;
+  const pass = ['COMPLETED','COMPLETED_REVIEW','COMPLETED_WITH_SKIPS'].includes(status) && results.certified_a_results > 0 && queue.actionable_pending_rows === 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0 && queue.error_rows === 0;
   return {
     ok: pass,
     data_ok: pass,
@@ -2035,6 +2082,18 @@ async function checkPhase3abFullRun(input, env) {
     result_totals: results,
     temp_cleanup: { temp_rows_cleaned: tempClean, rule: 'board_factor_queue is the Phase 3A/3B temp/working table; board_factor_results is the promoted main raw-result table.' },
     certification_a: { certified_a_results: results.certified_a_results, data_ok: results.certified_a_results > 0 },
+    completion_gate: {
+      total_rows: queue.total_rows,
+      completed_rows: queue.completed_rows,
+      actionable_pending_rows: queue.actionable_pending_rows,
+      pending_rows: queue.pending_rows,
+      skipped_stale_rows: queue.skipped_stale_rows,
+      retry_later_rows: queue.retry_later_rows,
+      running_rows: queue.running_rows,
+      error_rows: queue.error_rows,
+      final_status: status,
+      pass
+    },
     lock_state: lock || null,
     queue_health: queueHealth,
     result_health: resultHealth,
