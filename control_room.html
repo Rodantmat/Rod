@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.19 - Phase 3 Stale Pending Finalizer</div>
+<div id="versionTag">v1.3.20 - Sleeper RBI/RFI Board Signal Runner</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -169,6 +169,12 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="check" onclick="runJobButton('PHASE 3A/3B > Check Full Run','check_phase3ab_full_run')">Check Full Run</button>
 </div><div class="small">Phase 3A/3B test: schedule for next minute, acquire global no-parallel lock, build board_factor_queue temp rows, mine/promote raw Gemini results into board_factor_results, clean completed temp rows when complete. If another job is running, postpone/retry later.</div></div>
 
+
+<div class="card"><h2>Sleeper RBI/RFI Board Signals</h2><div class="grid">
+<button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Run Board Signal','run_sleeper_rbi_rfi_market_board')">Run Board Signal</button>
+<button class="check" onclick="runJobButton('SLEEPER RBI/RFI > Check Board Signal','check_sleeper_rbi_rfi_market_board')">Check Board Signal</button>
+<button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Schedule Daily 4:30AM','schedule_sleeper_rbi_rfi_daily_430')">Schedule/Run 4:30AM</button>
+</div><div class="small">Sleeper RBI/RFI signal runner: uses sleeper_rbi_rfi_board only, normalizes target line to 0.5, marks regular rows as CERTIFIED_BOARD_PRESENT, rejects more-only rows for under-only targets. No full-slate Gemini scrape, no external odds, no scoring.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -588,7 +594,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.19 - Phase 3 Stale Pending Finalizer",
+    version: "v1.3.20 - Sleeper RBI/RFI Board Signal Runner",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

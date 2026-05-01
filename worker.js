@@ -1,7 +1,7 @@
-// AlphaDog v1.3.19 - Phase 3 Stale Pending Finalizer compatible worker
+// AlphaDog v1.3.20 - Sleeper RBI/RFI Board Signal Runner compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.19 - Phase 3 Stale Pending Finalizer";
-const SYSTEM_CODENAME = "Stale Pending Finalizer";
+const SYSTEM_VERSION = "v1.3.20 - Sleeper RBI/RFI Board Signal Runner";
+const SYSTEM_CODENAME = "Sleeper Board Signal Runner";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -144,6 +144,9 @@ const JOB_DISPLAY_LABELS = {
   schedule_phase3ab_daily_4am: "PHASE 3A/3B > Schedule Daily 4AM",
   run_phase3ab_full_run_tick: "PHASE 3A/3B > Run Full Run Tick",
   check_phase3ab_full_run: "PHASE 3A/3B > Check Full Run",
+  run_sleeper_rbi_rfi_market_board: "SLEEPER RBI/RFI > Run Board Signal",
+  check_sleeper_rbi_rfi_market_board: "SLEEPER RBI/RFI > Check Board Signal",
+  schedule_sleeper_rbi_rfi_daily_430: "SLEEPER RBI/RFI > Schedule Daily 4:30AM",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -897,6 +900,8 @@ export default {
         const scheduled = await schedulePhase3abDaily4am({ job: 'schedule_phase3ab_daily_4am', trigger: 'scheduled_phase3ab_4am_cron', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC' }, env);
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
+      } else if (cron === '30 11 * * *') {
+        result = await runSleeperRbiRfiMarketBoard({ job: 'run_sleeper_rbi_rfi_market_board', trigger: 'scheduled_sleeper_rbi_rfi_430am_cron', cron, daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
       } else if (cron === '* * * * *') {
         // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
@@ -1074,6 +1079,9 @@ function executableJobNames() {
     "schedule_phase3ab_daily_4am",
     "run_phase3ab_full_run_tick",
     "check_phase3ab_full_run",
+    "run_sleeper_rbi_rfi_market_board",
+    "check_sleeper_rbi_rfi_market_board",
+    "schedule_sleeper_rbi_rfi_daily_430",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -1968,7 +1976,7 @@ async function runPhase3abFullRunOnce(input, env) {
     needs_continue: status === 'partial_continue',
     steps,
     next_action: status === 'partial_continue' ? 'Wait for the next minute tick or run PHASE 3A/3B > Run Full Run Tick again, then Check Full Run.' : 'Run PHASE 3A/3B > Check Full Run.',
-    note: 'v1.3.19 preserves the v1.3.18 multi-wave runner and adds stale-pending finalization: rows too close to game start are marked SKIPPED_STALE and no longer keep Phase 3 looping. No scoring or final candidate ranking is added.'
+    note: 'v1.3.20 preserves the v1.3.19 stale-pending finalizer and adds Sleeper RBI/RFI board signal runner. No scoring or final candidate ranking is added.'
   };
 }
 
@@ -7845,6 +7853,9 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "schedule_phase3ab_full_run_test") return await schedulePhase3abFullRunTest({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_phase3ab_full_run_tick") return await runPhase3abFullRunTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_phase3ab_full_run") return await checkPhase3abFullRun({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_sleeper_rbi_rfi_market_board") return await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "schedule_sleeper_rbi_rfi_daily_430") return await runSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_430" }, env);
+  if (jobName === "check_sleeper_rbi_rfi_market_board") return await checkSleeperRbiRfiMarketBoard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -9713,6 +9724,89 @@ async function handleSleeperTextParse(request,env){if(!isAuthorized(request,env)
 async function handleSleeperTextSave(request,env){if(!isAuthorized(request,env))return unauthorized();const input=await safeJson(request);const slateDate=String(input.slate_date||'').trim()||getPTParts().date;const sourceLabel=String(input.source_label||'sleeper_text');const replaceSlate=!!input.replace_slate;const parsed=parseSleeperTextBoard(input.raw_text||'',slateDate,sourceLabel);await ensureSleeperBoardTables(env);if(replaceSlate)await env.DB.prepare(`UPDATE sleeper_rbi_rfi_board SET is_current=0, updated_at=CURRENT_TIMESTAMP WHERE slate_date=? AND market IN ('RBI','RFI')`).bind(slateDate).run();let saved=0;const stmts=[];for(const r of parsed.rows){stmts.push(env.DB.prepare(`INSERT INTO sleeper_rbi_rfi_board (sleeper_leg_id,slate_date,player_name,team,opponent,opponent_team,venue_indicator,date_label,market,original_line_score,normalized_line_score,entry_type,target_side,source_label,raw_line,validation_status,is_current,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(sleeper_leg_id) DO UPDATE SET player_name=excluded.player_name,team=excluded.team,opponent=excluded.opponent,opponent_team=excluded.opponent_team,venue_indicator=excluded.venue_indicator,date_label=excluded.date_label,market=excluded.market,original_line_score=excluded.original_line_score,normalized_line_score=excluded.normalized_line_score,entry_type=excluded.entry_type,target_side=excluded.target_side,source_label=excluded.source_label,raw_line=excluded.raw_line,validation_status=excluded.validation_status,is_current=1,updated_at=CURRENT_TIMESTAMP`).bind(r.sleeper_leg_id,r.slate_date,r.player_name,r.team,r.opponent,r.opponent_team,r.venue_indicator,r.date_label,r.market,r.original_line_score,r.normalized_line_score,r.entry_type,r.target_side,r.source_label,r.raw_line,r.validation_status))}for(let i=0;i<stmts.length;i+=40){const chunk=stmts.slice(i,i+40);if(chunk.length){const res=await env.DB.batch(chunk);saved+=res.length}}const check=await sleeperTextCounts(env,slateDate);return json({ok:true,data_ok:saved>0,version:SYSTEM_VERSION,job:'sleeper_text_save',slate_date:slateDate,replace_slate:replaceSlate,parsed_count:parsed.rows.length,saved_count:saved,counts:parsed.counts,db_counts:check.counts,errors:parsed.errors,rows:parsed.rows,note:'Saved Sleeper RBI/RFI board rows. Downstream scoring normalizes RBI/RFI target line to 0.5.'})}
 async function sleeperTextCounts(env,slateDate){await ensureSleeperBoardTables(env);const res=await env.DB.prepare(`SELECT market, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 GROUP BY market ORDER BY market`).bind(slateDate).all();const counts={};for(const r of res.results||[])counts[r.market]=r.rows_count;const recent=await env.DB.prepare(`SELECT sleeper_leg_id,player_name,team,opponent,date_label,market,original_line_score,normalized_line_score,entry_type,target_side,source_label,updated_at FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 ORDER BY market,player_name LIMIT 50`).bind(slateDate).all();return{counts,recent:recent.results||[]}}
 async function handleSleeperTextCheck(request,env){if(!isAuthorized(request,env))return unauthorized();const url=new URL(request.url);const slateDate=url.searchParams.get('slate_date')||getPTParts().date;const out=await sleeperTextCounts(env,slateDate);return json({ok:true,data_ok:true,version:SYSTEM_VERSION,job:'sleeper_text_check',slate_date:slateDate,counts:out.counts,recent:out.recent})}
+
+async function ensureSleeperMarketSignalTables(env) {
+  await ensureSleeperBoardTables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS sleeper_rbi_rfi_market_signals (
+    signal_id TEXT PRIMARY KEY,
+    slate_date TEXT NOT NULL,
+    sleeper_leg_id TEXT NOT NULL,
+    player_name TEXT NOT NULL,
+    team TEXT NOT NULL,
+    opponent TEXT,
+    opponent_team TEXT,
+    venue_indicator TEXT,
+    date_label TEXT,
+    market TEXT NOT NULL,
+    normalized_line_score REAL DEFAULT 0.5,
+    entry_type TEXT DEFAULT 'regular',
+    target_side TEXT,
+    source_label TEXT DEFAULT 'sleeper_board',
+    signal_status TEXT NOT NULL,
+    usable_for_under INTEGER DEFAULT 0,
+    signal_score REAL,
+    validation_flags_json TEXT DEFAULT '[]',
+    raw_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_market_signals_slate_market ON sleeper_rbi_rfi_market_signals (slate_date, market, signal_status)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_sleeper_market_signals_leg ON sleeper_rbi_rfi_market_signals (sleeper_leg_id)`).run();
+}
+
+function sleeperSignalStatusForRow(row) {
+  const flags = [];
+  const market = String(row.market || '').toUpperCase();
+  const entryType = String(row.entry_type || 'regular').toLowerCase();
+  if (!['RBI', 'RFI'].includes(market)) flags.push('UNSUPPORTED_MARKET');
+  const usableForUnder = entryType === 'regular';
+  if (!usableForUnder) flags.push('MORE_ONLY_NO_UNDER_AVAILABLE');
+  const signalStatus = flags.includes('UNSUPPORTED_MARKET') ? 'REJECT_UNSUPPORTED_MARKET' : (usableForUnder ? 'CERTIFIED_BOARD_PRESENT' : 'REJECT_MORE_ONLY');
+  const targetSide = market === 'RBI' ? 'UNDER_0_5_RBI' : market === 'RFI' ? 'NRFI_UNDER_0_5_FIRST_INNING' : null;
+  return { signalStatus, usableForUnder, flags, targetSide, signalScore: usableForUnder ? 10.0 : 0.0 };
+}
+
+async function runSleeperRbiRfiMarketBoard(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = String((input || {}).slate_date || slate.slate_date || getPTParts().date);
+  await ensureSleeperMarketSignalTables(env);
+  const sourceRows = await env.DB.prepare(`SELECT * FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 AND market IN ('RBI','RFI') ORDER BY market, player_name, sleeper_leg_id`).bind(slateDate).all();
+  const rows = sourceRows.results || [];
+  let saved = 0;
+  const counts = { RBI: 0, RFI: 0 };
+  const status_counts = {};
+  const stmts = [];
+  for (const r of rows) {
+    const sig = sleeperSignalStatusForRow(r);
+    counts[r.market] = (counts[r.market] || 0) + 1;
+    status_counts[sig.signalStatus] = (status_counts[sig.signalStatus] || 0) + 1;
+    const signalId = `sleeper_market|${slateDate}|${simpleHashText(String(r.sleeper_leg_id || '') + '|' + String(r.market || ''))}`;
+    const rawJson = JSON.stringify({ source: 'sleeper_rbi_rfi_board', rule: 'board_presence_signal_only_no_external_odds_no_gemini', sleeper_leg_id: r.sleeper_leg_id, player_name: r.player_name, team: r.team, opponent: r.opponent, market: r.market, normalized_line_score: 0.5, entry_type: r.entry_type, target_side: sig.targetSide, validation_flags: sig.flags });
+    stmts.push(env.DB.prepare(`INSERT INTO sleeper_rbi_rfi_market_signals (signal_id,slate_date,sleeper_leg_id,player_name,team,opponent,opponent_team,venue_indicator,date_label,market,normalized_line_score,entry_type,target_side,source_label,signal_status,usable_for_under,signal_score,validation_flags_json,raw_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,0.5,?,?,'sleeper_board',?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(signal_id) DO UPDATE SET player_name=excluded.player_name,team=excluded.team,opponent=excluded.opponent,opponent_team=excluded.opponent_team,venue_indicator=excluded.venue_indicator,date_label=excluded.date_label,market=excluded.market,normalized_line_score=excluded.normalized_line_score,entry_type=excluded.entry_type,target_side=excluded.target_side,source_label=excluded.source_label,signal_status=excluded.signal_status,usable_for_under=excluded.usable_for_under,signal_score=excluded.signal_score,validation_flags_json=excluded.validation_flags_json,raw_json=excluded.raw_json,updated_at=CURRENT_TIMESTAMP`).bind(signalId,slateDate,r.sleeper_leg_id,r.player_name,r.team,r.opponent,r.opponent_team,r.venue_indicator,r.date_label,r.market,r.entry_type||'regular',sig.targetSide,sig.signalStatus,sig.usableForUnder?1:0,sig.signalScore,JSON.stringify(sig.flags),rawJson));
+  }
+  for (let i = 0; i < stmts.length; i += 40) {
+    const chunk = stmts.slice(i, i + 40);
+    if (chunk.length) { const res = await env.DB.batch(chunk); saved += res.length; }
+  }
+  const check = await checkSleeperRbiRfiMarketBoard({ slate_date: slateDate, job: 'check_sleeper_rbi_rfi_market_board' }, env);
+  return { ok: true, data_ok: rows.length > 0 && saved > 0, version: SYSTEM_VERSION, job: input.job || 'run_sleeper_rbi_rfi_market_board', slate_date: slateDate, mode: 'sleeper_board_presence_signal_only', source_rows: rows.length, saved_signals: saved, counts, status_counts, check, note: 'Uses Sleeper board rows only. No full-slate Gemini scrape, no external odds, no final scoring.' };
+}
+
+async function checkSleeperRbiRfiMarketBoard(input, env) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = String((input || {}).slate_date || slate.slate_date || getPTParts().date);
+  await ensureSleeperMarketSignalTables(env);
+  const sourceCountsRes = await env.DB.prepare(`SELECT market, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 AND market IN ('RBI','RFI') GROUP BY market ORDER BY market`).bind(slateDate).all();
+  const signalCountsRes = await env.DB.prepare(`SELECT market, signal_status, COUNT(*) AS rows_count FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? GROUP BY market, signal_status ORDER BY market, signal_status`).bind(slateDate).all();
+  const usableRes = await env.DB.prepare(`SELECT market, COUNT(*) AS usable_rows FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? AND signal_status='CERTIFIED_BOARD_PRESENT' AND usable_for_under=1 GROUP BY market ORDER BY market`).bind(slateDate).all();
+  const sampleRes = await env.DB.prepare(`SELECT player_name,team,opponent,date_label,market,normalized_line_score,entry_type,target_side,signal_status,usable_for_under,updated_at FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? ORDER BY market, signal_status, player_name LIMIT 50`).bind(slateDate).all();
+  const source_counts = {};
+  for (const r of sourceCountsRes.results || []) source_counts[r.market] = r.rows_count;
+  const usable_counts = {};
+  for (const r of usableRes.results || []) usable_counts[r.market] = r.usable_rows;
+  const total_signals = (signalCountsRes.results || []).reduce((a, r) => a + Number(r.rows_count || 0), 0);
+  return { ok: true, data_ok: total_signals > 0, version: SYSTEM_VERSION, job: input.job || 'check_sleeper_rbi_rfi_market_board', slate_date: slateDate, source_counts, signal_counts: signalCountsRes.results || [], usable_counts, total_signals, sample: sampleRes.results || [], next_action: total_signals > 0 ? 'Sleeper RBI/RFI board signal table is ready for downstream RBI/RFI jobs.' : 'Run SLEEPER RBI/RFI > Run Board Signal after ingesting Sleeper text board.', note: 'CERTIFIED_BOARD_PRESENT means the row exists on the Sleeper board and is regular/under-capable. REJECT_MORE_ONLY rows are retained but not usable for under-only targets.' };
+}
 
 async function handleSleeperVideoUpload(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
