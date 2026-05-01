@@ -1,4 +1,4 @@
-// AlphaDog v1.3.37 - Run Wrapper Success Detector Fix compatible worker
+// AlphaDog v1.3.38 - Scoring Slate Data Guard compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 const SYSTEM_VERSION = "v1.3.38 - Scoring Slate Data Guard";
 const SYSTEM_CODENAME = "Freshness Audit Only";
@@ -10518,7 +10518,7 @@ async function runMlbScoringV1(input,env){
     if(fam==='RBI'){cap=Math.min(cap,92);caps.push('C04_RBI_CAP_92');}
     if(lineType!=='standard'){cap=Math.min(cap,lineType==='demon'?40:85);caps.push(`C_ALT_${lineType.toUpperCase()}`);}
     if(dir==='UNDER'){cap=Math.min(cap,85);caps.push('C_UNDER_CAP_85');}
-    // v1.3.37: freshness remains audit-only. Derived modifiers are deterministic and in-house only.
+    // v1.3.38: freshness remains audit-only. Derived modifiers are deterministic and in-house only.
     if(spread>.10)blocks.push('B_DIVERGENCE_10PCT'); else if(spread>.07){final-=10;pen.push('P_SPREAD_7PCT_MINUS10');}
     if(maxHold>.60)blocks.push('B_HOLD_OVER_60PCT'); else if(maxHold>.35){final-=15;pen.push('P_HOLD_35PCT_MINUS15');}
     final=Math.max(0,Math.min(cap,final)); const conf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost)); // freshness audit-only, no confidence drag
