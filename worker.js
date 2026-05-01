@@ -1,7 +1,7 @@
-// AlphaDog v1.3.41 - Score Calibration Lift + Active Board Replace compatible worker
+// AlphaDog v1.3.42 - Score Candidate Release Board compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.41 - Score Calibration Lift + Active Board Replace";
-const SYSTEM_CODENAME = "Freshness Audit Only";
+const SYSTEM_VERSION = "v1.3.42 - Score Candidate Release Board";
+const SYSTEM_CODENAME = "Score Candidate Release Board";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -175,6 +175,7 @@ const JOB_DISPLAY_LABELS = {
   run_mlb_scoring_v1: "SCORING V1 > Run MLB Scores",
   check_mlb_scoring_v1: "SCORING V1 > Check MLB Scores",
   inspect_mlb_score_audit_v1: "SCORING V1 > Inspect Score Audit",
+  build_mlb_score_candidate_board_v1: "SCORING V1 > Build Score Candidate Board",
   check_static_venues: "CHECK > Static Venues",
   check_static_team_aliases: "CHECK > Static Team Aliases",
   check_static_players: "CHECK > Static Players",
@@ -1140,6 +1141,7 @@ function executableJobNames() {
     "run_mlb_scoring_v1",
     "check_mlb_scoring_v1",
     "inspect_mlb_score_audit_v1",
+    "build_mlb_score_candidate_board_v1",
     "check_static_venues",
     "check_static_team_aliases",
     "check_static_players",
@@ -7926,6 +7928,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_mlb_scoring_v1") return await runMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_mlb_scoring_v1") return await checkMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_audit_v1") return await inspectMlbScoreAuditV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "build_mlb_score_candidate_board_v1") return await buildMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
@@ -10471,6 +10474,56 @@ function scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,ctx,prob,spread,max
   return {mods,totalMod:+totalMod.toFixed(2),confidenceBoost:+confidenceBoost.toFixed(3),player_context:player,game_total:Number.isFinite(total)?+total.toFixed(2):null,park_context:{home_team:home,park_factor_run:park.park_factor_run??null,park_factor_hr:park.park_factor_hr??null},weather_context:weather||null};
 }
 
+async function buildMlbScoreCandidateBoardV1(input, env){
+  if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',error:'Missing DB binding'};
+  await ensureMlbScoringV1Tables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS score_candidate_board (candidate_key TEXT PRIMARY KEY, score_id TEXT, run_id TEXT, sport TEXT, slate_date TEXT, player_name TEXT, normalized_player_name TEXT, team TEXT, opponent TEXT, prop_family TEXT, line_type TEXT, line_number REAL, line_direction TEXT, no_vig_prob REAL, final_score REAL, confidence_grade TEXT, recommendation_status TEXT, market_confidence REAL, candidate_status TEXT, candidate_rank INTEGER, risk_notes TEXT, audit_payload TEXT, model_version TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_score_candidate_board_slate ON score_candidate_board (slate_date, candidate_status, final_score DESC)`).run();
+  const scoringSlateGuard=await resolveScoringSlateDate(input, env);
+  const slateDate=scoringSlateGuard.slate_date;
+  const res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
+  const rows=res.results||[];
+  await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run();
+  const inserts=[];
+  const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED:0};
+  const released=[];
+  let rank=0;
+  for(const r of rows){
+    let audit={};
+    try{audit=JSON.parse(r.audit_payload||'{}')||{};}catch(e){audit={parse_error:String(e&&e.message||e)};}
+    const caps=Array.isArray(audit.caps)?audit.caps:[];
+    const blocks=Array.isArray(audit.blocks)?audit.blocks:[];
+    const penalties=Array.isArray(audit.penalties)?audit.penalties:[];
+    const score=Number(r.final_score)||0;
+    const conf=String(r.confidence_grade||'').toUpperCase();
+    const mc=Number(r.market_confidence)||0;
+    const bookCount=Number(audit.book_count)||0;
+    let status='DEFERRED';
+    const risks=[];
+    if(blocks.length)risks.push('blocked_logic_present');
+    if(caps.includes('C01_SINGLE_BOOK_60'))risks.push('single_book_cap');
+    if(caps.includes('C01_THIN_UNDER3_75'))risks.push('thin_under_3_books');
+    if(caps.includes('C_ALT_ALT'))risks.push('alt_line_cap');
+    if(caps.includes('C_UNDER_CAP_85'))risks.push('under_cap');
+    if(penalties.length)risks.push('penalty_flags_present');
+    if(bookCount<2)risks.push('book_count_lt_2');
+    if(mc<0.35)risks.push('market_confidence_lt_0_35');
+    if(score>=80 && ['A','B'].includes(conf) && mc>=0.55 && bookCount>=3 && !blocks.length && !caps.includes('C01_SINGLE_BOOK_60')) status='QUALIFIED';
+    else if(score>=75 && ['A','B','C'].includes(conf) && mc>=0.40 && bookCount>=2 && !blocks.length && !caps.includes('C01_SINGLE_BOOK_60')) status='PLAYABLE';
+    else if(score>=70 && ['A','B','C'].includes(conf) && !blocks.length) status='WATCHLIST';
+    if(status==='DEFERRED') continue;
+    rank++;
+    summary[status]=(summary[status]||0)+1;
+    const riskNotes={caps,penalties,blocks,risks,book_count:bookCount,freshness_policy:audit.freshness_policy||'AUDIT_ONLY_NO_SCORE_EFFECT',odds_age_seconds:audit.odds_age_seconds??null,derived_modifier_total:audit.derived_modifier_total??null,base_score:audit.base_score??null};
+    const key=[slateDate,r.prop_family,r.player_name,r.line_direction,r.line_number,r.line_type].map(x=>String(x??'').replace(/\|/g,'_')).join('|');
+    inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,rank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
+    if(released.length<50)released.push({rank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:r.line_number,line_type:r.line_type,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
+  }
+  for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
+  const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
+  return{ok:true,data_ok:rank>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. QUALIFIED requires 80+, B/A confidence, market confidence >=0.55, and 3+ books; PLAYABLE requires 75+, C+ confidence, market confidence >=0.40, and 2+ books.',note:'v1.3.42 builds a read-ready candidate release board from active_score_board only. It does not call external APIs or Gemini. It does not force 80s/90s; it promotes only what the scored audit already supports.'};
+}
+
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mlb_scoring_scratchpad (run_id TEXT, scratch_id TEXT PRIMARY KEY, status TEXT, sport TEXT, slate_date TEXT, game_id TEXT, event_id TEXT, game_datetime_utc TEXT, player_name TEXT, normalized_player_name TEXT, player_id TEXT, team TEXT, opponent TEXT, is_home INTEGER, prop_family TEXT, market_key TEXT, line_type TEXT, line_number REAL, line_direction TEXT, source_board TEXT, source_line_id TEXT, market_odds REAL, no_vig_prob REAL, consensus_prob REAL, market_confidence REAL, raw_score REAL, final_score REAL, confidence_grade TEXT, recommendation_status TEXT, scoring_modifiers TEXT, caps TEXT, penalties TEXT, blocks TEXT, audit_payload TEXT, model_version TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
@@ -10534,7 +10587,7 @@ async function runMlbScoringV1(input,env){
     final=Math.max(0,Math.min(cap,final)); const conf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost)); // freshness audit-only, no confidence drag
     const rec=scoreRec(final,blocks), grade=scoreGrade(final,conf);
     const source=`odds_consensus|${slateDate}|${s.event_id}|${scoreNormName(s.player_name)}|${s.market_key}|${Number(s.outcome_point)}|${dir}`; const scratchId=`scratch|${runId}|${source}`; const scoreId=`score|${runId}|${source}|${simpleHashText(JSON.stringify({prob,final,conf,rec,grade}))}`;
-    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.3.41_lifted_probability_map',score_calibration_note:'base formula lifted to widen 70/watchlist tier without forcing 90s; active board replaced per run'};
+    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.3.42_lifted_probability_map',score_calibration_note:'base formula lifted to widen 70/watchlist tier without forcing 90s; active board replaced per run'};
     scratchStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_scoring_scratchpad (run_id,scratch_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,scratchId,blocks.length?'BLOCKED':'CERTIFIED','MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),null,modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,scoreAmerican(prob),prob,prob,conf,raw,final,grade,rec,JSON.stringify(modBundle.mods),JSON.stringify(caps),JSON.stringify(pen),JSON.stringify(blocks),JSON.stringify(audit),SYSTEM_VERSION));
     scratch++; if(blocks.length)continue; cert++;
     const table=scoreTable(fam); if(!table)continue;
@@ -10545,9 +10598,9 @@ async function runMlbScoringV1(input,env){
   }
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.41_lifted_probability_map',batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_score_calibration_lift_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.41 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, and active-board replace: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_score_calibration_lift_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
@@ -10574,7 +10627,7 @@ async function checkMlbScoringV1(input,env){
   const activeRowsOk=activeRows>0;
   const scoringEngineOk=latestRunCompleted&&scratchClean&&activeRowsOk;
   const dataOk=scoringEngineOk||(top.results||[]).length>0;
-  return{ok:true,data_ok:dataOk,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,scoring_engine_ok:scoringEngineOk,latest_run_completed:latestRunCompleted,scratch_clean:scratchClean,active_rows_ok:activeRowsOk,active_rows:activeRows,check_wrapper_fixed:true,retry_detector_override:'If body.ok=true and latest_run_completed=true, Control Room treats the check as final success, not retry.',modifier_calibration:{ready:true,active:true,applied_fields:['lineup_slot_modifier','team_total_modifier','park_modifier','weather_modifier','pitcher_handedness_modifier_when_available','market_depth_modifier','line_type_cap','rbi_table_setter_modifier_when_available'],rule:'freshness remains audit-only; no stale score penalty or stale hard cap in scoring V1.'},latest_runs:runRows,table_counts:tableRows,active_distribution:dist.results||[],top_active_scores:top.results||[],scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:activeRowsOk?'Scoring V1 active board exists. Next: run and inspect score distribution/modifier audit.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.41 check: Scoring Slate Data Guard active; if the UI sends an empty/tomorrow slate, check falls back to the latest odds-backed slate. Derived modifier calibration is active. Freshness remains audit-only.'};
+  return{ok:true,data_ok:dataOk,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,scoring_engine_ok:scoringEngineOk,latest_run_completed:latestRunCompleted,scratch_clean:scratchClean,active_rows_ok:activeRowsOk,active_rows:activeRows,check_wrapper_fixed:true,retry_detector_override:'If body.ok=true and latest_run_completed=true, Control Room treats the check as final success, not retry.',modifier_calibration:{ready:true,active:true,applied_fields:['lineup_slot_modifier','team_total_modifier','park_modifier','weather_modifier','pitcher_handedness_modifier_when_available','market_depth_modifier','line_type_cap','rbi_table_setter_modifier_when_available'],rule:'freshness remains audit-only; no stale score penalty or stale hard cap in scoring V1.'},latest_runs:runRows,table_counts:tableRows,active_distribution:dist.results||[],top_active_scores:top.results||[],scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:activeRowsOk?'Scoring V1 active board exists. Next: run and inspect score distribution/modifier audit.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.42 check: Scoring Slate Data Guard active; if the UI sends an empty/tomorrow slate, check falls back to the latest odds-backed slate. Derived modifier calibration is active. Freshness remains audit-only.'};
 }
 
 
@@ -10615,7 +10668,7 @@ async function inspectMlbScoreAuditV1(input,env){
   const target_per_100={elite_90_99:'2-3',strong_80_89:'12-15',watchlist_70_79:'~25',weak_60_69:'~30',reject_under_60:'25-30'};
   const observed_per_100={elite_90_99:+(rows.length?elite/rows.length*100:0).toFixed(1),strong_80_89:+(rows.length?strong/rows.length*100:0).toFixed(1),watchlist_70_79:+(rows.length?watchlist/rows.length*100:0).toFixed(1),weak_60_69:+(rows.length?weak/rows.length*100:0).toFixed(1),reject_under_60:+(rows.length?reject/rows.length*100:0).toFixed(1)};
   const calibration_read={status:rows.length?'audited':'no_active_rows',average_score:+(rows.length?totalScore/rows.length:0).toFixed(2),average_market_confidence:+(rows.length?totalConfidence/rows.length:0).toFixed(3),observed_per_100,target_per_100,interpretation:rows.length?'Current model is still conservative; next tuning should widen 70/80 tiers only after confirming modifier audit quality. Do not force 90s until market depth and derived factors support them.':'No active rows for selected slate.'};
-  return{ok:true,data_ok:rows.length>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_audit_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,rows_inspected:rows.length,audit_rows_parsed:auditRows,band_counts:bandCounts,prop_band_counts:propBand,confidence_summary,modifier_summary,cap_counts:capCounts,penalty_counts:penaltyCounts,block_counts:blockCounts,top_with_modifier_audit:topWithAudit,calibration_read,next_action:'Run SCORING V1 > Run MLB Scores, then Check MLB Scores, then Inspect Score Audit. No external API or Gemini is called by this inspector.',note:'v1.3.41 Score Calibration Lift audit is read-only. It parses active_score_board audit_payload, summarizes modifiers/caps/penalties, and compares distribution against target density. Freshness remains audit-only.'};
+  return{ok:true,data_ok:rows.length>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_audit_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,rows_inspected:rows.length,audit_rows_parsed:auditRows,band_counts:bandCounts,prop_band_counts:propBand,confidence_summary,modifier_summary,cap_counts:capCounts,penalty_counts:penaltyCounts,block_counts:blockCounts,top_with_modifier_audit:topWithAudit,calibration_read,next_action:'Run SCORING V1 > Run MLB Scores, then Check MLB Scores, then Inspect Score Audit. No external API or Gemini is called by this inspector.',note:'v1.3.42 Score Candidate Release audit is read-only. It parses active_score_board audit_payload, summarizes modifiers/caps/penalties, and compares distribution against target density. Freshness remains audit-only.'};
 }
 
 async function handleSleeperVideoUpload(request, env) {
