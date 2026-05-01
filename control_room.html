@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.28 - Odds API RBI Expansion Probe</div>
+<div id="versionTag">v1.3.29 - Odds Intel Temp Certifier</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -186,7 +186,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="run" onclick="runJobButton('ODDS API > Run Morning Odds','run_odds_api_morning')">Run Morning Odds</button>
 <button class="run" onclick="runJobButton('ODDS API > Run Early Afternoon Odds','run_odds_api_afternoon')">Run Early Afternoon Odds</button>
 <button class="check" onclick="runJobButton('ODDS API > Check Market Intel','check_odds_api_market_intel')">Check Market Intel</button>
-</div><div class="small">Odds API layer: one game-odds request first, then one batter-prop request per selected game. Uses h2h, spreads, totals, batter_hits, batter_rbis, and batter_total_bases only. RFI/NRFI Odds API probe is disabled for now. No Gemini and no scoring.</div></div>
+</div><div class="small">Odds API layer: mines to temp tables first, certifies the batch, promotes clean data to main, then cleans temp. Hits/Total Bases use strong-six books. RBI uses expanded books. RFI/NRFI Odds API probe is disabled for now. No Gemini and no scoring.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -606,7 +606,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.28 - Odds API RBI Expansion Probe",
+    version: "v1.3.29 - Odds Intel Temp Certifier",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
