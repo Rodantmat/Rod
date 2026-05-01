@@ -37,7 +37,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.24 - Sleeper RBI/RFI Window Mining Prep</div>
+<div id="versionTag">v1.3.25 - Odds API Market Intelligence</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -181,6 +181,12 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="warn" onclick="runJobButton('SLEEPER RBI/RFI > Run Early Afternoon Prep','run_sleeper_rbi_rfi_prep_afternoon')">Run Early Afternoon Prep</button>
 <button class="check" onclick="runJobButton('SLEEPER RBI/RFI > Check Window Prep','check_sleeper_rbi_rfi_window_prep')">Check Window Prep</button>
 </div><div class="small">Sleeper RBI/RFI signal + window runner: debug phase uses Sleeper board only. Morning Window processes all not-started/not-too-close rows. Early Afternoon Window processes games at/after 1:00 PM PT. Normalizes target line to 0.5, rejects more-only for under-only targets, excludes already-started rows and rows starting within 15 minutes. No full-slate Gemini scrape, no external odds, no scoring. Prep buttons join eligible window rows to existing Phase 3 raw factor coverage only.</div></div>
+
+<div class="card"><h2>Odds API Market Intelligence</h2><div class="grid">
+<button class="run" onclick="runJobButton('ODDS API > Run Morning Odds','run_odds_api_morning')">Run Morning Odds</button>
+<button class="run" onclick="runJobButton('ODDS API > Run Early Afternoon Odds','run_odds_api_afternoon')">Run Early Afternoon Odds</button>
+<button class="check" onclick="runJobButton('ODDS API > Check Market Intel','check_odds_api_market_intel')">Check Market Intel</button>
+</div><div class="small">Odds API layer: one game-odds request first, then one prop-odds request per selected game. Morning Odds is debug-all eligible games except started/within 15 minutes. Early Afternoon Odds is games at/after 1:00 PM PT. Stores raw payloads and normalized game/player prop odds. No Gemini and no scoring.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -600,7 +606,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.24 - Sleeper RBI/RFI Window Mining Prep",
+    version: "v1.3.25 - Odds API Market Intelligence",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
