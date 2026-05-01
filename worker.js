@@ -1,7 +1,7 @@
-// AlphaDog v1.3.29 - Odds Intel Temp Certifier compatible worker
+// AlphaDog v1.3.30 - Odds Scheduler Lock compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.29 - Odds Intel Temp Certifier";
-const SYSTEM_CODENAME = "Odds Intel Temp Certifier";
+const SYSTEM_VERSION = "v1.3.30 - Odds Scheduler Lock";
+const SYSTEM_CODENAME = "Odds Scheduler Lock";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -925,15 +925,19 @@ export default {
         const scheduled = await schedulePhase3abDaily4am({ job: 'schedule_phase3ab_daily_4am', trigger: 'scheduled_phase3ab_4am_cron', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC' }, env);
         const firstTick = await runDuePhase3abFullRun(env);
         result = { ok: true, data_ok: !!scheduled.data_ok || scheduled.status === 'already_scheduled_or_running', version: SYSTEM_VERSION, job: 'schedule_phase3ab_daily_4am', status: 'daily_phase3ab_scheduled', cron, daily_schedule: 'Daily 4:00 AM PDT / 11:00 UTC', scheduled, first_tick: firstTick, postpone_rule: 'If the global Phase 3 lock is busy, the request remains pending and retries 15 minutes later through the minute cron.', note: 'Phase 3A/3B daily full run scheduled. Minute cron continues build/mining ticks until complete; no parallel Phase 3 work is allowed.' };
+      } else if (cron === '30 11 * * *') {
+        const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_morning', trigger: 'scheduled_odds_api_morning_430am', cron, window_name: 'MORNING', daily_schedule: 'Daily 4:30 AM PDT / 11:30 UTC' }, env);
+        result = { ok: true, data_ok: !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_odds_api_morning_430am', status: odds.data_ok ? 'promoted' : 'needs_review', cron, odds, note: 'Dedicated Odds API morning cron. Uses temp-stage -> certify -> promote -> clean. No RFI probe, no Gemini, no scoring.' };
       } else if (cron === '0 13 * * *') {
         const board = await runSleeperRbiRfiMarketBoard({ job: 'run_sleeper_rbi_rfi_market_board', trigger: 'scheduled_sleeper_rbi_rfi_6am_cron', cron, daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
         const morning = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_morning', trigger: 'scheduled_sleeper_rbi_rfi_morning_window', cron, window_name: 'MORNING', daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
-        const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_morning', trigger: 'scheduled_odds_api_morning_6am', cron, window_name: 'MORNING', daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
-        result = { ok: true, data_ok: !!morning.data_ok || !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_sleeper_rbi_rfi_6am_window', status: 'completed', cron, board, morning, odds, note: 'Sleeper board/window plus Odds API morning market intelligence. No scoring.' };
+        const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_morning', trigger: 'scheduled_odds_api_morning_6am_refresh', cron, window_name: 'MORNING', daily_schedule: 'Daily 6:00 AM PDT / 13:00 UTC' }, env);
+        result = { ok: true, data_ok: !!morning.data_ok || !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_sleeper_plus_odds_api_morning_6am_refresh', status: 'completed', cron, board, morning, odds, note: 'Sleeper board/window plus Odds API morning refresh. Odds path uses temp-stage -> certify -> promote -> clean. No RFI probe, no Gemini for odds, no scoring.' };
       } else if (cron === '0 17 * * *') {
         result = await runSleeperRbiRfiWindowRunner({ job: 'run_sleeper_rbi_rfi_window_afternoon', trigger: 'scheduled_sleeper_rbi_rfi_afternoon_window', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 10:00 AM PDT / 17:00 UTC' }, env);
       } else if (cron === '0 18 * * *') {
-        result = await runOddsApiMarketIntel({ job: 'run_odds_api_afternoon', trigger: 'scheduled_odds_api_afternoon_11am', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 11:00 AM PDT / 18:00 UTC' }, env);
+        const odds = await runOddsApiMarketIntel({ job: 'run_odds_api_afternoon', trigger: 'scheduled_odds_api_afternoon_11am', cron, window_name: 'EARLY_AFTERNOON', daily_schedule: 'Daily 11:00 AM PDT / 18:00 UTC' }, env);
+        result = { ok: true, data_ok: !!odds.data_ok, version: SYSTEM_VERSION, job: 'scheduled_odds_api_afternoon_11am', status: odds.data_ok ? 'promoted' : 'needs_review', cron, odds, note: 'Dedicated Odds API early-afternoon cron. Uses temp-stage -> certify -> promote -> clean. No RFI probe, no Gemini, no scoring.' };
       } else if (cron === '* * * * *') {
         // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
         // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
@@ -10322,7 +10326,7 @@ async function runOddsApiMarketIntel(input, env) {
     sample_events:eventResults.slice(0,25),
     rules:['mine Odds API into temp tables first','certify temp before promotion','promote temp to main only when game odds, selected events, Hits, and Total Bases pass','RBI expanded-book rows are useful but not fatal if low/empty','clean temp after certified promotion','keep failed temp rows for debug','Hits/Total Bases use strongest six books only','RBI uses expansion bookmaker list to find maximum available RBI coverage','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','no Gemini','no scoring'],
     next_action: certification.ok ? 'Run ODDS API > Check Market Intel. If check is clean, move to scoring logic wiring.' : 'Certification failed. Check certification.failures and temp rows before rerunning.',
-    note:'v1.3.29 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success.'
+    note:'v1.3.30 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success. Dedicated cron wiring is locked for 4:30 AM PT morning odds, 6:00 AM PT morning refresh with Sleeper, and 11:00 AM PT early-afternoon odds.'
   };
 }
 async function checkOddsApiMarketIntel(input, env) {
@@ -10353,12 +10357,22 @@ async function checkOddsApiMarketIntel(input, env) {
     prop_book_counts:propBookRes.results || [],
     latest_certifications:certRes.results || [],
     temp_counts:tempRes.results || [],
+    scheduler_plan:{
+      timezone:'UTC cron / PT labels shown for PDT',
+      locked:true,
+      crons:[
+        { cron:'30 11 * * *', pt_label:'Daily 4:30 AM PT', job:'run_odds_api_morning', path:'Odds API temp-stage -> certify -> promote -> clean', purpose:'first certified morning odds snapshot' },
+        { cron:'0 13 * * *', pt_label:'Daily 6:00 AM PT', job:'run_sleeper_rbi_rfi_window_morning + run_odds_api_morning', path:'Sleeper board/window plus Odds API certified morning refresh', purpose:'refresh after more markets open' },
+        { cron:'0 18 * * *', pt_label:'Daily 11:00 AM PT', job:'run_odds_api_afternoon', path:'Odds API temp-stage -> certify -> promote -> clean', purpose:'early-afternoon certified odds refresh closer to games' }
+      ],
+      disabled_market:'RFI/NRFI Odds API probe remains disabled after INVALID_MARKET; later Gemini fallback only.'
+    },
     sleeper_rbi_match:sleeperRbiMatchRes.results?.[0] || { sleeper_rbi_players:0, matched_odds_players:0 },
     missing_sleeper_rbi_odds:missingSleeperRbiRes.results || [],
     prop_rows:propRows,
     sample:sampleRes.results || [],
     next_action: propRows ? 'Odds API batter prop data is ready for matching/edge wiring. Compare RBI matched_odds_players and prop_book_counts after the expansion.' : 'Run ODDS API > Run Morning Odds or Run Early Afternoon Odds.',
-    note:'v1.3.29 check: certified main odds tables after temp-stage promotion. Shows latest certifications and temp leftovers. No RFI probe, no Gemini, no scoring.'
+    note:'v1.3.30 check: certified main odds tables after temp-stage promotion. Shows latest certifications, temp leftovers, and locked cron plan. No RFI probe, no Gemini, no scoring.'
   };
 }
 
