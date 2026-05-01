@@ -186,7 +186,12 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="run" onclick="runJobButton('ODDS API > Run Morning Odds','run_odds_api_morning')">Run Morning Odds</button>
 <button class="run" onclick="runJobButton('ODDS API > Run Early Afternoon Odds','run_odds_api_afternoon')">Run Early Afternoon Odds</button>
 <button class="check" onclick="runJobButton('ODDS API > Check Market Intel','check_odds_api_market_intel')">Check Market Intel</button>
-</div><div class="small">Odds API layer: mines to temp tables first, certifies the batch, promotes clean data to main, then cleans temp. Hits/Total Bases use strong-six books. RBI uses expanded books. RFI/NRFI Odds API probe is disabled for now. No Gemini and no scoring.</div></div>
+</div><div class="small">Odds API layer: mines to temp tables first, certifies the batch, promotes clean data to main, then cleans temp. Hits/Total Bases use strong-six books. RBI uses expanded books. RFI/NRFI Odds API probe is disabled for now. No Gemini. Scoring V1 now runs after scheduled Odds API jobs and can also be run manually below.</div></div>
+
+<div class="card"><h2>Scoring V1 • MLB Pregame</h2><div class="grid">
+<button class="run" onclick="runJobButton('SCORING V1 > Run MLB Scores','run_mlb_scoring_v1')">Run MLB Scores</button>
+<button class="check" onclick="runJobButton('SCORING V1 > Check MLB Scores','check_mlb_scoring_v1')">Check MLB Scores</button>
+</div><div class="small">Scoring V1: deterministic in-house backend scoring for Hits, Total Bases, and RBI. Uses Odds API paired Over/Under no-vig consensus, writes scratchpad rows, certifies, promotes into separate score tables, logs audit rows, updates active_score_board, then cleans scratch. No Gemini. No RFI/NRFI yet.</div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
