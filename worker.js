@@ -1,6 +1,6 @@
 // AlphaDog v1.3.50 - Rollover Pickability Gate compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.50 - Rollover Pickability Gate";
+const SYSTEM_VERSION = "v1.3.51 - Main UI Admin Refresh Bridge";
 const SYSTEM_CODENAME = "Rollover Pickability Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -878,8 +878,65 @@ function unauthorized() {
   return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
+async function ensureMainUiRefreshTable(env){
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS main_ui_refresh_jobs (refresh_id TEXT PRIMARY KEY, status TEXT, stage TEXT, slate_date TEXT, requested_by TEXT, github_dispatch_ok INTEGER DEFAULT 0, estimated_minutes TEXT, started_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, finished_at TEXT, error TEXT, details_json TEXT)`).run();
+}
+async function triggerPrizePicksGithubWorkflow(env, refreshId){
+  const token=env.GITHUB_TOKEN;
+  const owner=env.GITHUB_OWNER || 'Rodantmat';
+  const repo=env.GITHUB_REPO || 'Rod';
+  const workflow=env.GITHUB_WORKFLOW_FILE || 'scrape.yml';
+  if(!token) return {ok:false, skipped:true, error:'Missing GITHUB_TOKEN secret on scheduled/control worker'};
+  const url=`https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`;
+  const res=await fetch(url,{method:'POST',headers:{'authorization':`Bearer ${token}`,'accept':'application/vnd.github+json','user-agent':'alphadog-control-worker','x-github-api-version':'2022-11-28','content-type':'application/json'},body:JSON.stringify({ref:'main',inputs:{source:'alphadog_admin_refresh',refresh_id:refreshId}})});
+  const text=await res.text().catch(()=>'');
+  return {ok:res.status===204,status:res.status,owner,repo,workflow,response:text.slice(0,500)};
+}
+async function runMainUiAdminRefreshSequence(env, refreshId, slateDate){
+  const steps=[];
+  async function mark(stage, extra={}){await env.DB.prepare(`UPDATE main_ui_refresh_jobs SET stage=?, updated_at=CURRENT_TIMESTAMP, details_json=? WHERE refresh_id=?`).bind(stage, JSON.stringify({steps,...extra}).slice(0,90000), refreshId).run().catch(()=>null)}
+  try{
+    await mark('EVERYDAY_PHASE1');
+    const phase1=await runEverydayPhase1Direct({job:'everyday_phase1_all_direct',trigger:'main_ui_admin_refresh',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'EVERYDAY_PHASE1',ok:!!phase1.ok,data_ok:!!phase1.data_ok,status:phase1.status||null});
+    await mark('WEATHER');
+    const weather=await scrapePhase2WeatherContext({job:'scrape_phase2_weather_context',trigger:'main_ui_admin_refresh',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'WEATHER',ok:!!weather.ok,data_ok:!!weather.data_ok,status:weather.status||null});
+    await mark('LINEUPS');
+    const lineup=await scrapePhase2LineupContext({job:'scrape_phase2_lineup_context',trigger:'main_ui_admin_refresh',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'LINEUPS',ok:!!lineup.ok,data_ok:!!lineup.data_ok,status:lineup.status||null});
+    await mark('PRIZEPICKS_CONTEXT');
+    const pp=await scrapePhase2cMarketContext({job:'scrape_phase2c_market_context',trigger:'main_ui_admin_refresh_after_github_dispatch',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'PRIZEPICKS_CONTEXT',ok:!!pp.ok,data_ok:!!pp.data_ok,status:pp.status||null});
+    await mark('ODDS');
+    const odds=await runOddsApiMarketIntel({job:'run_odds_api_afternoon',trigger:'main_ui_admin_refresh',window_name:'EARLY_AFTERNOON',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'ODDS',ok:!!odds.ok,data_ok:!!odds.data_ok,status:odds.status||null});
+    await mark('SCORING');
+    const scoring=await runFullScoringRefreshV1({job:'run_full_scoring_refresh_v1',trigger:'main_ui_admin_refresh',slate_date:slateDate,slate_mode:'AUTO'},env); steps.push({stage:'SCORING',ok:!!scoring.ok,data_ok:!!scoring.data_ok,status:scoring.status||null});
+    const ok=steps.every(x=>x.ok!==false);
+    await env.DB.prepare(`UPDATE main_ui_refresh_jobs SET status=?, stage='DONE', updated_at=CURRENT_TIMESTAMP, finished_at=CURRENT_TIMESTAMP, details_json=? WHERE refresh_id=?`).bind(ok?'COMPLETED':'COMPLETED_WITH_WARNINGS', JSON.stringify({steps}).slice(0,90000), refreshId).run();
+  }catch(err){
+    steps.push({stage:'ERROR',error:String(err?.message||err)});
+    await env.DB.prepare(`UPDATE main_ui_refresh_jobs SET status='ERROR', stage='ERROR', updated_at=CURRENT_TIMESTAMP, finished_at=CURRENT_TIMESTAMP, error=?, details_json=? WHERE refresh_id=?`).bind(String(err?.message||err), JSON.stringify({steps}).slice(0,90000), refreshId).run().catch(()=>null);
+  }
+}
+async function handleMainUiAdminRefreshStart(request, env, ctx){
+  if(!isAuthorized(request,env)) return unauthorized();
+  if(!env.DB) return json({ok:false,error:'Missing DB binding'}, {status:500});
+  await ensureMainUiRefreshTable(env);
+  const slate=resolveSlateDate({});
+  const refreshId=`main_ui_refresh|${slate.slate_date}|${Date.now()}|${crypto.randomUUID().slice(0,8)}`;
+  await env.DB.prepare(`INSERT INTO main_ui_refresh_jobs (refresh_id,status,stage,slate_date,requested_by,estimated_minutes,details_json) VALUES (?,?,?,?,?,?,?)`).bind(refreshId,'STARTED','GITHUB_DISPATCH',slate.slate_date,'main_ui_admin','8-15',JSON.stringify({started_from:'main_ui_admin'})).run();
+  const gh=await triggerPrizePicksGithubWorkflow(env,refreshId);
+  await env.DB.prepare(`UPDATE main_ui_refresh_jobs SET github_dispatch_ok=?, updated_at=CURRENT_TIMESTAMP, details_json=? WHERE refresh_id=?`).bind(gh.ok?1:0,JSON.stringify({github_dispatch:gh}).slice(0,90000),refreshId).run();
+  const promise=runMainUiAdminRefreshSequence(env,refreshId,slate.slate_date);
+  if(ctx&&ctx.waitUntil) ctx.waitUntil(promise); else promise.catch(()=>null);
+  return json({ok:true,data_ok:true,version:SYSTEM_VERSION,job:'main_ui_admin_full_data_refresh',refresh_id:refreshId,slate_date:slate.slate_date,estimated_minutes:'8-15',github_dispatch:gh,sequence:['GitHub PrizePicks scrape dispatch','Everyday Phase 1','Weather','Lineups','PrizePicks context','Odds API','Scoring V1'],note:'Started behind the curtains. Browser can be closed after this response.'});
+}
+async function handleMainUiAdminRefreshStatus(request, env){
+  if(!isAuthorized(request,env)) return unauthorized();
+  await ensureMainUiRefreshTable(env);
+  const rows=await env.DB.prepare(`SELECT * FROM main_ui_refresh_jobs ORDER BY started_at DESC LIMIT 10`).all();
+  return json({ok:true,version:SYSTEM_VERSION,rows:rows.results||[]});
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
 
@@ -894,6 +951,8 @@ export default {
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
       if (url.pathname === "/board/queue-payload/inspect") return withCors(await handleBoardQueuePayloadInspect(request, env));
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
+      if (url.pathname === "/main-ui/admin-refresh/start" && request.method === "POST") return withCors(await handleMainUiAdminRefreshStart(request, env, ctx));
+      if (url.pathname === "/main-ui/admin-refresh/status" && request.method === "GET") return withCors(await handleMainUiAdminRefreshStatus(request, env));
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
       if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
       if (url.pathname === "/ingest/upsert" && request.method === "POST") return withCors(await handleUpsert(request, env));
