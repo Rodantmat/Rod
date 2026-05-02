@@ -1,7 +1,7 @@
-// AlphaDog v1.3.57 - Admin Freshness Dispatcher compatible worker
+// AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.57 - Admin Freshness Dispatcher";
-const SYSTEM_CODENAME = "Admin Freshness Dispatcher";
+const SYSTEM_VERSION = "v1.3.58 - PrizePicks GitHub Dispatch Bridge";
+const SYSTEM_CODENAME = "PrizePicks GitHub Dispatch Bridge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -154,6 +154,7 @@ const JOB_DISPLAY_LABELS = {
   check_phase2_weather_context: "EVERYDAY PHASE 2A > Check Weather/Roof",
   scrape_phase2_lineup_context: "EVERYDAY PHASE 2B > Run Lineup/Scratch",
   check_phase2_lineup_context: "EVERYDAY PHASE 2B > Check Lineup/Scratch",
+  trigger_prizepicks_github_board_refresh: "PRIZEPICKS > Trigger GitHub Board Refresh",
   scrape_phase2c_market_context: "EVERYDAY PHASE 2C > Run Market Context",
   check_phase2c_market_context: "EVERYDAY PHASE 2C > Check Market Context",
   schedule_phase3ab_full_run_test: "PHASE 3A/3B > Schedule Full Run Test",
@@ -764,6 +765,7 @@ const JOBS = {
   check_phase2_weather_context: { prompt: null, tables: ["game_weather_context", "games"], note: "Check Phase 2A weather/wind/roof context coverage for today slate" },
   scrape_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Phase 2B today-slate lineup confirmation with last-available lineup fallback, top-order completeness, and late-scratch shell. No scoring and no Gemini." },
   check_phase2_lineup_context: { prompt: null, tables: ["game_lineup_context", "games", "lineups_current"], note: "Check Phase 2B lineup confirmation, last-lineup fallback, and late-scratch shell readiness" },
+  trigger_prizepicks_github_board_refresh: { prompt: null, tables: ["mlb_stats"], note: "Trigger GitHub Actions PrizePicks scrape.yml workflow and wait for mlb_stats board rows to update before Phase 2C conversion." },
   scrape_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "phase2c_market_context_runs", "mlb_stats"], note: "Phase 2C-I current PrizePicks board market/projection context from latest mlb_stats capture window, processed in bounded chunks. No scoring, no external odds, no Gemini." },
   check_phase2c_market_context: { prompt: null, tables: ["prizepicks_current_market_context", "phase2c_market_context_runs", "mlb_stats"], note: "Check Phase 2C-I current PrizePicks market/projection context readiness and chunk runner state" },
 
@@ -955,7 +957,7 @@ export default {
       } else if (cron === '35 11 * * *' || cron === '5 13 * * *' || cron === '5 18 * * *') {
         result = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_scoring_safety_cron', cron }, env);
       } else if (cron === '* * * * *') {
-        // v1.3.57: Admin/Main UI full-refresh requests get one bounded backend step first.
+        // v1.3.58: Admin/Main UI full-refresh requests get one bounded backend step first.
         // This prevents Phase 3A/3B minute retries from starving the user-triggered freshness pipeline.
         const adminDueTick = await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
@@ -1133,6 +1135,7 @@ function executableJobNames() {
     "check_phase2_weather_context",
     "scrape_phase2_lineup_context",
     "check_phase2_lineup_context",
+    "trigger_prizepicks_github_board_refresh",
     "scrape_phase2c_market_context",
     "check_phase2c_market_context",
     "schedule_phase3ab_full_run_test",
@@ -2268,6 +2271,151 @@ function compactStepResult(value) {
   }
 }
 
+
+function parseD1TimestampMaybe(value) {
+  if (!value) return 0;
+  const text = String(value).trim();
+  const iso = text.includes('T') ? text : text.replace(' ', 'T') + 'Z';
+  const n = Date.parse(iso);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function githubWorkflowFileName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'scrape.yml';
+  const parts = raw.split('/').filter(Boolean);
+  return parts[parts.length - 1] || raw;
+}
+
+async function getPrizePicksMlbStatsFreshness(env) {
+  try {
+    const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mlb_stats' LIMIT 1").first();
+    if (!exists) return { table_exists:false, rows_count:0, latest_updated_at:null, latest_updated_ms:0 };
+    const row = await env.DB.prepare("SELECT COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated_at FROM mlb_stats").first();
+    return {
+      table_exists:true,
+      rows_count:Number(row?.rows_count || 0),
+      latest_updated_at:row?.latest_updated_at || null,
+      latest_updated_ms:parseD1TimestampMaybe(row?.latest_updated_at)
+    };
+  } catch (e) {
+    return { table_exists:false, rows_count:0, latest_updated_at:null, latest_updated_ms:0, error:String(e && e.message || e) };
+  }
+}
+
+function priorAdminStepResult(state, stepName) {
+  const list = Array.isArray(state?.step_results) ? state.step_results : [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i] && list[i].step === stepName) return list[i].result || null;
+  }
+  return null;
+}
+
+async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
+  const repo = String(env.GITHUB_REPO || '').trim();
+  const token = String(env.GITHUB_TOKEN || '').trim();
+  const workflow = githubWorkflowFileName(env.GITHUB_WORKFLOW_FILE || 'scrape.yml');
+  const ref = String(env.GITHUB_REF || env.GITHUB_BRANCH || 'main').trim() || 'main';
+  const nowIso = new Date().toISOString();
+  const current = await getPrizePicksMlbStatsFreshness(env);
+  const prior = priorAdminStepResult(state, 'prizepicks_board') || {};
+  const requestedAt = prior.requested_at || prior.triggered_at || null;
+  const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
+
+  if (requestedMs && current.rows_count > 0 && current.latest_updated_ms > requestedMs) {
+    return {
+      ok:true,
+      data_ok:true,
+      version:SYSTEM_VERSION,
+      job:'trigger_prizepicks_github_board_refresh',
+      status:'board_refresh_detected',
+      board_refresh_complete:true,
+      requested_at:requestedAt,
+      detected_at:nowIso,
+      mlb_stats:current,
+      note:'PrizePicks GitHub workflow appears complete because mlb_stats updated after the workflow dispatch request.'
+    };
+  }
+
+  if (requestedMs) {
+    const elapsedSeconds = Math.round((Date.now() - requestedMs) / 1000);
+    if (elapsedSeconds < 900) {
+      return {
+        ok:true,
+        data_ok:false,
+        version:SYSTEM_VERSION,
+        job:'trigger_prizepicks_github_board_refresh',
+        status:'waiting_for_github_board_update',
+        board_refresh_complete:false,
+        requested_at:requestedAt,
+        elapsed_seconds:elapsedSeconds,
+        mlb_stats:current,
+        next_check:'next minute cron tick',
+        note:'GitHub workflow was already dispatched; waiting for main.py to refresh mlb_stats before converting PrizePicks context.'
+      };
+    }
+  }
+
+  const missing = [];
+  if (!repo) missing.push('GITHUB_REPO');
+  if (!token) missing.push('GITHUB_TOKEN');
+  if (!workflow) missing.push('GITHUB_WORKFLOW_FILE');
+  if (missing.length) {
+    return {
+      ok:false,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:'trigger_prizepicks_github_board_refresh',
+      status:'missing_github_dispatch_secret',
+      board_refresh_complete:false,
+      missing,
+      mlb_stats:current,
+      note:'Control Room worker needs GitHub dispatch secrets to refresh PrizePicks from the full refresh pipeline.'
+    };
+  }
+  if (!/^[^/]+\/[^/]+$/.test(repo)) {
+    return {
+      ok:false,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:'trigger_prizepicks_github_board_refresh',
+      status:'invalid_github_repo_format',
+      board_refresh_complete:false,
+      repo_format_expected:'owner/repo',
+      received_repo_preview:repo.includes('/') ? repo : `${repo}`,
+      mlb_stats:current
+    };
+  }
+
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
+  const response = await fetch(url, {
+    method:'POST',
+    headers:{
+      'Authorization':`Bearer ${token}`,
+      'Accept':'application/vnd.github+json',
+      'X-GitHub-Api-Version':'2022-11-28',
+      'User-Agent':'AlphaDog-Control-Room-Worker'
+    },
+    body:JSON.stringify({ ref })
+  });
+  const text = await response.text().catch(() => '');
+  const ok = response.status === 204;
+  const triggeredAt = nowIso;
+  return {
+    ok,
+    data_ok:false,
+    version:SYSTEM_VERSION,
+    job:'trigger_prizepicks_github_board_refresh',
+    status:ok ? 'github_workflow_dispatched_waiting_for_board_update' : 'github_workflow_dispatch_failed',
+    board_refresh_complete:false,
+    requested_at:triggeredAt,
+    github:{ repo, workflow_file:workflow, ref, http_status:response.status, ok, response_preview:text.slice(0,700) || null },
+    mlb_stats_before:current,
+    next_check:'next minute cron tick',
+    note:ok ? 'GitHub scrape.yml workflow dispatched. The admin refresh will keep retrying this step until mlb_stats updates, then continue into Phase 2C and scoring.' : 'GitHub workflow dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE, and ref.'
+  };
+}
+
 async function runAdminFreshnessPipelineStep(input, env, state = {}) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
@@ -2276,6 +2424,8 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     'everyday_phase1',
     'phase2_weather',
     'phase2_lineup',
+    'prizepicks_board',
+    'phase2c_market_context',
     'odds_morning',
     'odds_afternoon',
     'score_refresh'
@@ -2302,6 +2452,11 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     result = await scrapePhase2WeatherContext({ job:'scrape_phase2_weather_context', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
   } else if (step === 'phase2_lineup') {
     result = await scrapePhase2LineupContext({ job:'scrape_phase2_lineup_context', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+  } else if (step === 'prizepicks_board') {
+    result = await triggerPrizePicksGithubBoardRefresh(input, env, state);
+    completeStep = !!result?.board_refresh_complete;
+  } else if (step === 'phase2c_market_context') {
+    result = await scrapePhase2cMarketContext({ job:'scrape_phase2c_market_context', trigger:'admin_freshness_dispatcher_after_prizepicks_board', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
   } else if (step === 'odds_morning') {
     result = await runOddsApiMarketIntel({ job:'run_odds_api_morning', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode, window_name:'MORNING' }, env);
   } else if (step === 'odds_afternoon') {
@@ -2327,9 +2482,9 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     complete: done,
     needs_continue: !done,
     result,
-    prizepicks_bridge: { skipped: true, reason: 'Control Room worker has no GitHub Actions trigger secret/config in this build. PrizePicks board remains handled by the existing GitHub scrape.yml schedule/manual workflow.' },
+    prizepicks_bridge: { skipped: false, mode: 'github_actions_workflow_dispatch', workflow_file: githubWorkflowFileName(env.GITHUB_WORKFLOW_FILE || 'scrape.yml'), repo_configured: !!env.GITHUB_REPO, token_configured: !!env.GITHUB_TOKEN },
     sequence: steps,
-    note: 'v1.3.57 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather, Phase 2 lineup, odds windows, then scoring. Static is intentionally excluded.'
+    note: 'v1.3.58 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather/lineup, PrizePicks GitHub board refresh, Phase 2C context rebuild, odds windows, then scoring. Static is intentionally excluded.'
   };
 }
 
@@ -8067,6 +8222,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "check_phase2_weather_context") return await checkPhase2WeatherContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_phase2_lineup_context") return await scrapePhase2LineupContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "check_phase2_lineup_context") return await checkPhase2LineupContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "trigger_prizepicks_github_board_refresh") return await triggerPrizePicksGithubBoardRefresh({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env, {});
   if (jobName === "scrape_phase2c_market_context") return await scrapePhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "check_phase2c_market_context") return await checkPhase2cMarketContext({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "schedule_phase3ab_daily_4am") return await schedulePhase3abDaily4am({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_daily_schedule" }, env);
