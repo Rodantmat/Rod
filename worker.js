@@ -1,6 +1,6 @@
 // AlphaDog v1.3.50 - Rollover Pickability Gate compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.51 - Main UI Admin Refresh Bridge";
+const SYSTEM_VERSION = "v1.3.52 - Main UI Bridge Diagnostics";
 const SYSTEM_CODENAME = "Rollover Pickability Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
