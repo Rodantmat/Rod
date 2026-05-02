@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.58 - PrizePicks GitHub Dispatch Bridge";
-const SYSTEM_CODENAME = "PrizePicks GitHub Dispatch Bridge";
+const SYSTEM_VERSION = "v1.3.59 - Minute Cron Full Refresh Scheduler";
+const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -957,33 +957,51 @@ export default {
       } else if (cron === '35 11 * * *' || cron === '5 13 * * *' || cron === '5 18 * * *') {
         result = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_scoring_safety_cron', cron }, env);
       } else if (cron === '* * * * *') {
-        // v1.3.58: Admin/Main UI full-refresh requests get one bounded backend step first.
-        // This prevents Phase 3A/3B minute retries from starving the user-triggered freshness pipeline.
+        // v1.3.59: the only active cron is the minute poller.
+        // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
+        // or the weekly static-temp refresh is due/in progress.
+        const scheduledAdminRefresh = await scheduleDueAdminFullRefreshFromMinuteCron(env, cron);
         const adminDueTick = await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
-          result = { ok: true, data_ok: !!adminDueTick.data_ok, version: SYSTEM_VERSION, job: 'admin_freshness_minute_due_tick', status: 'admin_refresh_advanced', cron, admin_tick: adminDueTick, note: 'Minute cron advanced one bounded Admin/Main UI freshness step before Phase 3. This avoids browser dependency and avoids Phase 3 lock starvation.' };
+          result = {
+            ok: true,
+            data_ok: !!adminDueTick.data_ok,
+            version: SYSTEM_VERSION,
+            job: 'admin_freshness_minute_scheduler',
+            status: 'admin_refresh_advanced',
+            cron,
+            scheduled_admin_refresh: scheduledAdminRefresh,
+            admin_tick: adminDueTick,
+            note: 'Minute cron advanced one bounded Admin/Main UI freshness step. Manual button requests and scheduled 9AM/12PM/9PM PT full refreshes share this same backend-safe dispatcher.'
+          };
         } else {
-        // v1.3.18: Phase 3A/3B deferred work continues after Admin/Main UI freshness has no due work.
-        const phase3DueTick = await runDuePhase3abFullRun(env);
-        if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
-          const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_minute_after_phase3ab_terminal_mine', cron }, env, phase3DueTick);
-          result = { ok: true, data_ok: !!phase3DueTick.data_ok || !!scoring_refresh.data_ok, version: SYSTEM_VERSION, job: 'phase3ab_minute_due_tick', status: 'phase3ab_advanced', cron, phase3_tick: phase3DueTick, auto_scoring_refresh: scoring_refresh, note: 'Minute cron advanced one due Phase 3A/3B protected tick. Auto Scoring Mesh refreshes scores/candidate board only when the mining tick is terminal complete.' };
-        } else {
-          const fallbackSchedule = await ensurePhase3abDaily4amFromMinuteFallback(env, cron);
-          if (fallbackSchedule && fallbackSchedule.status === 'scheduled_due_now') {
-            const firstTick = await runDuePhase3abFullRun(env);
-            const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_minute_fallback_after_phase3ab_terminal_mine', cron }, env, firstTick);
-            result = { ok: true, data_ok: true || !!scoring_refresh.data_ok, version: SYSTEM_VERSION, job: 'phase3ab_minute_fallback_daily_4am', status: 'scheduled_and_started', cron, fallback_schedule: fallbackSchedule, first_tick: firstTick, auto_scoring_refresh: scoring_refresh, note: 'Minute fallback created the missing daily Phase 3A/3B request and advanced one protected tick. Auto Scoring Mesh refreshes if that tick reaches terminal completion.' };
+          const staticSchedule = await scheduleDueWeeklyStaticRefreshFromMinuteCron(env, cron);
+          const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+          if ((staticSchedule && staticSchedule.status !== 'not_due') || (staticTick && staticTick.status !== 'idle_no_due_static_refresh')) {
+            result = {
+              ok: true,
+              data_ok: !!staticTick?.data_ok || !!staticSchedule?.data_ok,
+              version: SYSTEM_VERSION,
+              job: 'static_refresh_minute_scheduler',
+              status: 'static_refresh_checked_or_advanced',
+              cron,
+              scheduled_static_refresh: staticSchedule,
+              static_tick: staticTick,
+              note: 'Minute cron handled the weekly static-temp scheduler/tick. No daily Phase 3 fallback, no old odds-only cron, and no stale legacy scheduled branches run from the minute cron.'
+            };
           } else {
-            const incTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick' }, env);
-            if (incTick && incTick.status !== 'idle_no_due_temp_refresh') result = incTick;
-            else {
-              const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
-              if (staticTick && staticTick.status !== 'idle_no_due_static_refresh') result = staticTick;
-              else result = phase3DueTick;
-            }
+            result = {
+              ok: true,
+              data_ok: true,
+              version: SYSTEM_VERSION,
+              job: 'minute_cron_idle',
+              status: 'idle_no_due_work',
+              cron,
+              scheduled_admin_refresh: scheduledAdminRefresh,
+              scheduled_static_refresh: staticSchedule,
+              note: 'No admin/manual full refresh request, no scheduled full-refresh slot, and no weekly static-temp work is due. The cron exits without heavy work.'
+            };
           }
-        }
         }
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
@@ -2222,6 +2240,98 @@ async function checkPhase3abFullRun(input, env) {
     note: 'v1.3.50 keeps the slate-guarded Phase 3A/3B checker. Empty requested slates fall back to the latest Phase 3A/3B request instead of returning a false hard failure.'
   };
 }
+
+function getPTScheduleParts(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    weekday: "short"
+  }).formatToParts(now);
+  const m = {};
+  for (const p of parts) m[p.type] = p.value;
+  return {
+    date: `${m.year}-${m.month}-${m.day}`,
+    weekday: String(m.weekday || ""),
+    hour: Number(m.hour),
+    minute: Number(m.minute),
+    second: Number(m.second),
+    time: `${m.hour}:${m.minute}:${m.second}`
+  };
+}
+
+function adminFullRefreshSlotForPT(parts) {
+  const hour = Number(parts?.hour);
+  const minute = Number(parts?.minute);
+  if (minute !== 0) return null;
+  if (hour === 9) return { key: 'FULL_0900_PT', label: '9:00 AM PT daily full refresh' };
+  if (hour === 12) return { key: 'FULL_1200_PT', label: '12:00 PM PT daily full refresh' };
+  if (hour === 21) return { key: 'FULL_2100_PT', label: '9:00 PM PT daily full refresh' };
+  return null;
+}
+
+async function scheduleDueAdminFullRefreshFromMinuteCron(env, cron) {
+  await ensureDeferredFullRunTable(env);
+  const pt = getPTScheduleParts();
+  const slot = adminFullRefreshSlotForPT(pt);
+  if (!slot) {
+    return { ok: true, status: 'not_due', cron, pt, schedule: ['09:00 PT', '12:00 PT', '21:00 PT'] };
+  }
+
+  const slate = resolveSlateDate({ slate_mode: 'AUTO' });
+  const requestPrefix = `scheduled_admin_full_refresh|${pt.date}|${slot.key}|`;
+  const requestedBy = `scheduled_admin_full_refresh_${slot.key.toLowerCase()}`;
+  const existingSlot = await env.DB.prepare(`
+    SELECT request_id, status, slate_date, requested_at, run_after, started_at, finished_at, error
+    FROM deferred_full_run_once
+    WHERE request_id LIKE ?
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).bind(`${requestPrefix}%`).first();
+  if (existingSlot) {
+    return { ok: true, status: 'already_scheduled_for_slot', cron, pt, slot, slate_date: slate.slate_date, existing_request: existingSlot };
+  }
+
+  const activeRefresh = await env.DB.prepare(`
+    SELECT request_id, status, slate_date, requested_at, run_after, started_at, finished_at, requested_by
+    FROM deferred_full_run_once
+    WHERE job_name='run_full_pipeline'
+      AND status IN ('PENDING','RUNNING')
+    ORDER BY requested_at DESC
+    LIMIT 1
+  `).first();
+  if (activeRefresh) {
+    return { ok: true, status: 'deferred_refresh_already_active_skip_slot', cron, pt, slot, slate_date: slate.slate_date, active_request: activeRefresh, note: 'Skipped creating a duplicate scheduled full refresh because another full refresh is already pending/running.' };
+  }
+
+  const requestId = `${requestPrefix}${Date.now()}|${crypto.randomUUID()}`;
+  const runAfter = deferredRunAfterSeconds(-1);
+  await env.DB.prepare(`
+    INSERT INTO deferred_full_run_once (request_id, job_name, slate_date, slate_mode, status, run_after, requested_by)
+    VALUES (?, 'run_full_pipeline', ?, 'AUTO', 'PENDING', ?, ?)
+  `).bind(requestId, slate.slate_date, runAfter, requestedBy).run();
+  await logSystemEvent(env, {
+    trigger_source: 'scheduled_minute_cron',
+    action_label: `ADMIN FRESHNESS > ${slot.label}`,
+    job_name: 'deferred_full_run_once',
+    slate_date: slate.slate_date,
+    slate_mode: 'AUTO',
+    status: 'scheduled',
+    task_id: requestId,
+    input_json: { request_id: requestId, run_after: runAfter, cron, pt, slot, requested_by: requestedBy }
+  });
+  return { ok: true, data_ok: true, status: 'scheduled_due_now', cron, pt, slot, request_id: requestId, slate_date: slate.slate_date, run_after: runAfter, requested_by: requestedBy, note: 'Scheduled one backend Admin/Main UI full refresh for the PT slot. The same minute cron will advance it in bounded steps.' };
+}
+
+async function scheduleDueWeeklyStaticRefreshFromMinuteCron(env, cron) {
+  const pt = getPTScheduleParts();
+  const isMonday = /^mon/i.test(pt.weekday);
+  const due = isMonday && pt.hour === 1 && pt.minute === 0;
+  if (!due) return { ok: true, status: 'not_due', cron, pt, schedule: 'Monday 1:00 AM PT weekly static-temp refresh' };
+  const scheduled = await scheduleStaticTempRefreshOnce({ job: 'weekly_static_temp_refresh_auto', trigger: 'scheduled_minute_weekly_static', cron, weekly_schedule: 'Monday 1:00 AM PT', slate_mode: 'AUTO' }, env);
+  return { ok: true, data_ok: !!scheduled?.data_ok || scheduled?.status === 'already_scheduled_or_running', status: 'weekly_static_due_checked', cron, pt, scheduled, note: 'Weekly static-temp refresh is due. Minute cron will keep advancing run_static_temp_refresh_tick until complete.' };
+}
+
 async function handleDeferredFullRunRequest(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   await ensureDeferredFullRunTable(env);
@@ -2484,7 +2594,7 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     result,
     prizepicks_bridge: { skipped: false, mode: 'github_actions_workflow_dispatch', workflow_file: githubWorkflowFileName(env.GITHUB_WORKFLOW_FILE || 'scrape.yml'), repo_configured: !!env.GITHUB_REPO, token_configured: !!env.GITHUB_TOKEN },
     sequence: steps,
-    note: 'v1.3.58 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather/lineup, PrizePicks GitHub board refresh, Phase 2C context rebuild, odds windows, then scoring. Static is intentionally excluded.'
+    note: 'v1.3.59 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather/lineup, PrizePicks GitHub board refresh, Phase 2C context rebuild, odds windows, then scoring. Static is intentionally excluded.'
   };
 }
 
