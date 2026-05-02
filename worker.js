@@ -1,7 +1,7 @@
-// AlphaDog v1.3.48 - Odds Scheduler Guard compatible worker
+// AlphaDog v1.3.49 - Stale Board Purge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.48 - Odds Scheduler Guard";
-const SYSTEM_CODENAME = "Odds Scheduler Guard";
+const SYSTEM_VERSION = "v1.3.49 - Stale Board Purge";
+const SYSTEM_CODENAME = "Stale Board Purge";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1893,7 +1893,7 @@ async function schedulePhase3abDaily4am(input, env) {
   `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date, `phase3ab_daily_4am|${slate.slate_date}|%`).first();
   if (existing) {
     const active = ['PENDING','RUNNING'].includes(String(existing.status || '').toUpperCase());
-    return { ok: true, data_ok: !active, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: active ? 'already_scheduled_or_running' : 'daily_request_already_completed_or_terminal', slate_date: slate.slate_date, existing_request: existing, next_action: active ? 'Minute cron will continue the existing Phase 3A/3B request. Use PHASE 3A/3B > Check Full Run to monitor.' : 'Daily Phase 3A/3B request already exists for this slate. No duplicate request was created.', note: 'v1.3.48 dedupes daily Phase 3A/3B by slate even after terminal completion.' };
+    return { ok: true, data_ok: !active, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: active ? 'already_scheduled_or_running' : 'daily_request_already_completed_or_terminal', slate_date: slate.slate_date, existing_request: existing, next_action: active ? 'Minute cron will continue the existing Phase 3A/3B request. Use PHASE 3A/3B > Check Full Run to monitor.' : 'Daily Phase 3A/3B request already exists for this slate. No duplicate request was created.', note: 'v1.3.49 keeps daily Phase 3A/3B dedupe by slate even after terminal completion.' };
   }
   const requestId = `phase3ab_daily_4am|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
   const runAfter = phase3abTimestampForSql(new Date(Date.now() - 1000));
@@ -2210,7 +2210,7 @@ async function checkPhase3abFullRun(input, env) {
       ...(results.certified_a_results <= 0 ? ['No certified A raw result rows found yet.'] : [])
     ],
     next_action: hardPass || reviewPass ? 'Phase 3A/3B is terminal for the selected slate. Review ERROR rows if present; scoring mesh should refresh after terminal completion.' : 'If status is pending/partial, wait 2 minutes and check again. If ERROR rows mention Gemini credits, refill Gemini billing before retry.',
-    note: 'v1.3.48 makes this checker slate-guarded. Empty requested slates fall back to the latest Phase 3A/3B request instead of returning a false hard failure.'
+    note: 'v1.3.49 keeps the slate-guarded Phase 3A/3B checker. Empty requested slates fall back to the latest Phase 3A/3B request instead of returning a false hard failure.'
   };
 }
 async function handleDeferredFullRunRequest(request, env) {
@@ -10299,7 +10299,7 @@ async function promoteOddsApiTempRun(env, runId, slateDate, windowName) {
   await env.DB.prepare(`DELETE FROM odds_api_requests WHERE slate_date=? AND window_name=? AND request_type IN (SELECT DISTINCT request_type FROM odds_api_requests_temp WHERE run_id=?)`).bind(slateDate,windowName,runId).run();
   await env.DB.prepare(`INSERT INTO odds_api_requests (request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at) SELECT request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at FROM odds_api_requests_temp WHERE run_id=? ON CONFLICT(request_id) DO UPDATE SET slate_date=excluded.slate_date,window_name=excluded.window_name,request_type=excluded.request_type,event_id=excluded.event_id,endpoint=excluded.endpoint,redacted_url=excluded.redacted_url,http_status=excluded.http_status,ok=excluded.ok,regions=excluded.regions,markets=excluded.markets,bookmakers=excluded.bookmakers,x_requests_remaining=excluded.x_requests_remaining,x_requests_used=excluded.x_requests_used,x_requests_last=excluded.x_requests_last,elapsed_ms=excluded.elapsed_ms,payload_json=excluded.payload_json,error=excluded.error,created_at=excluded.created_at`).bind(runId).run();
 
-  // v1.3.48: event ids are global at the Odds API level and can reappear across slate/window reruns.
+  // v1.3.49: event ids are global at the Odds API level and can reappear across slate/window reruns.
   // Never plain INSERT promoted event rows. Upsert them so manual reruns and cron reruns are idempotent.
   await env.DB.prepare(`INSERT INTO odds_api_events (event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json) SELECT event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json FROM odds_api_events_temp WHERE run_id=? ON CONFLICT(event_id) DO UPDATE SET slate_date=excluded.slate_date,commence_time=excluded.commence_time,commence_date_pt=excluded.commence_date_pt,commence_time_pt=excluded.commence_time_pt,window_bucket=excluded.window_bucket,home_team=excluded.home_team,away_team=excluded.away_team,sport_key=excluded.sport_key,sport_title=excluded.sport_title,last_seen_window=excluded.last_seen_window,last_seen_at=CURRENT_TIMESTAMP,raw_json=excluded.raw_json`).bind(runId).run();
 
@@ -10380,7 +10380,7 @@ async function runOddsApiMarketIntel(input, env) {
       promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
       cleanup = await cleanOddsApiTempRun(env, runId, false);
     } catch (err) {
-      promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.48' };
+      promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.49' };
       cleanup = await cleanOddsApiTempRun(env, runId, true).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
     }
   } else {
@@ -10699,9 +10699,14 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   const scoringSlateGuard=await resolveScoringSlateDate(env,input||{});
   const slateDate=scoringSlateGuard.slate_date;
   const pickCtx=await loadPickabilityContext(env,slateDate);
+  const staleBefore=(await env.DB.prepare(`SELECT slate_date, COUNT(*) AS rows_count FROM score_candidate_board WHERE COALESCE(slate_date,'')<>? GROUP BY slate_date ORDER BY slate_date DESC LIMIT 25`).bind(slateDate).all().catch(()=>({results:[]}))).results||[];
+  const selectedBefore=await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).first().catch(()=>({rows_count:0}));
   const res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run();
+  // score_candidate_board is a current release/read model, not historical storage.
+  // Wipe the whole board before rebuilding so real stale rows from prior slates cannot survive.
+  await env.DB.prepare(`DELETE FROM score_candidate_board`).run();
+  const stale_purge={mode:'FULL_BOARD_REPLACE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),stale_slate_rows_before:staleBefore,total_stale_rows_before:staleBefore.reduce((n,r)=>n+Number(r.rows_count||0),0)};
   const inserts=[];
   const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0};
   const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,prizepicks_pickable:0,sleeper_pickable:0,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings};
@@ -10752,7 +10757,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.3.47 adds the Pickability Gate to candidate release. It confirms exact current PrizePicks/Sleeper side availability before release. Goblin/demon rows are treated as More/OVER only. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_pickability_gate_stale_board_purge_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,stale_purge,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.3.49 fully replaces score_candidate_board on every rebuild so old slate release rows cannot survive. Pickability Gate remains active. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
@@ -10781,6 +10786,8 @@ async function inspectMlbScoreCandidateBoardV1(input, env){
   const slateDate=guard.slate_date;
   const tableExists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='score_candidate_board'").first();
   if(!tableExists){return{ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,table_exists:false,candidates_seen:0,next_action:'Run SCORING V1 > Build Score Candidate Board.',note:'v1.3.44 Candidate Board Export Layer is read-only. score_candidate_board does not exist yet.'};}
+  const staleRows=(await env.DB.prepare(`SELECT slate_date, COUNT(*) AS rows_count FROM score_candidate_board WHERE COALESCE(slate_date,'')<>? GROUP BY slate_date ORDER BY slate_date DESC LIMIT 25`).bind(slateDate).all()).results||[];
+  const staleTotal=staleRows.reduce((n,r)=>n+Number(r.rows_count||0),0);
   const rows=(await env.DB.prepare(`SELECT * FROM score_candidate_board WHERE slate_date=? ORDER BY candidate_rank ASC, final_score DESC LIMIT 100`).bind(slateDate).all()).results||[];
   const summaryRows=(await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) AS rows_count, ROUND(AVG(final_score),2) AS avg_score, ROUND(MAX(final_score),2) AS max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY CASE candidate_status WHEN 'QUALIFIED' THEN 1 WHEN 'PLAYABLE' THEN 2 WHEN 'WATCHLIST' THEN 3 ELSE 9 END, max_score DESC`).bind(slateDate).all()).results||[];
   const statusRows=(await env.DB.prepare(`SELECT candidate_status, COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status ORDER BY CASE candidate_status WHEN 'QUALIFIED' THEN 1 WHEN 'PLAYABLE' THEN 2 WHEN 'WATCHLIST' THEN 3 ELSE 9 END`).bind(slateDate).all()).results||[];
@@ -10793,7 +10800,7 @@ async function inspectMlbScoreCandidateBoardV1(input, env){
   const playable=(statusRows.find(r=>r.candidate_status==='PLAYABLE')||{}).rows_count||0;
   const qualified=(statusRows.find(r=>r.candidate_status==='QUALIFIED')||{}).rows_count||0;
   const release_health=total>0&&(playable+qualified)>0?'PASS_HAS_RELEASE_CANDIDATES':(total>0?'PASS_WATCHLIST_ONLY':'EMPTY');
-  return{ok:true,data_ok:total>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health,summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:'Use score_candidate_board as the release/read model. Next build can wire the UI display/export layer or keep tuning scoring gates.',note:'v1.3.44 Candidate Board Export Layer is read-only. It verifies score_candidate_board, summarizes release status, prop distribution, top candidates, and risk tags. No external API or Gemini is called.'};
+  return{ok:true,data_ok:total>0&&staleTotal===0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health:staleTotal>0?'FAIL_STALE_ROWS_PRESENT':release_health,stale_guard:{pass:staleTotal===0,active_slate:slateDate,stale_rows_total:staleTotal,stale_rows_by_slate:staleRows},summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:staleTotal>0?'Run SCORING V1 > Run Full Score Refresh to purge and rebuild the candidate board.':'Use score_candidate_board as the release/read model. Next build can wire the UI display/export layer or keep tuning scoring gates.',note:'v1.3.49 inspect is stale-guarded. score_candidate_board must contain only the active slate; any old slate row makes data_ok false.'};
 }
 
 async function exportMlbScoreCandidateBoardV1(input, env){
@@ -10802,6 +10809,8 @@ async function exportMlbScoreCandidateBoardV1(input, env){
   const slateDate=guard.slate_date;
   const tableExists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='score_candidate_board'").first();
   if(!tableExists){return{ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,table_exists:false,candidates_exported:0,next_action:'Run SCORING V1 > Build Score Candidate Board first.',note:'v1.3.45 export is read-only and does not call external APIs or Gemini.'};}
+  const staleRows=(await env.DB.prepare(`SELECT slate_date, COUNT(*) AS rows_count FROM score_candidate_board WHERE COALESCE(slate_date,'')<>? GROUP BY slate_date ORDER BY slate_date DESC LIMIT 25`).bind(slateDate).all()).results||[];
+  const staleTotal=staleRows.reduce((n,r)=>n+Number(r.rows_count||0),0);
   const rows=(await env.DB.prepare(`SELECT candidate_rank,candidate_status,prop_family,player_name,team,opponent,line_direction,line_number,line_type,final_score,confidence_grade,market_confidence,no_vig_prob,risk_notes,updated_at FROM score_candidate_board WHERE slate_date=? ORDER BY candidate_rank ASC, final_score DESC LIMIT 100`).bind(slateDate).all()).results||[];
   const esc=(v)=>'"'+String(v??'').replace(/"/g,'""')+'"';
   const headers=['rank','status','prop_family','player','team','opponent','side','line','line_type','score','grade','market_confidence','no_vig_prob','book_count','risks','caps','base_score','derived_modifier_total','updated_at'];
@@ -10814,7 +10823,7 @@ async function exportMlbScoreCandidateBoardV1(input, env){
   const playable=compact.filter(r=>r.status==='PLAYABLE').length;
   const qualified=compact.filter(r=>r.status==='QUALIFIED').length;
   const watchlist=compact.filter(r=>r.status==='WATCHLIST').length;
-  return{ok:true,data_ok:compact.length>0,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_export_read_only_no_external_api_no_gemini',table_exists:true,candidates_exported:compact.length,summary:{QUALIFIED:qualified,PLAYABLE:playable,WATCHLIST:watchlist},csv_header:headers,copy_paste_csv:csv.join('\n'),rows:compact,next_action:'Copy copy_paste_csv into a spreadsheet or use rows for UI rendering. This is the release/read model export.',note:'v1.3.45 keeps the read-only export layer from score_candidate_board. No external API or Gemini is called.'};
+  return{ok:true,data_ok:compact.length>0&&staleTotal===0,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_export_read_only_no_external_api_no_gemini',table_exists:true,candidates_exported:compact.length,stale_guard:{pass:staleTotal===0,active_slate:slateDate,stale_rows_total:staleTotal,stale_rows_by_slate:staleRows},summary:{QUALIFIED:qualified,PLAYABLE:playable,WATCHLIST:watchlist},csv_header:headers,copy_paste_csv:csv.join('\n'),rows:compact,next_action:staleTotal>0?'Run SCORING V1 > Run Full Score Refresh to purge and rebuild the candidate board.':'Copy copy_paste_csv into a spreadsheet or use rows for UI rendering. This is the release/read model export.',note:'v1.3.49 export is stale-guarded and only returns the selected active slate. No external API or Gemini is called.'};
 }
 
 async function runMlbScoringV1(input,env){
