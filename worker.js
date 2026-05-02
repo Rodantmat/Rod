@@ -1,7 +1,7 @@
-// AlphaDog v1.3.50 - Rollover Pickability Gate compatible worker
+// AlphaDog v1.3.57 - Admin Freshness Dispatcher compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.50 - Rollover Pickability Gate";
-const SYSTEM_CODENAME = "Rollover Pickability Gate";
+const SYSTEM_VERSION = "v1.3.57 - Admin Freshness Dispatcher";
+const SYSTEM_CODENAME = "Admin Freshness Dispatcher";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -955,8 +955,13 @@ export default {
       } else if (cron === '35 11 * * *' || cron === '5 13 * * *' || cron === '5 18 * * *') {
         result = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_scoring_safety_cron', cron }, env);
       } else if (cron === '* * * * *') {
-        // v1.3.18: Phase 3A/3B deferred work has priority on minute ticks.
-        // This fixes due phase3ab_daily_4am rows staying PENDING while manual ticks still advance mining.
+        // v1.3.57: Admin/Main UI full-refresh requests get one bounded backend step first.
+        // This prevents Phase 3A/3B minute retries from starving the user-triggered freshness pipeline.
+        const adminDueTick = await runDueDeferredFullRun(env);
+        if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
+          result = { ok: true, data_ok: !!adminDueTick.data_ok, version: SYSTEM_VERSION, job: 'admin_freshness_minute_due_tick', status: 'admin_refresh_advanced', cron, admin_tick: adminDueTick, note: 'Minute cron advanced one bounded Admin/Main UI freshness step before Phase 3. This avoids browser dependency and avoids Phase 3 lock starvation.' };
+        } else {
+        // v1.3.18: Phase 3A/3B deferred work continues after Admin/Main UI freshness has no due work.
         const phase3DueTick = await runDuePhase3abFullRun(env);
         if (phase3DueTick && phase3DueTick.status !== 'NO_PHASE3AB_DEFERRED_DUE') {
           const scoring_refresh = await runFullScoringRefreshIfReady({ job:'run_full_scoring_refresh_v1', trigger:'scheduled_minute_after_phase3ab_terminal_mine', cron }, env, phase3DueTick);
@@ -976,6 +981,7 @@ export default {
               else result = phase3DueTick;
             }
           }
+        }
         }
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
@@ -2240,43 +2246,155 @@ async function handleDeferredFullRunRequest(request, env) {
   return json({ ok: true, version: SYSTEM_VERSION, job: "deferred_full_run_once", status: "SCHEDULED_ONE_SHOT", request_id: requestId, slate_date: slate.slate_date, slate_mode: slate.slate_mode, run_after: runAfter, message: "Full Run scheduled for the backend in about 1 minute. Do not keep Safari open for this run. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.", temporary_test_mode: true, removal_note: "This one-shot scheduling mode is temporary and should be removed after scheduler/miner reliability is fully proven." });
 }
 
+async function parseDeferredState(row) {
+  try {
+    const parsed = row?.output_json ? JSON.parse(String(row.output_json)) : null;
+    if (parsed && typeof parsed === 'object' && parsed.admin_refresh_state) return parsed.admin_refresh_state;
+    if (parsed && typeof parsed === 'object' && parsed.step_index !== undefined) return parsed;
+  } catch (_) {}
+  return { step_index: 0, completed_steps: [], step_results: [], started_at: new Date().toISOString() };
+}
+
+function deferredRunAfterSeconds(seconds = 60) {
+  return new Date(Date.now() + Number(seconds || 60) * 1000).toISOString().replace('T',' ').replace(/\.\d{3}Z$/, '');
+}
+
+function compactStepResult(value) {
+  try {
+    const txt = JSON.stringify(value);
+    return JSON.parse(txt.length > 3500 ? txt.slice(0, 3500) + '"...[truncated]"' : txt);
+  } catch (_) {
+    return { text: String(value).slice(0, 3500) };
+  }
+}
+
+async function runAdminFreshnessPipelineStep(input, env, state = {}) {
+  const slate = resolveSlateDate(input || {});
+  const slateDate = slate.slate_date;
+  const steps = [
+    'incremental_daily',
+    'everyday_phase1',
+    'phase2_weather',
+    'phase2_lineup',
+    'odds_morning',
+    'odds_afternoon',
+    'score_refresh'
+  ];
+  const idx = Math.max(0, Math.min(Number(state.step_index || 0), steps.length));
+  if (idx >= steps.length) {
+    return { ok: true, data_ok: true, status: 'completed', complete: true, step_name: 'completed', slate_date: slateDate, note: 'Admin freshness pipeline already completed.' };
+  }
+  const step = steps[idx];
+  let result;
+  let completeStep = true;
+
+  if (step === 'incremental_daily') {
+    const scheduled = await scheduleIncrementalTempRefreshOnce({ job:'schedule_incremental_temp_refresh_once', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+    const tick = await runIncrementalTempScheduledTick({ job:'run_incremental_temp_refresh_tick', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode, max_ms:24000 }, env);
+    completeStep = !!(tick?.refresh_complete || String(tick?.status || '').toLowerCase().includes('completed') || String(tick?.status || '').toLowerCase().includes('idle_no_due'));
+    result = { scheduled, tick };
+  } else if (step === 'everyday_phase1') {
+    const scheduled = await scheduleEverydayPhase1Once({ job:'schedule_everyday_phase1_once', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+    const tick = await runEverydayPhase1Tick({ job:'run_everyday_phase1_tick', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode, max_steps:8, max_ms:26000 }, env);
+    completeStep = !!(tick?.phase1_complete || String(tick?.status || '').toLowerCase().includes('completed'));
+    result = { scheduled, tick };
+  } else if (step === 'phase2_weather') {
+    result = await scrapePhase2WeatherContext({ job:'scrape_phase2_weather_context', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+  } else if (step === 'phase2_lineup') {
+    result = await scrapePhase2LineupContext({ job:'scrape_phase2_lineup_context', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+  } else if (step === 'odds_morning') {
+    result = await runOddsApiMarketIntel({ job:'run_odds_api_morning', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode, window_name:'MORNING' }, env);
+  } else if (step === 'odds_afternoon') {
+    result = await runOddsApiMarketIntel({ job:'run_odds_api_afternoon', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode, window_name:'EARLY_AFTERNOON' }, env);
+  } else if (step === 'score_refresh') {
+    result = await runFullScoringRefreshV1({ job:'run_full_scoring_refresh_v1', trigger:'admin_freshness_dispatcher', slate_date:slateDate, slate_mode:slate.slate_mode }, env);
+  }
+
+  const ok = result?.ok !== false;
+  const nextIndex = completeStep ? idx + 1 : idx;
+  const done = nextIndex >= steps.length;
+  return {
+    ok,
+    data_ok: done ? ok : false,
+    version: SYSTEM_VERSION,
+    job: 'admin_freshness_dispatcher_step',
+    slate_date: slateDate,
+    step_index: idx,
+    step_name: step,
+    step_complete: completeStep,
+    next_step_index: nextIndex,
+    next_step_name: done ? null : steps[nextIndex],
+    complete: done,
+    needs_continue: !done,
+    result,
+    prizepicks_bridge: { skipped: true, reason: 'Control Room worker has no GitHub Actions trigger secret/config in this build. PrizePicks board remains handled by the existing GitHub scrape.yml schedule/manual workflow.' },
+    sequence: steps,
+    note: 'v1.3.57 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather, Phase 2 lineup, odds windows, then scoring. Static is intentionally excluded.'
+  };
+}
+
 async function runDueDeferredFullRun(env) {
   await ensureDeferredFullRunTable(env);
   await resetStaleDeferredFullRuns(env);
   const row = await env.DB.prepare(`
     SELECT * FROM deferred_full_run_once
     WHERE status='PENDING'
+      AND job_name='run_full_pipeline'
       AND run_after <= CURRENT_TIMESTAMP
-    ORDER BY run_after ASC, requested_at ASC
+    ORDER BY CASE WHEN requested_by='main_alphadog_ui_refresh_full_data' THEN 0 ELSE 1 END, run_after ASC, requested_at ASC
     LIMIT 1
   `).first();
   if (!row) return { ok: true, status: "NO_DEFERRED_FULL_RUN_DUE", checked_at: new Date().toISOString() };
   const taskId = crypto.randomUUID();
   const claim = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='RUNNING', started_at=CURRENT_TIMESTAMP, task_id=?
+    SET status='RUNNING', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), task_id=?
     WHERE request_id=? AND status='PENDING'
   `).bind(taskId, row.request_id).run();
   if (Number(claim?.meta?.changes || 0) === 0) return { ok: true, status: "DEFERRED_FULL_RUN_ALREADY_CLAIMED", request_id: row.request_id };
-  const input = { job: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", trigger: "deferred_one_shot", request_id: row.request_id };
-  await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "started", task_id: taskId, input_json: input });
+
+  const state = await parseDeferredState(row);
+  const input = { job: "admin_freshness_dispatcher_step", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", trigger: row.requested_by === 'main_alphadog_ui_refresh_full_data' ? "main_ui_deferred_full_refresh" : "control_room_deferred_full_refresh", request_id: row.request_id, requested_by: row.requested_by || null };
+  await logSystemEvent(env, { trigger_source: input.trigger, action_label: "ADMIN FRESHNESS > BOUNDED STEP", job_name: "admin_freshness_dispatcher_step", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "started", task_id: taskId, input_json: input });
   await env.DB.prepare(`
     INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
-    VALUES (?, 'run_full_pipeline', 'running', CURRENT_TIMESTAMP, ?)
+    VALUES (?, 'admin_freshness_dispatcher_step', 'running', CURRENT_TIMESTAMP, ?)
   `).bind(taskId, JSON.stringify(input)).run();
   try {
-    const result = await runFullPipeline(input, env);
-    const ok = !!result?.ok;
-    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(ok ? "success" : "failed", JSON.stringify(result), taskId).run();
-    await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(ok ? "COMPLETED" : "FAILED", JSON.stringify(result), ok ? null : String(result?.error || result?.status || "full_run_failed"), row.request_id).run();
-    await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: ok ? "success" : "failed", task_id: taskId, output_preview: result, error: ok ? null : String(result?.error || result?.status || "full_run_failed") });
-    return { ok, status: ok ? "DEFERRED_FULL_RUN_COMPLETED" : "DEFERRED_FULL_RUN_FAILED", request_id: row.request_id, task_id: taskId, result };
+    const stepResult = await runAdminFreshnessPipelineStep(input, env, state);
+    const ok = !!stepResult?.ok;
+    const priorSteps = Array.isArray(state.completed_steps) ? state.completed_steps : [];
+    const priorResults = Array.isArray(state.step_results) ? state.step_results : [];
+    const nextState = {
+      admin_refresh_state: {
+        started_at: state.started_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        step_index: Number(stepResult?.next_step_index || 0),
+        completed_steps: stepResult?.step_complete ? [...priorSteps, stepResult.step_name] : priorSteps,
+        step_results: [...priorResults, { step: stepResult.step_name, ok, complete: !!stepResult.step_complete, result: compactStepResult(stepResult.result) }].slice(-12),
+        sequence: stepResult.sequence || []
+      },
+      last_step: stepResult
+    };
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE task_id=?`).bind(ok ? "success" : "failed", JSON.stringify(stepResult), ok ? null : String(stepResult?.error || stepResult?.status || "admin_freshness_step_failed"), taskId).run();
+    if (stepResult.complete) {
+      await env.DB.prepare(`UPDATE deferred_full_run_once SET status='COMPLETED', finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(JSON.stringify(nextState), row.request_id).run();
+    } else if (ok) {
+      const runAfter = deferredRunAfterSeconds(60);
+      await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(runAfter, JSON.stringify(nextState), row.request_id).run();
+    } else {
+      const runAfter = deferredRunAfterSeconds(180);
+      await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(runAfter, JSON.stringify(nextState), String(stepResult?.error || stepResult?.status || 'step_failed_retrying'), row.request_id).run();
+    }
+    await logSystemEvent(env, { trigger_source: input.trigger, action_label: "ADMIN FRESHNESS > BOUNDED STEP", job_name: "admin_freshness_dispatcher_step", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: ok ? "success" : "failed", task_id: taskId, output_preview: stepResult, error: ok ? null : String(stepResult?.error || stepResult?.status || "admin_freshness_step_failed") });
+    return { ok, data_ok: !!stepResult.complete && ok, status: stepResult.complete ? "ADMIN_FRESHNESS_COMPLETED" : "ADMIN_FRESHNESS_CONTINUES", request_id: row.request_id, task_id: taskId, next_run_after: stepResult.complete ? null : (ok ? deferredRunAfterSeconds(60) : deferredRunAfterSeconds(180)), result: stepResult };
   } catch (err) {
     const msg = String(err?.message || err);
+    const runAfter = deferredRunAfterSeconds(180);
     await env.DB.prepare(`UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=? WHERE task_id=?`).bind(msg, taskId).run().catch(() => null);
-    await env.DB.prepare(`UPDATE deferred_full_run_once SET status='FAILED', finished_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?`).bind(msg, row.request_id).run().catch(() => null);
-    await logSystemEvent(env, { trigger_source: "scheduled_deferred_one_shot", action_label: "SCHEDULED ONE-SHOT > FULL RUN", job_name: "run_full_pipeline", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "failed", task_id: taskId, error: msg });
-    return { ok: false, status: "DEFERRED_FULL_RUN_EXCEPTION", request_id: row.request_id, task_id: taskId, error: msg };
+    await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE request_id=?`).bind(runAfter, msg, row.request_id).run().catch(() => null);
+    await logSystemEvent(env, { trigger_source: input.trigger, action_label: "ADMIN FRESHNESS > BOUNDED STEP", job_name: "admin_freshness_dispatcher_step", slate_date: row.slate_date, slate_mode: row.slate_mode || "AUTO", status: "failed", task_id: taskId, error: msg });
+    return { ok: false, status: "ADMIN_FRESHNESS_STEP_EXCEPTION_RETRYING", request_id: row.request_id, task_id: taskId, next_run_after: runAfter, error: msg };
   }
 }
 
