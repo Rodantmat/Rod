@@ -1,7 +1,7 @@
-// AlphaDog v1.3.47 - Pickability Gate compatible worker
+// AlphaDog v1.3.48 - Odds Scheduler Guard compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.47 - Pickability Gate";
-const SYSTEM_CODENAME = "Candidate Board Export Layer";
+const SYSTEM_VERSION = "v1.3.48 - Odds Scheduler Guard";
+const SYSTEM_CODENAME = "Odds Scheduler Guard";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1887,12 +1887,13 @@ async function schedulePhase3abDaily4am(input, env) {
     FROM deferred_full_run_once
     WHERE job_name=?
       AND slate_date=?
-      AND status IN ('PENDING','RUNNING')
+      AND request_id LIKE ?
     ORDER BY requested_at DESC
     LIMIT 1
-  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first();
+  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date, `phase3ab_daily_4am|${slate.slate_date}|%`).first();
   if (existing) {
-    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: 'already_scheduled_or_running', slate_date: slate.slate_date, existing_request: existing, next_action: 'Minute cron will continue the existing Phase 3A/3B request. Use PHASE 3A/3B > Check Full Run to monitor.', note: 'No duplicate daily Phase 3A/3B request was created.' };
+    const active = ['PENDING','RUNNING'].includes(String(existing.status || '').toUpperCase());
+    return { ok: true, data_ok: !active, version: SYSTEM_VERSION, job: input.job || 'schedule_phase3ab_daily_4am', status: active ? 'already_scheduled_or_running' : 'daily_request_already_completed_or_terminal', slate_date: slate.slate_date, existing_request: existing, next_action: active ? 'Minute cron will continue the existing Phase 3A/3B request. Use PHASE 3A/3B > Check Full Run to monitor.' : 'Daily Phase 3A/3B request already exists for this slate. No duplicate request was created.', note: 'v1.3.48 dedupes daily Phase 3A/3B by slate even after terminal completion.' };
   }
   const requestId = `phase3ab_daily_4am|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
   const runAfter = phase3abTimestampForSql(new Date(Date.now() - 1000));
@@ -2132,30 +2133,54 @@ async function checkPhase3abFullRun(input, env) {
   await ensureDeferredFullRunTable(env);
   await ensurePipelineLocksTable(env);
   await resetStalePhase3abGlobalLock(env, PHASE3AB_LOCK_STALE_MINUTES);
-  const slate = resolveSlateDate(input || {});
-  const latest = await env.DB.prepare(`
+  const requested = resolveSlateDate(input || {});
+  let selectedSlateDate = requested.slate_date;
+  let latest = await env.DB.prepare(`
     SELECT request_id, job_name, slate_date, slate_mode, status, requested_at, run_after, started_at, finished_at, task_id, error, output_json
     FROM deferred_full_run_once
     WHERE job_name=? AND slate_date=?
     ORDER BY requested_at DESC
     LIMIT 1
-  `).bind(PHASE3AB_DEFERRED_JOB, slate.slate_date).first().catch(() => null);
-  const queue = await phase3abQueueTotals(env, slate.slate_date);
-  const results = await phase3abResultTotals(env, slate.slate_date);
+  `).bind(PHASE3AB_DEFERRED_JOB, selectedSlateDate).first().catch(() => null);
+
+  let slateGuard = { requested_slate_date: requested.slate_date, slate_date: selectedSlateDate, fallback_applied: false, reason: latest ? 'requested_has_phase3_request' : 'requested_empty' };
+  if (!latest) {
+    const fallback = await env.DB.prepare(`
+      SELECT request_id, job_name, slate_date, slate_mode, status, requested_at, run_after, started_at, finished_at, task_id, error, output_json
+      FROM deferred_full_run_once
+      WHERE job_name=?
+      ORDER BY requested_at DESC
+      LIMIT 1
+    `).bind(PHASE3AB_DEFERRED_JOB).first().catch(() => null);
+    if (fallback) {
+      latest = fallback;
+      selectedSlateDate = fallback.slate_date;
+      slateGuard = { requested_slate_date: requested.slate_date, slate_date: selectedSlateDate, fallback_applied: true, reason: 'requested_empty_fell_back_to_latest_phase3_request' };
+    }
+  }
+
+  const queue = await phase3abQueueTotals(env, selectedSlateDate);
+  const results = await phase3abResultTotals(env, selectedSlateDate);
   const lock = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
-  const queueHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
-  const resultHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [slate.slate_date]);
+  const queueHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count FROM board_factor_queue WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [selectedSlateDate]);
+  const resultHealth = await phase3abRows(env, `SELECT queue_type, status, COUNT(*) AS rows_count, SUM(factor_count) AS raw_factor_rows FROM board_factor_results WHERE slate_date=? GROUP BY queue_type, status ORDER BY queue_type, status`, [selectedSlateDate]);
   const tempClean = queue.total_rows === 0 || (queue.pending_rows + queue.retry_later_rows + queue.running_rows + queue.completed_rows + queue.skipped_stale_rows) === 0;
-  const status = latest?.status || 'not_scheduled';
-  const pass = ['COMPLETED','COMPLETED_REVIEW','COMPLETED_WITH_SKIPS'].includes(status) && results.certified_a_results > 0 && queue.actionable_pending_rows === 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0 && queue.error_rows === 0;
+  const rawStatus = String(latest?.status || 'not_scheduled').toUpperCase();
+  const terminal = ['COMPLETED','COMPLETED_REVIEW','COMPLETED_WITH_SKIPS','COMPLETED_WITH_ERRORS_REVIEW'].includes(rawStatus);
+  const hardPass = ['COMPLETED','COMPLETED_REVIEW','COMPLETED_WITH_SKIPS'].includes(rawStatus) && results.certified_a_results > 0 && queue.actionable_pending_rows === 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0 && queue.error_rows === 0;
+  const reviewPass = rawStatus === 'COMPLETED_WITH_ERRORS_REVIEW' && results.certified_a_results > 0 && queue.actionable_pending_rows === 0 && queue.pending_rows === 0 && queue.retry_later_rows === 0 && queue.running_rows === 0;
+  const ok = !!latest && (hardPass || reviewPass || terminal || rawStatus === 'PENDING' || rawStatus === 'RUNNING');
+  const dataOk = hardPass || reviewPass;
   return {
-    ok: pass,
-    data_ok: pass,
+    ok,
+    data_ok: dataOk,
     version: SYSTEM_VERSION,
     job: input.job || 'check_phase3ab_full_run',
     phase: 'Phase 3A/3B Full Run Test',
-    slate_date: slate.slate_date,
-    status: pass ? 'pass' : (latest ? 'needs_review_or_continue' : 'not_scheduled'),
+    slate_date: selectedSlateDate,
+    requested_slate_date: requested.slate_date,
+    slate_guard: slateGuard,
+    status: hardPass ? 'pass' : (reviewPass ? 'pass_with_error_rows_review' : (latest ? 'needs_review_or_continue' : 'not_scheduled')),
     latest_request: latest ? { ...latest, output_json: latest.output_json ? '[stored_output_json_available_in_db]' : null } : null,
     queue_totals: queue,
     result_totals: results,
@@ -2170,20 +2195,22 @@ async function checkPhase3abFullRun(input, env) {
       retry_later_rows: queue.retry_later_rows,
       running_rows: queue.running_rows,
       error_rows: queue.error_rows,
-      final_status: status,
-      pass
+      final_status: rawStatus,
+      pass: hardPass,
+      pass_with_review: reviewPass
     },
     lock_state: lock || null,
     queue_health: queueHealth,
     result_health: resultHealth,
     warnings: [
-      ...(queue.error_rows > 0 ? [`${queue.error_rows} queue rows are ERROR and need review or credits/retry before pass`] : []),
-      ...(latest && latest.status === 'PENDING' ? ['Deferred test is still pending; wait for minute cron/tick or run Run Full Run Tick.'] : []),
-      ...(latest && latest.status === 'RUNNING' ? ['Deferred test is currently running.'] : []),
+      ...(slateGuard.fallback_applied ? [`Requested slate ${requested.slate_date} had no Phase 3A/3B request; showing latest available slate ${selectedSlateDate}.`] : []),
+      ...(queue.error_rows > 0 ? [`${queue.error_rows} queue rows are ERROR; mining still reached terminal review state but these rows need review.`] : []),
+      ...(latest && rawStatus === 'PENDING' ? ['Deferred test is still pending; wait for minute cron/tick or run Run Full Run Tick.'] : []),
+      ...(latest && rawStatus === 'RUNNING' ? ['Deferred test is currently running.'] : []),
       ...(results.certified_a_results <= 0 ? ['No certified A raw result rows found yet.'] : [])
     ],
-    next_action: pass ? 'Phase 3A/3B full-run test passed. Next: schedule real Phase 3A/3B time window.' : 'If status is pending/partial, wait 2 minutes and check again. If ERROR rows mention Gemini credits, refill Gemini billing before retry.',
-    note: 'This check validates Phase 3A/3B queue/result full-run mechanics only. It does not score final candidates.'
+    next_action: hardPass || reviewPass ? 'Phase 3A/3B is terminal for the selected slate. Review ERROR rows if present; scoring mesh should refresh after terminal completion.' : 'If status is pending/partial, wait 2 minutes and check again. If ERROR rows mention Gemini credits, refill Gemini billing before retry.',
+    note: 'v1.3.48 makes this checker slate-guarded. Empty requested slates fall back to the latest Phase 3A/3B request instead of returning a false hard failure.'
   };
 }
 async function handleDeferredFullRunRequest(request, env) {
@@ -10262,18 +10289,31 @@ async function certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResu
   return { ok:passed, status:passed?'CERTIFIED':'FAILED', grade, failures, game_events:Number(ev?.rows_count || 0), game_market_rows:Number(gm?.rows_count || 0), prop_rows:propRows, hits_rows:hitsRows, rbi_rows:rbiRows, total_bases_rows:tbRows, prop_family_counts:propCounts };
 }
 async function promoteOddsApiTempRun(env, runId, slateDate, windowName) {
+  const tempCounts = await env.DB.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM odds_api_events_temp WHERE run_id=?) AS event_rows,
+      (SELECT COUNT(*) FROM odds_api_game_markets_temp WHERE run_id=?) AS game_market_rows,
+      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=?) AS prop_rows
+  `).bind(runId, runId, runId).first().catch(() => ({ event_rows:0, game_market_rows:0, prop_rows:0 }));
+
   await env.DB.prepare(`DELETE FROM odds_api_requests WHERE slate_date=? AND window_name=? AND request_type IN (SELECT DISTINCT request_type FROM odds_api_requests_temp WHERE run_id=?)`).bind(slateDate,windowName,runId).run();
-  await env.DB.prepare(`INSERT INTO odds_api_requests (request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at) SELECT request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at FROM odds_api_requests_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`DELETE FROM odds_api_events WHERE slate_date=?`).bind(slateDate).run();
-  await env.DB.prepare(`INSERT INTO odds_api_events (event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json) SELECT event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json FROM odds_api_events_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`DELETE FROM odds_api_game_markets WHERE slate_date=?`).bind(slateDate).run();
-  await env.DB.prepare(`INSERT INTO odds_api_game_markets (row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,bookmaker_last_update,market_key,outcome_name,outcome_price,outcome_point,outcome_description,updated_at,raw_json) SELECT row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,bookmaker_last_update,market_key,outcome_name,outcome_price,outcome_point,outcome_description,updated_at,raw_json FROM odds_api_game_markets_temp WHERE run_id=?`).bind(runId).run();
+  await env.DB.prepare(`INSERT INTO odds_api_requests (request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at) SELECT request_id,slate_date,window_name,request_type,event_id,endpoint,redacted_url,http_status,ok,regions,markets,bookmakers,x_requests_remaining,x_requests_used,x_requests_last,elapsed_ms,payload_json,error,created_at FROM odds_api_requests_temp WHERE run_id=? ON CONFLICT(request_id) DO UPDATE SET slate_date=excluded.slate_date,window_name=excluded.window_name,request_type=excluded.request_type,event_id=excluded.event_id,endpoint=excluded.endpoint,redacted_url=excluded.redacted_url,http_status=excluded.http_status,ok=excluded.ok,regions=excluded.regions,markets=excluded.markets,bookmakers=excluded.bookmakers,x_requests_remaining=excluded.x_requests_remaining,x_requests_used=excluded.x_requests_used,x_requests_last=excluded.x_requests_last,elapsed_ms=excluded.elapsed_ms,payload_json=excluded.payload_json,error=excluded.error,created_at=excluded.created_at`).bind(runId).run();
+
+  // v1.3.48: event ids are global at the Odds API level and can reappear across slate/window reruns.
+  // Never plain INSERT promoted event rows. Upsert them so manual reruns and cron reruns are idempotent.
+  await env.DB.prepare(`INSERT INTO odds_api_events (event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json) SELECT event_id,slate_date,commence_time,commence_date_pt,commence_time_pt,window_bucket,home_team,away_team,sport_key,sport_title,last_seen_window,last_seen_at,raw_json FROM odds_api_events_temp WHERE run_id=? ON CONFLICT(event_id) DO UPDATE SET slate_date=excluded.slate_date,commence_time=excluded.commence_time,commence_date_pt=excluded.commence_date_pt,commence_time_pt=excluded.commence_time_pt,window_bucket=excluded.window_bucket,home_team=excluded.home_team,away_team=excluded.away_team,sport_key=excluded.sport_key,sport_title=excluded.sport_title,last_seen_window=excluded.last_seen_window,last_seen_at=CURRENT_TIMESTAMP,raw_json=excluded.raw_json`).bind(runId).run();
+
+  const gameBuckets = await env.DB.prepare(`SELECT DISTINCT window_bucket FROM odds_api_game_markets_temp WHERE run_id=?`).bind(runId).all();
+  const gameBucketList = (gameBuckets.results || []).map(r => String(r.window_bucket || '')).filter(Boolean);
+  for (const b of gameBucketList) await env.DB.prepare(`DELETE FROM odds_api_game_markets WHERE slate_date=? AND window_bucket=?`).bind(slateDate,b).run();
+  await env.DB.prepare(`INSERT INTO odds_api_game_markets (row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,bookmaker_last_update,market_key,outcome_name,outcome_price,outcome_point,outcome_description,updated_at,raw_json) SELECT row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,bookmaker_last_update,market_key,outcome_name,outcome_price,outcome_point,outcome_description,updated_at,raw_json FROM odds_api_game_markets_temp WHERE run_id=? ON CONFLICT(row_id) DO UPDATE SET slate_date=excluded.slate_date,event_id=excluded.event_id,commence_time=excluded.commence_time,commence_time_pt=excluded.commence_time_pt,window_bucket=excluded.window_bucket,home_team=excluded.home_team,away_team=excluded.away_team,bookmaker_key=excluded.bookmaker_key,bookmaker_title=excluded.bookmaker_title,bookmaker_last_update=excluded.bookmaker_last_update,market_key=excluded.market_key,outcome_name=excluded.outcome_name,outcome_price=excluded.outcome_price,outcome_point=excluded.outcome_point,outcome_description=excluded.outcome_description,updated_at=CURRENT_TIMESTAMP,raw_json=excluded.raw_json`).bind(runId).run();
+
   const buckets = await env.DB.prepare(`SELECT DISTINCT window_bucket FROM odds_api_player_props_temp WHERE run_id=?`).bind(runId).all();
   const bucketList = (buckets.results || []).map(r => String(r.window_bucket || '')).filter(Boolean);
   for (const b of bucketList) await env.DB.prepare(`DELETE FROM odds_api_player_props WHERE slate_date=? AND window_bucket=?`).bind(slateDate,b).run();
-  await env.DB.prepare(`INSERT INTO odds_api_player_props (row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,market_key,player_name,outcome_name,outcome_price,outcome_point,outcome_description,target_side,prop_family,updated_at,raw_json) SELECT row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,market_key,player_name,outcome_name,outcome_price,outcome_point,outcome_description,target_side,prop_family,updated_at,raw_json FROM odds_api_player_props_temp WHERE run_id=?`).bind(runId).run();
+  await env.DB.prepare(`INSERT INTO odds_api_player_props (row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,market_key,player_name,outcome_name,outcome_price,outcome_point,outcome_description,target_side,prop_family,updated_at,raw_json) SELECT row_id,slate_date,event_id,commence_time,commence_time_pt,window_bucket,home_team,away_team,bookmaker_key,bookmaker_title,market_key,player_name,outcome_name,outcome_price,outcome_point,outcome_description,target_side,prop_family,updated_at,raw_json FROM odds_api_player_props_temp WHERE run_id=? ON CONFLICT(row_id) DO UPDATE SET slate_date=excluded.slate_date,event_id=excluded.event_id,commence_time=excluded.commence_time,commence_time_pt=excluded.commence_time_pt,window_bucket=excluded.window_bucket,home_team=excluded.home_team,away_team=excluded.away_team,bookmaker_key=excluded.bookmaker_key,bookmaker_title=excluded.bookmaker_title,market_key=excluded.market_key,player_name=excluded.player_name,outcome_name=excluded.outcome_name,outcome_price=excluded.outcome_price,outcome_point=excluded.outcome_point,outcome_description=excluded.outcome_description,target_side=excluded.target_side,prop_family=excluded.prop_family,updated_at=CURRENT_TIMESTAMP,raw_json=excluded.raw_json`).bind(runId).run();
   await env.DB.prepare(`UPDATE odds_api_run_certifications SET status='PROMOTED', promoted_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(runId).run();
-  return { promoted:true, replaced_slate:slateDate, replaced_prop_buckets:bucketList };
+  return { promoted:true, replaced_slate:slateDate, replaced_game_buckets:gameBucketList, replaced_prop_buckets:bucketList, temp_counts:tempCounts, idempotency:'UPSERT_ON_EVENTS_GAME_MARKETS_PLAYER_PROPS' };
 }
 async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
   const cert = await env.DB.prepare(`SELECT status FROM odds_api_run_certifications WHERE run_id=?`).bind(runId).first();
@@ -10336,8 +10376,13 @@ async function runOddsApiMarketIntel(input, env) {
   let promotion = { promoted:false, reason:'certification_failed' };
   let cleanup = { cleaned:false, reason:'not_promoted' };
   if (certification.ok) {
-    promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
-    cleanup = await cleanOddsApiTempRun(env, runId, false);
+    try {
+      promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
+      cleanup = await cleanOddsApiTempRun(env, runId, false);
+    } catch (err) {
+      promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.48' };
+      cleanup = await cleanOddsApiTempRun(env, runId, true).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
+    }
   } else {
     cleanup = await cleanOddsApiTempRun(env, runId, true);
   }
