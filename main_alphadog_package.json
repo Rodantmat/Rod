@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "deploy": "wrangler deploy --config main_alphadog_wrangler.jsonc",
+    "dev": "wrangler dev --config main_alphadog_wrangler.jsonc"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}

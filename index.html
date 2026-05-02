@@ -1,81 +1,20 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OXYGEN-COBALT • Main-1N.4 Goblin Triple Tap</title>
-  <link rel="stylesheet" href="./alphadog-main-styles.css?v=main1n2" />
-</head>
-<body>
-  <div class="app-shell">
-    <header class="hero">
-      <h1>OXYGEN-COBALT <span class="version-pill">Main-1N.4 Goblin Triple Tap</span></h1>
-      <div id="globalProgressMount" class="global-progress-panel" aria-live="polite">
-        <div class="global-progress-top">
-          <span class="global-progress-task">System ready</span>
-          <span class="global-progress-result">idle</span>
-        </div>
-        <div class="global-progress-track"><div class="global-progress-fill" style="width:0%"></div></div>
-      </div>
-    </header>
-
-    <main id="screenOne" class="screen screen-active" data-screen="ingest">
-      <section class="card">
-        <h2>Paste Board Text</h2>
-        <textarea id="boardInput" rows="12" placeholder="Paste PrizePicks-style MLB board text here..."></textarea>
-        <div id="feedStatus"></div>
-        <div class="btn-row">
-          <button id="ingestBtn">Ingest &amp; Validate Board</button>
-          <button id="analyzeBtn" class="primary-strong" disabled>Go to Screen 2 / Analyze</button>
-          <button id="resetBtn" class="secondary">Reset All</button>
-        </div>
-        <div id="ingestMessage" class="message"></div>
-      </section>
-
-      <div id="poolMount"></div>
-    </main>
-
-    <main id="screenTwo" class="screen" data-screen="analysis" hidden>
-      <section class="card analysis-toolbar">
-        <div>
-          <h2>Screen 2 • Data Matrix</h2>
-          <p class="muted tight">MLB API factor bridge with DB-first packets, safe official MLB enrichment, Gemini A-E matrix fill, and per-factor data/score lights.</p>
-        </div>
-        <div class="btn-row toolbar-actions">
-          <button id="copyReportBtn" class="report-button">Copy Debug Report</button>
-          <button id="refreshBackendBtn" class="secondary">Refresh Daily Health</button>
-          <button id="rerunBackendBtn" class="primary-strong">Re-run DB Wiring</button>
-          <button id="backToIngestBtn" class="secondary">Back to Screen 1</button>
-          <button id="analysisResetBtn" class="secondary">Reset All</button>
-        </div>
-      </section>
-
-      <div class="backend-auto-lock-box">
-        <div class="auto-lock-title">Backend Auto Lock</div>
-        <div class="auto-lock-line"><strong>Main API:</strong> https://alphadog-main-api-v100.rodolfoaamattos.workers.dev</div>
-        <div class="auto-lock-line"><strong>Slate Date:</strong> auto-detected by backend unless supplied by code</div>
-        <div class="auto-lock-line"><strong>Cache:</strong> controlled supplemental DB upsert only; scheduled worker untouched</div>
-      </div>
-      <div id="backendStatusMount"></div>
-
-      <div id="analysisMount"></div>
-
-      <section class="card system-log-card">
-        <div class="system-log-head">
-          <div>
-            <h2>System Log</h2>
-            <p class="muted tight">Mining / backend wiring status. This is included in Copy Debug Report.</p>
-          </div>
-          <button id="copyReportBottomBtn" class="secondary">Copy Debug Report</button>
-        </div>
-        <div id="systemLogMount" class="system-log-mount"></div>
-      </section>
-    </main>
-  </div>
-
-  <script src="./alphadog-main-parser.js?v=main1n2"></script>
-  <script src="./alphadog-main-connectors.js?v=main1n2"></script>
-  <script src="./alphadog-main-ui-engine.js?v=main1n2"></script>
-  <script src="./alphadog-main-core.js?v=main1n2"></script>
-</body>
-</html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>AlphaDog v1.0</title><link rel="icon" type="image/png" href="/main_alphadog_favicon.png"><link rel="apple-touch-icon" href="/main_alphadog_apple_touch_icon.png"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="AlphaDog"><meta name="theme-color" content="#080f21">
+<style>
+:root{--bg:#080f21;--panel:#111a30;--panel2:#0d1428;--line:#26365f;--text:#f3f7ff;--muted:#aebbd2;--blue:#2477ff;--blue2:#135de0;--red:#bb3138;--gold:#f2c45c;--green:#65e6a3;--shadow:0 18px 40px rgba(0,0,0,.35)}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#151f39 0,#080f21 38%,#050913 100%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;min-height:100vh}.wrap{max-width:1120px;margin:0 auto;padding:18px 14px 42px}.hero{display:flex;align-items:center;gap:14px;margin:4px 0 18px}.logo{width:72px;height:72px;border-radius:50%;background:#fff;padding:4px;box-shadow:var(--shadow)}h1{font-size:38px;line-height:1;margin:0;font-weight:900;letter-spacing:-.04em}.v{font-size:16px;color:var(--muted);font-weight:800;margin-top:5px}.panel{background:rgba(17,26,48,.92);border:1px solid var(--line);border-radius:24px;box-shadow:var(--shadow);padding:16px;margin-bottom:14px}.filterTitle{font-size:14px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.08em;margin:0 0 10px}.chips{display:flex;gap:9px;flex-wrap:wrap}.chip{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:#141f3a;border-radius:999px;padding:10px 12px;font-weight:800;color:#dfe8fb;user-select:none}.chip input{accent-color:var(--blue);width:18px;height:18px}.controls{display:grid;grid-template-columns:1fr;gap:14px}select{appearance:none;background:#141f3a;color:var(--text);border:1px solid var(--line);border-radius:16px;padding:14px 16px;font-size:17px;font-weight:850;width:100%}.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 2px 14px}.status{color:var(--muted);font-size:14px;font-weight:750}button{border:0;border-radius:15px;background:linear-gradient(180deg,var(--blue),var(--blue2));color:#fff;font-weight:900;padding:12px 16px;font-size:15px;box-shadow:0 10px 22px rgba(36,119,255,.22)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.card{position:relative;overflow:hidden;background:linear-gradient(180deg,#141e36,#0c1428);border:1px solid #2b3a65;border-radius:22px;padding:14px;min-height:206px;box-shadow:var(--shadow)}.card:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 90% 15%,rgba(36,119,255,.18),transparent 35%);pointer-events:none}.top{position:relative;display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.player{font-size:20px;line-height:1.06;font-weight:950;letter-spacing:-.03em;padding-right:2px}.badge{flex:0 0 auto;border-radius:999px;padding:6px 8px;font-weight:950;font-size:11px;border:1px solid #3b4c7d;background:#101a31;text-transform:uppercase}.goblin{color:var(--green)}.demon{color:#ff7676}.regular{color:#dce7ff}.teams{position:relative;color:var(--muted);font-size:13px;font-weight:800;margin-top:8px;line-height:1.35}.date{position:relative;margin-top:9px;color:#c8d5ec;font-size:13px;font-weight:750}.lineBox{position:relative;margin-top:12px;display:inline-flex;gap:6px;align-items:center;border:1px solid #334573;background:#0b1326;border-radius:14px;padding:8px 10px;font-weight:950;font-size:13px}.side{color:#fff}.score{position:absolute;right:14px;bottom:12px;text-align:right}.scoreNum{font-size:34px;font-weight:1000;letter-spacing:-.05em}.scoreLbl{color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase}.comment{position:relative;margin-top:12px;color:#b9c7dc;font-size:12px;line-height:1.3;max-width:72%;font-weight:650}.empty{text-align:center;color:var(--muted);padding:44px 20px;border:1px dashed var(--line);border-radius:22px;background:#10182d}.err{color:#ff8b8b}@media(max-width:650px){.wrap{padding:14px 10px 36px}.hero{gap:10px}.logo{width:58px;height:58px}h1{font-size:32px}.panel{border-radius:21px;padding:13px}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.card{border-radius:19px;padding:11px;min-height:205px}.player{font-size:17px}.teams,.date{font-size:12px}.lineBox{font-size:12px;padding:7px 8px}.scoreNum{font-size:30px}.comment{font-size:11px;max-width:70%}.chip{padding:9px 10px;font-size:14px}}
+</style></head>
+<body><main class="wrap"><header class="hero"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0</div></div></header><section class="panel controls"><div><p class="filterTitle">Prop lines</p><div class="chips" id="propFilters"></div></div><div><p class="filterTitle">Line type</p><div class="chips" id="typeFilters"></div></div><div><p class="filterTitle">Final score</p><select id="scoreFilter"><option value="90">90+</option><option value="85">85+</option><option value="80">80+</option><option value="75">75+</option><option value="70" selected>70+</option><option value="60">60+</option></select></div></section><div class="bar"><div class="status" id="status">Loading board...</div><button id="refresh">Refresh</button></div><section class="grid" id="cards"></section></main>
+<script>
+const TEAM={ARI:'Arizona Diamondbacks',ATL:'Atlanta Braves',BAL:'Baltimore Orioles',BOS:'Boston Red Sox',CHC:'Chicago Cubs',CWS:'Chicago White Sox',CHW:'Chicago White Sox',CIN:'Cincinnati Reds',CLE:'Cleveland Guardians',COL:'Colorado Rockies',DET:'Detroit Tigers',HOU:'Houston Astros',KC:'Kansas City Royals',KCR:'Kansas City Royals',LAA:'Los Angeles Angels',LAD:'Los Angeles Dodgers',MIA:'Miami Marlins',MIL:'Milwaukee Brewers',MIN:'Minnesota Twins',NYM:'New York Mets',NYY:'New York Yankees',ATH:'Athletics',OAK:'Athletics',PHI:'Philadelphia Phillies',PIT:'Pittsburgh Pirates',SD:'San Diego Padres',SEA:'Seattle Mariners',SF:'San Francisco Giants',STL:'St. Louis Cardinals',TB:'Tampa Bay Rays',TEX:'Texas Rangers',TOR:'Toronto Blue Jays',WSH:'Washington Nationals',WAS:'Washington Nationals'};
+let rows=[];let filters={props:new Set(['HITS','RBI','TOTAL_BASES']),types:new Set(['goblin','demon','regular']),score:70};
+const $=id=>document.getElementById(id);function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function team(v){return TEAM[v]||v||'Unknown Team'}function propLabel(p){return p==='TOTAL_BASES'?'Total Bases':p==='RBI'?'RBI':p==='HITS'?'Hits':p}function typeLabel(t){return t==='regular'?'Regular':t.charAt(0).toUpperCase()+t.slice(1)}function fmtDate(v){if(!v)return 'Time pending';let d=new Date(v);if(isNaN(d))return v;return new Intl.DateTimeFormat(undefined,{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(d)}function comment(r){let bits=[];if(r.no_vig_prob)bits.push(Math.round(r.no_vig_prob*100)+'% no-vig lean');if(r.market_confidence)bits.push('market confidence '+Math.round(r.market_confidence*100));if(r.recommendation_status)bits.push(r.recommendation_status.toLowerCase());return bits.slice(0,2).join(' • ')||'Stored-data score from current AlphaDog board.'}
+function chip(label,value,setName){const id=setName+'_'+value;return `<label class="chip" for="${id}"><input id="${id}" type="checkbox" checked data-set="${setName}" data-value="${value}">${label}</label>`}
+function buildFilters(){$('propFilters').innerHTML=['TOTAL_BASES','RBI','HITS'].map(p=>chip(propLabel(p),p,'props')).join('');$('typeFilters').innerHTML=['goblin','demon','regular'].map(t=>chip(typeLabel(t),t,'types')).join('');document.querySelectorAll('input[type=checkbox]').forEach(el=>el.onchange=()=>{const s=filters[el.dataset.set];el.checked?s.add(el.dataset.value):s.delete(el.dataset.value);render()});$('scoreFilter').onchange=e=>{filters.score=Number(e.target.value);render()}}
+function normalizeType(r){let t=String(r.board_line_type||r.line_type||'regular').toLowerCase();if(t==='standard')t='regular';return ['goblin','demon','regular'].includes(t)?t:'regular'}
+function render(){let shown=rows.filter(r=>filters.props.has(r.prop_family)&&filters.types.has(normalizeType(r))&&Number(r.final_score||0)>=filters.score);$('status').textContent=`${shown.length} shown / ${rows.length} loaded`;if(!shown.length){$('cards').innerHTML='<div class="empty" style="grid-column:1/-1">No legs match these filters.</div>';return}$('cards').innerHTML=shown.map(r=>{let t=normalizeType(r);let score=Number(r.final_score||0);return `<article class="card"><div class="top"><div class="player">${esc(r.player_name)}</div><div class="badge ${t}">${typeLabel(t)}</div></div><div class="teams">${esc(team(r.team))}<br>vs ${esc(team(r.opponent))}</div><div class="date">${esc(fmtDate(r.game_datetime_utc||r.start_time))}</div><div class="lineBox"><span>${esc(propLabel(r.prop_family))}</span><span class="side">${esc(r.line_direction)}</span><span>${esc(r.line_number)}</span></div><div class="comment">${esc(comment(r))}</div><div class="score"><div class="scoreLbl">Score</div><div class="scoreNum">${score.toFixed(1)}</div></div></article>`}).join('')}
+async function load(){try{$('status').textContent='Loading board...';let r=await fetch('/main_alphadog_board?score_min=0&t='+Date.now());let j=await r.json();if(!j.ok)throw Error(j.error||'Board load failed');rows=j.rows||[];render()}catch(e){$('status').innerHTML='<span class="err">'+esc(e.message||e)+'</span>';$('cards').innerHTML='<div class="empty err" style="grid-column:1/-1">Could not load board.</div>'}}
+$('refresh').onclick=load;buildFilters();load();
+</script></body></html>
