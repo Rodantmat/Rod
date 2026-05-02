@@ -1,6 +1,6 @@
-// AlphaDog v1.3.53 - Main UI Admin Bridge Guard compatible worker
+// AlphaDog v1.3.54 - Main UI Admin Bridge Guard compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.53 - Main UI Admin Bridge Guard";
+const SYSTEM_VERSION = "v1.3.54 - Main UI Admin Bridge Guard";
 const SYSTEM_CODENAME = "Main UI Admin Bridge Guard";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
