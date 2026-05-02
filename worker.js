@@ -1,7 +1,7 @@
-// AlphaDog v1.3.54 - Main UI Admin Bridge Guard compatible worker
+// AlphaDog v1.3.50 - Rollover Pickability Gate compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.54 - Main UI Admin Bridge Guard";
-const SYSTEM_CODENAME = "Main UI Admin Bridge Guard";
+const SYSTEM_VERSION = "v1.3.50 - Rollover Pickability Gate";
+const SYSTEM_CODENAME = "Rollover Pickability Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -878,93 +878,8 @@ function unauthorized() {
   return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
-
-async function handleMainUiAdminRefreshStart(request, env, ctx) {
-  if (!isAuthorized(request, env)) return unauthorized();
-  const body = await safeJson(request).catch(() => ({}));
-  const slate = resolveSlateDate(body || {});
-  const refreshId = `main_ui_full_refresh|${slate.slate_date}|${Date.now()}|${crypto.randomUUID()}`;
-  const input = {
-    ...(body || {}),
-    job: "main_ui_full_data_refresh_v1",
-    refresh_id: refreshId,
-    slate_date: slate.slate_date,
-    slate_mode: slate.slate_mode,
-    trigger: "main_ui_admin_refresh_full_data",
-    sequence: [
-      "schedule_incremental_temp_refresh_once",
-      "run_incremental_temp_refresh_tick",
-      "schedule_everyday_phase1_once",
-      "run_everyday_phase1_tick",
-      "scrape_phase2_weather_context",
-      "scrape_phase2_lineup_context",
-      "scrape_phase2c_market_context",
-      "run_odds_api_morning_or_afternoon_by_time",
-      "run_full_scoring_refresh_v1"
-    ],
-    note: "Sleeper is manual and static is intentionally skipped. PrizePicks board context uses the existing Phase 2C current-board pipeline; external GitHub scrape remains on its own scheduled workflow."
-  };
-  await env.DB.prepare(`
-    INSERT INTO task_runs (task_id, job_name, status, started_at, input_json)
-    VALUES (?, 'main_ui_full_data_refresh_v1', 'running', CURRENT_TIMESTAMP, ?)
-  `).bind(refreshId, JSON.stringify(input)).run();
-  await logSystemEvent(env, { trigger_source: "main_ui_admin", action_label: "MAIN UI > Refresh Full Data", job_name: "main_ui_full_data_refresh_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "started", task_id: refreshId, input_json: input });
-  const runner = async () => {
-    const steps = [];
-    const runStep = async (label, fn) => {
-      const started_at = new Date().toISOString();
-      try {
-        const result = await fn();
-        steps.push({ label, ok: !!result?.ok, data_ok: !!result?.data_ok, status: result?.status || null, started_at, finished_at: new Date().toISOString(), preview: JSON.stringify(result || {}).slice(0, 900) });
-        return result;
-      } catch (err) {
-        const result = { ok: false, error: String(err?.message || err) };
-        steps.push({ label, ok: false, data_ok: false, status: "exception", started_at, finished_at: new Date().toISOString(), preview: JSON.stringify(result).slice(0, 900) });
-        return result;
-      }
-    };
-    try {
-      const bodyBase = { ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "main_ui_admin_refresh_full_data" };
-      await runStep("schedule_incremental_temp_refresh_once", () => scheduleIncrementalTempRefreshOnce({ ...bodyBase, job: "schedule_incremental_temp_refresh_once" }, env));
-      await runStep("run_incremental_temp_refresh_tick", () => runIncrementalTempScheduledTick({ ...bodyBase, job: "run_incremental_temp_refresh_tick", max_ms: 24000 }, env));
-      await runStep("schedule_everyday_phase1_once", () => scheduleEverydayPhase1Once({ ...bodyBase, job: "schedule_everyday_phase1_once" }, env));
-      await runStep("run_everyday_phase1_tick", () => runEverydayPhase1Tick({ ...bodyBase, job: "run_everyday_phase1_tick", max_steps: 8, max_ms: 24000 }, env));
-      await runStep("scrape_phase2_weather_context", () => scrapePhase2WeatherContext({ ...bodyBase, job: "scrape_phase2_weather_context" }, env));
-      await runStep("scrape_phase2_lineup_context", () => scrapePhase2LineupContext({ ...bodyBase, job: "scrape_phase2_lineup_context" }, env));
-      await runStep("scrape_phase2c_market_context", () => scrapePhase2cMarketContext({ ...bodyBase, job: "scrape_phase2c_market_context" }, env));
-      const hour = Number(new Date().toISOString().slice(11,13));
-      const oddsJob = hour >= 17 ? "run_odds_api_afternoon" : "run_odds_api_morning";
-      const oddsWindow = oddsJob === "run_odds_api_afternoon" ? "EARLY_AFTERNOON" : "MORNING";
-      const odds = await runStep(oddsJob, () => runOddsApiMarketIntel({ ...bodyBase, job: oddsJob, window_name: oddsWindow }, env));
-      await runStep("run_full_scoring_refresh_v1", () => runFullScoringRefreshV1({ ...bodyBase, job: "run_full_scoring_refresh_v1", trigger: odds?.data_ok ? "main_ui_admin_after_odds" : "main_ui_admin_score_safety" }, env));
-      const final = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: "main_ui_full_data_refresh_v1", refresh_id: refreshId, slate_date: slate.slate_date, status: "completed", steps };
-      await env.DB.prepare(`UPDATE task_runs SET status='success', finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(JSON.stringify(final), refreshId).run();
-      await logSystemEvent(env, { trigger_source: "main_ui_admin", action_label: "MAIN UI > Refresh Full Data", job_name: "main_ui_full_data_refresh_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "success", http_status: 200, task_id: refreshId, output_preview: final });
-    } catch (err) {
-      const final = { ok: false, data_ok: false, version: SYSTEM_VERSION, job: "main_ui_full_data_refresh_v1", refresh_id: refreshId, slate_date: slate.slate_date, status: "failed", error: String(err?.message || err), steps };
-      await env.DB.prepare(`UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE task_id=?`).bind(final.error, JSON.stringify(final), refreshId).run().catch(() => null);
-      await logSystemEvent(env, { trigger_source: "main_ui_admin", action_label: "MAIN UI > Refresh Full Data", job_name: "main_ui_full_data_refresh_v1", slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "failed", http_status: 500, task_id: refreshId, error: final.error, output_preview: final });
-    }
-  };
-  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(runner());
-  else await runner();
-  return json({ ok: true, data_ok: true, version: SYSTEM_VERSION, job: "main_ui_full_data_refresh_v1", status: "started_background", refresh_id: refreshId, slate_date: slate.slate_date, estimated_minutes: "6-12", note: "Background refresh started. You may close the browser. Sleeper manual and static skipped." });
-}
-
-async function handleMainUiAdminRefreshStatus(request, env) {
-  if (!isAuthorized(request, env)) return unauthorized();
-  const row = await env.DB.prepare(`
-    SELECT task_id, job_name, status, started_at, finished_at, substr(COALESCE(output_json,error,''),1,1200) AS preview
-    FROM task_runs
-    WHERE job_name='main_ui_full_data_refresh_v1'
-    ORDER BY datetime(started_at) DESC
-    LIMIT 1
-  `).first().catch(() => null);
-  return json({ ok: true, data_ok: !!row, version: SYSTEM_VERSION, job: "main_ui_full_data_refresh_v1_status", latest: row || null });
-}
-
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     try {
       const url = new URL(request.url);
 
@@ -979,8 +894,6 @@ export default {
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
       if (url.pathname === "/board/queue-payload/inspect") return withCors(await handleBoardQueuePayloadInspect(request, env));
       if (url.pathname === "/tasks/run" && request.method === "POST") return withCors(await handleTaskRun(request, env));
-      if (url.pathname === "/main-ui/admin-refresh/start" && request.method === "POST") return withCors(await handleMainUiAdminRefreshStart(request, env, ctx));
-      if (url.pathname === "/main-ui/admin-refresh/status" && request.method === "GET") return withCors(await handleMainUiAdminRefreshStatus(request, env));
       if (url.pathname === "/packet/leg" && request.method === "POST") return withCors(await handleLegPacket(request, env));
       if (url.pathname === "/score/leg" && request.method === "POST") return withCors(await handleScoreLeg(request, env));
       if (url.pathname === "/ingest/upsert" && request.method === "POST") return withCors(await handleUpsert(request, env));
