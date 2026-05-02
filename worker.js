@@ -1,6 +1,6 @@
-// AlphaDog v1.3.46 - Auto Scoring Trigger Mesh compatible worker
+// AlphaDog v1.3.47 - Pickability Gate compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.46 - Auto Scoring Trigger Mesh";
+const SYSTEM_VERSION = "v1.3.47 - Pickability Gate";
 const SYSTEM_CODENAME = "Candidate Board Export Layer";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10551,18 +10551,115 @@ async function checkAutoScoringMeshV1(input, env) {
   return { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input?.job || 'check_auto_scoring_mesh_v1', slate_date: slateDate, mesh_policy: { scoring_refresh_job: 'run_full_scoring_refresh_v1', refresh_steps: ['run_mlb_scoring_v1','build_mlb_score_candidate_board_v1','export summary check'], no_external_calls_from_scoring_refresh: true, triggers: ['after scheduled Odds API morning promotion','after scheduled Odds API afternoon promotion','after manual Odds API promotion','after PrizePicks board queue pipeline','after Sleeper RBI/RFI board signal update','after Sleeper morning/afternoon window update','after Phase 3A/3B mining reaches a terminal complete state','after Board Queue Auto Mine reaches complete/no-continue state','manual Run Full Score Refresh button'], partial_mining_rule: 'No candidate rebuild while Phase 3/board mining is partial_continue; scoring waits for final mine completion or direct board/odds update.' }, cron_plan_locked: ['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety','* * * * * phase3 completion watcher'], recent_runs: recent.results || [], locks: locks.results || [], next_action: 'Run the data update job normally. The mesh refreshes scoring/candidate board automatically after terminal updates. Use Run Full Score Refresh only as a manual safety button.', note: 'v1.3.46 wires scoring to the end of data updates so testing uses the freshest stored board/market/mined data available. Scoring refresh itself is stored-data only.' };
 }
 
+
+function pickabilityPropToPrizePicksStat(propFamily){
+  const f=String(propFamily||'').toUpperCase();
+  if(f==='HITS')return 'Hits';
+  if(f==='RBI')return 'RBIs';
+  if(f==='TOTAL_BASES')return 'Total Bases';
+  if(f==='RFI_NRFI'||f==='RFI')return '1st Inning Runs Allowed';
+  return String(propFamily||'');
+}
+function pickabilityNormStat(v){return String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'');}
+function pickabilityTeamKeys(v){
+  const raw=String(v||'').trim();
+  const k=scoreTeamKey(raw);
+  const out=new Set();
+  if(raw)out.add(raw.toUpperCase().replace(/[^A-Z0-9]/g,''));
+  if(k)out.add(String(k).toUpperCase().replace(/[^A-Z0-9]/g,''));
+  if(out.has('OAK'))out.add('ATH');
+  if(out.has('ATH'))out.add('OAK');
+  return out;
+}
+function pickabilityTeamMatch(a,b){
+  const A=pickabilityTeamKeys(a), B=pickabilityTeamKeys(b);
+  if(!A.size||!B.size)return true;
+  for(const x of A)if(B.has(x))return true;
+  return false;
+}
+function pickabilityLineMatch(a,b){
+  const x=Number(a), y=Number(b);
+  return Number.isFinite(x)&&Number.isFinite(y)&&Math.abs(x-y)<0.001;
+}
+function pickabilitySideFromPrizePicksOddsType(oddsType){
+  const t=String(oddsType||'standard').toLowerCase();
+  if(t==='goblin'||t==='demon')return ['OVER'];
+  return ['OVER','UNDER'];
+}
+async function loadPickabilityContext(env, slateDate){
+  const ctx={prizepicks_rows:[],sleeper_rows:[],source_tables:{prizepicks_current_market_context:false,sleeper_rbi_rfi_market_signals:false},warnings:[]};
+  try{
+    const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prizepicks_current_market_context'").first();
+    if(exists){
+      ctx.source_tables.prizepicks_current_market_context=true;
+      const res=await env.DB.prepare(`SELECT projection_key,line_id,player_name,team,opponent,stat_type,line_score,odds_type,is_promo,start_time,slate_date,board_updated_at,source_confidence,identity_method,is_supported_single,status FROM prizepicks_current_market_context WHERE slate_date=? AND status='ACTIVE' AND COALESCE(is_current,1)=1`).bind(slateDate).all();
+      ctx.prizepicks_rows=res.results||[];
+    } else ctx.warnings.push('missing_prizepicks_current_market_context');
+  }catch(e){ctx.warnings.push('prizepicks_context_load_failed:'+String(e&&e.message||e));}
+  try{
+    const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sleeper_rbi_rfi_market_signals'").first();
+    if(exists){
+      ctx.source_tables.sleeper_rbi_rfi_market_signals=true;
+      const res=await env.DB.prepare(`SELECT signal_id,sleeper_leg_id,player_name,team,opponent,opponent_team,market,normalized_line_score,entry_type,target_side,signal_status,usable_for_under,updated_at FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? AND signal_status='CERTIFIED_BOARD_PRESENT' AND usable_for_under=1`).bind(slateDate).all();
+      ctx.sleeper_rows=res.results||[];
+    } else ctx.warnings.push('missing_sleeper_rbi_rfi_market_signals');
+  }catch(e){ctx.warnings.push('sleeper_signal_load_failed:'+String(e&&e.message||e));}
+  return ctx;
+}
+function evaluateCandidatePickability(row, audit, ctx){
+  const direction=String(row.line_direction||'').toUpperCase();
+  const prop=String(row.prop_family||'').toUpperCase();
+  const line=Number(row.line_number);
+  const playerKey=scoreNormName(row.player_name);
+  const ppStat=pickabilityNormStat(pickabilityPropToPrizePicksStat(prop));
+  const checked={prizepicks_rows:ctx.prizepicks_rows.length,sleeper_rows:ctx.sleeper_rows.length};
+  const failure_flags=[];
+  if(!direction||!['OVER','UNDER'].includes(direction))failure_flags.push('PICKABILITY_UNKNOWN_SIDE');
+  if(!playerKey)failure_flags.push('PICKABILITY_MISSING_PLAYER');
+  if(!Number.isFinite(line))failure_flags.push('PICKABILITY_MISSING_LINE');
+  for(const pp of ctx.prizepicks_rows){
+    if(scoreNormName(pp.player_name)!==playerKey)continue;
+    if(pickabilityNormStat(pp.stat_type)!==ppStat)continue;
+    if(!pickabilityLineMatch(pp.line_score,line))continue;
+    if(!pickabilityTeamMatch(row.team,pp.team))continue;
+    if(row.opponent&&pp.opponent&&!pickabilityTeamMatch(row.opponent,pp.opponent))continue;
+    const selectable=pickabilitySideFromPrizePicksOddsType(pp.odds_type);
+    if(selectable.includes(direction)){
+      return { pickable:true, source:'prizepicks_current_market_context', board:'PrizePicks', matched_line_id:pp.line_id||pp.projection_key||null, matched_odds_type:pp.odds_type||null, selectable_sides:selectable, checked, flags:[], reason:'exact_prizepicks_board_side_available' };
+    }
+    failure_flags.push(`PICKABILITY_PRIZEPICKS_${String(pp.odds_type||'unknown').toUpperCase()}_${direction}_NOT_SELECTABLE`);
+  }
+  if((prop==='RBI'||prop==='RFI'||prop==='RFI_NRFI')&&direction==='UNDER'){
+    const sleeperMarket=prop==='RBI'?'RBI':'RFI';
+    for(const sr of ctx.sleeper_rows){
+      if(String(sr.market||'').toUpperCase()!==sleeperMarket)continue;
+      if(!pickabilityLineMatch(sr.normalized_line_score,line))continue;
+      if(prop==='RBI'&&scoreNormName(sr.player_name)!==playerKey)continue;
+      if(prop==='RBI'&&!pickabilityTeamMatch(row.team,sr.team))continue;
+      if(prop==='RBI'&&row.opponent&&sr.opponent_team&&!pickabilityTeamMatch(row.opponent,sr.opponent_team))continue;
+      return { pickable:true, source:'sleeper_rbi_rfi_market_signals', board:'Sleeper', matched_line_id:sr.sleeper_leg_id||sr.signal_id||null, matched_odds_type:sr.entry_type||'regular', selectable_sides:['UNDER'], checked, flags:[], reason:'exact_sleeper_under_side_available' };
+    }
+    failure_flags.push(`PICKABILITY_SLEEPER_${sleeperMarket}_UNDER_NOT_FOUND`);
+  }
+  if(!ctx.prizepicks_rows.length)failure_flags.push('PICKABILITY_NO_ACTIVE_PRIZEPICKS_CONTEXT_ROWS');
+  if((prop==='RBI'||prop==='RFI'||prop==='RFI_NRFI')&&direction==='UNDER'&&!ctx.sleeper_rows.length)failure_flags.push('PICKABILITY_NO_ACTIVE_SLEEPER_UNDER_SIGNALS');
+  return { pickable:false, source:null, board:null, matched_line_id:null, matched_odds_type:null, selectable_sides:[], checked, flags:[...new Set(failure_flags)], reason:'no_exact_selectable_board_side_confirmed' };
+}
+
 async function buildMlbScoreCandidateBoardV1(input, env){
   if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',error:'Missing DB binding'};
   await ensureMlbScoringV1Tables(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS score_candidate_board (candidate_key TEXT PRIMARY KEY, score_id TEXT, run_id TEXT, sport TEXT, slate_date TEXT, player_name TEXT, normalized_player_name TEXT, team TEXT, opponent TEXT, prop_family TEXT, line_type TEXT, line_number REAL, line_direction TEXT, no_vig_prob REAL, final_score REAL, confidence_grade TEXT, recommendation_status TEXT, market_confidence REAL, candidate_status TEXT, candidate_rank INTEGER, risk_notes TEXT, audit_payload TEXT, model_version TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_score_candidate_board_slate ON score_candidate_board (slate_date, candidate_status, final_score DESC)`).run();
-  const scoringSlateGuard=await resolveScoringSlateDate(input, env);
+  const scoringSlateGuard=await resolveScoringSlateDate(env,input||{});
   const slateDate=scoringSlateGuard.slate_date;
+  const pickCtx=await loadPickabilityContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
   const rows=res.results||[];
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run();
   const inserts=[];
-  const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED:0};
+  const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0};
+  const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,prizepicks_pickable:0,sleeper_pickable:0,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings};
   const released=[];
   let rank=0;
   for(const r of rows){
@@ -10589,18 +10686,29 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     else if(score>=75 && ['A','B','C'].includes(conf) && mc>=0.40 && bookCount>=2 && !blocks.length && !caps.includes('C01_SINGLE_BOOK_60')) status='PLAYABLE';
     else if(score>=70 && ['A','B','C'].includes(conf) && !blocks.length) status='WATCHLIST';
     if(status==='DEFERRED') continue;
-    rank++;
+    const pickability=evaluateCandidatePickability(r,audit,pickCtx);
+    pickability_summary.checked++;
+    if(pickability.pickable){
+      pickability_summary.pickable++;
+      if(pickability.board==='PrizePicks')pickability_summary.prizepicks_pickable++;
+      if(pickability.board==='Sleeper')pickability_summary.sleeper_pickable++;
+    } else {
+      status='DEFERRED_UNPICKABLE';
+      risks.push('pickability_gate_failed');
+      pickability_summary.deferred_unpickable++;
+    }
+    if(status!=='DEFERRED_UNPICKABLE')rank++;
     summary[status]=(summary[status]||0)+1;
-    const riskNotes={caps,penalties,blocks,risks,book_count:bookCount,freshness_policy:audit.freshness_policy||'AUDIT_ONLY_NO_SCORE_EFFECT',odds_age_seconds:audit.odds_age_seconds??null,derived_modifier_total:audit.derived_modifier_total??null,base_score:audit.base_score??null};
+    const riskNotes={caps,penalties,blocks,risks,book_count:bookCount,freshness_policy:audit.freshness_policy||'AUDIT_ONLY_NO_SCORE_EFFECT',odds_age_seconds:audit.odds_age_seconds??null,derived_modifier_total:audit.derived_modifier_total??null,base_score:audit.base_score??null,pickability_gate:{required:true,...pickability}};
+    const displayRank=status==='DEFERRED_UNPICKABLE'?null:rank;
     const key=[slateDate,r.prop_family,r.player_name,r.line_direction,r.line_number,r.line_type].map(x=>String(x??'').replace(/\|/g,'_')).join('|');
-    inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,rank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
-    if(released.length<50)released.push({rank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:r.line_number,line_type:r.line_type,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
+    inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
+    if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:r.line_number,line_type:r.line_type,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. QUALIFIED requires 80+, B/A confidence, market confidence >=0.55, and 3+ books; PLAYABLE requires 75+, C+ confidence, market confidence >=0.40, and 2+ books.',note:'v1.3.44 builds a read-ready candidate release board from active_score_board only. It does not call external APIs or Gemini. It does not force 80s/90s; it promotes only what the scored audit already supports.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.3.47 adds the Pickability Gate to candidate release. It confirms exact current PrizePicks/Sleeper side availability before release. Goblin/demon rows are treated as More/OVER only. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
-
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mlb_scoring_scratchpad (run_id TEXT, scratch_id TEXT PRIMARY KEY, status TEXT, sport TEXT, slate_date TEXT, game_id TEXT, event_id TEXT, game_datetime_utc TEXT, player_name TEXT, normalized_player_name TEXT, player_id TEXT, team TEXT, opponent TEXT, is_home INTEGER, prop_family TEXT, market_key TEXT, line_type TEXT, line_number REAL, line_direction TEXT, source_board TEXT, source_line_id TEXT, market_odds REAL, no_vig_prob REAL, consensus_prob REAL, market_confidence REAL, raw_score REAL, final_score REAL, confidence_grade TEXT, recommendation_status TEXT, scoring_modifiers TEXT, caps TEXT, penalties TEXT, blocks TEXT, audit_payload TEXT, model_version TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();

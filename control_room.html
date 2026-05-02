@@ -43,7 +43,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.46 - Auto Scoring Trigger Mesh</div>
+<div id="versionTag">v1.3.47 - Pickability Gate</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -204,7 +204,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="check" onclick="runJobButton('SCORING V1 > Inspect Candidate Board','inspect_mlb_score_candidate_board_v1')">Inspect Candidate Board</button>
 <button class="check" onclick="runJobButton('SCORING V1 > Export Candidate Board','export_mlb_score_candidate_board_v1')">Export Candidate Board</button>
 <button class="audit" onclick="renderCandidateBoardUI()">Render Candidate Board UI</button>
-</div><div class="small">Scoring V1: deterministic in-house backend scoring for Hits, Total Bases, and RBI. Uses stored Odds API paired Over/Under no-vig consensus only, writes scratchpad rows, certifies, promotes into separate score tables, logs audit rows, replaces active_score_board for the slate, then cleans scratch. Inspect Score Audit is read-only and summarizes modifier/cap/penalty distribution. Build Candidate Board creates the release read-model; Inspect Candidate Board verifies release status and risk tags; Export Candidate Board returns copy/paste CSV plus compact rows for UI/export. No Gemini. No external API from scoring. v1.3.46 adds Auto Scoring Mesh: after Odds API, Sleeper board/window updates, PrizePicks board queue pipeline, and terminal Phase 3/board mining, the backend runs stored-data scoring and rebuilds the candidate board automatically.</div><div id="candidateBoard" class="candidateBoard"><div class="small">Candidate Board UI empty. Click Render Candidate Board UI after Build/Inspect/Export.</div></div></div>
+</div><div class="small">Scoring V1: deterministic in-house backend scoring for Hits, Total Bases, and RBI. Uses stored Odds API paired Over/Under no-vig consensus only, writes scratchpad rows, certifies, promotes into separate score tables, logs audit rows, replaces active_score_board for the slate, then cleans scratch. Inspect Score Audit is read-only and summarizes modifier/cap/penalty distribution. Build Candidate Board creates the release read-model; Inspect Candidate Board verifies release status and risk tags; Export Candidate Board returns copy/paste CSV plus compact rows for UI/export. No Gemini. No external API from scoring. v1.3.47 keeps Auto Scoring Mesh and adds the Pickability Gate: candidate release must confirm the exact current PrizePicks/Sleeper selectable side before QUALIFIED/PLAYABLE/WATCHLIST. Goblin/demon board rows are treated as More/OVER only; unavailable sides are deferred as DEFERRED_UNPICKABLE.</div><div id="candidateBoard" class="candidateBoard"><div class="small">Candidate Board UI empty. Click Render Candidate Board UI after Build/Inspect/Export.</div></div></div>
 
 <div class="section"><h3>CLEAN</h3><div class="grid">
 <button class="clean" onclick="runSQLButton('CLEAN > Full', cleanAll())">Full</button><button class="clean" onclick="runSQLButton('CLEAN > Starters', cleanStarters())">Starters</button><button class="clean" onclick="runSQLButton('CLEAN > Markets', cleanMarkets())">Markets</button><button class="clean" onclick="runSQLButton('CLEAN > Games', cleanGames())">Games</button>
@@ -632,7 +632,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.46 - Auto Scoring Trigger Mesh",
+    version: "v1.3.47 - Pickability Gate",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],
