@@ -1,4 +1,4 @@
-const MAIN_ALPHADOG_UI_VERSION = "v1.0.01 - Independent Main UI";
+const MAIN_ALPHADOG_UI_VERSION = "v1.0.01 - Independent Main UI - Deploy Test";
 const ACTIVE_PROP_FAMILIES = ["HITS", "RBI", "TOTAL_BASES"];
 
 const TEAM_NAMES = {
