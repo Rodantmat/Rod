@@ -1,0 +1,9 @@
+VERSION AUDIT PASS
+Expected: v1.0.18 - Main UI Board Guard Certified Repair
+index.html UI_VERSION: v1.0.18 - Main UI Board Guard Certified Repair
+worker MAIN_ALPHADOG_UI_VERSION: v1.0.18 - Main UI Board Guard Certified Repair
+worker embedded INDEX_HTML synced: yes
+TEAM_NAMES client guard: present
+direct deferred full refresh scheduler: enabled
+start-time display safety gate: enabled
+Scheduled backend files touched: no
