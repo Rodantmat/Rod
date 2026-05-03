@@ -1,0 +1,18 @@
+BUILD VERSION AUDIT
+Expected build: v1.3.68.2 - RBI Gemini Grounded JSON Payload Fix
+
+Verified package targets:
+- ZIP filename: alphadog_v1.3.68.2_rbi_gemini_grounded_json_payload_fix.zip
+- worker.js SYSTEM_VERSION: v1.3.68.2 - RBI Gemini Grounded JSON Payload Fix
+- control_room.html visible tag: v1.3.68.2 - RBI Gemini Grounded JSON Payload Fix
+- control_room.html client version/debugConfig: control_room_v1_3_68_2_rbi_gemini_grounded_json_payload_fix
+- README: README_v1.3.68.2.txt
+- Debug job registered: debug_rbi_gemini_signal_one
+- Active config: wrangler.jsonc
+
+Guard checks performed before packaging:
+- node --check worker.js
+- hard JSON MIME removed inside callGeminiJsonWithGoogleSearch Google Search payload
+- hard JSON MIME removed inside callGeminiJsonWithGoogleSearchDebug Google Search payload
+- old package docs removed
+- flat folder only

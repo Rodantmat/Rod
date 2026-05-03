@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.68.1 - RBI Gemini Signal Job Registry Guard";
+const SYSTEM_VERSION = "v1.3.68.2 - RBI Gemini Grounded JSON Payload Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1770,7 +1770,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   let staleDeferredReset = 0;
   const taskRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.68.1 stale Phase 3 recovery marked orphan running task stale'
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.68.2 stale Phase 3 recovery marked orphan running task stale'
     WHERE job_name='run_phase3ab_full_run_tick'
       AND status='running'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -1778,7 +1778,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   staleTasksMarked = Number(taskRes?.meta?.changes || 0);
   const deferredRes = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.68.1 stale Phase 3 recovery reset deferred request to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.68.2 stale Phase 3 recovery reset deferred request to pending'
     WHERE job_name=?
       AND status='RUNNING'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -11264,14 +11264,18 @@ Leg:
 - market: RBI UNDER 0.5 / Less Than 0.5 RBI
 - deterministic_pre_signal_score: ${Number(scored?.final || 0).toFixed(2)}
 
-Return JSON only with this exact shape:
+CRITICAL FORMATTING INSTRUCTIONS:
+You MUST return one JSON object only, wrapped in a fenced json code block. Do not include any prose before or after the code block.
+
+Return this exact schema inside the fenced json block:
+${"```json"}
 {
   "prompt_name":"PROMPT_3G_RBI_UNDER_0_5_MARKET_SIGNAL_GROUNDED_1_LEG",
   "player":"${row.player_name}",
   "market":"RBI UNDER 0.5",
-  "signal":"FAVORABLE_or_NO_SIGNAL_or_UNFAVORABLE",
+  "signal":"FAVORABLE",
   "bonus_recommended":0,
-  "confidence":"HIGH_or_MEDIUM_or_LOW",
+  "confidence":"HIGH",
   "sources_checked":[],
   "market_presence_score":0,
   "under_signal_score":0,
@@ -11279,6 +11283,9 @@ Return JSON only with this exact shape:
   "evidence_summary":"short evidence summary or empty string",
   "do_not_bonus_reason":"short reason if no bonus"
 }
+${"```"}
+
+Allowed signal values only: FAVORABLE, NO_SIGNAL, UNFAVORABLE.
 
 Bonus guidance:
 - bonus_recommended 0 if no direct market signal, unsupported evidence, or conflicting signal.
@@ -11292,12 +11299,44 @@ async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
   const maxOutputTokens = Number(options.maxOutputTokens || 2048);
   await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens });
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens, responseMimeType: 'application/json' } };
+  // v1.3.68.2: Google Search tool use is incompatible with hard JSON MIME setting.
+  // Keep JSON-only instructions in the prompt, then parse JSON from normal text output.
+  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
   const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
   const data = await res.json().catch(()=>({}));
   if (!res.ok) throw new Error(JSON.stringify(data));
-  const text = data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('') || JSON.stringify(data);
-  return parseStrictJson(cleanJsonText(text));
+  const extracted = extractGeminiTextAndGrounding(data);
+  const parsedInfo = extractGeminiJsonForDebug(extracted.raw_text || JSON.stringify(data || {}));
+  if (!parsedInfo.ok || !parsedInfo.parsed || typeof parsedInfo.parsed !== 'object') throw new Error('gemini_json_extract_failed:' + String(parsedInfo.error || 'no_json'));
+  const parsed = parsedInfo.parsed;
+  parsed._gemini_grounding_uris = extracted.grounding_uris;
+  parsed._gemini_grounding_sources = extracted.grounding_sources;
+  parsed._gemini_response_text_path_used = extracted.response_text_path_used;
+  parsed._gemini_json_extract_method = parsedInfo.method;
+  return parsed;
+}
+
+function extractGeminiTextAndGrounding(data){
+  const parts = data?.candidates?.[0]?.content?.parts;
+  let rawText = '';
+  let responsePath = 'none';
+  if (Array.isArray(parts)) {
+    rawText = parts.map(p => p && typeof p.text === 'string' ? p.text : '').join('');
+    responsePath = 'candidates[0].content.parts[].text';
+  }
+  if (!rawText && typeof data?.candidates?.[0]?.content?.parts?.[0]?.text === 'string') {
+    rawText = data.candidates[0].content.parts[0].text;
+    responsePath = 'candidates[0].content.parts[0].text';
+  }
+  const chunks = data?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+  const groundingSources = [];
+  for (const c of Array.isArray(chunks) ? chunks : []) {
+    const uri = String(c?.web?.uri || '').trim();
+    const title = String(c?.web?.title || '').trim();
+    if (uri || title) groundingSources.push({ uri, title });
+  }
+  const groundingUris = groundingSources.map(x => x.uri).filter(Boolean);
+  return { raw_text: rawText, response_text_path_used: responsePath, grounding_sources: groundingSources, grounding_uris: groundingUris };
 }
 
 function extractFirstJsonObjectText(raw){
@@ -11344,27 +11383,31 @@ async function callGeminiJsonWithGoogleSearchDebug(env, model, prompt, options =
     extracted_json_text: '',
     json_extract_method: null,
     parsed: null,
-    error: null
+    error: null,
+    response_mime_type_removed_for_grounding: true,
+    grounding_uris: [],
+    grounding_sources: []
   };
   if (!env.GEMINI_API_KEY) { out.error = 'Missing GEMINI_API_KEY secret'; return out; }
   const maxOutputTokens = Number(options.maxOutputTokens || 2048);
   try { await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens }); }
   catch (e) { out.error = 'reserveGeminiRateBudget_failed:' + String(e && e.message || e); return out; }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens, responseMimeType: 'application/json' } };
+  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
   out.grounding_enabled_or_declared = true;
+  out.response_mime_type_removed_for_grounding = true;
   let data = null;
   try {
     const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
     out.gemini_http_status = res.status;
     data = await res.json().catch(async()=>({ _non_json_response:true, text: await res.text().catch(()=> '') }));
-    const parts = data?.candidates?.[0]?.content?.parts;
-    if (Array.isArray(parts)) {
-      out.response_text_path_used = 'candidates[0].content.parts[].text';
-      out.raw_text = parts.map(p => p && typeof p.text === 'string' ? p.text : '').join('');
-    }
+    const extractedPayload = extractGeminiTextAndGrounding(data);
+    out.response_text_path_used = extractedPayload.response_text_path_used;
+    out.raw_text = extractedPayload.raw_text || '';
+    out.grounding_uris = extractedPayload.grounding_uris || [];
+    out.grounding_sources = extractedPayload.grounding_sources || [];
     if (!out.raw_text) {
-      out.response_text_path_used = out.response_text_path_used || 'JSON.stringify(full_response)';
+      out.response_text_path_used = out.response_text_path_used && out.response_text_path_used !== 'none' ? out.response_text_path_used : 'JSON.stringify(full_response)';
       out.raw_text = JSON.stringify(data || {});
     }
     if (!res.ok) out.error = 'gemini_http_error:' + JSON.stringify(data || {}).slice(0, 900);
@@ -11376,6 +11419,12 @@ async function callGeminiJsonWithGoogleSearchDebug(env, model, prompt, options =
   out.extracted_json_text = extracted.json_text;
   out.json_extract_method = extracted.method;
   out.parsed = extracted.parsed;
+  if (out.parsed && typeof out.parsed === 'object') {
+    out.parsed._gemini_grounding_uris = out.grounding_uris || [];
+    out.parsed._gemini_grounding_sources = out.grounding_sources || [];
+    out.parsed._gemini_response_text_path_used = out.response_text_path_used;
+    out.parsed._gemini_json_extract_method = extracted.method;
+  }
   if (!out.error && !extracted.ok) out.error = 'json_extract_failed:' + extracted.error;
   return out;
 }
@@ -11425,6 +11474,7 @@ async function debugRbiGeminiSignalOne(input, env){
     if (!normalizerOutput.usable) bonusGateReasons.push('normalized_not_usable');
     if (normalizerOutput.contradicting) bonusGateReasons.push('contradicting_signal');
     if (normalizerOutput.signal === 'UNFAVORABLE') bonusGateReasons.push('signal_unfavorable');
+    if (!normalizerOutput.groundingEvidenceFound) bonusGateReasons.push('grounding_metadata_missing');
     if (!normalizerOutput.sourceAllowed) bonusGateReasons.push('source_not_allowed_or_missing');
     if (!normalizerOutput.directMarketEvidence) bonusGateReasons.push('direct_market_evidence_missing');
     if (Number(bonusInfo.bonus || 0) > 0) bonusGateReasons.push('bonus_gate_passed');
@@ -11456,6 +11506,9 @@ async function debugRbiGeminiSignalOne(input, env){
     forced_fresh_call:true,
     api_key_bound: !!env.GEMINI_API_KEY,
     grounding_enabled_or_declared: call.grounding_enabled_or_declared,
+    response_mime_type_removed_for_grounding: call.response_mime_type_removed_for_grounding === true,
+    grounding_uris: Array.isArray(call.grounding_uris) ? call.grounding_uris.slice(0,8) : [],
+    grounding_sources: Array.isArray(call.grounding_sources) ? call.grounding_sources.slice(0,8) : [],
     gemini_http_status: call.gemini_http_status,
     gemini_model_used: call.gemini_model_used,
     response_text_path_used: call.response_text_path_used,
@@ -11478,23 +11531,30 @@ async function debugRbiGeminiSignalOne(input, env){
 }
 function normalizeRbiGeminiUnderSignal(j){
   const obj = j && typeof j === 'object' ? j : {};
+  const boolish = (v) => v === true || String(v || '').trim().toLowerCase() === 'true' || String(v || '').trim().toLowerCase() === 'yes';
+  const numish = (v, fallback = 0) => { const n = Number(v); return Number.isFinite(n) ? n : fallback; };
+  const arrish = (v) => Array.isArray(v) ? v : (typeof v === 'string' && v.trim() ? [v.trim()] : []);
   const finalStatus = obj.final_status && typeof obj.final_status === 'object' ? obj.final_status : {};
   const marketPresence = obj.market_presence && typeof obj.market_presence === 'object' ? obj.market_presence : {};
   const scores = obj.scores && typeof obj.scores === 'object' ? obj.scores : {};
   const validation = obj.validation && typeof obj.validation === 'object' ? obj.validation : {};
   const evidenceArr = Array.isArray(obj.evidence) ? obj.evidence : [];
+  const groundingSources = Array.isArray(obj._gemini_grounding_sources) ? obj._gemini_grounding_sources : [];
+  const groundingUris = Array.isArray(obj._gemini_grounding_uris) ? obj._gemini_grounding_uris : [];
   const sources = [];
   const pushSource = (v) => { const x = String(v || '').trim(); if (x && !sources.some(s => s.toLowerCase() === x.toLowerCase())) sources.push(x); };
-  if (Array.isArray(obj.sources_checked)) for (const x of obj.sources_checked) pushSource(x);
+  for (const x of arrish(obj.sources_checked)) pushSource(x);
   pushSource(obj.source_name);
   pushSource(obj.best_source_name);
   pushSource(marketPresence.best_source_name);
   for (const ev of evidenceArr) pushSource(ev && ev.source_name);
+  for (const src of groundingSources) { pushSource(src && (src.title || src.uri)); }
+  for (const uri of groundingUris) pushSource(uri);
 
   const evidenceParts = [];
   const pushEvidence = (v) => { const x = String(v || '').trim(); if (x) evidenceParts.push(x); };
   pushEvidence(obj.evidence_summary);
-  pushEvidence(obj.evidence);
+  if (typeof obj.evidence === 'string') pushEvidence(obj.evidence);
   pushEvidence(finalStatus.summary);
   pushEvidence(marketPresence.best_source_url);
   for (const ev of evidenceArr) {
@@ -11502,49 +11562,56 @@ function normalizeRbiGeminiUnderSignal(j){
     pushEvidence(ev && ev.missing_reason);
     pushEvidence(ev && ev.source_url);
   }
+  for (const src of groundingSources) pushEvidence(`${src?.title || ''} ${src?.uri || ''}`.trim());
   const evidenceText = evidenceParts.join(' | ');
   const evidenceLower = evidenceText.toLowerCase();
   const sourceText = sources.join('|').toLowerCase();
 
   const rawSignal = String(obj.signal || '').trim().toUpperCase();
-  const finalUsable = finalStatus.usable_for_rbi_under_market_layer === true;
-  const flatUsable = obj.usable_for_rbi_under_market_layer === true;
+  const finalUsable = boolish(finalStatus.usable_for_rbi_under_market_layer);
+  const flatUsable = boolish(obj.usable_for_rbi_under_market_layer) || boolish(obj.usable);
   const recommended = String(finalStatus.recommended_action || '').toLowerCase();
   const marketLive = String(marketPresence.market_live_or_present || '').toLowerCase();
   const underVisible = String(marketPresence.under_side_visible || '').toLowerCase();
   const underPriceVisible = String(marketPresence.under_price_visible || '').toLowerCase();
-  const nestedMarketScore = Number(scores.market_presence_score ?? obj.market_presence_score ?? 0);
-  const nestedUnderScore = Number(scores.under_signal_score ?? scores.under_presence_score ?? obj.under_signal_score ?? 0);
-  const validMarketSources = Number(validation.valid_bettingpros_market_source_count ?? validation.valid_market_source_count ?? 0);
-  const underVisibleSources = Number(validation.under_visible_source_count ?? 0);
-  const evidenceUnderFound = evidenceArr.some(ev => ev && ev.under_side_found === true);
-  const evidenceLineFound = evidenceArr.some(ev => Math.abs(Number(ev && ev.line_found) - 0.5) <= 0.001);
+  const nestedMarketScore = numish(scores.market_presence_score ?? obj.market_presence_score, 0);
+  const nestedUnderScore = numish(scores.under_signal_score ?? scores.under_presence_score ?? obj.under_signal_score, 0);
+  const validMarketSources = numish(validation.valid_bettingpros_market_source_count ?? validation.valid_market_source_count, 0);
+  const underVisibleSources = numish(validation.under_visible_source_count, 0);
+  const evidenceUnderFound = evidenceArr.some(ev => ev && boolish(ev.under_side_found));
+  const evidenceLineFound = evidenceArr.some(ev => Math.abs(numish(ev && ev.line_found, 999)) - 0.5 <= 0.001);
+  const groundingEvidenceFound = groundingUris.length > 0 || groundingSources.length > 0;
 
   const sourceAllowed = /bettingpros|covers|draftkings|fanduel|betmgm|sportsbook|odds|prop_table|odds_table|consensus/.test(sourceText + '|' + String(obj.source_type || '').toLowerCase() + '|' + String(marketPresence.source_type || '').toLowerCase());
   const directMarketEvidence =
-    nestedMarketScore >= 7.5 || nestedUnderScore >= 7.5 || validMarketSources > 0 || underVisibleSources > 0 ||
-    evidenceUnderFound || evidenceLineFound || marketLive === 'yes' || underVisible === 'yes' || underPriceVisible === 'yes' ||
-    /\bu\s*0\.5\s*\(-?\d{2,4}\)|under\s*0\.5|less\s*than\s*0\.5|over\s*0\.5\s*(rbi)?\s*(priced|at)?\s*\+\d{2,4}|\+\d{2,4}|-\d{2,4}|heavy\s*juice|heavily\s*juiced|consensus|implied|draftkings|covers|bettingpros/.test(evidenceLower);
+    (groundingEvidenceFound && sourceAllowed) && (
+      nestedMarketScore >= 7.5 || nestedUnderScore >= 7.5 || validMarketSources > 0 || underVisibleSources > 0 ||
+      evidenceUnderFound || evidenceLineFound || marketLive === 'yes' || underVisible === 'yes' || underPriceVisible === 'yes' ||
+      /\bu\s*0\.5\s*\(-?\d{2,4}\)|under\s*0\.5|less\s*than\s*0\.5|over\s*0\.5\s*(rbi)?\s*(priced|at)?\s*\+\d{2,4}|\+\d{2,4}|-\d{2,4}|heavy\s*juice|heavily\s*juiced|consensus|implied|draftkings|covers|bettingpros/.test(evidenceLower)
+    );
   const contradicting = rawSignal === 'UNFAVORABLE' || /conflicting signal|prop mismatch|not rbi|hrr combo instead of pure rbi/.test(evidenceLower);
   let signal = rawSignal;
-  if (!signal || signal === 'FAVORABLE_OR_NO_SIGNAL_OR_UNFAVORABLE') {
+  if (!['FAVORABLE','NO_SIGNAL','UNFAVORABLE'].includes(signal)) {
     if ((flatUsable || finalUsable || recommended.includes('use_market_presence_signal')) && directMarketEvidence) signal = 'FAVORABLE';
     else if (directMarketEvidence && sourceAllowed) signal = 'FAVORABLE';
     else signal = 'NO_SIGNAL';
   }
-  const usable = (flatUsable || finalUsable || signal === 'FAVORABLE' || recommended.includes('use_market_presence_signal')) && !contradicting;
-  let requested = Number(obj.bonus_recommended || 0);
-  if (!Number.isFinite(requested) || requested <= 0) {
-    if (signal === 'FAVORABLE' && (nestedUnderScore >= 9 || nestedMarketScore >= 9 || sources.length >= 2 || validMarketSources > 1)) requested = 3;
-    else if (signal === 'FAVORABLE') requested = 2;
+  if (!groundingEvidenceFound || !sourceAllowed || !directMarketEvidence) signal = signal === 'UNFAVORABLE' ? 'UNFAVORABLE' : 'NO_SIGNAL';
+  const usable = (flatUsable || finalUsable || signal === 'FAVORABLE' || recommended.includes('use_market_presence_signal')) && !contradicting && groundingEvidenceFound && sourceAllowed && directMarketEvidence;
+  let requested = Math.max(0, Math.min(3, numish(obj.bonus_recommended, 0)));
+  if ((!Number.isFinite(requested) || requested <= 0) && signal === 'FAVORABLE') {
+    if (nestedUnderScore >= 9 || nestedMarketScore >= 9 || sources.length >= 2 || validMarketSources > 1) requested = 3;
+    else requested = 2;
   }
   return {
     signal,
     usable,
     sourceAllowed,
     directMarketEvidence,
+    groundingEvidenceFound,
     contradicting,
     sources,
+    grounding_uris: groundingUris,
     source_name: String(obj.source_name || marketPresence.best_source_name || sources[0] || 'grounded_search'),
     source_type: String(obj.source_type || marketPresence.source_type || (sourceAllowed ? 'grounded_allowed_market_source' : 'missing')),
     evidence_summary: evidenceText,
@@ -11552,12 +11619,13 @@ function normalizeRbiGeminiUnderSignal(j){
     under_signal_score: Number.isFinite(nestedUnderScore) ? nestedUnderScore : 0,
     bonus_recommended: requested,
     confidence: String(obj.confidence || (nestedUnderScore >= 9 || nestedMarketScore >= 9 ? 'HIGH' : 'MEDIUM')).toUpperCase(),
-    parser_path: rawSignal ? 'flat_signal' : (finalUsable || recommended ? 'nested_final_status' : (directMarketEvidence ? 'evidence_inference' : 'no_signal'))
+    parser_path: obj._gemini_json_extract_method || (rawSignal ? 'flat_signal' : (finalUsable || recommended ? 'nested_final_status' : (directMarketEvidence ? 'evidence_inference' : 'no_signal')))
   };
 }
+
 function rbiGeminiBonusFromSignal(j){
   const n = normalizeRbiGeminiUnderSignal(j);
-  if (!n.usable || n.contradicting || n.signal === 'UNFAVORABLE' || !n.sourceAllowed || !n.directMarketEvidence) {
+  if (!n.usable || n.contradicting || n.signal === 'UNFAVORABLE' || !n.sourceAllowed || !n.directMarketEvidence || !n.groundingEvidenceFound) {
     return { bonus:0, confidence_bump:0, favorable:false, parser_path:n.parser_path, normalized_signal:n.signal };
   }
   let bonus = Math.max(0, Math.min(3, Number(n.bonus_recommended || 0)));
@@ -11611,7 +11679,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.1 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only; nested/flat Gemini signal outputs are normalized before scoring.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.2 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only; grounded JSON is parsed from text because hard JSON MIME is incompatible with Google Search tool use.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11657,7 +11725,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.68.1_rbi_gemini_nested_signal_normalizer',
+      score_calibration_version: 'v1.3.68.2_rbi_gemini_nested_signal_normalizer',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
