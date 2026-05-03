@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.62 - Scoring Output Safety Guard";
+const SYSTEM_VERSION = "v1.3.63 - RBI Under Market Bonus Tie-Breaker";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1764,7 +1764,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   let staleDeferredReset = 0;
   const taskRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.62 stale Phase 3 recovery marked orphan running task stale'
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.63 stale Phase 3 recovery marked orphan running task stale'
     WHERE job_name='run_phase3ab_full_run_tick'
       AND status='running'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -1772,7 +1772,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   staleTasksMarked = Number(taskRes?.meta?.changes || 0);
   const deferredRes = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.62 stale Phase 3 recovery reset deferred request to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.63 stale Phase 3 recovery reset deferred request to pending'
     WHERE job_name=?
       AND status='RUNNING'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -2722,6 +2722,9 @@ function rbiFallbackSummary(fb) {
     score_stmt_count: Array.isArray(fb.scoreStmts) ? fb.scoreStmts.length : 0,
     active_stmt_count: Array.isArray(fb.activeStmts) ? fb.activeStmts.length : 0,
     audit_stmt_count: Array.isArray(fb.auditStmts) ? fb.auditStmts.length : 0,
+    market_bonus_rows: Number(fb.market_bonus_rows || 0),
+    market_bonus_avg: Number(fb.market_bonus_rows || 0) ? Number((Number(fb.market_bonus_total || 0) / Number(fb.market_bonus_rows || 1)).toFixed(2)) : 0,
+    market_bonus_context: fb.market_bonus_context || null,
     cap: 'C_RBI_BOARD_FALLBACK_85'
   };
 }
@@ -11032,7 +11035,7 @@ function scoreRbiFallbackSample(row, sourceBoard){
   };
 }
 
-function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lineType){
+function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lineType, marketBonus = null){
   const dir = String(direction || 'UNDER').toUpperCase();
   const player = scorePickPlayerContext(sample, ctx);
   const rbi = player.rbi;
@@ -11075,20 +11078,98 @@ function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lin
   if (Number.isFinite(pr)) add('RBI_PARK_CONTEXT', dir === 'UNDER' ? (1 - pr) * 40 : (pr - 1) * 45, `park_run_${pr}`, 'static_park_context');
   const total = ctx.totalsByEvent.get(String(sample.event_id || ''));
   if (Number.isFinite(total)) add('RBI_GAME_TOTAL_CONTEXT', dir === 'UNDER' ? (8 - total) * 1.2 : (total - 8) * 1.4, `game_total_${total}`, 'odds_api_game_markets_totals');
+  if (dir === 'UNDER' && marketBonus && Number(marketBonus.bonus || 0) > 0) {
+    add('RBI_UNDER_MARKET_SIGNAL_BONUS', Number(marketBonus.bonus || 0), marketBonus.reason || 'certified_under_market_presence_bonus', marketBonus.source || 'rbi_under_market_presence');
+    confidence += Number(marketBonus.confidence_bump || 0);
+  }
   const modTotal = scoreClamp(mods.reduce((a,m)=>a+Number(m.value||0),0), -18, 18);
   let final = raw + modTotal;
-  // v1.3.61: fallback RBI scoring is allowed to be useful without Odds API, but capped at 85.
+  // v1.3.63: fallback RBI scoring can use board/history/game context first; market presence is only a small tiebreaker bonus, capped at 85.
   final = Math.max(dir === 'UNDER' ? 60 : 0, Math.min(85, final));
   if (sourceBoard === 'sleeper_rbi_rfi_board' && dir === 'UNDER') final = Math.max(60, final);
-  const conf = Math.max(0.35, Math.min(0.82, confidence + Math.min(0.12, mods.filter(m=>Number(m.value)>0).length * 0.025)));
+  const conf = Math.max(0.35, Math.min(0.84, confidence + Math.min(0.12, mods.filter(m=>Number(m.value)>0).length * 0.025)));
   const rec = scoreRec(final, []);
   const grade = scoreGrade(final, conf);
-  return { raw, final, conf, rec, grade, mods, modTotal, player_context: player, cap: 85 };
+  return { raw, final, conf, rec, grade, mods, modTotal, player_context: player, cap: 85, market_bonus: marketBonus || null };
+}
+
+
+function rbiUnderBonusKey(playerName, team, opponent, lineNumber){
+  const oppRaw = String(opponent || '').replace(/^(@|vs)\s*/i,'').trim();
+  return [scoreNormName(playerName), scoreTeamKey(team) || String(team || '').toUpperCase(), scoreTeamKey(oppRaw) || String(oppRaw || '').toUpperCase(), Number(lineNumber || 0.5).toFixed(1)].join('|');
+}
+function rbiUnderMarketBonusFromCtx(row, sourceBoard, direction, lineNumber, bonusCtx){
+  if (String(direction || '').toUpperCase() !== 'UNDER') return null;
+  const line = Number(lineNumber);
+  if (!Number.isFinite(line) || Math.abs(line - 0.5) > 0.001) return null;
+  const key = rbiUnderBonusKey(row.player_name, row.team, row.opponent, line);
+  const exact = bonusCtx?.byKey?.get(key);
+  const playerOnly = bonusCtx?.byPlayer?.get(scoreNormName(row.player_name));
+  const signal = exact || playerOnly || null;
+  if (!signal) return null;
+  const source = String(signal.source_label || signal.source || 'sleeper_rbi_rfi_market_signals');
+  const sourceType = String(signal.source_type || '').toLowerCase();
+  const entryType = String(signal.entry_type || 'regular').toLowerCase();
+  const signalScore = Number(signal.signal_score ?? signal.under_signal_score ?? 0);
+  const marketPresence = Number(signal.market_presence_score ?? 0);
+  const underVisible = Number(signal.under_side_visible ?? signal.usable_for_under ?? 0) ? 1 : 0;
+  let bonus = 0;
+  const reasons = [];
+  if (entryType === 'regular') { bonus += 1.25; reasons.push('regular_under_selectable'); }
+  if (underVisible) { bonus += 1.00; reasons.push('under_side_visible'); }
+  if (signalScore >= 9) { bonus += 1.25; reasons.push('strong_under_signal'); }
+  else if (signalScore >= 7.5) { bonus += 0.75; reasons.push('usable_under_signal'); }
+  if (marketPresence >= 7.5) { bonus += 0.75; reasons.push('clean_market_presence'); }
+  if (sourceType.includes('bettingpros') || source.toLowerCase().includes('bettingpros')) { bonus += 0.50; reasons.push('bettingpros_only_source_bonus'); }
+  bonus = Math.max(0, Math.min(4.5, bonus));
+  if (bonus <= 0) return null;
+  return {
+    bonus,
+    confidence_bump: Math.min(0.04, bonus * 0.008),
+    source,
+    reason: reasons.join('|') || 'rbi_under_market_presence_bonus',
+    key,
+    signal_id: signal.signal_id || null,
+    table: signal.table_name || null,
+    market_presence_score: Number.isFinite(marketPresence) ? marketPresence : null,
+    under_signal_score: Number.isFinite(signalScore) ? signalScore : null,
+    entry_type: entryType
+  };
+}
+async function loadRbiUnderMarketBonusContext(env, slateDate){
+  const ctx = { byKey:new Map(), byPlayer:new Map(), rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:[] };
+  const put = (r, tableName) => {
+    const line = Number(r.normalized_line_score ?? r.line_number ?? r.line_score ?? 0.5);
+    if (!r.player_name || !Number.isFinite(line)) return;
+    const row = { ...r, table_name: tableName };
+    const key = rbiUnderBonusKey(r.player_name, r.team, r.opponent || r.opponent_team, line);
+    ctx.byKey.set(key, row);
+    const playerKey = scoreNormName(r.player_name);
+    if (playerKey && !ctx.byPlayer.has(playerKey)) ctx.byPlayer.set(playerKey, row);
+    ctx.rows++;
+  };
+  try {
+    const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sleeper_rbi_rfi_market_signals'").first();
+    if (exists) {
+      const res = await env.DB.prepare(`SELECT signal_id, player_name, team, opponent, opponent_team, market, normalized_line_score, entry_type, target_side, source_label, signal_status, usable_for_under, signal_score, updated_at FROM sleeper_rbi_rfi_market_signals WHERE slate_date=? AND market='RBI' AND signal_status='CERTIFIED_BOARD_PRESENT' AND usable_for_under=1`).bind(slateDate).all();
+      for (const r of (res.results || [])) { put(r, 'sleeper_rbi_rfi_market_signals'); ctx.sleeper_rows++; }
+    }
+  } catch (e) { ctx.warnings.push('sleeper_bonus_load_failed:' + String(e && e.message || e)); }
+  try {
+    const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='rbi_under_market_presence_signals'").first();
+    if (exists) {
+      const res = await env.DB.prepare(`SELECT signal_id, player_name, team, opponent, line_number, 'regular' AS entry_type, source_name AS source_label, source_type, market_presence_score, under_signal_score, 1 AS usable_for_under, under_signal_score AS signal_score, updated_at FROM rbi_under_market_presence_signals WHERE slate_date=? AND COALESCE(usable_for_rbi_under_market_layer,1)=1`).bind(slateDate).all();
+      for (const r of (res.results || [])) { put(r, 'rbi_under_market_presence_signals'); ctx.bettingpros_rows++; }
+    }
+  } catch (e) { ctx.warnings.push('bettingpros_bonus_table_load_skipped:' + String(e && e.message || e)); }
+  return ctx;
 }
 
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
-  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0 };
+  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
+  const marketBonusCtx = await loadRbiUnderMarketBonusContext(env, slateDate);
+  out.market_bonus_context = { rows: marketBonusCtx.rows, sleeper_rows: marketBonusCtx.sleeper_rows, bettingpros_rows: marketBonusCtx.bettingpros_rows, warnings: marketBonusCtx.warnings };
   const addRow = (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11098,7 +11179,9 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
     const source = `${sourceBoard}|${slateDate}|${sourceId}|${scoreNormName(row.player_name)}|RBI|${lineNumber}|${dir}`;
     if (existing.has(source)) { out.skipped_existing++; return; }
     existing.add(source);
-    const scored = scoreRbiFallbackFromStoredData(dir, sample, modifierCtx, sourceBoard, lineType);
+    const marketBonus = rbiUnderMarketBonusFromCtx(row, sourceBoard, dir, lineNumber, marketBonusCtx);
+    const scored = scoreRbiFallbackFromStoredData(dir, sample, modifierCtx, sourceBoard, lineType, marketBonus);
+    if (marketBonus && Number(marketBonus.bonus || 0) > 0) { out.market_bonus_rows++; out.market_bonus_total += Number(marketBonus.bonus || 0); }
     const scoreId = `score|${runId}|${source}|${simpleHashText(JSON.stringify({ final: scored.final, dir, lineType, sourceBoard }))}`;
     const audit = {
       book_count: 0,
@@ -11117,7 +11200,9 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       no_gemini: true,
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.62_scoring_output_safety_guard'
+      score_calibration_version: 'v1.3.63_rbi_under_market_bonus_tiebreaker',
+      market_bonus: scored.market_bonus,
+      market_bonus_policy: 'small_tiebreaker_only_history_game_lineup_score_first_cap_85'
     };
     const team = scoreTeamKey(row.team) || row.team || null;
     const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
@@ -11531,11 +11616,11 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_board_direction_repair_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_under_market_bonus_tiebreaker_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring; stored RBI Under market-presence signals are used only as a small bonus/tiebreaker.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. No external API or Gemini is called by scoring.'};
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. No external API or Gemini is called by scoring; stored RBI Under market-presence signals are used only as a small bonus/tiebreaker.'};
  }
 }
 
