@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.59 - Minute Cron Full Refresh Scheduler";
+const SYSTEM_VERSION = "v1.3.60 - RBI Board Direction Repair";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1726,11 +1726,17 @@ async function resetStaleDeferredFullRuns(env) {
   await ensureDeferredFullRunTable(env);
   const res = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, error='stale deferred run reset to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, error='stale deferred run reset to pending'
     WHERE status='RUNNING'
       AND started_at < datetime('now','-15 minutes')
   `).run();
-  return { stale_deferred_reset: Number(res?.meta?.changes || 0) };
+  const pendingCleanup = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET finished_at=NULL, started_at=NULL
+    WHERE status='PENDING'
+      AND finished_at IS NOT NULL
+  `).run().catch(() => ({ meta: { changes: 0 } }));
+  return { stale_deferred_reset: Number(res?.meta?.changes || 0), pending_finished_at_cleaned: Number(pendingCleanup?.meta?.changes || 0) };
 }
 
 
@@ -1756,24 +1762,22 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   const staleLockReset = Number(res?.meta?.changes || 0);
   let staleTasksMarked = 0;
   let staleDeferredReset = 0;
-  if (staleLockReset > 0) {
-    const taskRes = await env.DB.prepare(`
-      UPDATE task_runs
-      SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.18 stale Phase 3 lock recovery marked orphan running task stale'
-      WHERE job_name='run_phase3ab_full_run_tick'
-        AND status='running'
-        AND started_at < datetime('now', '-' || ? || ' minutes')
-    `).bind(String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
-    staleTasksMarked = Number(taskRes?.meta?.changes || 0);
-    const deferredRes = await env.DB.prepare(`
-      UPDATE deferred_full_run_once
-      SET status='PENDING', started_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.18 stale Phase 3 lock recovery reset deferred request to pending'
-      WHERE job_name=?
-        AND status='RUNNING'
-        AND started_at < datetime('now', '-' || ? || ' minutes')
-    `).bind(PHASE3AB_DEFERRED_JOB, String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
-    staleDeferredReset = Number(deferredRes?.meta?.changes || 0);
-  }
+  const taskRes = await env.DB.prepare(`
+    UPDATE task_runs
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.60 stale Phase 3 recovery marked orphan running task stale'
+    WHERE job_name='run_phase3ab_full_run_tick'
+      AND status='running'
+      AND started_at < datetime('now', '-' || ? || ' minutes')
+  `).bind(String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
+  staleTasksMarked = Number(taskRes?.meta?.changes || 0);
+  const deferredRes = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.60 stale Phase 3 recovery reset deferred request to pending'
+    WHERE job_name=?
+      AND status='RUNNING'
+      AND started_at < datetime('now', '-' || ? || ' minutes')
+  `).bind(PHASE3AB_DEFERRED_JOB, String(staleMinutes)).run().catch(() => ({ meta: { changes: 0 } }));
+  staleDeferredReset = Number(deferredRes?.meta?.changes || 0);
   const after = await env.DB.prepare(`SELECT * FROM pipeline_locks WHERE lock_id=?`).bind(PHASE3AB_GLOBAL_LOCK_ID).first().catch(() => null);
   return { stale_lock_reset: staleLockReset, stale_tasks_marked: staleTasksMarked, stale_deferred_reset: staleDeferredReset, before, after, stale_minutes: staleMinutes };
 }
@@ -2120,7 +2124,7 @@ async function runPhase3abDeferredRow(env, row, input = {}) {
     const nextRun = phase3abTimestampForSql(new Date(Date.now() + 60 * 1000));
     if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) {
       if (result.needs_continue) {
-        await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, JSON.stringify(result), row.request_id).run();
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=?, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, JSON.stringify(result), row.request_id).run();
       } else {
         const finalDeferredStatus = result.status === 'completed_with_skips' ? 'COMPLETED_WITH_SKIPS' : (result.data_ok ? 'COMPLETED' : 'COMPLETED_REVIEW');
         await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(finalDeferredStatus, JSON.stringify(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
@@ -2646,7 +2650,7 @@ async function runDueDeferredFullRun(env) {
       await env.DB.prepare(`UPDATE deferred_full_run_once SET status='COMPLETED', finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(JSON.stringify(nextState), row.request_id).run();
     } else if (ok) {
       const runAfter = deferredRunAfterSeconds(60);
-      await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=NULL WHERE request_id=?`).bind(runAfter, JSON.stringify(nextState), row.request_id).run();
+      await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=?, output_json=?, error=NULL WHERE request_id=?`).bind(runAfter, JSON.stringify(nextState), row.request_id).run();
     } else {
       const runAfter = deferredRunAfterSeconds(180);
       await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', run_after=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(runAfter, JSON.stringify(nextState), String(stepResult?.error || stepResult?.status || 'step_failed_retrying'), row.request_id).run();
@@ -10923,6 +10927,140 @@ function scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,ctx,prob,spread,max
 }
 
 
+
+function scoreRbiFallbackSample(row, sourceBoard){
+  const team = scoreTeamKey(row.team);
+  const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
+  const opponent = scoreTeamKey(oppRaw);
+  return {
+    event_id: row.game_id || row.event_id || row.line_id || row.signal_id || row.sleeper_leg_id || `${sourceBoard}|${row.player_name}|${row.team}|${row.opponent}`,
+    commence_time: row.start_time || row.game_datetime_utc || null,
+    player_name: row.player_name,
+    home_team: String(row.opponent || '').trim().toLowerCase().startsWith('@') ? oppRaw : (team || row.team || null),
+    away_team: String(row.opponent || '').trim().toLowerCase().startsWith('@') ? (team || row.team || null) : oppRaw,
+    team,
+    opponent
+  };
+}
+
+function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lineType){
+  const dir = String(direction || 'UNDER').toUpperCase();
+  const player = scorePickPlayerContext(sample, ctx);
+  const rbi = player.rbi;
+  const mods = [];
+  const add = (id, value, reason, source) => { value = scoreClamp(value, -14, 14); if (Math.abs(value) >= 0.01) mods.push({ id, value: +value.toFixed(2), reason, source }); };
+  let raw = dir === 'UNDER' ? 70 : 42;
+  let confidence = rbi ? 0.62 : 0.42;
+  if (rbi) {
+    const opp = Number(rbi.opp);
+    const slot = Number(rbi.slot);
+    if (Number.isFinite(opp)) {
+      if (dir === 'UNDER') add('RBI_OPPORTUNITY_INVERSE', 10 - opp * 2.2, `rbi_opportunity_${opp}`, 'edge_candidates_rbi');
+      else add('RBI_OPPORTUNITY', (opp - 3.5) * 3.2, `rbi_opportunity_${opp}`, 'edge_candidates_rbi');
+    }
+    if (Number.isFinite(slot)) {
+      if (dir === 'UNDER') {
+        if (slot >= 7) add('RBI_LINEUP_SLOT_UNDER', 8, `slot_${slot}`, 'edge_candidates_rbi');
+        else if (slot === 1) add('RBI_LINEUP_SLOT_UNDER', 5, `slot_${slot}`, 'edge_candidates_rbi');
+        else if (slot >= 3 && slot <= 5) add('RBI_LINEUP_SLOT_UNDER', -8, `slot_${slot}`, 'edge_candidates_rbi');
+        else add('RBI_LINEUP_SLOT_UNDER', 1.5, `slot_${slot}`, 'edge_candidates_rbi');
+      } else {
+        if (slot >= 3 && slot <= 5) add('RBI_LINEUP_SLOT_OVER', 7, `slot_${slot}`, 'edge_candidates_rbi');
+        else if (slot >= 7) add('RBI_LINEUP_SLOT_OVER', -7, `slot_${slot}`, 'edge_candidates_rbi');
+        else if (slot === 1) add('RBI_LINEUP_SLOT_OVER', -4, `slot_${slot}`, 'edge_candidates_rbi');
+        else add('RBI_LINEUP_SLOT_OVER', 2, `slot_${slot}`, 'edge_candidates_rbi');
+      }
+    }
+    const tier = String(rbi.tier || '');
+    if (tier.includes('A_POOL')) add('RBI_A_POOL_CONTEXT', dir === 'UNDER' ? -7 : 8, tier, 'edge_candidates_rbi');
+    else if (tier.includes('B_POOL')) add('RBI_B_POOL_CONTEXT', dir === 'UNDER' ? 2 : 1, tier, 'edge_candidates_rbi');
+    const setter = Number(rbi.setter);
+    if (Number.isFinite(setter)) add('RBI_SETTER_CONTEXT', dir === 'UNDER' ? (3 - setter) * 0.9 : (setter - 3) * 0.9, `setter_${setter}`, 'edge_candidates_rbi');
+    if (String(rbi.run_flag || '').toLowerCase().includes('positive')) add('RBI_RUN_ENV_FLAG', dir === 'UNDER' ? -2 : 2, rbi.run_flag, 'edge_candidates_rbi');
+  } else {
+    add('RBI_CONTEXT_MISSING_SAFE_BASE', dir === 'UNDER' ? -2 : -6, 'no player RBI context found; using safe stored-data base', 'audit_only');
+  }
+  const home = player.home;
+  const park = PARK_CONTEXT_BY_HOME_TEAM[home] || {};
+  const pr = Number(park.park_factor_run);
+  if (Number.isFinite(pr)) add('RBI_PARK_CONTEXT', dir === 'UNDER' ? (1 - pr) * 40 : (pr - 1) * 45, `park_run_${pr}`, 'static_park_context');
+  const total = ctx.totalsByEvent.get(String(sample.event_id || ''));
+  if (Number.isFinite(total)) add('RBI_GAME_TOTAL_CONTEXT', dir === 'UNDER' ? (8 - total) * 1.2 : (total - 8) * 1.4, `game_total_${total}`, 'odds_api_game_markets_totals');
+  const modTotal = scoreClamp(mods.reduce((a,m)=>a+Number(m.value||0),0), -18, 18);
+  let final = raw + modTotal;
+  // v1.3.60: fallback RBI scoring is allowed to be useful without Odds API, but capped at 85.
+  final = Math.max(dir === 'UNDER' ? 60 : 0, Math.min(85, final));
+  if (sourceBoard === 'sleeper_rbi_rfi_board' && dir === 'UNDER') final = Math.max(60, final);
+  const conf = Math.max(0.35, Math.min(0.82, confidence + Math.min(0.12, mods.filter(m=>Number(m.value)>0).length * 0.025)));
+  const rec = scoreRec(final, []);
+  const grade = scoreGrade(final, conf);
+  return { raw, final, conf, rec, grade, mods, modTotal, player_context: player, cap: 85 };
+}
+
+async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
+  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0 };
+  const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
+  const addRow = (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
+    const dir = String(direction || 'UNDER').toUpperCase();
+    const lineNumber = Number(sourceLineNumber);
+    if (!row.player_name || !Number.isFinite(lineNumber)) return;
+    if ((lineType === 'demon' || lineType === 'goblin') && dir === 'UNDER') return;
+    const sample = scoreRbiFallbackSample(row, sourceBoard);
+    const source = `${sourceBoard}|${slateDate}|${sourceId}|${scoreNormName(row.player_name)}|RBI|${lineNumber}|${dir}`;
+    if (existing.has(source)) { out.skipped_existing++; return; }
+    existing.add(source);
+    const scored = scoreRbiFallbackFromStoredData(dir, sample, modifierCtx, sourceBoard, lineType);
+    const scoreId = `score|${runId}|${source}|${simpleHashText(JSON.stringify({ final: scored.final, dir, lineType, sourceBoard }))}`;
+    const audit = {
+      book_count: 0,
+      no_vig_prob: null,
+      base_score: scored.raw,
+      final_score: scored.final,
+      derived_modifier_total: scored.modTotal,
+      derived_modifiers: scored.mods,
+      player_context: scored.player_context,
+      caps: ['C_RBI_BOARD_FALLBACK_85'],
+      penalties: [],
+      blocks: [],
+      source_board: sourceBoard,
+      source_line_id: source,
+      fallback_reason: 'Odds API RBI coverage is thin or supplemental; scored from stored board/history/game/RBI context.',
+      freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
+      no_gemini: true,
+      odds_api_supplemental_only_for_rbi: true,
+      score_calibration_version: 'v1.3.60_rbi_board_direction_repair'
+    };
+    const team = scoreTeamKey(row.team) || row.team || null;
+    const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
+    const opponent = scoreTeamKey(oppRaw) || oppRaw || null;
+    const gameTime = row.start_time || null;
+    out.scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_rbi_scores (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),null,team,opponent,null,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,null,null,scored.conf,scored.raw,scored.final,scored.grade,scored.rec,JSON.stringify(scored.mods),JSON.stringify(audit.caps),JSON.stringify([]),JSON.stringify([]),JSON.stringify(audit),SYSTEM_VERSION));
+    out.promoted++;
+    if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec)) {
+      out.activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),team,opponent,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,scored.final,scored.grade,scored.rec,scored.conf,JSON.stringify(audit),SYSTEM_VERSION));
+      out.active++;
+    }
+    out.auditStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`audit|${scoreId}`,runId,scoreId,`scratch|${scoreId}`,slateDate,'RBI',source,row.player_name,scored.rec,`RBI board fallback ${scored.rec}: ${row.player_name} ${dir} ${lineNumber} = ${scored.final.toFixed(2)}`,JSON.stringify(audit)));
+  };
+  const ppRows = await scoreRowsSafe(env, `SELECT line_id, projection_key, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, slate_date FROM prizepicks_current_market_context WHERE slate_date=? AND status='ACTIVE' AND COALESCE(is_current,1)=1 AND stat_type='RBIs'`, [slateDate]);
+  for (const r of ppRows) {
+    if (!isBoardRowStillPickableByStartTime(r.start_time)) continue;
+    const lineType = String(r.odds_type || 'standard').toLowerCase();
+    const id = r.line_id || r.projection_key || `${r.player_name}|${r.line_score}|${lineType}`;
+    const dirs = (lineType === 'demon' || lineType === 'goblin' || Number(r.is_promo || 0) === 1) ? ['OVER'] : ['OVER','UNDER'];
+    for (const d of dirs) addRow(r, 'prizepicks_current_market_context', id, lineType, d, Number(r.line_score));
+    out.prizepicks_rows++;
+  }
+  const sleeperRows = await scoreRowsSafe(env, `SELECT rowid AS row_id, player_name, team, opponent, market, original_line_score, normalized_line_score, entry_type, target_side, raw_line, slate_date FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 AND market='RBI' AND validation_status='parsed'`, [slateDate]);
+  for (const r of sleeperRows) {
+    const entry = String(r.entry_type || 'regular').toLowerCase();
+    const lineType = (entry === 'demon' || entry === 'goblin') ? entry : 'standard';
+    addRow(r, 'sleeper_rbi_rfi_board', r.row_id || r.raw_line || `${r.player_name}|${r.normalized_line_score}`, lineType, 'UNDER', Number(r.normalized_line_score || r.original_line_score || 0.5));
+    out.sleeper_rows++;
+  }
+  return out;
+}
+
 function scoringMeshShouldScoreAfterMine(result){
   const status = String(result?.status || '').toLowerCase();
   return status === 'completed' || status === 'completed_with_skips' || status === 'completed_with_errors_review' || status === 'pass_complete' || status === 'complete' || result?.needs_continue === false;
@@ -11035,6 +11173,14 @@ async function loadPickabilityContext(env, slateDate){
       ctx.sleeper_rows=res.results||[];
     } else ctx.warnings.push('missing_sleeper_rbi_rfi_market_signals');
   }catch(e){ctx.warnings.push('sleeper_signal_load_failed:'+String(e&&e.message||e));}
+  try{
+    const existsBoard=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='sleeper_rbi_rfi_board'").first();
+    if(existsBoard){
+      ctx.source_tables.sleeper_rbi_rfi_board=true;
+      const res=await env.DB.prepare(`SELECT rowid AS signal_id, rowid AS sleeper_leg_id, player_name, team, opponent, opponent AS opponent_team, market, normalized_line_score, entry_type, target_side, validation_status AS signal_status, 1 AS usable_for_under, updated_at FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 AND validation_status='parsed' AND market IN ('RBI','RFI')`).bind(slateDate).all();
+      ctx.sleeper_rows.push(...(res.results||[]));
+    } else ctx.warnings.push('missing_sleeper_rbi_rfi_board');
+  }catch(e){ctx.warnings.push('sleeper_board_load_failed:'+String(e&&e.message||e));}
   return ctx;
 }
 function isBoardRowStillPickableByStartTime(startTime){
@@ -11238,7 +11384,12 @@ async function runMlbScoringV1(input,env){
   await ensureOddsApiTables(env); await ensureMlbScoringV1Tables(env);
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status IN ('PENDING','RUNNING')`).bind(slateDate).run();
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-	  await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=?`).bind(slateDate).run();
+  // v1.3.60: score tables are latest-slate read models, not append-only logs.
+  // Old rows for the same slate caused duplicate source_line_id waves after every scoring refresh.
+  for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
+    await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=?`).bind(slateDate).run();
+  }
+  await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=?`).bind(slateDate).run();
   await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,created_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual')).run();
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
@@ -11255,7 +11406,11 @@ async function runMlbScoringV1(input,env){
    if(!pairs.length){blocked++; continue;}
    const avg=x=>pairs.reduce((a,p)=>a+p[x],0)/pairs.length; const probs={OVER:avg('fo'),UNDER:avg('fu')}; const maxHold=Math.max(...pairs.map(p=>p.hold)); const spread=Math.max(...pairs.map(p=>p.fo))-Math.min(...pairs.map(p=>p.fo)); const times=pairs.map(p=>Date.parse(String(p.updated||'').replace(' ','T')+'Z')).filter(Number.isFinite); const stale=times.length?Math.max(0,Math.round((Date.now()-Math.max(...times))/1000)):null;
    for(const dir of ['OVER','UNDER']){
-    const prob=probs[dir]; let raw=scoreBase(prob), final=raw, cap=98; const caps=[],pen=[],blocks=[]; const lineType=scoreLineType(fam,s.outcome_point);
+    const lineType=scoreLineType(fam,s.outcome_point);
+    // v1.3.60: PrizePicks-style demon/tail lines are one-way MORE/OVER products.
+    // Do not manufacture demon unders in score storage. Standard and sportsbook alt unders remain allowed.
+    if(dir==='UNDER' && lineType==='demon') continue;
+    const prob=probs[dir]; let raw=scoreBase(prob), final=raw, cap=98; const caps=[],pen=[],blocks=[];
     const modBundle=scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,modifierCtx,prob,spread,maxHold);
     final+=modBundle.totalMod;
     if(pairs.length===1){cap=Math.min(cap,60);caps.push('C01_SINGLE_BOOK_60');} else if(pairs.length<3){cap=Math.min(cap,75);caps.push('C01_THIN_UNDER3_75');}
@@ -11277,11 +11432,17 @@ async function runMlbScoringV1(input,env){
     auditStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`audit|${scoreId}`,runId,scoreId,scratchId,slateDate,fam,source,s.player_name,rec,`Scoring V1 ${rec}: ${s.player_name} ${fam} ${dir} ${s.outcome_point} = ${final.toFixed(2)}`,JSON.stringify(audit)));
    }
   }
+  const rbiBoardFallback = await buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx);
+  scoreStmts.push(...rbiBoardFallback.scoreStmts);
+  activeStmts.push(...rbiBoardFallback.activeStmts);
+  auditStmts.push(...rbiBoardFallback.auditStmts);
+  promoted += rbiBoardFallback.promoted;
+  active += rbiBoardFallback.active;
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback,batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_score_calibration_lift_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_board_direction_repair_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
