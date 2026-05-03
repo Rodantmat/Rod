@@ -1,0 +1,10 @@
+Build Version Audit
+Expected build: v1.3.70 - Hits TB Cap Calibration Repair
+
+Checks:
+- ZIP filename: alphadog_v1.3.70_hits_tb_cap_calibration_repair.zip
+- worker.js SYSTEM_VERSION: v1.3.70 - Hits TB Cap Calibration Repair
+- control_room.html visible tag: v1.3.70 - Hits TB Cap Calibration Repair
+- control_room.html client version/debugConfig: control_room_v1_3_70_hits_tb_cap_calibration_repair
+- README: README_v1.3.70.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.70.txt

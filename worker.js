@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.69 - PrizePicks Standard Hits/TB Coverage Repair";
+const SYSTEM_VERSION = "v1.3.70 - Hits TB Cap Calibration Repair";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11767,7 +11767,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
   if (Number.isFinite(hitPerGame)) {
     const poissonHit = 1 - Math.exp(-Math.max(0, Math.min(2.1, hitPerGame)));
     overProb = scoreClamp(poissonHit, 0.36, 0.78);
-    add('PP_STD_HIT_RATE_MODEL', (overProb - 0.55) * 18, `hit_per_game_${hitPerGame.toFixed(3)}`, 'incremental_player_metrics');
+    add('PP_STD_HIT_RATE_MODEL', (dir === 'UNDER' ? (0.55 - overProb) : (overProb - 0.55)) * 18, `hit_per_game_${hitPerGame.toFixed(3)}_${dir.toLowerCase()}_oriented`, 'incremental_player_metrics');
   } else {
     overProb = 0.54;
     add('PP_STD_HIT_RATE_MISSING', -2.5, 'incremental hit-rate unavailable', 'audit_only');
@@ -11775,7 +11775,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
 
   if (prop === 'TOTAL_BASES') {
     const slgProxy = metrics && Number(metrics.ab) > 0 ? Number(metrics.hits || 0) / Number(metrics.ab) : null;
-    if (Number.isFinite(slgProxy)) add('PP_STD_TB_CONTACT_PROXY', (slgProxy - 0.24) * 12, `hits_per_ab_${slgProxy.toFixed(3)}`, 'incremental_player_metrics');
+    if (Number.isFinite(slgProxy)) add('PP_STD_TB_CONTACT_PROXY', (dir === 'UNDER' ? (0.24 - slgProxy) : (slgProxy - 0.24)) * 12, `hits_per_ab_${slgProxy.toFixed(3)}_${dir.toLowerCase()}_oriented`, 'incremental_player_metrics');
   }
 
   const slot = Number(player.lineup_slot);
@@ -11795,11 +11795,20 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
   let totalMod = mods.reduce((a,m)=>a+Number(m.value||0),0);
   totalMod = scoreClamp(totalMod, -10, 10);
   let final = raw + totalMod;
-  const caps = ['C_PP_STANDARD_BOARD_FALLBACK_72', 'C_NO_PAIRED_BOOK_CONSENSUS_FALLBACK'];
+  const caps = [prob >= 0.58 ? 'C_PP_STANDARD_BOARD_FALLBACK_76_HIGH_PROB' : 'C_PP_STANDARD_BOARD_FALLBACK_72', 'C_NO_PAIRED_BOOK_CONSENSUS_FALLBACK'];
   const penalties = [];
   const blocks = [];
-  let cap = 72;
-  if (dir === 'UNDER') { cap = Math.min(cap, 68); caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_68'); }
+  let cap = 98;
+  if (prob < 0.58) cap = Math.min(cap, 72);
+  if (dir === 'UNDER') {
+    if (prob >= 0.58) {
+      cap = Math.min(cap, 76);
+      caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_76_HIGH_PROB');
+    } else {
+      cap = Math.min(cap, 68);
+      caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_68');
+    }
+  }
   if (!metrics) { cap = Math.min(cap, 64); caps.push('C_MISSING_INCREMENTAL_METRICS_64'); }
   if (line > 0.5 && prop === 'HITS') { cap = Math.min(cap, 62); caps.push('C_HITS_ALT_LINE_FALLBACK_62'); }
   final = Math.max(0, Math.min(cap, final));
@@ -11820,7 +11829,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
     blocks,
     player_context:player,
     fallback_reason:'PrizePicks standard Hits/Total Bases line exists but Odds API consensus scoring was missing or too thin; conservative stored-data fallback scored only exact regular board sides.',
-    score_calibration_version:'v1.3.69_prizepicks_standard_hits_tb_coverage_repair'
+    score_calibration_version:'v1.3.70_hits_tb_cap_calibration_repair'
   };
 }
 
@@ -11907,7 +11916,7 @@ function prizePicksStandardHitsTbFallbackSummary(out){
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, call_failures:0, parse_failures:0, malformed_or_truncated:0, retry_successes:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.69 preserves RBI Gemini grounded JSON parsing and adds compact parse-failure accounting; blanket Sleeper board bonus remains disabled; Gemini runs over75-only and parses fenced/raw/balanced JSON from text because hard JSON MIME is incompatible with Google Search tool use.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.70 preserves RBI Gemini grounded JSON parsing; Hits/TB cap calibration is adjusted separately for high-probability two-book consensus and exact PrizePicks standard rows.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11960,7 +11969,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.69_prizepicks_standard_hits_tb_coverage_repair',
+      score_calibration_version: 'v1.3.70_hits_tb_cap_calibration_repair',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
@@ -12347,7 +12356,11 @@ async function runMlbScoringV1(input,env){
     const prob=probs[dir]; let raw=scoreBase(prob), final=raw, cap=98; const caps=[],pen=[],blocks=[];
     const modBundle=scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,modifierCtx,prob,spread,maxHold);
     final+=modBundle.totalMod;
-    if(pairs.length===1){cap=Math.min(cap,60);caps.push('C01_SINGLE_BOOK_60');} else if(pairs.length<3){cap=Math.min(cap,75);caps.push('C01_THIN_UNDER3_75');}
+    if(pairs.length===1){cap=Math.min(cap,60);caps.push('C01_SINGLE_BOOK_60');} else if(pairs.length<3){
+      const projectedConf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost));
+      if(prob>=0.60 && projectedConf>=0.40 && maxHold<=0.25 && spread<=0.07){cap=Math.min(cap,82);caps.push('C01_THIN_UNDER3_HIGH_PROB_82');}
+      else {cap=Math.min(cap,75);caps.push('C01_THIN_UNDER3_75');}
+    }
     if(fam==='RBI'){cap=Math.min(cap,92);caps.push('C04_RBI_CAP_92');}
     if(lineType!=='standard'){cap=Math.min(cap,lineType==='demon'?40:85);caps.push(`C_ALT_${lineType.toUpperCase()}`);}
     if(dir==='UNDER'){cap=Math.min(cap,85);caps.push('C_UNDER_CAP_85');}
@@ -12380,13 +12393,13 @@ async function runMlbScoringV1(input,env){
   active += ppStandardHitsTbFallback.active;
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.69_prizepicks_standard_hits_tb_coverage_repair',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.70_hits_tb_cap_calibration_repair',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.69 adds conservative PrizePicks standard Hits/Total Bases fallback scoring when exact regular board rows exist but Odds API consensus scoring is missing or too thin. Goblin/demon remain More-only; unders are never manufactured for non-standard PrizePicks rows. RBI Gemini parsing behavior is preserved.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.70 recalibrates Hits/Total Bases cap compression: high-probability two-book consensus can breathe to 82, exact PrizePicks standard fallback can breathe to 76, and fallback contact/rate modifiers are side-oriented. Goblin/demon remain More-only; unders are never manufactured for non-standard PrizePicks rows. RBI Gemini behavior is preserved.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.3.69 keeps RBI Gemini over75 behavior and adds conservative PrizePicks standard Hits/TB fallback coverage.'};
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.3.70 keeps RBI Gemini over75 behavior and recalibrates Hits/TB cap compression.'};
  }
 }
 
