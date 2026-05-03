@@ -1,0 +1,10 @@
+Build Version Audit
+Expected build: v1.3.71 - Hits TB Strategic Probability Lift
+
+Checks:
+- ZIP filename: alphadog_v1.3.71_hits_tb_strategic_probability_lift.zip
+- worker.js SYSTEM_VERSION: v1.3.71 - Hits TB Strategic Probability Lift
+- control_room.html visible tag: v1.3.71 - Hits TB Strategic Probability Lift
+- control_room.html client version/debugConfig: control_room_v1_3_71_hits_tb_strategic_probability_lift
+- README: README_v1.3.71.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.71.txt
