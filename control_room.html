@@ -3,6 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
+<!-- v1.3.68 - RBI Gemini Signal Callpath Debugger -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -197,6 +198,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <div class="card"><h2>Scoring V1 • MLB Pregame</h2><div class="grid">
 <button class="run" onclick="runJobButton('SCORING V1 > Run Full Score Refresh','run_full_scoring_refresh_v1')">Run Full Score Refresh</button>
 <button class="check" onclick="runJobButton('SCORING V1 > Check Auto Scoring Mesh','check_auto_scoring_mesh_v1')">Check Auto Scoring Mesh</button>
+<button class="debug" onclick="runJobButton('SCORING V1 > Debug RBI Gemini Signal One','debug_rbi_gemini_signal_one')">Debug RBI Gemini Signal One</button>
 <button class="run" onclick="runJobButton('SCORING V1 > Run MLB Scores','run_mlb_scoring_v1')">Run MLB Scores</button>
 <button class="check" onclick="runJobButton('SCORING V1 > Check MLB Scores','check_mlb_scoring_v1')">Check MLB Scores</button>
 <button class="check" onclick="runJobButton('SCORING V1 > Inspect Score Audit','inspect_mlb_score_audit_v1')">Inspect Score Audit</button>

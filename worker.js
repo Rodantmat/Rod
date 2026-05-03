@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.67 - RBI Gemini Nested Signal Normalizer";
+const SYSTEM_VERSION = "v1.3.68 - RBI Gemini Signal Callpath Debugger";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -8450,6 +8450,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_odds_api_morning") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_morning" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Morning Odds API promotion when data_ok." }; }
   if (jobName === "run_odds_api_afternoon") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_afternoon" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Afternoon Odds API promotion when data_ok." }; }
   if (jobName === "check_odds_api_market_intel") return await checkOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "debug_rbi_gemini_signal_one") return await debugRbiGeminiSignalOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_debug_forced_fresh" }, env);
   if (jobName === "run_mlb_scoring_v1") return await runMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_mlb_scoring_v1") return await checkMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_audit_v1") return await inspectMlbScoreAuditV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
@@ -11291,6 +11292,183 @@ async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
   if (!res.ok) throw new Error(JSON.stringify(data));
   const text = data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('') || JSON.stringify(data);
   return parseStrictJson(cleanJsonText(text));
+}
+
+function extractFirstJsonObjectText(raw){
+  const text = String(raw || '');
+  const start = text.indexOf('{');
+  if (start < 0) return '';
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+function extractGeminiJsonForDebug(raw){
+  const text = String(raw || '').trim();
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const attempts = [];
+  if (fenced && fenced[1]) attempts.push({ method:'fenced_json', text:fenced[1].trim() });
+  if (text.startsWith('{') && text.endsWith('}')) attempts.push({ method:'raw_json', text });
+  const first = extractFirstJsonObjectText(text);
+  if (first) attempts.push({ method:'first_object', text:first });
+  let lastError = '';
+  for (const a of attempts) {
+    try { return { ok:true, method:a.method, json_text:a.text, parsed:JSON.parse(cleanJsonText(a.text)), error:null }; }
+    catch (e) { lastError = String(e && e.message || e); }
+  }
+  return { ok:false, method:'none', json_text:'', parsed:null, error:lastError || 'no_json_object_found' };
+}
+async function callGeminiJsonWithGoogleSearchDebug(env, model, prompt, options = {}){
+  const out = {
+    gemini_http_status: null,
+    gemini_model_used: model,
+    grounding_enabled_or_declared: 'unknown',
+    response_text_path_used: null,
+    raw_text: '',
+    extracted_json_text: '',
+    json_extract_method: null,
+    parsed: null,
+    error: null
+  };
+  if (!env.GEMINI_API_KEY) { out.error = 'Missing GEMINI_API_KEY secret'; return out; }
+  const maxOutputTokens = Number(options.maxOutputTokens || 2048);
+  try { await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens }); }
+  catch (e) { out.error = 'reserveGeminiRateBudget_failed:' + String(e && e.message || e); return out; }
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0, maxOutputTokens, responseMimeType: 'application/json' } };
+  out.grounding_enabled_or_declared = true;
+  let data = null;
+  try {
+    const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+    out.gemini_http_status = res.status;
+    data = await res.json().catch(async()=>({ _non_json_response:true, text: await res.text().catch(()=> '') }));
+    const parts = data?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      out.response_text_path_used = 'candidates[0].content.parts[].text';
+      out.raw_text = parts.map(p => p && typeof p.text === 'string' ? p.text : '').join('');
+    }
+    if (!out.raw_text) {
+      out.response_text_path_used = out.response_text_path_used || 'JSON.stringify(full_response)';
+      out.raw_text = JSON.stringify(data || {});
+    }
+    if (!res.ok) out.error = 'gemini_http_error:' + JSON.stringify(data || {}).slice(0, 900);
+  } catch (e) {
+    out.error = 'gemini_fetch_exception:' + String(e && e.message || e);
+    out.raw_text = data ? JSON.stringify(data) : '';
+  }
+  const extracted = extractGeminiJsonForDebug(out.raw_text);
+  out.extracted_json_text = extracted.json_text;
+  out.json_extract_method = extracted.method;
+  out.parsed = extracted.parsed;
+  if (!out.error && !extracted.ok) out.error = 'json_extract_failed:' + extracted.error;
+  return out;
+}
+
+async function debugRbiGeminiSignalOne(input, env){
+  const job = input?.job || 'debug_rbi_gemini_signal_one';
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job, error:'Missing DB binding' };
+  const guard = await resolveScoringSlateDate(env, input || {});
+  const slateDate = guard.slate_date;
+  const wanted = String(input?.player || input?.player_name || 'Kyle Isbel').trim();
+  const modifierCtx = await loadMlbScoringModifierContext(env, slateDate);
+  const findLike = '%' + wanted.replace(/[%_]/g, '') + '%';
+  let row = null, sourceBoard = null, sourceLineId = null, lineType = 'standard', lineNumber = 0.5;
+  const sleeper = await env.DB.prepare(`SELECT rowid AS row_id, player_name, team, opponent, market, original_line_score, normalized_line_score, entry_type, target_side, raw_line, slate_date FROM sleeper_rbi_rfi_board WHERE slate_date=? AND is_current=1 AND market='RBI' AND validation_status='parsed' AND player_name LIKE ? ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, rowid DESC LIMIT 1`).bind(slateDate, findLike, wanted).first().catch(()=>null);
+  if (sleeper) {
+    row = sleeper; sourceBoard = 'sleeper_rbi_rfi_board'; sourceLineId = sleeper.row_id || sleeper.raw_line || `${sleeper.player_name}|${sleeper.normalized_line_score}`; lineType = String(sleeper.entry_type || 'regular').toLowerCase(); lineNumber = Number(sleeper.normalized_line_score || sleeper.original_line_score || 0.5);
+  } else {
+    const pp = await env.DB.prepare(`SELECT line_id, projection_key, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time, slate_date FROM prizepicks_current_market_context WHERE slate_date=? AND status='ACTIVE' AND COALESCE(is_current,1)=1 AND stat_type='RBIs' AND player_name LIKE ? ORDER BY CASE WHEN LOWER(player_name)=LOWER(?) THEN 0 ELSE 1 END, line_id DESC LIMIT 1`).bind(slateDate, findLike, wanted).first().catch(()=>null);
+    if (pp) { row = pp; sourceBoard = 'prizepicks_current_market_context'; sourceLineId = pp.line_id || pp.projection_key || `${pp.player_name}|${pp.line_score}`; lineType = String(pp.odds_type || 'standard').toLowerCase(); lineNumber = Number(pp.line_score || 0.5); }
+  }
+  if (!row) return { ok:true, data_ok:false, version:SYSTEM_VERSION, job, slate_date:slateDate, requested_player:wanted, error:'debug_leg_not_found_in_current_sleeper_or_prizepicks_rbi_board', next_action:'Confirm Kyle Isbel exists on the selected slate or pass player override.' };
+  const sample = scoreRbiFallbackSample(row, sourceBoard);
+  const baseScored = scoreRbiFallbackFromStoredData('UNDER', sample, modifierCtx, sourceBoard, lineType, null);
+  const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
+  const team = scoreTeamKey(row.team) || row.team || null;
+  const opponent = scoreTeamKey(oppRaw) || oppRaw || null;
+  const signalId = rbiGeminiSignalId(slateDate, row.player_name, team, opponent, lineNumber);
+  await ensureRbiGeminiUnderSignalTable(env).catch(()=>null);
+  const cached = await env.DB.prepare(`SELECT * FROM rbi_gemini_under_signals WHERE signal_id=? LIMIT 1`).bind(signalId).first().catch(()=>null);
+  const prompt = buildRbiUnderGeminiMarketPresencePrompt({slateDate,row,sample,scored:{final:baseScored.final}});
+  const model = String(env.RBI_UNDER_MARKET_GEMINI_MODEL || SCRAPE_MODEL || 'gemini-2.5-flash');
+  const gate = [];
+  if (String(row?.line_direction || 'UNDER').toUpperCase() === 'OVER') gate.push('direction_over');
+  if (!Number.isFinite(Number(baseScored.final)) || Number(baseScored.final) <= 75) gate.push('pre_signal_score_not_over_75');
+  if (!Number.isFinite(Number(lineNumber)) || Math.abs(Number(lineNumber)-0.5)>0.001) gate.push('line_not_0_5');
+  if (!env.GEMINI_API_KEY) gate.push('missing_gemini_api_key');
+  const skipped = gate.length > 0;
+  let call = { raw_text:'', extracted_json_text:'', parsed:null, error:null, gemini_http_status:null, gemini_model_used:model, grounding_enabled_or_declared:'unknown', response_text_path_used:null, json_extract_method:null };
+  if (!skipped) call = await callGeminiJsonWithGoogleSearchDebug(env, model, prompt, { maxOutputTokens: 2048, scrape:true });
+  const normalizerInput = call.parsed;
+  const normalizerOutput = normalizerInput ? normalizeRbiGeminiUnderSignal(normalizerInput) : null;
+  const bonusInfo = normalizerInput ? rbiGeminiBonusFromSignal(normalizerInput) : { bonus:0, confidence_bump:0, favorable:false, parser_path:null, normalized_signal:null };
+  const bonusGateReasons = [];
+  if (skipped) bonusGateReasons.push(...gate);
+  if (!normalizerInput) bonusGateReasons.push('no_parsed_json');
+  if (normalizerOutput) {
+    if (!normalizerOutput.usable) bonusGateReasons.push('normalized_not_usable');
+    if (normalizerOutput.contradicting) bonusGateReasons.push('contradicting_signal');
+    if (normalizerOutput.signal === 'UNFAVORABLE') bonusGateReasons.push('signal_unfavorable');
+    if (!normalizerOutput.sourceAllowed) bonusGateReasons.push('source_not_allowed_or_missing');
+    if (!normalizerOutput.directMarketEvidence) bonusGateReasons.push('direct_market_evidence_missing');
+    if (Number(bonusInfo.bonus || 0) > 0) bonusGateReasons.push('bonus_gate_passed');
+  }
+  const bonusApplied = Number(bonusInfo.bonus || 0) > 0 ? Number(bonusInfo.bonus || 0) : 0;
+  return {
+    ok:true,
+    data_ok: !skipped && !call.error && !!normalizerInput,
+    version:SYSTEM_VERSION,
+    job,
+    mode:'single_leg_forced_fresh_rbi_gemini_signal_callpath_debug_no_cache_write',
+    slate_date:slateDate,
+    slate_guard:guard,
+    player: row.player_name,
+    source_board: sourceBoard,
+    source_line_id: String(sourceLineId || '').slice(0, 160),
+    line_number: lineNumber,
+    line_type: lineType,
+    deterministic_score_before_signal: Number(baseScored.final || 0),
+    prompt_name:'PROMPT_3G_RBI_UNDER_0_5_MARKET_SIGNAL_GROUNDED_1_LEG',
+    exact_prompt_preview: prompt.slice(0,1500),
+    gemini_call_skipped: skipped,
+    skip_reason: skipped ? gate.join('|') : '',
+    cache_used:false,
+    cache_key: signalId,
+    cache_version: cached ? String(cached.model_version || '') : null,
+    cache_signal: cached ? { usable_for_bonus:Number(cached.usable_for_bonus||0), bonus:Number(cached.bonus||0), source_name:cached.source_name||null, source_type:cached.source_type||null } : null,
+    cache_created_at: cached ? cached.created_at || null : null,
+    forced_fresh_call:true,
+    api_key_bound: !!env.GEMINI_API_KEY,
+    grounding_enabled_or_declared: call.grounding_enabled_or_declared,
+    gemini_http_status: call.gemini_http_status,
+    gemini_model_used: call.gemini_model_used,
+    response_text_path_used: call.response_text_path_used,
+    raw_text_preview: String(call.raw_text || '').slice(0,2500),
+    extracted_json_preview: String(call.extracted_json_text || '').slice(0,1500),
+    json_extract_method: call.json_extract_method,
+    normalizer_input_type: normalizerInput === null ? 'null' : (Array.isArray(normalizerInput) ? 'array' : typeof normalizerInput),
+    normalizer_output: normalizerOutput,
+    parsed_signal: normalizerOutput ? normalizerOutput.signal : null,
+    parsed_bonus_recommended: normalizerOutput ? normalizerOutput.bonus_recommended : null,
+    parsed_usable_for_rbi_under_market_layer: normalizerOutput ? normalizerOutput.usable : null,
+    do_not_bonus_reason: normalizerInput ? String(normalizerInput.do_not_bonus_reason || '') : '',
+    normalization_reason: normalizerOutput ? normalizerOutput.parser_path : null,
+    bonus_gate_reason: bonusGateReasons.join('|'),
+    bonus_applied: bonusApplied,
+    final_score_after_bonus: Math.min(96, Number(baseScored.final || 0) + bonusApplied),
+    error: call.error || '',
+    note:'Debug bypasses rbi_gemini_under_signals cache and does not write cache. Main scoring math unchanged.'
+  };
 }
 function normalizeRbiGeminiUnderSignal(j){
   const obj = j && typeof j === 'object' ? j : {};
