@@ -1,0 +1,10 @@
+Build version audit
+Expected version: v1.0.13 - Candidate Board Read-Only Repair
+ZIP filename must contain: v1.0.13
+worker.js version constant: v1.0.13 - Candidate Board Read-Only Repair
+index.html visible/script version: v1.0.13 - Candidate Board Read-Only Repair
+README: README_v1.0.13_MAIN_UI_CANDIDATE_BOARD_READ_ONLY_REPAIR.txt
+Main worker: main-alphadog-ui-v100
+Scheduled backend untouched: yes
+Control Room untouched: yes
+Flat folder only: yes
