@@ -1,0 +1,17 @@
+AlphaDog Main UI Build Version Audit
+
+ZIP version: v1.0.14 - Candidate Board Double-Gate Repair
+worker version constant: v1.0.14 - Candidate Board Double-Gate Repair
+visible UI version label: v1.0.14 - Candidate Board Double-Gate Repair
+README version: v1.0.14 - Candidate Board Double-Gate Repair
+Wrangler config: main_alphadog_wrangler.jsonc
+Worker name: main-alphadog-ui-v100
+
+Validation:
+- node --check main_alphadog_worker.js passed.
+- Flat folder only.
+- Scheduled backend/control room files are not included.
+- No D1 write route enabled.
+- Board endpoint is read-only.
+- score_candidate_board remains the release/read model.
+- second_start_gate_applied=false is included in health and board responses.

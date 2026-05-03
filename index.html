@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>AlphaDog v1.0.13</title>
+  <title>AlphaDog v1.0.14</title>
   <link rel="icon" type="image/png" href="/main_alphadog_favicon.png">
   <link rel="apple-touch-icon" href="/main_alphadog_apple_touch_icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,7 +18,7 @@
 <body>
 <main class="wrap">
   <header class="hero">
-    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.13 - Candidate Board Read-Only Repair</div></div></div>
+    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.14 - Candidate Board Double-Gate Repair</div></div></div>
     <div class="menuWrap"><button class="menuBtn" type="button" id="menuOpen" aria-label="Open menu">☰</button><div class="menuPanel hidden" id="mainMenu"><button class="menuItem" type="button" id="menuBoard">🏠 Board</button><button class="menuItem" type="button" id="menuRbi">⚾ RBI</button><button class="menuItem" type="button" id="menuAdmin">⚙️ Admin</button></div></div>
   </header>
   <section id="boardScreen">
@@ -52,7 +52,7 @@
 <script>
 (function(){
 'use strict';
-const UI_VERSION='v1.0.13 - Candidate Board Read-Only Repair';
+const UI_VERSION='v1.0.14 - Candidate Board Double-Gate Repair';
 const TEAM={ARI:'Arizona Diamondbacks',ATL:'Atlanta Braves',BAL:'Baltimore Orioles',BOS:'Boston Red Sox',CHC:'Chicago Cubs',CWS:'Chicago White Sox',CHW:'Chicago White Sox',CIN:'Cincinnati Reds',CLE:'Cleveland Guardians',COL:'Colorado Rockies',DET:'Detroit Tigers',HOU:'Houston Astros',KC:'Kansas City Royals',KCR:'Kansas City Royals',LAA:'Los Angeles Angels',LAD:'Los Angeles Dodgers',MIA:'Miami Marlins',MIL:'Milwaukee Brewers',MIN:'Minnesota Twins',NYM:'New York Mets',NYY:'New York Yankees',ATH:'Athletics',OAK:'Athletics',PHI:'Philadelphia Phillies',PIT:'Pittsburgh Pirates',SD:'San Diego Padres',SDP:'San Diego Padres',SEA:'Seattle Mariners',SF:'San Francisco Giants',SFG:'San Francisco Giants',STL:'St. Louis Cardinals',TB:'Tampa Bay Rays',TBR:'Tampa Bay Rays',TEX:'Texas Rangers',TOR:'Toronto Blue Jays',WSH:'Washington Nationals',WAS:'Washington Nationals'};
 let rows=[];
 let filters={props:new Set(['HITS','RBI','TOTAL_BASES']),types:new Set(['goblin','demon','regular']),score:70};
