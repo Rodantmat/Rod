@@ -1,0 +1,20 @@
+BUILD VERSION AUDIT
+Expected build: v1.3.68.1 - RBI Gemini Signal Job Registry Guard
+
+Required matching labels:
+- ZIP filename: alphadog_v1.3.68.1_rbi_gemini_signal_job_registry_guard.zip
+- worker.js SYSTEM_VERSION: v1.3.68.1 - RBI Gemini Signal Job Registry Guard
+- control_room.html visible tag: v1.3.68.1 - RBI Gemini Signal Job Registry Guard
+- control_room.html client version/debugConfig: control_room_v1_3_68_1_rbi_gemini_signal_job_registry_guard
+- README: README_v1.3.68.1.txt
+
+Registry guard:
+- JOBS includes debug_rbi_gemini_signal_one
+- executableJobNames includes debug_rbi_gemini_signal_one
+- executeTaskJob routes debug_rbi_gemini_signal_one to debugRbiGeminiSignalOne
+
+Scope:
+- Fixes the missing job registry/executable route that caused REJECTED_UNKNOWN_JOB.
+- Keeps scoring math unchanged.
+- Keeps board pickability unchanged.
+- Keeps cron/static/incremental/everyday flows unchanged.
