@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.65 - RBI Gemini Signal Parser Repair";
+const SYSTEM_VERSION = "v1.3.66 - RBI Gemini Cache Rerun Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1764,7 +1764,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   let staleDeferredReset = 0;
   const taskRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.65 stale Phase 3 recovery marked orphan running task stale'
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.66 stale Phase 3 recovery marked orphan running task stale'
     WHERE job_name='run_phase3ab_full_run_tick'
       AND status='running'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -1772,7 +1772,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   staleTasksMarked = Number(taskRes?.meta?.changes || 0);
   const deferredRes = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.65 stale Phase 3 recovery reset deferred request to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.66 stale Phase 3 recovery reset deferred request to pending'
     WHERE job_name=?
       AND status='RUNNING'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -11325,9 +11325,14 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
   const signalId = rbiGeminiSignalId(slateDate, row.player_name, team, opponent, lineNumber);
   const cached = await env.DB.prepare(`SELECT * FROM rbi_gemini_under_signals WHERE signal_id=? LIMIT 1`).bind(signalId).first().catch(()=>null);
   if (cached) {
+    const cachedVersion = String(cached.model_version || '');
     const b = Number(cached.bonus || 0);
-    if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_favorable_grounded_rbi_under_signal', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
-    return { ...empty, source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_unfavorable_or_unusable_signal', signal_id:signalId, favorable:false };
+    if (cachedVersion === SYSTEM_VERSION) {
+      if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_favorable_grounded_rbi_under_signal_current_version', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
+      return { ...empty, source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_unfavorable_or_unusable_signal_current_version', signal_id:signalId, favorable:false };
+    }
+    // Parser/prompt updates must not be blocked by stale no-bonus rows from older builds.
+    // Continue into a fresh Gemini call and INSERT OR REPLACE the old cached signal.
   }
   const model = String(env.RBI_UNDER_MARKET_GEMINI_MODEL || SCRAPE_MODEL || 'gemini-2.5-flash');
   let parsed = null, error = null;
@@ -11339,7 +11344,11 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
   }
   const bonusInfo = rbiGeminiBonusFromSignal(parsed);
   const warnings = Array.isArray(parsed?.warning_flags) ? parsed.warning_flags : [];
-  await env.DB.prepare(`INSERT OR REPLACE INTO rbi_gemini_under_signals (signal_id,slate_date,player_name,normalized_player_name,team,opponent,line_number,source_board,source_line_id,pre_signal_score,usable_for_bonus,market_presence_score,under_signal_score,bonus,confidence_bump,source_name,source_type,evidence,warning_flags_json,raw_json,model_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(signalId,slateDate,row.player_name,scoreNormName(row.player_name),team,opponent,Number(lineNumber),sourceBoard,sourceLineId,Number(preSignalScore),bonusInfo.favorable?1:0,Number(parsed?.market_presence_score||0),Number(parsed?.under_signal_score||0),bonusInfo.bonus,bonusInfo.confidence_bump,String(parsed?.source_name||''),String(parsed?.source_type||''),String(parsed?.evidence||'').slice(0,900),JSON.stringify(warnings).slice(0,1200),JSON.stringify(parsed).slice(0,4000),SYSTEM_VERSION).run().catch(()=>null);
+  const parsedSources = Array.isArray(parsed?.sources_checked) ? parsed.sources_checked.join('|') : '';
+  const storedSourceName = String(parsed?.source_name || parsedSources || 'grounded_search').slice(0,240);
+  const storedSourceType = String(parsed?.source_type || (parsedSources ? 'grounded_allowed_sources' : '')).slice(0,240);
+  const storedEvidence = String(parsed?.evidence_summary || parsed?.evidence || '').slice(0,900);
+  await env.DB.prepare(`INSERT OR REPLACE INTO rbi_gemini_under_signals (signal_id,slate_date,player_name,normalized_player_name,team,opponent,line_number,source_board,source_line_id,pre_signal_score,usable_for_bonus,market_presence_score,under_signal_score,bonus,confidence_bump,source_name,source_type,evidence,warning_flags_json,raw_json,model_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(signalId,slateDate,row.player_name,scoreNormName(row.player_name),team,opponent,Number(lineNumber),sourceBoard,sourceLineId,Number(preSignalScore),bonusInfo.favorable?1:0,Number(parsed?.market_presence_score||0),Number(parsed?.under_signal_score||0),bonusInfo.bonus,bonusInfo.confidence_bump,storedSourceName,storedSourceType,storedEvidence,JSON.stringify(warnings).slice(0,1200),JSON.stringify(parsed).slice(0,4000),SYSTEM_VERSION).run().catch(()=>null);
   if (!bonusInfo.favorable) return { ...empty, reason:error?'gemini_call_failed_or_no_usable_signal':'gemini_signal_not_favorable', signal_id:signalId, favorable:false, market_presence_score:Number(parsed?.market_presence_score||0), under_signal_score:Number(parsed?.under_signal_score||0) };
   return { bonus:bonusInfo.bonus, confidence_bump:bonusInfo.confidence_bump, source:'gemini_grounded_rbi_under_market_signal', reason:'favorable_grounded_rbi_under_market_signal_over75_only', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(parsed?.market_presence_score||0), under_signal_score:Number(parsed?.under_signal_score||0), evidence:String(parsed?.evidence||'').slice(0,240) };
 }
@@ -11347,7 +11356,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.65 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.66 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only; stale cached non-favorable signals are rerun after parser/prompt updates.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11393,7 +11402,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.65_rbi_gemini_signal_parser_repair',
+      score_calibration_version: 'v1.3.66_rbi_gemini_cache_rerun_fix',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
