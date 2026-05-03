@@ -1,0 +1,19 @@
+BUILD VERSION AUDIT
+
+Expected build: v1.3.68.4 - RBI Gemini Parser Hardening
+
+Verified labels before packaging:
+- ZIP filename: alphadog_v1.3.68.4_rbi_gemini_parser_hardening.zip
+- worker.js SYSTEM_VERSION: v1.3.68.4 - RBI Gemini Parser Hardening
+- control_room.html visible tag: v1.3.68.4 - RBI Gemini Parser Hardening
+- control_room.html client version/debugConfig: control_room_v1_3_68_4_rbi_gemini_parser_hardening
+- README: README_v1.3.68.4.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.68.4.txt
+
+Guardrails:
+- node --check worker.js must pass before delivery.
+- Flat folder only.
+- No subdirectories.
+- No scoring math change.
+- No pickability/board release change.
+- No cron/static/incremental/everyday flow change.

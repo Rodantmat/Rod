@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.68.3 - RBI Gemini Signal Main Layer Promotion";
+const SYSTEM_VERSION = "v1.3.68.4 - RBI Gemini Parser Hardening";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11294,28 +11294,6 @@ Bonus guidance:
 - market_presence_score and under_signal_score may be 7.5 to 10 when direct table/price evidence exists.
 - usable_for_rbi_under_market_layer should be true only when evidence directly supports RBI Under/Less 0.5 or strongly implies it through a heavily plus-priced Over 0.5 RBI.`;
 }
-async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
-  if (!env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret');
-  const maxOutputTokens = Number(options.maxOutputTokens || 2048);
-  await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens });
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-  // v1.3.68.3: production RBI Gemini signal uses the proven grounded-search text JSON path; no hard JSON MIME with tools.
-  // Keep JSON-only instructions in the prompt, then parse JSON from normal text output.
-  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
-  const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
-  const data = await res.json().catch(()=>({}));
-  if (!res.ok) throw new Error(JSON.stringify(data));
-  const extracted = extractGeminiTextAndGrounding(data);
-  const parsedInfo = extractGeminiJsonForDebug(extracted.raw_text || JSON.stringify(data || {}));
-  if (!parsedInfo.ok || !parsedInfo.parsed || typeof parsedInfo.parsed !== 'object') throw new Error('gemini_json_extract_failed:' + String(parsedInfo.error || 'no_json'));
-  const parsed = parsedInfo.parsed;
-  parsed._gemini_grounding_uris = extracted.grounding_uris;
-  parsed._gemini_grounding_sources = extracted.grounding_sources;
-  parsed._gemini_response_text_path_used = extracted.response_text_path_used;
-  parsed._gemini_json_extract_method = parsedInfo.method;
-  return parsed;
-}
-
 function extractGeminiTextAndGrounding(data){
   const parts = data?.candidates?.[0]?.content?.parts;
   let rawText = '';
@@ -11339,40 +11317,101 @@ function extractGeminiTextAndGrounding(data){
   return { raw_text: rawText, response_text_path_used: responsePath, grounding_sources: groundingSources, grounding_uris: groundingUris };
 }
 
-function extractFirstJsonObjectText(raw){
+function extractBalancedJsonObjects(raw){
   const text = String(raw || '');
-  const start = text.indexOf('{');
-  if (start < 0) return '';
-  let depth = 0, inString = false, escape = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === '\\') { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    if (ch === '}') {
-      depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+  const objects = [];
+  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+    let depth = 0, inString = false, escape = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (escape) { escape = false; continue; }
+      if (ch === '\\') { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) { objects.push(text.slice(start, i + 1)); break; }
+      }
     }
   }
-  return '';
+  return [...new Set(objects)].filter(Boolean);
+}
+function extractFirstJsonObjectText(raw){
+  return extractBalancedJsonObjects(raw)[0] || '';
+}
+function classifyGeminiJsonParseFailure(text, err){
+  const raw = String(text || '');
+  const msg = String(err || '').toLowerCase();
+  if (!raw.trim()) return 'empty_response';
+  const openBraces = (raw.match(/\{/g) || []).length;
+  const closeBraces = (raw.match(/\}/g) || []).length;
+  if (openBraces > closeBraces || msg.includes('unexpected end')) return 'truncated_or_unbalanced_json';
+  if ((raw.match(/```json/gi) || []).length > 1) return 'duplicated_fenced_json';
+  if (raw.includes('```') && !/```(?:json)?\s*[\s\S]*?```/i.test(raw)) return 'broken_fenced_json';
+  if (msg.includes('unexpected token')) return 'malformed_json';
+  return 'json_not_found_or_unparseable';
 }
 function extractGeminiJsonForDebug(raw){
   const text = String(raw || '').trim();
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const attempts = [];
-  if (fenced && fenced[1]) attempts.push({ method:'fenced_json', text:fenced[1].trim() });
-  if (text.startsWith('{') && text.endsWith('}')) attempts.push({ method:'raw_json', text });
-  const first = extractFirstJsonObjectText(text);
-  if (first) attempts.push({ method:'first_object', text:first });
+  const pushAttempt = (method, value) => {
+    const t = String(value || '').trim();
+    if (!t) return;
+    if (!attempts.some(a => a.text === t)) attempts.push({ method, text:t });
+  };
+  const fencedMatches = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  for (const m of fencedMatches) pushAttempt('fenced_json', m[1]);
+  if (text.startsWith('{') && text.endsWith('}')) pushAttempt('raw_json', text);
+  const balanced = extractBalancedJsonObjects(text);
+  for (const obj of balanced) pushAttempt('balanced_object', obj);
+  if (balanced[0]) pushAttempt('first_object', balanced[0]);
   let lastError = '';
   for (const a of attempts) {
-    try { return { ok:true, method:a.method, json_text:a.text, parsed:JSON.parse(cleanJsonText(a.text)), error:null }; }
+    try { return { ok:true, method:a.method, json_text:a.text, parsed:JSON.parse(cleanJsonText(a.text)), error:null, failure_type:null, attempts_count:attempts.length }; }
     catch (e) { lastError = String(e && e.message || e); }
   }
-  return { ok:false, method:'none', json_text:'', parsed:null, error:lastError || 'no_json_object_found' };
+  return { ok:false, method:'none', json_text:'', parsed:null, error:lastError || 'no_json_object_found', failure_type:classifyGeminiJsonParseFailure(text, lastError), attempts_count:attempts.length };
 }
+async function callGeminiGroundedOnce(env, model, prompt, maxOutputTokens, options = {}){
+  await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens });
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
+  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
+  const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
+  const data = await res.json().catch(async()=>({ _non_json_response:true, text: await res.text().catch(()=> '') }));
+  const extractedPayload = extractGeminiTextAndGrounding(data);
+  let rawText = extractedPayload.raw_text || '';
+  let responsePath = extractedPayload.response_text_path_used;
+  if (!rawText) { responsePath = responsePath && responsePath !== 'none' ? responsePath : 'JSON.stringify(full_response)'; rawText = JSON.stringify(data || {}); }
+  return { res, data, rawText, responsePath, extractedPayload };
+}
+async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
+  if (!env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret');
+  const firstMaxOutputTokens = Number(options.maxOutputTokens || 2048);
+  let lastError = '', lastFailureType = '', lastParsedInfo = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const maxOutputTokens = attempt === 1 ? firstMaxOutputTokens : Math.max(4096, firstMaxOutputTokens);
+    const promptForAttempt = attempt === 1 ? prompt : `${prompt}\n\nRETRY FORMAT REPAIR: Your prior response was not parseable. Return exactly ONE complete fenced json object. Do not duplicate the fence. Do not include numbered citation markers inside arrays. Keep sources_checked as source names only, not citation numbers.`;
+    const one = await callGeminiGroundedOnce(env, model, promptForAttempt, maxOutputTokens, options);
+    if (!one.res.ok) throw new Error(JSON.stringify(one.data));
+    const parsedInfo = extractGeminiJsonForDebug(one.rawText || JSON.stringify(one.data || {}));
+    lastParsedInfo = parsedInfo;
+    if (parsedInfo.ok && parsedInfo.parsed && typeof parsedInfo.parsed === 'object') {
+      const parsed = parsedInfo.parsed;
+      parsed._gemini_grounding_uris = one.extractedPayload.grounding_uris;
+      parsed._gemini_grounding_sources = one.extractedPayload.grounding_sources;
+      parsed._gemini_response_text_path_used = one.responsePath;
+      parsed._gemini_json_extract_method = parsedInfo.method;
+      parsed._gemini_retry_count = attempt - 1;
+      parsed._gemini_parse_failure_type = attempt > 1 ? lastFailureType : '';
+      return parsed;
+    }
+    lastError = String(parsedInfo.error || 'no_json');
+    lastFailureType = parsedInfo.failure_type || classifyGeminiJsonParseFailure(one.rawText, lastError);
+  }
+  throw new Error('gemini_json_extract_failed:' + String(lastFailureType || lastError || 'no_json') + ':' + String(lastError || '').slice(0,240));
+}
+
 async function callGeminiJsonWithGoogleSearchDebug(env, model, prompt, options = {}){
   const out = {
     gemini_http_status: null,
@@ -11386,46 +11425,55 @@ async function callGeminiJsonWithGoogleSearchDebug(env, model, prompt, options =
     error: null,
     response_mime_type_removed_for_grounding: true,
     grounding_uris: [],
-    grounding_sources: []
+    grounding_sources: [],
+    gemini_retry_count: 0,
+    json_parse_failure_type: null,
+    json_parse_attempts_count: 0,
+    parse_attempts: []
   };
   if (!env.GEMINI_API_KEY) { out.error = 'Missing GEMINI_API_KEY secret'; return out; }
-  const maxOutputTokens = Number(options.maxOutputTokens || 2048);
-  try { await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens }); }
-  catch (e) { out.error = 'reserveGeminiRateBudget_failed:' + String(e && e.message || e); return out; }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
+  const firstMaxOutputTokens = Number(options.maxOutputTokens || 2048);
   out.grounding_enabled_or_declared = true;
   out.response_mime_type_removed_for_grounding = true;
-  let data = null;
-  try {
-    const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
-    out.gemini_http_status = res.status;
-    data = await res.json().catch(async()=>({ _non_json_response:true, text: await res.text().catch(()=> '') }));
-    const extractedPayload = extractGeminiTextAndGrounding(data);
-    out.response_text_path_used = extractedPayload.response_text_path_used;
-    out.raw_text = extractedPayload.raw_text || '';
-    out.grounding_uris = extractedPayload.grounding_uris || [];
-    out.grounding_sources = extractedPayload.grounding_sources || [];
-    if (!out.raw_text) {
-      out.response_text_path_used = out.response_text_path_used && out.response_text_path_used !== 'none' ? out.response_text_path_used : 'JSON.stringify(full_response)';
-      out.raw_text = JSON.stringify(data || {});
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const maxOutputTokens = attempt === 1 ? firstMaxOutputTokens : Math.max(4096, firstMaxOutputTokens);
+    const promptForAttempt = attempt === 1 ? prompt : `${prompt}\n\nRETRY FORMAT REPAIR: Your prior response was not parseable. Return exactly ONE complete fenced json object. Do not duplicate the fence. Do not include numbered citation markers inside arrays. Keep sources_checked as source names only, not citation numbers.`;
+    try {
+      const one = await callGeminiGroundedOnce(env, model, promptForAttempt, maxOutputTokens, options);
+      out.gemini_http_status = one.res.status;
+      out.response_text_path_used = one.responsePath;
+      out.raw_text = one.rawText || '';
+      out.grounding_uris = one.extractedPayload.grounding_uris || [];
+      out.grounding_sources = one.extractedPayload.grounding_sources || [];
+      if (!one.res.ok) {
+        out.error = 'gemini_http_error:' + JSON.stringify(one.data || {}).slice(0, 900);
+        return out;
+      }
+      const extracted = extractGeminiJsonForDebug(out.raw_text);
+      out.extracted_json_text = extracted.json_text;
+      out.json_extract_method = extracted.method;
+      out.parsed = extracted.parsed;
+      out.json_parse_failure_type = extracted.failure_type || null;
+      out.json_parse_attempts_count = extracted.attempts_count || 0;
+      out.parse_attempts.push({ attempt, maxOutputTokens, ok: !!extracted.ok, method: extracted.method, failure_type: extracted.failure_type || null, error: extracted.error ? String(extracted.error).slice(0,180) : '' });
+      if (out.parsed && typeof out.parsed === 'object') {
+        out.parsed._gemini_grounding_uris = out.grounding_uris || [];
+        out.parsed._gemini_grounding_sources = out.grounding_sources || [];
+        out.parsed._gemini_response_text_path_used = out.response_text_path_used;
+        out.parsed._gemini_json_extract_method = extracted.method;
+        out.parsed._gemini_retry_count = attempt - 1;
+        out.parsed._gemini_parse_failure_type = attempt > 1 && out.parse_attempts[0] ? out.parse_attempts[0].failure_type : '';
+        out.gemini_retry_count = attempt - 1;
+        out.error = null;
+        return out;
+      }
+      out.error = 'json_extract_failed:' + (extracted.failure_type || extracted.error || 'no_json');
+      if (attempt === 1) continue;
+    } catch (e) {
+      out.error = 'gemini_fetch_or_parse_exception:' + String(e && e.message || e);
+      if (attempt === 1) continue;
     }
-    if (!res.ok) out.error = 'gemini_http_error:' + JSON.stringify(data || {}).slice(0, 900);
-  } catch (e) {
-    out.error = 'gemini_fetch_exception:' + String(e && e.message || e);
-    out.raw_text = data ? JSON.stringify(data) : '';
   }
-  const extracted = extractGeminiJsonForDebug(out.raw_text);
-  out.extracted_json_text = extracted.json_text;
-  out.json_extract_method = extracted.method;
-  out.parsed = extracted.parsed;
-  if (out.parsed && typeof out.parsed === 'object') {
-    out.parsed._gemini_grounding_uris = out.grounding_uris || [];
-    out.parsed._gemini_grounding_sources = out.grounding_sources || [];
-    out.parsed._gemini_response_text_path_used = out.response_text_path_used;
-    out.parsed._gemini_json_extract_method = extracted.method;
-  }
-  if (!out.error && !extracted.ok) out.error = 'json_extract_failed:' + extracted.error;
   return out;
 }
 
@@ -11515,6 +11563,10 @@ async function debugRbiGeminiSignalOne(input, env){
     raw_text_preview: String(call.raw_text || '').slice(0,2500),
     extracted_json_preview: String(call.extracted_json_text || '').slice(0,1500),
     json_extract_method: call.json_extract_method,
+    gemini_retry_count: Number(call.gemini_retry_count || 0),
+    json_parse_failure_type: call.json_parse_failure_type || null,
+    json_parse_attempts_count: Number(call.json_parse_attempts_count || 0),
+    parse_attempts: Array.isArray(call.parse_attempts) ? call.parse_attempts.slice(0,3) : [],
     normalizer_input_type: normalizerInput === null ? 'null' : (Array.isArray(normalizerInput) ? 'array' : typeof normalizerInput),
     normalizer_output: normalizerOutput,
     parsed_signal: normalizerOutput ? normalizerOutput.signal : null,
@@ -11635,7 +11687,7 @@ function rbiGeminiBonusFromSignal(j){
   return { bonus:+bonus.toFixed(2), confidence_bump:+Math.min(0.035, bonus * 0.008).toFixed(3), favorable:bonus>0, parser_path:n.parser_path, normalized_signal:n.signal, normalized_source:n.source_name };
 }
 async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, sourceLineId, lineNumber, sample, preSignalScore){
-  const empty = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'no_gemini_signal', signal_id:null, favorable:false };
+  const empty = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'no_gemini_signal', signal_id:null, favorable:false, call_failed:false, parse_failed:false, retry_count:0, parse_failure_type:null };
   if (String(row?.line_direction || 'UNDER').toUpperCase() === 'OVER') return empty;
   if (!Number.isFinite(Number(preSignalScore)) || Number(preSignalScore) <= 75) return { ...empty, reason:'pre_signal_score_not_over_75' };
   if (!Number.isFinite(Number(lineNumber)) || Math.abs(Number(lineNumber)-0.5)>0.001) return { ...empty, reason:'line_not_0_5' };
@@ -11650,7 +11702,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
     const cachedVersion = String(cached.model_version || '');
     const b = Number(cached.bonus || 0);
     if (cachedVersion === SYSTEM_VERSION) {
-      if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_favorable_grounded_rbi_under_signal_current_version', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
+      if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_favorable_grounded_rbi_under_signal_current_version', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, call_failed:false, parse_failed:false, retry_count:0, parse_failure_type:null, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
       return { ...empty, source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_unfavorable_or_unusable_signal_current_version', signal_id:signalId, favorable:false };
     }
     // Parser/prompt updates must not be blocked by stale no-bonus rows from older builds.
@@ -11662,7 +11714,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
     parsed = await callGeminiJsonWithGoogleSearch(env, model, buildRbiUnderGeminiMarketPresencePrompt({slateDate,row,sample,scored:{final:preSignalScore}}), { maxOutputTokens: 2048, scrape: true });
   } catch (e) {
     error = String(e && e.message || e).slice(0,900);
-    parsed = { source_name:'BettingPros_or_null', source_type:'missing', market_presence_score:0, under_signal_score:0, usable_for_rbi_under_market_layer:false, evidence:null, warning_flags:['GEMINI_SIGNAL_CALL_FAILED', error] };
+    parsed = { source_name:'BettingPros_or_null', source_type:'missing', market_presence_score:0, under_signal_score:0, usable_for_rbi_under_market_layer:false, evidence:null, warning_flags:['GEMINI_SIGNAL_CALL_FAILED', error], _gemini_call_failed:true, _gemini_parse_failed:/json_extract|parse|truncated|malformed|unbalanced/i.test(error||''), _gemini_parse_failure_type:(String(error||'').match(/gemini_json_extract_failed:([^:]+)/)||[])[1]||null };
   }
   const normalizedSignal = normalizeRbiGeminiUnderSignal(parsed);
   const bonusInfo = rbiGeminiBonusFromSignal(parsed);
@@ -11672,14 +11724,14 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
   const storedSourceType = String(normalizedSignal.source_type || (parsedSources ? 'grounded_allowed_sources' : '')).slice(0,240);
   const storedEvidence = String(normalizedSignal.evidence_summary || '').slice(0,900);
   await env.DB.prepare(`INSERT OR REPLACE INTO rbi_gemini_under_signals (signal_id,slate_date,player_name,normalized_player_name,team,opponent,line_number,source_board,source_line_id,pre_signal_score,usable_for_bonus,market_presence_score,under_signal_score,bonus,confidence_bump,source_name,source_type,evidence,warning_flags_json,raw_json,model_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(signalId,slateDate,row.player_name,scoreNormName(row.player_name),team,opponent,Number(lineNumber),sourceBoard,sourceLineId,Number(preSignalScore),bonusInfo.favorable?1:0,Number(normalizedSignal.market_presence_score||0),Number(normalizedSignal.under_signal_score||0),bonusInfo.bonus,bonusInfo.confidence_bump,storedSourceName,storedSourceType,storedEvidence,JSON.stringify(warnings).slice(0,1200),JSON.stringify({ normalized_signal: normalizedSignal, raw: parsed }).slice(0,4000),SYSTEM_VERSION).run().catch(()=>null);
-  if (!bonusInfo.favorable) return { ...empty, reason:error?'gemini_call_failed_or_no_usable_signal':'gemini_signal_not_favorable', signal_id:signalId, favorable:false, market_presence_score:Number(normalizedSignal.market_presence_score||0), under_signal_score:Number(normalizedSignal.under_signal_score||0) };
-  return { bonus:bonusInfo.bonus, confidence_bump:bonusInfo.confidence_bump, source:'gemini_grounded_rbi_under_market_signal', reason:'favorable_grounded_rbi_under_market_signal_over75_only', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(normalizedSignal.market_presence_score||0), under_signal_score:Number(normalizedSignal.under_signal_score||0), evidence:String(normalizedSignal.evidence_summary||'').slice(0,240), parser_path:bonusInfo.parser_path };
+  if (!bonusInfo.favorable) return { ...empty, reason:error?'gemini_call_failed_or_no_usable_signal':'gemini_signal_not_favorable', signal_id:signalId, favorable:false, call_failed:!!error && !/json_extract|parse|truncated|malformed|unbalanced/i.test(error), parse_failed:!!(parsed && parsed._gemini_parse_failed), retry_count:Number(parsed && parsed._gemini_retry_count || 0), parse_failure_type:(parsed && parsed._gemini_parse_failure_type) || null, market_presence_score:Number(normalizedSignal.market_presence_score||0), under_signal_score:Number(normalizedSignal.under_signal_score||0) };
+  return { bonus:bonusInfo.bonus, confidence_bump:bonusInfo.confidence_bump, source:'gemini_grounded_rbi_under_market_signal', reason:'favorable_grounded_rbi_under_market_signal_over75_only', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, call_failed:false, parse_failed:false, retry_count:Number(parsed && parsed._gemini_retry_count || 0), parse_failure_type:(parsed && parsed._gemini_parse_failure_type) || null, market_presence_score:Number(normalizedSignal.market_presence_score||0), under_signal_score:Number(normalizedSignal.under_signal_score||0), evidence:String(normalizedSignal.evidence_summary||'').slice(0,240), parser_path:bonusInfo.parser_path };
 }
 
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
-  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
+  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, call_failures:0, parse_failures:0, malformed_or_truncated:0, retry_successes:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.3 promotes the proven grounded Gemini RBI UNDER signal path into full scoring; blanket Sleeper board bonus remains disabled; Gemini runs over75-only and parses fenced/raw JSON from text because hard JSON MIME is incompatible with Google Search tool use.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.4 hardens RBI Gemini grounded JSON parsing and adds compact parse-failure accounting; blanket Sleeper board bonus remains disabled; Gemini runs over75-only and parses fenced/raw/balanced JSON from text because hard JSON MIME is incompatible with Google Search tool use.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11697,10 +11749,17 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       try {
         marketBonus = await getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, source, lineNumber, sample, baseScored.final);
         out.gemini_signal_rows++;
+        if (marketBonus && Number(marketBonus.retry_count || 0) > 0) out.gemini_signal_context.retry_successes++;
+        if (marketBonus && marketBonus.parse_failed) out.gemini_signal_context.parse_failures++;
+        if (marketBonus && /truncated|malformed|unbalanced|duplicated/i.test(String(marketBonus.parse_failure_type || marketBonus.reason || ''))) out.gemini_signal_context.malformed_or_truncated++;
+        if (marketBonus && marketBonus.call_failed) out.gemini_signal_context.call_failures++;
         if (marketBonus && Number(marketBonus.bonus || 0) > 0) { out.gemini_signal_bonus_rows++; out.gemini_signal_context.favorable++; }
       } catch (e) {
         out.gemini_signal_context.errors++;
-        marketBonus = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'gemini_signal_exception:'+String(e && e.message || e).slice(0,160), favorable:false };
+        const emsg = String(e && e.message || e);
+        if (/json_extract|parse|truncated|malformed|unbalanced/i.test(emsg)) out.gemini_signal_context.parse_failures++; else out.gemini_signal_context.call_failures++;
+        if (/truncated|malformed|unbalanced|duplicated/i.test(emsg)) out.gemini_signal_context.malformed_or_truncated++;
+        marketBonus = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'gemini_signal_exception:'+emsg.slice(0,160), favorable:false, call_failed:!/json_extract|parse|truncated|malformed|unbalanced/i.test(emsg), parse_failed:/json_extract|parse|truncated|malformed|unbalanced/i.test(emsg), parse_failure_type:(emsg.match(/gemini_json_extract_failed:([^:]+)/)||[])[1]||null };
       }
     } else if (dir === 'UNDER') {
       out.gemini_signal_context.skipped_pre75++;
@@ -11725,7 +11784,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.68.3_rbi_gemini_signal_main_layer_promotion',
+      score_calibration_version: 'v1.3.68.4_rbi_gemini_parser_hardening',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
@@ -12141,7 +12200,7 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_gemini_grounded_signal_main_layer_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.68.3 promotes the proven RBI Gemini grounded-search text JSON path into full scoring. Scoring remains stored-data first; RBI UNDER 0.5 Gemini market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_gemini_grounded_signal_main_layer_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.68.4 keeps the proven RBI Gemini grounded-search text JSON path in full scoring and hardens fenced/raw/balanced JSON parsing with compact parse-failure accounting. Scoring remains stored-data first; RBI UNDER 0.5 Gemini market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
