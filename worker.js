@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.64 - RBI Real Data Variance Gemini Over75 Signal";
+const SYSTEM_VERSION = "v1.3.65 - RBI Gemini Signal Parser Repair";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1764,7 +1764,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   let staleDeferredReset = 0;
   const taskRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.64 stale Phase 3 recovery marked orphan running task stale'
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.65 stale Phase 3 recovery marked orphan running task stale'
     WHERE job_name='run_phase3ab_full_run_tick'
       AND status='running'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -1772,7 +1772,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   staleTasksMarked = Number(taskRes?.meta?.changes || 0);
   const deferredRes = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.64 stale Phase 3 recovery reset deferred request to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.65 stale Phase 3 recovery reset deferred request to pending'
     WHERE job_name=?
       AND status='RUNNING'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -11142,7 +11142,7 @@ function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lin
     } else add('RBI_GAME_TOTAL_CONTEXT', (total - 8) * 1.4, `game_total_${total.toFixed(2)}`, 'odds_api_game_markets_totals');
   } else add('RBI_GAME_TOTAL_MISSING', 0, 'game total unavailable', 'audit_only');
   if (dir === 'UNDER' && marketBonus && Number(marketBonus.bonus || 0) > 0) {
-    add('RBI_UNDER_GEMINI_MARKET_SIGNAL_BONUS', Number(marketBonus.bonus || 0), marketBonus.reason || 'gemini_bettingpros_under_signal_bonus', marketBonus.source || 'gemini_bettingpros_market_presence');
+    add('RBI_UNDER_GEMINI_MARKET_SIGNAL_BONUS', Number(marketBonus.bonus || 0), marketBonus.reason || 'gemini_bettingpros_under_signal_bonus', marketBonus.source || 'gemini_grounded_rbi_under_market_signal');
     confidence += Number(marketBonus.confidence_bump || 0);
   }
   const modTotal = scoreClamp(mods.reduce((a,m)=>a+Number(m.value||0),0), -28, 28);
@@ -11237,7 +11237,48 @@ function rbiGeminiSignalId(slateDate, playerName, team, opponent, lineNumber){
 }
 function buildRbiUnderGeminiMarketPresencePrompt({slateDate,row,sample,scored}){
   const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
-  return `RBI Under 0.5 Market Presence Signal — BettingPros Only — 1 Leg\n\nYou are auditing ONE MLB Sleeper/PrizePicks RBI UNDER 0.5 leg. Use BettingPros only. Do not use Covers, OddsChecker, DraftKings, FanDuel, Rotowire, snippets from non-BettingPros pages, projections, fantasy articles, or general web summaries.\n\nLeg:\n- slate_date: ${slateDate}\n- player: ${row.player_name}\n- team: ${row.team || sample.team || ''}\n- opponent: ${oppRaw || sample.opponent || ''}\n- market: RBI Under 0.5 / Less Than 0.5 RBI\n- deterministic_pre_signal_score: ${Number(scored?.final || 0).toFixed(2)}\n\nTask:\nDetermine whether BettingPros shows a usable RBI Under 0.5 / Less Than 0.5 market-presence signal for this exact player. This is only a small tie-breaker. Do not invent odds. Do not infer from general player quality.\n\nScoring rules:\n- market_presence_score: 0.0 if no BettingPros RBI market found; 5.0 if RBI line appears but not clearly a market/table; 7.5 if 0.5 RBI market appears in a BettingPros prop table; 10.0 if clean BettingPros prop table evidence is visible.\n- under_signal_score: 0.0 if Under/Less side not visible; 7.5 if Under/Less side appears in a BettingPros prop table; 10.0 if Under/Less side is clearly visible with direct table evidence.\n- usable_for_rbi_under_market_layer must be true only when the source is BettingPros and the RBI Under/Less side is visible enough to act as a market-presence signal.\n\nReturn JSON only with this exact shape:\n{\n  "prompt_name":"PROMPT_3G_RBI_UNDER_0_5_MARKET_PRESENCE_BETTINGPROS_ONLY_1_LEG",\n  "player_name":"${row.player_name}",\n  "team":"${row.team || sample.team || ''}",\n  "opponent":"${oppRaw || sample.opponent || ''}",\n  "source_name":"BettingPros_or_null",\n  "source_type":"bettingpros_prop_table_or_bettingpros_snippet_or_bettingpros_article_or_missing",\n  "market_presence_score":0,\n  "under_signal_score":0,\n  "usable_for_rbi_under_market_layer":false,\n  "recommended_action":"use_market_presence_signal_or_mark_unavailable_or_reject_non_bettingpros_source",\n  "evidence":"short direct evidence description or null",\n  "warning_flags":[]\n}`;
+  return `RBI UNDER 0.5 Market Signal Bonus — Grounded Search — 1 Leg
+
+You are auditing ONE MLB Sleeper/PrizePicks RBI UNDER 0.5 leg. Use live/grounded search when available. This is ONLY a small tie-breaker bonus after AlphaDog's deterministic stored-data score is already over 75.
+
+Allowed evidence sources, in priority order:
+1. BettingPros player prop table or consensus prop page.
+2. Covers player prop page/table.
+3. Major sportsbook pages or directly indexed odds pages showing Over 0.5 RBI price or Under/Less 0.5 RBI price.
+4. Projection pages only as supporting evidence, not the sole market signal.
+
+Do not invent odds. Do not use generic player quality as the market signal. If you only find non-market fantasy/articles/snippets, return NO_SIGNAL. If Over 0.5 RBI is heavily plus-money, that is favorable for the UNDER because it implies a heavily juiced Under side.
+
+Leg:
+- slate_date: ${slateDate}
+- player: ${row.player_name}
+- team: ${row.team || sample.team || ''}
+- opponent: ${oppRaw || sample.opponent || ''}
+- market: RBI UNDER 0.5 / Less Than 0.5 RBI
+- deterministic_pre_signal_score: ${Number(scored?.final || 0).toFixed(2)}
+
+Return JSON only with this exact shape:
+{
+  "prompt_name":"PROMPT_3G_RBI_UNDER_0_5_MARKET_SIGNAL_GROUNDED_1_LEG",
+  "player":"${row.player_name}",
+  "market":"RBI UNDER 0.5",
+  "signal":"FAVORABLE_or_NO_SIGNAL_or_UNFAVORABLE",
+  "bonus_recommended":0,
+  "confidence":"HIGH_or_MEDIUM_or_LOW",
+  "sources_checked":[],
+  "market_presence_score":0,
+  "under_signal_score":0,
+  "usable_for_rbi_under_market_layer":false,
+  "evidence_summary":"short evidence summary or empty string",
+  "do_not_bonus_reason":"short reason if no bonus"
+}
+
+Bonus guidance:
+- bonus_recommended 0 if no direct market signal, unsupported evidence, or conflicting signal.
+- bonus_recommended 2 if direct market evidence favors Under/Less 0.5.
+- bonus_recommended 3 only if multiple allowed sources or very strong direct price evidence support Under/Less 0.5.
+- market_presence_score and under_signal_score may be 7.5 to 10 when direct table/price evidence exists.
+- usable_for_rbi_under_market_layer should be true only when evidence directly supports RBI Under/Less 0.5 or strongly implies it through a heavily plus-priced Over 0.5 RBI.`;
 }
 async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
   if (!env.GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY secret');
@@ -11252,18 +11293,27 @@ async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
   return parseStrictJson(cleanJsonText(text));
 }
 function rbiGeminiBonusFromSignal(j){
-  const usable = !!j?.usable_for_rbi_under_market_layer;
+  const signal = String(j?.signal || '').trim().toUpperCase();
+  const usable = !!j?.usable_for_rbi_under_market_layer || signal === 'FAVORABLE';
   const sourceName = String(j?.source_name || '').toLowerCase();
   const sourceType = String(j?.source_type || '').toLowerCase();
+  const sources = Array.isArray(j?.sources_checked) ? j.sources_checked.map(x => String(x || '').toLowerCase()) : [];
+  const evidence = String(j?.evidence_summary || j?.evidence || '').toLowerCase();
   const market = Number(j?.market_presence_score || 0);
   const under = Number(j?.under_signal_score || 0);
-  const bettingProsOk = sourceName.includes('bettingpros') || sourceType.includes('bettingpros');
-  if (!usable || !bettingProsOk || market < 7.5 || under < 7.5) return { bonus:0, confidence_bump:0, favorable:false };
-  const bonus = Math.min(4.0, 2.0 + Math.max(0, under - 7.5) * 0.55 + Math.max(0, market - 7.5) * 0.25);
-  return { bonus:+bonus.toFixed(2), confidence_bump:+Math.min(0.04, bonus * 0.008).toFixed(3), favorable:true };
+  const directAllowedSource = sourceName.includes('bettingpros') || sourceType.includes('bettingpros') || sources.some(x => /bettingpros|covers|draftkings|fanduel|betmgm|sportsbook|odds/.test(x));
+  const directEvidence = market >= 7.5 || under >= 7.5 || /under|less|over 0\.5|\+\d{2,4}|-\d{2,4}|odds|price|juice|consensus|implied/.test(evidence);
+  if (!usable || signal === 'UNFAVORABLE' || !directAllowedSource || !directEvidence) return { bonus:0, confidence_bump:0, favorable:false };
+  let requested = Number(j?.bonus_recommended || 0);
+  if (!Number.isFinite(requested) || requested <= 0) requested = 2;
+  const confidence = String(j?.confidence || '').toUpperCase();
+  let bonus = Math.max(0, Math.min(3, requested));
+  if (confidence === 'LOW') bonus = Math.min(bonus, 1.5);
+  if (confidence === 'HIGH' && (market >= 9 || under >= 9 || sources.length >= 2)) bonus = Math.max(bonus, 2.5);
+  return { bonus:+bonus.toFixed(2), confidence_bump:+Math.min(0.035, bonus * 0.008).toFixed(3), favorable:bonus>0 };
 }
 async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, sourceLineId, lineNumber, sample, preSignalScore){
-  const empty = { bonus:0, confidence_bump:0, source:'gemini_bettingpros_market_presence', reason:'no_gemini_signal', signal_id:null, favorable:false };
+  const empty = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'no_gemini_signal', signal_id:null, favorable:false };
   if (String(row?.line_direction || 'UNDER').toUpperCase() === 'OVER') return empty;
   if (!Number.isFinite(Number(preSignalScore)) || Number(preSignalScore) <= 75) return { ...empty, reason:'pre_signal_score_not_over_75' };
   if (!Number.isFinite(Number(lineNumber)) || Math.abs(Number(lineNumber)-0.5)>0.001) return { ...empty, reason:'line_not_0_5' };
@@ -11276,8 +11326,8 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
   const cached = await env.DB.prepare(`SELECT * FROM rbi_gemini_under_signals WHERE signal_id=? LIMIT 1`).bind(signalId).first().catch(()=>null);
   if (cached) {
     const b = Number(cached.bonus || 0);
-    if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_bettingpros_market_presence_cache', reason:'cached_favorable_bettingpros_under_signal', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
-    return { ...empty, source:'gemini_bettingpros_market_presence_cache', reason:'cached_unfavorable_or_unusable_signal', signal_id:signalId, favorable:false };
+    if (b > 0 && Number(cached.usable_for_bonus || 0) === 1) return { bonus:b, confidence_bump:Number(cached.confidence_bump||0), source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_favorable_grounded_rbi_under_signal', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(cached.market_presence_score||0), under_signal_score:Number(cached.under_signal_score||0) };
+    return { ...empty, source:'gemini_grounded_rbi_under_market_signal_cache', reason:'cached_unfavorable_or_unusable_signal', signal_id:signalId, favorable:false };
   }
   const model = String(env.RBI_UNDER_MARKET_GEMINI_MODEL || SCRAPE_MODEL || 'gemini-2.5-flash');
   let parsed = null, error = null;
@@ -11291,13 +11341,13 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
   const warnings = Array.isArray(parsed?.warning_flags) ? parsed.warning_flags : [];
   await env.DB.prepare(`INSERT OR REPLACE INTO rbi_gemini_under_signals (signal_id,slate_date,player_name,normalized_player_name,team,opponent,line_number,source_board,source_line_id,pre_signal_score,usable_for_bonus,market_presence_score,under_signal_score,bonus,confidence_bump,source_name,source_type,evidence,warning_flags_json,raw_json,model_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).bind(signalId,slateDate,row.player_name,scoreNormName(row.player_name),team,opponent,Number(lineNumber),sourceBoard,sourceLineId,Number(preSignalScore),bonusInfo.favorable?1:0,Number(parsed?.market_presence_score||0),Number(parsed?.under_signal_score||0),bonusInfo.bonus,bonusInfo.confidence_bump,String(parsed?.source_name||''),String(parsed?.source_type||''),String(parsed?.evidence||'').slice(0,900),JSON.stringify(warnings).slice(0,1200),JSON.stringify(parsed).slice(0,4000),SYSTEM_VERSION).run().catch(()=>null);
   if (!bonusInfo.favorable) return { ...empty, reason:error?'gemini_call_failed_or_no_usable_signal':'gemini_signal_not_favorable', signal_id:signalId, favorable:false, market_presence_score:Number(parsed?.market_presence_score||0), under_signal_score:Number(parsed?.under_signal_score||0) };
-  return { bonus:bonusInfo.bonus, confidence_bump:bonusInfo.confidence_bump, source:'gemini_bettingpros_market_presence', reason:'favorable_bettingpros_under_signal_over75_only', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(parsed?.market_presence_score||0), under_signal_score:Number(parsed?.under_signal_score||0), evidence:String(parsed?.evidence||'').slice(0,240) };
+  return { bonus:bonusInfo.bonus, confidence_bump:bonusInfo.confidence_bump, source:'gemini_grounded_rbi_under_market_signal', reason:'favorable_grounded_rbi_under_market_signal_over75_only', signal_id:signalId, table:'rbi_gemini_under_signals', favorable:true, market_presence_score:Number(parsed?.market_presence_score||0), under_signal_score:Number(parsed?.under_signal_score||0), evidence:String(parsed?.evidence||'').slice(0,240) };
 }
 
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
-  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini BettingPros market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
+  const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.64 disabled blanket Sleeper board bonus; Gemini BettingPros prompt is over75-only.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.65 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11318,7 +11368,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
         if (marketBonus && Number(marketBonus.bonus || 0) > 0) { out.gemini_signal_bonus_rows++; out.gemini_signal_context.favorable++; }
       } catch (e) {
         out.gemini_signal_context.errors++;
-        marketBonus = { bonus:0, confidence_bump:0, source:'gemini_bettingpros_market_presence', reason:'gemini_signal_exception:'+String(e && e.message || e).slice(0,160), favorable:false };
+        marketBonus = { bonus:0, confidence_bump:0, source:'gemini_grounded_rbi_under_market_signal', reason:'gemini_signal_exception:'+String(e && e.message || e).slice(0,160), favorable:false };
       }
     } else if (dir === 'UNDER') {
       out.gemini_signal_context.skipped_pre75++;
@@ -11341,11 +11391,11 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       source_line_id: source,
       fallback_reason: 'Odds API RBI coverage is thin or supplemental; scored from stored board/history/game/RBI context.',
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
-      gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini BettingPros market-presence prompt',
+      gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.64_rbi_real_data_variance_gemini_over75_signal',
+      score_calibration_version: 'v1.3.65_rbi_gemini_signal_parser_repair',
       market_bonus: scored.market_bonus,
-      market_bonus_policy: 'Gemini BettingPros signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
+      market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
     const team = scoreTeamKey(row.team) || row.team || null;
     const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
@@ -11759,11 +11809,11 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_real_data_variance_gemini_over75_signal',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. Scoring is stored-data first. RBI UNDER 0.5 Gemini BettingPros market-presence prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_gemini_signal_parser_repair',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. Scoring is stored-data first. RBI UNDER 0.5 Gemini grounded market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. RBI UNDER 0.5 Gemini BettingPros market-presence prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. RBI UNDER 0.5 Gemini grounded market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
  }
 }
 
