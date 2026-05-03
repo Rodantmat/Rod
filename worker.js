@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.68.2 - RBI Gemini Grounded JSON Payload Fix";
+const SYSTEM_VERSION = "v1.3.68.3 - RBI Gemini Signal Main Layer Promotion";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11299,7 +11299,7 @@ async function callGeminiJsonWithGoogleSearch(env, model, prompt, options = {}){
   const maxOutputTokens = Number(options.maxOutputTokens || 2048);
   await reserveGeminiRateBudget(env, model, prompt, { ...options, maxOutputTokens });
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`;
-  // v1.3.68.2: Google Search tool use is incompatible with hard JSON MIME setting.
+  // v1.3.68.3: production RBI Gemini signal uses the proven grounded-search text JSON path; no hard JSON MIME with tools.
   // Keep JSON-only instructions in the prompt, then parse JSON from normal text output.
   const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { temperature: 0, topP: 0.95, maxOutputTokens } };
   const res = await fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body) });
@@ -11679,7 +11679,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.2 disabled blanket Sleeper board bonus; Gemini grounded RBI UNDER market signal prompt is over75-only; grounded JSON is parsed from text because hard JSON MIME is incompatible with Google Search tool use.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.68.3 promotes the proven grounded Gemini RBI UNDER signal path into full scoring; blanket Sleeper board bonus remains disabled; Gemini runs over75-only and parses fenced/raw JSON from text because hard JSON MIME is incompatible with Google Search tool use.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -11725,7 +11725,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.68.2_rbi_gemini_nested_signal_normalizer',
+      score_calibration_version: 'v1.3.68.3_rbi_gemini_signal_main_layer_promotion',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
@@ -12141,7 +12141,7 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_gemini_signal_parser_repair',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. Scoring is stored-data first. RBI UNDER 0.5 Gemini grounded market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_gemini_grounded_signal_main_layer_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.68.3 promotes the proven RBI Gemini grounded-search text JSON path into full scoring. Scoring remains stored-data first; RBI UNDER 0.5 Gemini market-signal prompt is called only for deterministic scores over 75 and can add a small favorable-signal bonus.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}

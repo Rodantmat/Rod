@@ -1,0 +1,23 @@
+AlphaDog Build Version Audit
+
+Expected build: v1.3.68.3 - RBI Gemini Signal Main Layer Promotion
+
+Verified package labels:
+- ZIP filename: alphadog_v1.3.68.3_rbi_gemini_signal_main_layer_promotion.zip
+- worker.js SYSTEM_VERSION: v1.3.68.3 - RBI Gemini Signal Main Layer Promotion
+- control_room.html visible tag: v1.3.68.3 - RBI Gemini Signal Main Layer Promotion
+- control_room.html client version/debugConfig: control_room_v1_3_68_3_rbi_gemini_signal_main_layer_promotion
+- README: README_v1.3.68.3.txt
+
+Registry/function safeguards:
+- debug_rbi_gemini_signal_one remains registered.
+- Production getRbiGeminiUnderSignalBonus uses callGeminiJsonWithGoogleSearch.
+- callGeminiJsonWithGoogleSearch does not send responseMimeType with Google Search tool use.
+- JSON parser supports fenced_json, raw_json, and first_object.
+- Grounding metadata is passed into normalizeRbiGeminiUnderSignal.
+
+Scope guard:
+- No scoring math rewrite.
+- No UI/control-room flow refactor.
+- No scheduler/cron changes.
+- No static/incremental/everyday changes.
