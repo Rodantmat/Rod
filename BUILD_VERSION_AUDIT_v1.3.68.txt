@@ -1,0 +1,12 @@
+v1.3.68 - RBI Gemini Signal Callpath Debugger
+
+Version label audit before ZIP packaging:
+- worker.js SYSTEM_VERSION: v1.3.68 - RBI Gemini Signal Callpath Debugger
+- control_room.html visible versionTag: v1.3.68 - RBI Gemini Signal Callpath Debugger
+- control_room.html client version constant: v1.3.68 - RBI Gemini Signal Callpath Debugger
+- README file: README_v1.3.68.txt
+- ZIP filename: alphadog_v1.3.68_rbi_gemini_signal_callpath_debugger.zip
+
+Guardrail added for this delivery:
+Packaging was blocked until the critical version labels above matched.
+Known allowed legacy strings, if present, are historical internal task notes only and are not active build labels.
