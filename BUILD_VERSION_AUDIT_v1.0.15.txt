@@ -1,0 +1,8 @@
+Build version audit
+Version: v1.0.15 - Candidate Board Export Fallback Repair
+ZIP filename must contain: v1.0.15
+worker version: v1.0.15 - Candidate Board Export Fallback Repair
+visible UI version: v1.0.15 - Candidate Board Export Fallback Repair
+README version: v1.0.15 - Candidate Board Export Fallback Repair
+Flat ZIP: yes
+No scheduled backend files changed: yes
