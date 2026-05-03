@@ -1,0 +1,6 @@
+ZIP filename: alphadog_main_ui_v1.0.16_candidate_board_rankless_query_repair.zip
+worker.js version: v1.0.16 - Candidate Board Rankless Query Repair
+index.html embedded version: v1.0.16 - Candidate Board Rankless Query Repair
+README version: v1.0.16 - Candidate Board Rankless Query Repair
+Scheduled backend/control room touched: NO
+Flat folder only: YES
