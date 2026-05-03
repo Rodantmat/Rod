@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.61 - RBI Fallback Variable Guard";
+const SYSTEM_VERSION = "v1.3.62 - Scoring Output Safety Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1689,14 +1689,14 @@ async function runScheduled(event, env) {
       UPDATE task_runs
       SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
       WHERE task_id = ?
-    `).bind(wrapped.ok ? "success" : "failed", JSON.stringify(wrapped), taskId).run();
+    `).bind(wrapped.ok ? "success" : "failed", safeTaskOutputJson(wrapped), taskId).run();
     await logSystemEvent(env, { trigger_source: "scheduled", action_label: `SCHEDULED > ${displayLabelForJob(routedJob)}`, job_name: routedJob, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: wrapped.ok ? "success" : "failed", task_id: taskId, output_preview: wrapped, error: wrapped.ok ? null : "scheduled_routed_job_failed" });
     return wrapped;
   } catch (err) {
     const result = { ok: false, version: SYSTEM_VERSION, job: "scheduled_router", routed_job: routedJob, status: "FAILED_EXCEPTION", cron, error: String(err?.message || err) };
     await env.DB.prepare(`
       UPDATE task_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE task_id=?
-    `).bind(result.error, JSON.stringify(result), taskId).run().catch(() => null);
+    `).bind(result.error, safeTaskOutputJson(result), taskId).run().catch(() => null);
     await logSystemEvent(env, { trigger_source: "scheduled", action_label: `SCHEDULED > ${displayLabelForJob(routedJob)}`, job_name: routedJob, slate_date: slate.slate_date, slate_mode: slate.slate_mode, status: "failed", task_id: taskId, error: result.error });
     return result;
   }
@@ -1764,7 +1764,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   let staleDeferredReset = 0;
   const taskRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.61 stale Phase 3 recovery marked orphan running task stale'
+    SET status='STALE_RESET', finished_at=CURRENT_TIMESTAMP, error='v1.3.62 stale Phase 3 recovery marked orphan running task stale'
     WHERE job_name='run_phase3ab_full_run_tick'
       AND status='running'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -1772,7 +1772,7 @@ async function resetStalePhase3abGlobalLock(env, staleMinutes = PHASE3AB_LOCK_ST
   staleTasksMarked = Number(taskRes?.meta?.changes || 0);
   const deferredRes = await env.DB.prepare(`
     UPDATE deferred_full_run_once
-    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.61 stale Phase 3 recovery reset deferred request to pending'
+    SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=CURRENT_TIMESTAMP, error='v1.3.62 stale Phase 3 recovery reset deferred request to pending'
     WHERE job_name=?
       AND status='RUNNING'
       AND started_at < datetime('now', '-' || ? || ' minutes')
@@ -2124,13 +2124,13 @@ async function runPhase3abDeferredRow(env, row, input = {}) {
     const nextRun = phase3abTimestampForSql(new Date(Date.now() + 60 * 1000));
     if (row.request_id && !String(row.request_id).startsWith('manual_phase3ab_tick|')) {
       if (result.needs_continue) {
-        await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=?, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, JSON.stringify(result), row.request_id).run();
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status='PENDING', started_at=NULL, finished_at=NULL, run_after=?, output_json=?, error=NULL WHERE request_id=?`).bind(nextRun, safeTaskOutputJson(result), row.request_id).run();
       } else {
         const finalDeferredStatus = result.status === 'completed_with_skips' ? 'COMPLETED_WITH_SKIPS' : (result.data_ok ? 'COMPLETED' : 'COMPLETED_REVIEW');
-        await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(finalDeferredStatus, JSON.stringify(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
+        await env.DB.prepare(`UPDATE deferred_full_run_once SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=?, error=? WHERE request_id=?`).bind(finalDeferredStatus, safeTaskOutputJson(result), result.data_ok ? null : 'completed but data_ok false or review needed', row.request_id).run();
       }
     }
-    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(result.ok ? 'success' : 'failed', JSON.stringify(result), taskId).run().catch(() => null);
+    await env.DB.prepare(`UPDATE task_runs SET status=?, finished_at=CURRENT_TIMESTAMP, output_json=? WHERE task_id=?`).bind(result.ok ? 'success' : 'failed', safeTaskOutputJson(result), taskId).run().catch(() => null);
     await logSystemEvent(env, { trigger_source: taskInput.trigger || 'phase3ab_tick', action_label: displayLabelForJob('run_phase3ab_full_run_tick'), job_name: 'run_phase3ab_full_run_tick', slate_date: slateDate, slate_mode: slateMode, status: result.ok ? 'success' : 'failed', task_id: taskId, output_preview: result, error: result.ok ? null : String(result.error || result.status || 'phase3ab_failed') });
     return { ...result, task_id: taskId, request_id: row.request_id, deferred_next_run_after: result.needs_continue ? nextRun : null, lock_status: 'RELEASED' };
   } catch (err) {
@@ -2675,6 +2675,95 @@ async function logSystemEvent(env, event = {}) {
       crypto.randomUUID(), SYSTEM_VERSION, String(event.trigger_source || "unknown"), event.action_label ? String(event.action_label) : null, event.job_name ? String(event.job_name) : null, event.slate_date ? String(event.slate_date) : null, event.slate_mode ? String(event.slate_mode) : null, event.status ? String(event.status) : null, Number.isFinite(Number(event.http_status)) ? Number(event.http_status) : null, event.task_id ? String(event.task_id) : null, event.input_json ? compactLogText(event.input_json) : null, event.output_preview ? compactLogText(event.output_preview) : null, event.error ? compactLogText(event.error) : null
     ).run();
   } catch (_) {}
+}
+
+function compactLogText(value, maxChars = 6000) {
+  try {
+    const text = typeof value === 'string' ? value : JSON.stringify(compactForStorage(value));
+    if (!text) return null;
+    return text.length > maxChars ? text.slice(0, maxChars) + `...[truncated ${text.length - maxChars} chars]` : text;
+  } catch (e) {
+    const text = String(value ?? '');
+    return text.length > maxChars ? text.slice(0, maxChars) + `...[truncated ${text.length - maxChars} chars]` : text;
+  }
+}
+
+function compactForStorage(value, depth = 0) {
+  if (value === null || value === undefined) return value ?? null;
+  if (typeof value === 'string') return value.length > 1200 ? value.slice(0, 1200) + `...[truncated ${value.length - 1200} chars]` : value;
+  if (typeof value !== 'object') return value;
+  if (depth >= 4) return Array.isArray(value) ? `[array:${value.length}]` : '[object]';
+  if (Array.isArray(value)) return value.slice(0, 20).map(v => compactForStorage(v, depth + 1)).concat(value.length > 20 ? [`...[${value.length - 20} more]`] : []);
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (['scoreStmts','activeStmts','auditStmts','rows','copy_paste_csv','top_candidates','top_active_scores'].includes(k)) {
+      if (Array.isArray(v)) out[k] = `[array:${v.length}]`;
+      else if (typeof v === 'string') out[k] = v.slice(0, 1200) + (v.length > 1200 ? `...[truncated ${v.length - 1200} chars]` : '');
+      else out[k] = compactForStorage(v, depth + 1);
+    } else {
+      out[k] = compactForStorage(v, depth + 1);
+    }
+  }
+  return out;
+}
+
+function safeTaskOutputJson(value) {
+  return compactLogText(value, 12000) || '{}';
+}
+
+function rbiFallbackSummary(fb) {
+  if (!fb || typeof fb !== 'object') return null;
+  return {
+    promoted: Number(fb.promoted || 0),
+    active: Number(fb.active || 0),
+    prizepicks_rows: Number(fb.prizepicks_rows || 0),
+    sleeper_rows: Number(fb.sleeper_rows || 0),
+    skipped_existing: Number(fb.skipped_existing || 0),
+    score_stmt_count: Array.isArray(fb.scoreStmts) ? fb.scoreStmts.length : 0,
+    active_stmt_count: Array.isArray(fb.activeStmts) ? fb.activeStmts.length : 0,
+    audit_stmt_count: Array.isArray(fb.auditStmts) ? fb.auditStmts.length : 0,
+    cap: 'C_RBI_BOARD_FALLBACK_85'
+  };
+}
+
+function scoringResultSummary(scoring) {
+  if (!scoring || typeof scoring !== 'object') return scoring || null;
+  return {
+    ok: !!scoring.ok,
+    data_ok: !!scoring.data_ok,
+    version: scoring.version || SYSTEM_VERSION,
+    job: scoring.job || 'run_mlb_scoring_v1',
+    slate_date: scoring.slate_date || null,
+    requested_slate_date: scoring.requested_slate_date || null,
+    slate_guard: scoring.slate_guard || null,
+    run_id: scoring.run_id || null,
+    status: scoring.status || null,
+    error: scoring.error || null,
+    rows: scoring.rows ? { ...scoring.rows, rbi_board_fallback: rbiFallbackSummary(scoring.rows.rbi_board_fallback) } : null,
+    distribution: Array.isArray(scoring.distribution) ? scoring.distribution.slice(0, 12) : [],
+    top_scores_count: Array.isArray(scoring.top_scores) ? scoring.top_scores.length : 0,
+    next_action: scoring.next_action || null
+  };
+}
+
+function candidateBoardSummary(board) {
+  if (!board || typeof board !== 'object') return board || null;
+  return {
+    ok: !!board.ok,
+    data_ok: !!board.data_ok,
+    version: board.version || SYSTEM_VERSION,
+    job: board.job || null,
+    slate_date: board.slate_date || null,
+    requested_slate_date: board.requested_slate_date || null,
+    active_rows_seen: board.active_rows_seen ?? null,
+    candidates_written: board.candidates_written ?? null,
+    summary: board.summary || null,
+    pickability_summary: board.pickability_summary || null,
+    distribution: Array.isArray(board.distribution) ? board.distribution.slice(0, 12) : [],
+    top_candidates_count: Array.isArray(board.top_candidates) ? board.top_candidates.length : 0,
+    status: board.status || null,
+    error: board.error || null
+  };
 }
 
 function clampDebugSQLMaxRows(value) {
@@ -8518,7 +8607,7 @@ async function handleTaskRun(request, env) {
       UPDATE task_runs
       SET status = ?, finished_at = CURRENT_TIMESTAMP, output_json = ?
       WHERE task_id = ?
-    `).bind(result.ok ? "success" : "failed", JSON.stringify(result), taskId).run();
+    `).bind(result.ok ? "success" : "failed", safeTaskOutputJson(result), taskId).run();
   } catch (err) {
     result = { ok: false, status: "FAILED_EXCEPTION", error: String(err?.message || err), task_id: taskId };
     try {
@@ -11028,7 +11117,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       no_gemini: true,
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.61_rbi_fallback_variable_guard'
+      score_calibration_version: 'v1.3.62_scoring_output_safety_guard'
     };
     const team = scoreTeamKey(row.team) || row.team || null;
     const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
@@ -11085,7 +11174,7 @@ async function runFullScoringRefreshV1(input, env) {
       candidate_board = await buildMlbScoreCandidateBoardV1({ ...(input || {}), job: 'build_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_candidate_board` }, env);
       if (candidate_board && candidate_board.ok) export_board = await exportMlbScoreCandidateBoardV1({ ...(input || {}), job: 'export_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_export` }, env);
     }
-    return { ok: true, data_ok: !!(scoring?.data_ok && candidate_board?.data_ok), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_no_external_api_no_gemini', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring, candidate_board, export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null } : export_board, lock_status: 'RELEASED', next_action: 'Render Candidate Board UI or Export Candidate Board. The release board was rebuilt from the latest stored mining/board/odds data.', note: 'Full scoring refresh runs only stored-data scoring, then immediately rebuilds score_candidate_board so the UI/export read model is not stale. It does not call Odds API, Gemini, MLB API, PrizePicks, or Sleeper.' };
+    return { ok: true, data_ok: !!(scoring?.data_ok && candidate_board?.data_ok), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_no_external_api_no_gemini_compact_output', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null } : candidateBoardSummary(export_board), lock_status: 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then Build/Inspect/Export Candidate Board.', note: 'Full scoring refresh uses compact output only. Full row details remain in the DB/read models.' };
   } finally {
     await releasePipelineLock(env, lockId, lockedBy);
   }
@@ -11440,9 +11529,9 @@ async function runMlbScoringV1(input,env){
   active += rbiBoardFallback.active;
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiBoardFallback,batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.42_lifted_probability_map',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_board_direction_repair_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiBoardFallback},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_rbi_board_direction_repair_no_external_api_no_gemini',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.42 keeps derived modifiers, Scoring Slate Data Guard, Modifier Audit Inspector, score calibration lift, active-board replace, and candidate-board release: if the UI sends an empty/tomorrow slate, scoring falls back to the latest Odds API slate with prop rows. Freshness remains audit-only. No external API or Gemini is called by scoring.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
@@ -11455,10 +11544,10 @@ async function checkMlbScoringV1(input,env){
   const scoringSlateGuard=await resolveScoringSlateDate(env,input||{});
   const slateDate=scoringSlateGuard.slate_date;
   await ensureMlbScoringV1Tables(env);
-  const runs=await env.DB.prepare(`SELECT * FROM scoring_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 10`).bind(slateDate).all();
+  const runs=await env.DB.prepare(`SELECT run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,error,substr(COALESCE(details_json,''),1,1200) AS details_preview,created_at,completed_at FROM scoring_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 5`).bind(slateDate).all();
   const counts=await env.DB.prepare(`SELECT 'mlb_hits_scores' table_name,COUNT(*) rows_count FROM mlb_hits_scores WHERE slate_date=? UNION ALL SELECT 'mlb_total_bases_scores',COUNT(*) FROM mlb_total_bases_scores WHERE slate_date=? UNION ALL SELECT 'mlb_rbi_scores',COUNT(*) FROM mlb_rbi_scores WHERE slate_date=? UNION ALL SELECT 'active_score_board',COUNT(*) FROM active_score_board WHERE slate_date=? UNION ALL SELECT 'mlb_scoring_scratchpad',COUNT(*) FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate,slateDate,slateDate,slateDate,slateDate).all();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) rows_count,ROUND(AVG(final_score),2) avg_score,ROUND(MAX(final_score),2) max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all();
-  const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,line_type,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob,updated_at FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 50`).bind(slateDate).all();
+  const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,line_type,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob,updated_at FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 15`).bind(slateDate).all();
   const runRows=runs.results||[];
   const tableRows=counts.results||[];
   const latestRun=runRows[0]||null;
@@ -11469,7 +11558,7 @@ async function checkMlbScoringV1(input,env){
   const activeRowsOk=activeRows>0;
   const scoringEngineOk=latestRunCompleted&&scratchClean&&activeRowsOk;
   const dataOk=scoringEngineOk||(top.results||[]).length>0;
-  return{ok:true,data_ok:dataOk,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,scoring_engine_ok:scoringEngineOk,latest_run_completed:latestRunCompleted,scratch_clean:scratchClean,active_rows_ok:activeRowsOk,active_rows:activeRows,check_wrapper_fixed:true,retry_detector_override:'If body.ok=true and latest_run_completed=true, Control Room treats the check as final success, not retry.',modifier_calibration:{ready:true,active:true,applied_fields:['lineup_slot_modifier','team_total_modifier','park_modifier','weather_modifier','pitcher_handedness_modifier_when_available','market_depth_modifier','line_type_cap','rbi_table_setter_modifier_when_available'],rule:'freshness remains audit-only; no stale score penalty or stale hard cap in scoring V1.'},latest_runs:runRows,table_counts:tableRows,active_distribution:dist.results||[],top_active_scores:top.results||[],scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:activeRowsOk?'Scoring V1 active board exists. Next: run and inspect score distribution/modifier audit.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.42 check: Scoring Slate Data Guard active; if the UI sends an empty/tomorrow slate, check falls back to the latest odds-backed slate. Derived modifier calibration is active. Freshness remains audit-only.'};
+  return{ok:true,data_ok:dataOk,version:SYSTEM_VERSION,job:input.job||'check_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,scoring_engine_ok:scoringEngineOk,latest_run_completed:latestRunCompleted,scratch_clean:scratchClean,active_rows_ok:activeRowsOk,active_rows:activeRows,check_wrapper_fixed:true,retry_detector_override:'If body.ok=true and latest_run_completed=true, Control Room treats the check as final success, not retry.',modifier_calibration:{ready:true,active:true,applied_fields:['lineup_slot_modifier','team_total_modifier','park_modifier','weather_modifier','pitcher_handedness_modifier_when_available','market_depth_modifier','line_type_cap','rbi_table_setter_modifier_when_available'],rule:'freshness remains audit-only; no stale score penalty or stale hard cap in scoring V1.'},latest_runs:runRows,table_counts:tableRows,active_distribution:dist.results||[],top_active_scores:top.results||[],output_guard:{compact:true,latest_runs_limit:5,top_active_scores_limit:15},scheduler_plan:{locked:true,crons:['30 11 odds+score','35 11 score safety','0 13 sleeper+odds+score','5 13 score safety','0 17 sleeper window+score','0 18 odds+score','5 18 score safety']},next_action:activeRowsOk?'Scoring V1 active board exists. Next: run and inspect score distribution/modifier audit.':'Run ODDS API first, then SCORING V1 > Run MLB Scores.',note:'v1.3.42 check: Scoring Slate Data Guard active; if the UI sends an empty/tomorrow slate, check falls back to the latest odds-backed slate. Derived modifier calibration is active. Freshness remains audit-only.'};
 }
 
 
