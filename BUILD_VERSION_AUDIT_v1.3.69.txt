@@ -1,0 +1,17 @@
+AlphaDog Build Version Audit
+Expected build: v1.3.69 - PrizePicks Standard Hits/TB Coverage Repair
+
+Matched labels:
+- ZIP filename: alphadog_v1.3.69_prizepicks_standard_hits_tb_coverage_repair.zip
+- worker.js SYSTEM_VERSION: v1.3.69 - PrizePicks Standard Hits/TB Coverage Repair
+- control_room.html visible tag: v1.3.69 - PrizePicks Standard Hits/TB Coverage Repair
+- control_room.html client version/debugConfig: control_room_v1_3_69_prizepicks_standard_hits_tb_coverage_repair
+- README: README_v1.3.69.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.69.txt
+
+Surgical patch scope:
+- Backend scoring coverage only.
+- PrizePicks STANDARD Hits/TB fallback scoring added.
+- Goblin/demon More-only policy preserved.
+- Sleeper more-only under rejection preserved.
+- Main UI not touched.
