@@ -1,0 +1,18 @@
+AlphaDog Main UI Build Audit
+
+Version: v1.0.19 - Sleeper Feed Board Recovery
+Date: 2026-05-04
+
+Verified labels:
+- index.html title: AlphaDog v1.0.19
+- index.html visible version: v1.0.19 - Sleeper Feed Board Recovery
+- index.html UI_VERSION: v1.0.19 - Sleeper Feed Board Recovery
+- main_alphadog_worker.js MAIN_ALPHADOG_UI_VERSION: v1.0.19 - Sleeper Feed Board Recovery
+
+Syntax:
+- main_alphadog_worker.js passed node --check.
+
+Scope:
+- Main UI only.
+- No scheduled backend scoring/math changes.
+- No Cloudflare cron changes.
