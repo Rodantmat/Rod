@@ -1,0 +1,23 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.75 - Incremental Orchestrator Adapter Repair
+
+Files checked:
+- worker.js
+- control_room.html
+- README_v1.3.75.txt
+- BUILD_VERSION_AUDIT_v1.3.75.txt
+
+Required string:
+v1.3.75 - Incremental Orchestrator Adapter Repair
+
+Patch scope:
+- Incremental auto-runner scheduling adapter
+- Refresh orchestrator incremental routing
+- Incremental stale-finalizer timeout threshold
+
+Do not touch list preserved:
+- scoring math
+- candidate board generation
+- odds logic
+- Sleeper/PrizePicks ingest logic
+- D1 scoring schemas
