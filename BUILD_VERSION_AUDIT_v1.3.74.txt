@@ -1,0 +1,25 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.74 - Global Refresh Orchestrator
+
+Checked:
+- worker.js SYSTEM_VERSION updated.
+- control_room.html visible version updated.
+- Control Room script version updated.
+- wrangler.jsonc preserved with minute cron: * * * * *.
+- New orchestrator jobs registered in health executable_jobs.
+- New orchestrator routes added to executeTaskJob.
+- New orchestrator tables are auto-created by worker.
+- Minute cron calls refresh_orchestrator_tick before older admin/static/incremental fallbacks.
+- Incremental queued job schedules/continues the temp refresh automatically.
+- node --check worker.js passed.
+- node --check Control Room script blocks passed.
+
+Files changed:
+- worker.js
+- control_room.html
+- README_v1.3.74.txt
+- BUILD_VERSION_AUDIT_v1.3.74.txt
+
+Files preserved:
+- package.json
+- wrangler.jsonc

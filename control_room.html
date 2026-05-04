@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.3.73 - Incremental Auto Runner No Manual Tick -->
+<!-- v1.3.74 - Global Refresh Orchestrator -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -23,6 +23,10 @@ pre{background:#000;color:#00ff88;padding:8px;margin-top:8px;overflow:auto;max-h
 .candidateSummary{font-size:12px;color:#fff;margin-bottom:8px;white-space:pre-wrap}.candidateTableWrap{overflow:auto;border:1px solid #1f2937;border-radius:7px;max-height:520px}
 table.candidateTable{width:100%;border-collapse:collapse;font-size:11px;color:#d7ffe6;background:#05070a}.candidateTable th,.candidateTable td{border-bottom:1px solid #1f2937;padding:6px;text-align:left;vertical-align:top;white-space:nowrap}.candidateTable th{position:sticky;top:0;background:#111827;color:#9ae6b4;z-index:1}
 .badgePlayable{color:#fff;background:#1f6feb;border-radius:999px;padding:2px 6px;font-weight:800}.badgeWatchlist{color:#111;background:#facc15;border-radius:999px;padding:2px 6px;font-weight:800}.badgeQualified{color:#fff;background:#238636;border-radius:999px;padding:2px 6px;font-weight:800}.riskCell{white-space:normal;min-width:180px;color:#ffcf99}
+
+
+.refreshGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:8px 0}.refreshItem{display:flex;gap:8px;align-items:flex-start;background:#111;border:1px solid #30363d;border-radius:7px;padding:8px;color:#d7ffe6}.refreshItem input{width:auto;margin:2px 0 0 0}.refreshItem b{display:block;color:#fff;font-size:12px}.refreshItem span{display:block;color:#aaa;font-size:10px;line-height:1.25}.refreshActions{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:8px}
+@media (max-width:720px){.refreshGrid{grid-template-columns:1fr}.refreshActions{grid-template-columns:repeat(2,1fr)}}
 
 /* label-sql-fix */
 .grid button{min-height:0;height:auto;white-space:normal;overflow:visible;text-overflow:clip;line-height:1.15;padding:10px 4px;}
@@ -44,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.73 - Incremental Auto Runner No Manual Tick</div>
+<div id="versionTag">v1.3.74 - Global Refresh Orchestrator</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -60,6 +64,32 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="debug" onclick="debugConfig()">Config</button><button class="debug" onclick="health()">Health</button><button class="debug" onclick="dailyHealth()">Daily Health</button><button class="debug" onclick="testSQL()">SQL Test</button><button class="debug" onclick="loadConfig()">Reload</button>
 </div></div>
 
+
+
+<div class="section"><h3>DATA REFRESHING • ORCHESTRATOR</h3>
+<div class="small">Database-backed queue. Select one or more refreshers, then schedule selected-only or cascade from the first checked step. Minute cron continues the queue; no manual repeated ticking.</div>
+<div class="refreshGrid" id="refreshOrchestratorChecks">
+<label class="refreshItem"><input type="checkbox" data-refresh-key="incremental_daily" checked><div><b>01 Incremental Daily</b><span>Fresh game logs/splits → audit → promote → derived metrics.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="everyday_phase1"><div><b>02 Everyday Phase 1</b><span>Games, starters, bullpens, lineups, usage, candidate prep.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="weather_roof"><div><b>03 Weather/Roof</b><span>Phase 2A weather, wind, roof context.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="lineup_context"><div><b>04 Lineup/Scratch</b><span>Phase 2B lineup confirmation and fallback context.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="prizepicks_board"><div><b>05 PrizePicks Board</b><span>Trigger board refresh bridge.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="prizepicks_context"><div><b>06 PrizePicks Context</b><span>Phase 2C current-board market context.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="sleeper_board"><div><b>07 Sleeper Board</b><span>Sleeper RBI/RFI board ingest.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="sleeper_morning_window"><div><b>08 Sleeper Morning Window</b><span>RBI/RFI Sleeper signal window.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="odds_api_morning"><div><b>09 Odds API Morning</b><span>External odds/player props refresh.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="scoring_refresh"><div><b>10 Scoring Board</b><span>Score refresh and candidate board rebuild.</span></div></label>
+</div>
+<div class="refreshActions">
+<button class="warn" onclick="orchestratorSelectedOnly()">Schedule Selected Only</button>
+<button class="warn" onclick="orchestratorCascade()">Cascade From First Checked</button>
+<button class="check" onclick="runJobButton('DATA REFRESHING > Orchestrator Status','refresh_orchestrator_status')">Orchestrator Status</button>
+<button class="audit" onclick="runJobButton('DATA REFRESHING > Run One Queue Tick','refresh_orchestrator_tick')">Run Queue Tick</button>
+<button class="debug" onclick="runJobButton('DATA REFRESHING > Init Tables','refresh_orchestrator_init')">Init Tables</button>
+<button class="danger" onclick="runJobButton('DATA REFRESHING > Cancel Queue','refresh_orchestrator_cancel_all')">Cancel Active Queue</button>
+</div>
+<div class="small">Selected Only = independent checked jobs, one at a time. Cascade = starts at the first checked step and continues through later steps only after each previous step completes.</div>
+</div>
 
 <div class="section"><h3>SCRAPE</h3><div class="grid">
 <button onclick="runJobButton('SCRAPE > FULL RUN','run_full_pipeline')">FULL RUN</button>
@@ -272,7 +302,12 @@ async function requestJobWithRetry(l,j){if(j==="board_queue_auto_mine")return re
   setOutput(l,{final:isOk ? "success" : "failed",slate_date:d,attempts:a});
   return
 }if(i<maxTries){setOutput(l,{status:"retrying",reason:"503/cancelled/zero inserted",next_try:i+1,slate_date:d,attempts:a});await new Promise(x=>setTimeout(x,10000))}}setOutput(l,{final:maxTries===1?"failed_no_retry_for_long_static_job":"failed_after_3_attempts",slate_date:d,attempts:a})}
-async function requestAutoMineLoop(l,j){const d=resolveSlateDate();loading(l,"One short server batch only. Persistent backend cron continues every 2 minutes.\nSlate: "+d);const r=await rawRequest(l+" one_server_batch",JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,limit:5,manual_spot_check:true});if(r&&r.body&&r.body.progress)setMinePulse(r.body);const body=r.body||{},isOk=r.http_status&&r.http_status<400&&body.ok!==false;setStatus((isOk?"DONE: ":"FAILED: ")+l);setOutput(l,{final:isOk?"one_server_batch_complete":"failed",slate_date:d,response:r,instructions:"Manual Auto Mine is intentionally one short backend batch on iPhone. Let the persistent scheduled miner continue every 2 minutes; check queue health later."})}function health(){requestJSON("DEBUG > Health",HEALTH_URL,null)}function dailyHealth(){requestJSON("DEBUG > Daily Health",DAILY_HEALTH_URL+"?slate_date="+encodeURIComponent(D()),null)}function testSQL(){requestJSON("DEBUG > SQL Test",SQL_URL,{sql:""})}async function scheduleFullRunOneShot(){const d=resolveSlateDate();loading("SCRAPE > FULL RUN","Scheduling one-shot backend Full Run. Safari does not need to stay open.\nSlate: "+d);const r=await rawRequest("SCRAPE > FULL RUN scheduled one-shot",DEFER_FULL_RUN_URL,{job:"run_full_pipeline",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});setStatus("SCHEDULED: SCRAPE > FULL RUN");setOutput("SCRAPE > FULL RUN",{final:"scheduled_background_one_shot",slate_date:d,response:r,instructions:"Full Run was scheduled to run in the backend in about 1 minute. Do not keep Safari open. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.",temporary_test_mode:true})}function runJobButton(l,j){if(j==="run_full_pipeline")return scheduleFullRunOneShot();requestJobWithRetry(l,j)}function runSQLButton(l,s){requestJSON(l,SQL_URL,{sql:s})}function inspectLatestFactorResult(){requestJSON("CHECK > Board Factor Inspect",INSPECT_URL,{slate_date:D(),limit:3,raw_max_chars:20000})}function inspectLatestQueuePayload(){requestJSON("CHECK > Board Payload Inspect",PAYLOAD_INSPECT_URL,{slate_date:D(),limit:2,raw_max_chars:20000})}function runManualSQL(){requestJSON("MANUAL SQL > Output",SQL_URL,{sql:document.getElementById("sqlInput").value,max_rows:50,max_chars:900})}function copyOutput(){navigator.clipboard.writeText(document.getElementById("output").textContent);setStatus("COPIED OUTPUT")}
+async function requestAutoMineLoop(l,j){const d=resolveSlateDate();loading(l,"One short server batch only. Persistent backend cron continues every 2 minutes.\nSlate: "+d);const r=await rawRequest(l+" one_server_batch",JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,limit:5,manual_spot_check:true});if(r&&r.body&&r.body.progress)setMinePulse(r.body);const body=r.body||{},isOk=r.http_status&&r.http_status<400&&body.ok!==false;setStatus((isOk?"DONE: ":"FAILED: ")+l);setOutput(l,{final:isOk?"one_server_batch_complete":"failed",slate_date:d,response:r,instructions:"Manual Auto Mine is intentionally one short backend batch on iPhone. Let the persistent scheduled miner continue every 2 minutes; check queue health later."})}function health(){requestJSON("DEBUG > Health",HEALTH_URL,null)}function dailyHealth(){requestJSON("DEBUG > Daily Health",DAILY_HEALTH_URL+"?slate_date="+encodeURIComponent(D()),null)}function testSQL(){requestJSON("DEBUG > SQL Test",SQL_URL,{sql:""})}async function scheduleFullRunOneShot(){const d=resolveSlateDate();loading("SCRAPE > FULL RUN","Scheduling one-shot backend Full Run. Safari does not need to stay open.\nSlate: "+d);const r=await rawRequest("SCRAPE > FULL RUN scheduled one-shot",DEFER_FULL_RUN_URL,{job:"run_full_pipeline",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});setStatus("SCHEDULED: SCRAPE > FULL RUN");setOutput("SCRAPE > FULL RUN",{final:"scheduled_background_one_shot",slate_date:d,response:r,instructions:"Full Run was scheduled to run in the backend in about 1 minute. Do not keep Safari open. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.",temporary_test_mode:true})}function runJobButton(l,j){if(j==="run_full_pipeline")return scheduleFullRunOneShot();requestJobWithRetry(l,j)}
+function selectedRefreshKeys(){return Array.from(document.querySelectorAll('#refreshOrchestratorChecks input[data-refresh-key]:checked')).map(x=>x.getAttribute('data-refresh-key')).filter(Boolean)}
+async function runRefreshOrchestratorAction(label,job,mode){const keys=selectedRefreshKeys();if(!keys.length){setStatus('SELECT AT LEAST ONE DATA REFRESHER');setOutput(label,{ok:false,error:'No refreshers selected'});return}const d=resolveSlateDate();loading(label,'Scheduling '+mode+' refresh queue.\nSlate: '+d+'\nKeys: '+keys.join(', '));const r=await rawRequest(label,JOB_URL,{job:job,job_keys:keys,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,auto_start:true});setStatus('DONE: '+label+' / HTTP '+(r.http_status||'ERR'));setOutput(label,r)}
+function orchestratorSelectedOnly(){return runRefreshOrchestratorAction('DATA REFRESHING > Schedule Selected Only','refresh_orchestrator_enqueue_selected','selected-only')}
+function orchestratorCascade(){return runRefreshOrchestratorAction('DATA REFRESHING > Schedule Cascade','refresh_orchestrator_enqueue_cascade','cascade')}
+function runSQLButton(l,s){requestJSON(l,SQL_URL,{sql:s})}function inspectLatestFactorResult(){requestJSON("CHECK > Board Factor Inspect",INSPECT_URL,{slate_date:D(),limit:3,raw_max_chars:20000})}function inspectLatestQueuePayload(){requestJSON("CHECK > Board Payload Inspect",PAYLOAD_INSPECT_URL,{slate_date:D(),limit:2,raw_max_chars:20000})}function runManualSQL(){requestJSON("MANUAL SQL > Output",SQL_URL,{sql:document.getElementById("sqlInput").value,max_rows:50,max_chars:900})}function copyOutput(){navigator.clipboard.writeText(document.getElementById("output").textContent);setStatus("COPIED OUTPUT")}
 function candidateBadge(status){const s=String(status||'').toUpperCase();const cls=s==='QUALIFIED'?'badgeQualified':(s==='PLAYABLE'?'badgePlayable':'badgeWatchlist');return `<span class="${cls}">${escapeHtml(s||'UNKNOWN')}</span>`}
 function fmtNum(v,d=2){if(v===null||v===undefined||v==='')return '';const n=Number(v);return Number.isFinite(n)?n.toFixed(d).replace(/\.00$/,''):String(v)}
 function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
@@ -635,7 +670,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.73 - Incremental Auto Runner No Manual Tick",
+    version: "v1.3.74 - Global Refresh Orchestrator",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

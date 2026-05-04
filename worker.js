@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.73 - Incremental Auto Runner No Manual Tick";
+const SYSTEM_VERSION = "v1.3.74 - Global Refresh Orchestrator";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -124,6 +124,12 @@ const JOB_DISPLAY_LABELS = {
   schedule_incremental_temp_refresh_once: "INCREMENTAL TEMP > Schedule Daily Refresh Test",
   run_incremental_temp_refresh_tick: "INCREMENTAL TEMP > Run One Refresh Tick",
   run_incremental_temp_refresh_auto: "INCREMENTAL TEMP > Start/Continue Auto Refresh",
+  refresh_orchestrator_init: "DATA REFRESHING > Init Tables",
+  refresh_orchestrator_enqueue_selected: "DATA REFRESHING > Schedule Selected Only",
+  refresh_orchestrator_enqueue_cascade: "DATA REFRESHING > Schedule Cascade",
+  refresh_orchestrator_tick: "DATA REFRESHING > Run One Queue Tick",
+  refresh_orchestrator_status: "DATA REFRESHING > Orchestrator Status",
+  refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -967,6 +973,19 @@ export default {
         // v1.3.59: the only active cron is the minute poller.
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
+        const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
+        if (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') {
+          result = {
+            ok: true,
+            data_ok: !!orchestratorTick.data_ok,
+            version: SYSTEM_VERSION,
+            job: 'global_refresh_orchestrator_minute_scheduler',
+            status: 'orchestrator_advanced',
+            cron,
+            orchestrator_tick: orchestratorTick,
+            note: 'Minute cron advanced the database-backed refresh orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
+          };
+        } else {
         const scheduledAdminRefresh = await scheduleDueAdminFullRefreshFromMinuteCron(env, cron);
         const adminDueTick = await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
@@ -1026,6 +1045,7 @@ export default {
               };
             }
           }
+        }
         }
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
@@ -1149,6 +1169,12 @@ function executableJobNames() {
     "schedule_incremental_temp_refresh_once",
     "run_incremental_temp_refresh_tick",
     "run_incremental_temp_refresh_auto",
+    "refresh_orchestrator_init",
+    "refresh_orchestrator_enqueue_selected",
+    "refresh_orchestrator_enqueue_cascade",
+    "refresh_orchestrator_tick",
+    "refresh_orchestrator_status",
+    "refresh_orchestrator_cancel_all",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -6905,6 +6931,212 @@ async function cleanStaticTempTables(input, env) {
 
 
 
+
+async function ensureRefreshOrchestratorTables(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_refresh_catalog (
+    job_key TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    sequence_order INTEGER NOT NULL,
+    default_selected INTEGER DEFAULT 0,
+    supports_cascade INTEGER DEFAULT 1,
+    notes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_refresh_queue (
+    request_id TEXT PRIMARY KEY,
+    chain_id TEXT NOT NULL,
+    job_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    group_name TEXT NOT NULL,
+    sequence_order INTEGER NOT NULL,
+    cascade INTEGER DEFAULT 0,
+    status TEXT NOT NULL,
+    run_after TEXT,
+    requested_slate_date TEXT,
+    slate_mode TEXT,
+    attempt_count INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 3,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    started_at TEXT,
+    finished_at TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    input_json TEXT,
+    output_json TEXT,
+    error TEXT
+  )`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_refresh_events (
+    event_id TEXT PRIMARY KEY,
+    request_id TEXT,
+    chain_id TEXT,
+    job_key TEXT,
+    event_type TEXT NOT NULL,
+    status TEXT,
+    message TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    payload_json TEXT
+  )`).run();
+  const catalog = refreshOrchestratorCatalogRows();
+  const stmts = catalog.map(j => env.DB.prepare(`INSERT OR REPLACE INTO data_refresh_catalog (job_key, display_name, job_name, group_name, sequence_order, default_selected, supports_cascade, notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).bind(j.job_key, j.display_name, j.job_name, j.group_name, j.sequence_order, j.default_selected ? 1 : 0, j.supports_cascade === false ? 0 : 1, j.notes || null));
+  if (stmts.length) await env.DB.batch(stmts);
+}
+
+function refreshOrchestratorCatalogRows() {
+  return [
+    { job_key:'incremental_daily', display_name:'Incremental Daily Temp', job_name:'run_incremental_temp_refresh_auto', group_name:'01 Foundation', sequence_order:10, default_selected:1, notes:'Fresh current-season game logs/splits into temp, audit, promote, clean, rebuild derived metrics.' },
+    { job_key:'everyday_phase1', display_name:'Everyday Phase 1 Baseline', job_name:'everyday_phase1_all_direct', group_name:'02 Everyday Data', sequence_order:20, notes:'Games/market shell/starters/bullpens/lineups/usage/candidate prep baseline.' },
+    { job_key:'weather_roof', display_name:'Phase 2A Weather/Roof', job_name:'scrape_phase2_weather_context', group_name:'02 Everyday Data', sequence_order:30, notes:'Weather, wind, roof context.' },
+    { job_key:'lineup_context', display_name:'Phase 2B Lineup/Scratch', job_name:'scrape_phase2_lineup_context', group_name:'02 Everyday Data', sequence_order:40, notes:'Confirmed/last-available lineup context.' },
+    { job_key:'prizepicks_board', display_name:'PrizePicks Board Refresh', job_name:'trigger_prizepicks_github_board_refresh', group_name:'03 Market Boards', sequence_order:50, notes:'Dispatch PrizePicks GitHub board refresh bridge.' },
+    { job_key:'prizepicks_context', display_name:'Phase 2C Market Context', job_name:'scrape_phase2c_market_context', group_name:'03 Market Boards', sequence_order:60, notes:'Internal PrizePicks current-board context normalization.' },
+    { job_key:'sleeper_board', display_name:'Sleeper RBI/RFI Board', job_name:'run_sleeper_rbi_rfi_market_board', group_name:'03 Market Boards', sequence_order:70, notes:'Sleeper RBI/RFI market board ingestion.' },
+    { job_key:'sleeper_morning_window', display_name:'Sleeper Morning Window', job_name:'run_sleeper_rbi_rfi_window_morning', group_name:'04 Signals', sequence_order:80, notes:'Sleeper morning window runner.' },
+    { job_key:'odds_api_morning', display_name:'Odds API Morning', job_name:'run_odds_api_morning', group_name:'04 Signals', sequence_order:90, notes:'Odds API player props/game markets morning refresh.' },
+    { job_key:'scoring_refresh', display_name:'Scoring + Candidate Board', job_name:'run_full_scoring_refresh_v1', group_name:'05 Release Board', sequence_order:100, notes:'Stored-data scoring refresh and candidate board rebuild.' }
+  ];
+}
+
+async function refreshOrchestratorEvent(env, event) {
+  try {
+    await ensureRefreshOrchestratorTables(env);
+    await env.DB.prepare(`INSERT INTO data_refresh_events (event_id, request_id, chain_id, job_key, event_type, status, message, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+      crypto.randomUUID(), event.request_id || null, event.chain_id || null, event.job_key || null, event.event_type || 'event', event.status || null, event.message || null, event.payload_json ? JSON.stringify(event.payload_json).slice(0, 4000) : null
+    ).run();
+  } catch (_) {}
+}
+
+async function refreshOrchestratorStatus(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const catalog = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, default_selected, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
+  const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, attempt_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,700) AS output_preview, error FROM data_refresh_queue ORDER BY datetime(created_at) DESC, sequence_order ASC LIMIT 50`);
+  const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', catalog_count:catalog.length, catalog, active_summary:active, recent_queue:queue, note:'Database-backed refresh orchestrator is active. Minute cron processes one due queue row at a time; cascade rows wait for previous rows to complete.' };
+}
+
+async function refreshOrchestratorInit(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const status = await refreshOrchestratorStatus({ ...(input || {}), job:'refresh_orchestrator_status' }, env);
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_init', status:'ready', tables:['data_refresh_catalog','data_refresh_queue','data_refresh_events'], catalog_count:status.catalog_count, catalog:status.catalog, note:'Orchestrator tables were created/verified and catalog was seeded. No refresh job was scheduled.' };
+}
+
+async function enqueueRefreshOrchestratorRows(input, env, mode) {
+  await ensureRefreshOrchestratorTables(env);
+  const slate = resolveSlateDate(input || {});
+  const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
+  const requestedSet = new Set(requested);
+  const catalogRows = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
+  let selected;
+  if (mode === 'cascade') {
+    const starts = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
+    const startOrder = starts.length ? Math.min(...starts.map(r => Number(r.sequence_order || 9999))) : 10;
+    selected = catalogRows.filter(r => Number(r.sequence_order || 9999) >= startOrder && Number(r.supports_cascade || 0) !== 0);
+  } else {
+    selected = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
+  }
+  if (!selected.length) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'no_jobs_selected', requested_job_keys:requested, note:'Select at least one data refresh checkbox.' };
+
+  const active = await env.DB.prepare(`SELECT request_id, chain_id, job_key, status, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY created_at ASC LIMIT 1`).first().catch(() => null);
+  if (active && input?.force !== true) {
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'already_active_orchestrator_queue', existing_active:active, requested_job_keys:requested, note:'One refresh pipeline is already pending/running. This protects D1 and source APIs from overlapping refresh jobs.' };
+  }
+
+  const chainId = crypto.randomUUID();
+  const nowRun = `datetime('now')`;
+  const stmts = selected.map((j, idx) => env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${idx === 0 ? nowRun : 'NULL'}, ?, ?, ?, ?)`).bind(
+    crypto.randomUUID(), chainId, j.job_key, j.display_name, j.job_name, j.group_name, Number(j.sequence_order || (idx + 1) * 10), mode === 'cascade' ? 1 : 0, slate.slate_date, slate.slate_mode, Number(input?.max_attempts || 3), JSON.stringify({ ...(input || {}), orchestrator_mode:mode, slate_date:slate.slate_date, slate_mode:slate.slate_mode }).slice(0,4000)
+  ));
+  await env.DB.batch(stmts);
+  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'enqueue', status:'pending', message:`${selected.length} refresh job(s) enqueued`, payload_json:{ mode, selected_job_keys:selected.map(j => j.job_key), slate } });
+  const tick = input?.auto_start === false ? null : await runRefreshOrchestratorTick({ ...(input || {}), job:'refresh_orchestrator_tick', trigger:'enqueue_auto_start', max_ms:22000 }, env);
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time until the queue is complete.', note:'The database queue now controls refresh work. No new button/job is needed for future SQL-triggered refresh requests.' };
+}
+
+async function markRefreshQueueCompleted(env, row, wrapped) {
+  await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+  const next = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE chain_id=? AND status='pending' AND run_after IS NULL ORDER BY sequence_order ASC, created_at ASC LIMIT 1`).bind(row.chain_id).first().catch(() => null);
+  if (next) await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(next.request_id).run();
+}
+
+function refreshResultIsPartial(result) {
+  const status = String(result?.status || result?.last_tick?.status || '').toLowerCase();
+  if (result?.auto_continue_active) return true;
+  if (result?.refresh_complete === false) return true;
+  if (result?.phase1_complete === false) return true;
+  if (status.includes('partial') || status.includes('continue') || status.includes('running') || status.includes('scheduled') || status.includes('already_scheduled')) return true;
+  return false;
+}
+
+async function runRefreshOrchestratorTick(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const started = Date.now();
+  const maxMs = Math.max(6000, Math.min(Number(input?.max_ms || 23000), 26000));
+  const processed = [];
+  let last = null;
+  while ((Date.now() - started) < maxMs) {
+    const row = await env.DB.prepare(`SELECT * FROM data_refresh_queue WHERE status IN ('pending','running') AND (run_after IS NULL OR run_after <= CURRENT_TIMESTAMP) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, sequence_order ASC, created_at ASC LIMIT 1`).first().catch(() => null);
+    if (!row) break;
+    await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1 WHERE request_id=?`).bind(row.request_id).run();
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'start', status:'running', message:row.display_name });
+    let result;
+    try {
+      const body = JSON.parse(row.input_json || '{}');
+      const slate = resolveSlateDate({ ...(body || {}), slate_date:row.requested_slate_date || body.slate_date, slate_mode:row.slate_mode || body.slate_mode });
+      if (row.job_name === 'run_incremental_temp_refresh_auto') {
+        const activeIncremental = await env.DB.prepare(`SELECT request_id FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+        let scheduledIncremental = null;
+        if (!activeIncremental) {
+          scheduledIncremental = await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job:'schedule_incremental_temp_refresh_once', trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+        }
+        await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET run_after=CURRENT_TIMESTAMP WHERE status IN ('pending','running')`).run().catch(() => null);
+        result = await runIncrementalTempAutoLoop({ ...(body || {}), job:'run_incremental_temp_refresh_auto', trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_players:20, max_ms:22000, max_ticks:3, force_due:true }, env);
+        if (scheduledIncremental) result = { ...result, scheduled_incremental: scheduledIncremental };
+      } else {
+        result = await executeTaskJob(row.job_name, { ...(body || {}), job:row.job_name, trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
+      }
+      const wrapped = { ok:result?.ok !== false, data_ok:result?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, display_name:row.display_name, routed_job:row.job_name, result, elapsed_ms:Date.now()-started };
+      last = wrapped;
+      processed.push({ job_key:row.job_key, routed_job:row.job_name, status:result?.status || (result?.ok === false ? 'failed' : 'pass'), partial:refreshResultIsPartial(result) });
+      if (result?.ok === false || result?.data_ok === false) {
+        const attempts = Number(row.attempt_count || 0) + 1;
+        const terminal = attempts >= Number(row.max_attempts || 3);
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+        await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed':'retry', status:terminal?'failed':'pending', message:String(result?.error || result?.status || 'refresh_job_failed'), payload_json:wrapped });
+        break;
+      }
+      if (refreshResultIsPartial(result)) {
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+        await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'partial_continue', status:'running', message:'Will continue on next minute cron.', payload_json:wrapped });
+        break;
+      }
+      await markRefreshQueueCompleted(env, row, wrapped);
+      await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
+      break;
+    } catch (err) {
+      const error = String(err?.message || err);
+      const attempts = Number(row.attempt_count || 0) + 1;
+      const terminal = attempts >= Number(row.max_attempts || 3);
+      const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error };
+      last = wrapped;
+      processed.push({ job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error });
+      await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, error, JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+      await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed_exception':'retry_exception', status:terminal?'failed':'pending', message:error, payload_json:wrapped });
+      break;
+    }
+  }
+  const status = await refreshOrchestratorStatus({ job:'refresh_orchestrator_status' }, env);
+  const active = (status.active_summary || []).filter(r => ['pending','running'].includes(String(r.status || '').toLowerCase())).reduce((a,r)=>a+Number(r.rows_count||0),0);
+  return { ok:true, data_ok:last?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:processed.length ? 'advanced' : 'idle_no_due_refresh_queue', processed_count:processed.length, processed, last_result:last, active_remaining:active, elapsed_ms:Date.now()-started, queue_summary:status.active_summary, manual_ticks_required:false, note:active ? 'Refresh orchestrator has pending/running work. Minute cron will continue one safe unit at a time.' : 'Refresh orchestrator queue is idle/complete.' };
+}
+
+async function cancelRefreshOrchestratorQueue(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const res = await env.DB.prepare(`UPDATE data_refresh_queue SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error,'cancelled_by_user') WHERE status IN ('pending','running')`).run();
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_cancel_all', status:'cancelled_active_queue', changes:Number(res?.meta?.changes || 0), note:'Cancelled pending/running orchestrator queue rows only. It did not mutate data tables.' };
+}
+
 async function ensureIncrementalTempTables(env) {
   await ensureStaticReferenceTables(env);
   await ensureIncrementalBaseTables(env);
@@ -8599,6 +8831,13 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "board_queue_repair") {
     return await runBoardQueueRepair({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }
+
+  if (jobName === "refresh_orchestrator_init") return await refreshOrchestratorInit({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_enqueue_selected") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'selected');
+  if (jobName === "refresh_orchestrator_enqueue_cascade") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'cascade');
+  if (jobName === "refresh_orchestrator_tick") return await runRefreshOrchestratorTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);
+  if (jobName === "refresh_orchestrator_status") return await refreshOrchestratorStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".
