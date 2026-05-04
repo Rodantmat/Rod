@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.3.75 - Incremental Orchestrator Adapter Repair -->
+<!-- v1.3.76 - Cancel Retry Guard + Incremental Queue Fix -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -48,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.75 - Incremental Orchestrator Adapter Repair</div>
+<div id="versionTag">v1.3.76 - Cancel Retry Guard + Incremental Queue Fix</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -292,10 +292,10 @@ function clearMinePulse(){const el=document.getElementById("minePulse");if(el){e
 function loading(l,e){setStatus("RUNNING: "+l);if(l.indexOf("Board Queue Auto Mine Raw")>=0)setMinePulse("MINER PULSE\nStarting...\n"+(e||""));else clearMinePulse();setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_3_73_incremental_auto_runner_no_manual_tick",deferred_full_run_url:DEFER_FULL_RUN_URL})}
+function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_3_76_cancel_retry_guard_incremental_queue_fix",deferred_full_run_url:DEFER_FULL_RUN_URL})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
-function shouldRetry(r,j){const body=r&&r.body?r.body:null;if(body&&body.ok===true){if(j==="check_mlb_scoring_v1"&&(body.latest_run_completed===true||body.scoring_engine_ok===true||((body.latest_runs||[])[0]&&String((body.latest_runs||[])[0].status||"").toUpperCase()==="COMPLETED")))return false;if(j==="inspect_mlb_score_audit_v1")return false;if(j==="build_mlb_score_candidate_board_v1")return false;if(j==="run_mlb_scoring_v1"){return false;}}const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||raw.includes("cancelled"))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine"||j==="check_mlb_scoring_v1"||j==="run_mlb_scoring_v1")return false;return true}}return false}
+function shouldRetry(r,j){const body=r&&r.body?r.body:null;const httpOk=!!(r&&r.http_status&&r.http_status<400);if(j==="refresh_orchestrator_cancel_all")return false;if(body&&body.ok===true){const st=String(body.status||"").toLowerCase();if(st.includes("cancel"))return false;if(j==="check_mlb_scoring_v1"&&(body.latest_run_completed===true||body.scoring_engine_ok===true||((body.latest_runs||[])[0]&&String((body.latest_runs||[])[0].status||"").toUpperCase()==="COMPLETED")))return false;if(j==="inspect_mlb_score_audit_v1")return false;if(j==="build_mlb_score_candidate_board_v1")return false;if(j==="run_mlb_scoring_v1")return false;}const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||(!httpOk&&raw.includes("cancelled")))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine"||j==="check_mlb_scoring_v1"||j==="run_mlb_scoring_v1"||j==="refresh_orchestrator_cancel_all")return false;return true}}return false}
 async function requestJobWithRetry(l,j){if(j==="board_queue_auto_mine")return requestAutoMineLoop(l,j);const a=[],d=resolveSlateDate(),isLongStatic=/^scrape_static_game_logs_g[1-6]$/.test(j)||/^incremental_base_game_logs_g[1-6]$/.test(j)||j==="scrape_static_bvp_current_slate"||j==="run_incremental_temp_refresh_tick",maxTries=isLongStatic?1:3;for(let i=1;i<=maxTries;i++){loading(l,"Try "+i+" of "+maxTries+" started.\nSlate: "+d);const r=await rawRequest(l+" try "+i,JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});a.push({try:i,result:r});if(isLongStatic||!shouldRetry(r,j)){
   const isOk = r && r.http_status && r.http_status < 400 && (!r.body || r.body.ok !== false);
   setStatus((isOk ? "DONE: " : "FAILED: ") + l);
@@ -670,7 +670,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.75 - Incremental Orchestrator Adapter Repair",
+    version: "v1.3.76 - Cancel Retry Guard + Incremental Queue Fix",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

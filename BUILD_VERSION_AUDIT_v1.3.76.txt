@@ -1,0 +1,22 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.76 - Cancel Retry Guard + Incremental Queue Fix
+
+Files verified in package:
+- worker.js
+- control_room.html
+- wrangler.jsonc
+- package.json
+- README_v1.3.76.txt
+- BUILD_VERSION_AUDIT_v1.3.76.txt
+
+Patch scope:
+- Control Room retry classifier only for cancel false-positive retry.
+- Worker version label only, preserving v1.3.75 backend logic.
+
+Do not touch scope confirmed:
+- scoring math
+- odds logic
+- PrizePicks/Sleeper ingestion
+- Gemini logic
+- D1 schema
+- candidate-board generation

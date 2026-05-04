@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.75 - Incremental Orchestrator Adapter Repair";
+const SYSTEM_VERSION = "v1.3.76 - Cancel Retry Guard + Incremental Queue Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7164,7 +7164,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
       SET status='stale_reset', finished_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.75 stale incremental task finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.76 stale incremental task finalized after six-hour safety window')
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN (
@@ -7179,7 +7179,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const refreshRes = await env.DB.prepare(`
       UPDATE incremental_temp_refresh_runs
       SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.75 stale incremental temp refresh finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.76 stale incremental temp refresh finalized after six-hour safety window')
       WHERE status IN ('pending','running')
         AND updated_at < datetime('now','-6 hours')
     `).run();
@@ -7461,7 +7461,7 @@ async function runIncrementalTempAutoLoop(input, env) {
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
     next_action: last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.'),
-    note: 'One-click/cron auto-runner for incremental data. v1.3.75 auto-schedules a fresh request for manual/orchestrator use when no active incremental request exists, and does not let idle_no_due be treated as completed for a failed/incomplete refresh.'
+    note: 'One-click/cron auto-runner for incremental data. v1.3.76 keeps the incremental orchestrator adapter and adds Control Room cancel retry protection so cancel responses are final, not retried.'
   };
 }
 async function checkIncrementalTempData(input, env) {
