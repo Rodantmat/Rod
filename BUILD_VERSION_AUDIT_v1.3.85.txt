@@ -1,0 +1,21 @@
+Build audit: v1.3.85 - Incremental Delta Stale Finalizer
+
+Files included:
+- worker.js
+- control_room.html
+- wrangler.jsonc
+- package.json
+- README_v1.3.85.txt
+- BUILD_VERSION_AUDIT_v1.3.85.txt
+
+Version checks:
+- worker.js SYSTEM_VERSION: v1.3.85 - Incremental Delta Stale Finalizer
+- control_room.html visible version tag: v1.3.85 - Incremental Delta Stale Finalizer
+- README version: v1.3.85
+
+Patch scope:
+- Scheduled backend/control room only.
+- No scoring math changes.
+- No candidate board logic changes.
+- No Gemini changes.
+- No D1 destructive live-table deletion.
