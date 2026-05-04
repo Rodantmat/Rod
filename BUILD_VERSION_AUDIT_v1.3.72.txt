@@ -1,0 +1,23 @@
+AlphaDog Build Version Audit
+Expected build: v1.3.72 - Incremental Daily Delta Runner Repair
+
+Verified labels:
+- ZIP filename: alphadog_v1.3.72_incremental_daily_delta_runner_repair.zip
+- worker.js SYSTEM_VERSION: v1.3.72 - Incremental Daily Delta Runner Repair
+- control_room.html visible tag: v1.3.72 - Incremental Daily Delta Runner Repair
+- control_room.html client version/debugConfig: control_room_v1_3_72_incremental_daily_delta_runner_repair
+- README: README_v1.3.72.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.72.txt
+
+Surgical scope:
+- Incremental daily temp runner only.
+- No scoring math changes.
+- No Main UI changes.
+- No static weekly pipeline changes.
+- No candidate board generation changes.
+- No D1 schema-breaking migrations.
+
+Validation performed before packaging:
+- node --check worker.js passed.
+- File/version string audit passed.
+- Flat ZIP package only.
