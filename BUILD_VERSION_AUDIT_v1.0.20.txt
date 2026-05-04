@@ -1,0 +1,5 @@
+v1.0.20 - Sleeper Feed Signal Insert Repair
+
+Verified version labels updated in worker and embedded UI.
+Fixed signal insert SQL placeholder count.
+Flat ZIP package.
