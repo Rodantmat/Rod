@@ -1,0 +1,24 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.80 - Incremental Stage Completion Finalizer
+
+Files included:
+- worker.js
+- control_room.html
+- wrangler.jsonc
+- package.json
+- README_v1.3.80.txt
+- BUILD_VERSION_AUDIT_v1.3.80.txt
+
+Validation performed before packaging:
+- worker.js SYSTEM_VERSION updated.
+- control_room.html visible version tag updated.
+- No folder nesting in ZIP.
+- v1.3.79 labels removed from deploy files except historical text inside comments/output examples if any.
+- JavaScript syntax checked with node --check.
+
+Patch scope:
+- Incremental temp stage finalization only.
+- Compact incremental tick output only.
+- No scoring math touched.
+- No candidate board scoring touched.
+- No D1 schema migration required.

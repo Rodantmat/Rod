@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.79 - Incremental Force-Due Cursor Advance Repair";
+const SYSTEM_VERSION = "v1.3.80 - Incremental Stage Completion Finalizer";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7196,7 +7196,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
       SET status='stale_reset', finished_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.79 stale incremental task finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.80 stale incremental task finalized after six-hour safety window')
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN (
@@ -7211,7 +7211,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const refreshRes = await env.DB.prepare(`
       UPDATE incremental_temp_refresh_runs
       SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.79 stale incremental temp refresh finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.80 stale incremental temp refresh finalized after six-hour safety window')
       WHERE status IN ('pending','running')
         AND updated_at < datetime('now','-6 hours')
     `).run();
@@ -7289,10 +7289,70 @@ async function reconcileIncrementalTempProgressFromTemp(env, domain, season, tem
   for (const player of (activePlayers || [])) {
     const id = Number(player?.player_id || 0);
     if (!id || !stagedIds.has(id)) continue;
-    await markStaticProgress(env, domain, season, 0, player, 'COMPLETED', `${keyColumn} already staged in ${tempTable}; progress reconciled by v1.3.79`);
+    await markStaticProgress(env, domain, season, 0, player, 'COMPLETED', `${keyColumn} already staged in ${tempTable}; progress reconciled by v1.3.80`);
     reconciled += 1;
   }
   return { reconciled_players: reconciled, staged_player_ids: stagedIds.size };
+}
+
+
+function shouldFinalizeIncrementalTempStage({ step, activeCount, doneCount, tempRows, requiredRows }) {
+  const active = Math.max(1, Number(activeCount || 0));
+  const done = Math.max(0, Number(doneCount || 0));
+  const rows = Math.max(0, Number(tempRows || 0));
+  const required = Math.max(1, Number(requiredRows || 1));
+  const progressRatio = done / active;
+  const rowRatio = rows / required;
+  const rowThresholdPass = rows >= required;
+  const nearlyComplete = progressRatio >= 0.95;
+  const certifiedCoverage = rowThresholdPass && progressRatio >= 0.60;
+  return {
+    finalize: !!(nearlyComplete || certifiedCoverage),
+    reason: nearlyComplete ? `${step}_progress_95pct_plus` : (certifiedCoverage ? `${step}_row_threshold_plus_60pct_progress` : 'continue'),
+    active_count: active,
+    done_count: done,
+    temp_rows: rows,
+    required_rows: required,
+    progress_ratio: Number(progressRatio.toFixed(4)),
+    row_ratio: Number(rowRatio.toFixed(4))
+  };
+}
+
+function compactIncrementalStepResult(result) {
+  if (!result || typeof result !== 'object') return result || null;
+  return {
+    ok: result.ok !== false,
+    data_ok: result.data_ok !== false,
+    job: result.job || null,
+    version: result.version || SYSTEM_VERSION,
+    status: result.status || null,
+    table: result.table || null,
+    season: result.season || null,
+    selected_players_total: result.selected_players_total ?? null,
+    batch_limit: result.batch_limit ?? null,
+    attempted_players: result.attempted_players ?? null,
+    successful_fetch_count: result.successful_fetch_count ?? null,
+    failed_fetch_count: result.failed_fetch_count ?? null,
+    inserted_rows: result.inserted_rows ?? null,
+    rows_staged: result.rows_staged ?? null,
+    total_player_game_logs_temp_after: result.total_player_game_logs_temp_after ?? null,
+    total_ref_player_splits_temp_after: result.total_ref_player_splits_temp_after ?? null,
+    players_completed_this_run: result.players_completed_this_run ?? null,
+    skipped_players_no_logs: result.skipped_players_no_logs ?? null,
+    skipped_players_no_splits: result.skipped_players_no_splits ?? null,
+    progress_done: result.progress_done ?? null,
+    remaining_players_after: result.remaining_players_after ?? null,
+    needs_continue: !!result.needs_continue,
+    stage_finalizer: result.stage_finalizer || null,
+    duplicate_guard_counts: result.duplicate_guard ? {
+      before_counts: result.duplicate_guard.before_counts || null,
+      after_counts: result.duplicate_guard.after_counts || null
+    } : null,
+    errors_count: Array.isArray(result.errors) ? result.errors.length : 0,
+    no_data_samples_count: Array.isArray(result.no_log_samples) ? result.no_log_samples.length : (Array.isArray(result.no_split_samples) ? result.no_split_samples.length : 0),
+    live_tables_touched: !!result.live_tables_touched,
+    note: result.note || null
+  };
 }
 
 async function stageIncrementalGameLogsTemp(input, env) {
@@ -7378,10 +7438,11 @@ async function stageIncrementalGameLogsTemp(input, env) {
   const dedupe = await dedupeIncrementalTempTables(env);
   await ensureIncrementalTempUniqueIndexes(env);
   const tempCount = await staticTableCount(env, 'player_game_logs_temp');
-  const remaining = Math.max(0, active.length - doneCount);
+  const stageFinalizer = shouldFinalizeIncrementalTempStage({ step:'stage_logs', activeCount:active.length, doneCount, tempRows:tempCount.rows_count, requiredRows:10000 });
+  const remaining = stageFinalizer.finalize ? 0 : Math.max(0, active.length - doneCount);
   const needsContinue = remaining > 0;
   const dataOk = needsContinue ? true : Number(tempCount.rows_count || 0) >= 10000;
-  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'player_game_logs_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_player_game_logs_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_logs:skippedNoLogs, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_log_samples:noLogSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}', note:'Daily incremental temp fetches fresh MLB StatsAPI current-season game logs into player_game_logs_temp. v1.3.79 reconciles progress from temp rows and force-advances due running requests so already-staged players cannot repeat forever.' };
+  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'player_game_logs_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_player_game_logs_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_logs:skippedNoLogs, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_log_samples:noLogSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}', note: stageFinalizer.finalize ? 'Stage logs finalized by certified coverage threshold; advancing to split staging on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season game logs into player_game_logs_temp. v1.3.80 reconciles progress from temp rows, applies certified row-threshold stage finalization, and writes compact current tick output so stage_logs cannot run forever after temp coverage is already sufficient.' };
 }
 async function stageIncrementalSplitsTemp(input, env) {
   await ensureIncrementalTempTables(env);
@@ -7449,10 +7510,11 @@ async function stageIncrementalSplitsTemp(input, env) {
   const dedupe = await dedupeIncrementalTempTables(env);
   await ensureIncrementalTempUniqueIndexes(env);
   const tempCount = await staticTableCount(env, 'ref_player_splits_temp');
-  const remaining = Math.max(0, active.length - doneCount);
+  const stageFinalizer = shouldFinalizeIncrementalTempStage({ step:'stage_splits', activeCount:active.length, doneCount, tempRows:tempCount.rows_count, requiredRows:1000 });
+  const remaining = stageFinalizer.finalize ? 0 : Math.max(0, active.length - doneCount);
   const needsContinue = remaining > 0;
   const dataOk = needsContinue ? true : Number(tempCount.rows_count || 0) >= 1000;
-  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'ref_player_splits_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_ref_player_splits_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_splits:skippedNoSplits, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_split_samples:noSplitSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr', note:'Daily incremental temp fetches fresh MLB StatsAPI current-season split rows into ref_player_splits_temp. v1.3.79 reconciles progress from temp rows and force-advances due running requests so already-staged players cannot repeat forever.' };
+  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'ref_player_splits_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_ref_player_splits_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_splits:skippedNoSplits, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_split_samples:noSplitSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr', note: stageFinalizer.finalize ? 'Stage splits finalized by certified coverage threshold; advancing to audit on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season split rows into ref_player_splits_temp. v1.3.80 reconciles progress from temp rows, applies certified row-threshold stage finalization, and writes compact current tick output so split staging cannot run forever after temp coverage is already sufficient.' };
 }
 function nextIncrementalTempStep(step) { return ({ stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
 async function runIncrementalTempScheduledTick(input, env) {
@@ -7482,7 +7544,8 @@ async function runIncrementalTempScheduledTick(input, env) {
     }
     const nextStep = result?.needs_continue ? step : nextIncrementalTempStep(step); const complete = nextStep === 'completed';
     const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
-    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp fetch/stage, audit, protected promotion, temp cleanup, and derived rebuild finished. Error state cleared on completion.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and remains immediately due for the auto-runner/minute cron. No manual tick needed.' : 'Daily incremental pipeline advanced one protected step. Auto-runner/minute cron will continue.') };
+    const compactStep = compactIncrementalStepResult(result);
+    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:compactStep, counts, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp fetch/stage, audit, protected promotion, temp cleanup, and derived rebuild finished. Error state cleared on completion.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and remains immediately due for the auto-runner/minute cron. No manual tick needed.' : 'Daily incremental pipeline advanced one protected step. Auto-runner/minute cron will continue.') };
     const shouldStayDue = !!result?.needs_continue || !!input?.auto_continue;
     await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
@@ -7546,12 +7609,12 @@ async function runIncrementalTempAutoLoop(input, env) {
     elapsed_ms: Date.now() - started,
     latest_temp_refresh: latest,
     counts,
-    last_tick: last,
+    last_tick: compactIncrementalStepResult(last),
     auto_continue_active: !!active,
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
     next_action: last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.'),
-    note: 'One-click/cron auto-runner for incremental data. v1.3.79 keeps the orchestrator/cancel protections, keeps the temp unique insert guard, and adds force-due cursor advance so cron/orchestrator cannot keep touching a running request without executing the next batch.'
+    note: 'One-click/cron auto-runner for incremental data. v1.3.80 keeps the orchestrator/cancel protections and adds stage-completion finalization plus compact tick output so cron/orchestrator continues through logs → splits → audit → promote → clean → derived without manual babysitting.'
   };
 }
 async function checkIncrementalTempData(input, env) {
@@ -7577,10 +7640,10 @@ async function auditIncrementalTempCertification(input, env) {
   else if (latestRun.error) failures.push({ code:'TEMP_REFRESH_HAS_ERROR', error:latestRun.error, latest_run:{ request_id:latestRun.request_id, status:latestRun.status, current_step:latestRun.current_step, updated_at:latestRun.updated_at } });
   else if (!isAuditStep && !isCompletedFinalState) failures.push({ code:'TEMP_REFRESH_NOT_READY_FOR_AUDIT', latest_run:{ request_id:latestRun.request_id, status:latestRun.status, current_step:latestRun.current_step, updated_at:latestRun.updated_at } });
   if (isAuditStep) {
-    if ((m.player_game_logs_temp || 0) < 9000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:9000, note:'v1.3.79 uses deduped temp rows; 9000+ unique player/game/group rows is acceptable before split audit.' });
+    if ((m.player_game_logs_temp || 0) < 9000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:9000, note:'v1.3.80 uses deduped temp rows; 9000+ unique player/game/group rows is acceptable before split audit.' });
     if ((m.ref_player_splits_temp || 0) < 1000) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:1000 });
   } else if (isCompletedFinalState) {
-    if ((m.player_game_logs || 0) < 9000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.player_game_logs, required_min:9000, note:'v1.3.79 uses deduped live rows; 9000+ unique player/game/group rows is acceptable.' });
+    if ((m.player_game_logs || 0) < 9000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.player_game_logs, required_min:9000, note:'v1.3.80 uses deduped live rows; 9000+ unique player/game/group rows is acceptable.' });
     if ((m.ref_player_splits || 0) < 1000) failures.push({ code:'LIVE_SPLIT_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.ref_player_splits, required_min:1000 });
     if ((m.incremental_player_metrics || 0) < 700) failures.push({ code:'DERIVED_METRIC_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.incremental_player_metrics, required_min:700 });
     if (isPostCleanEmptyTemp) warnings.push({ code:'TEMP_TABLES_EMPTY_AFTER_SUCCESSFUL_CLEAN', note:'Expected after completed pipeline. Audit used live table counts and final completed state.' });
