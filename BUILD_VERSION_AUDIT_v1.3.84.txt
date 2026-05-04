@@ -1,0 +1,9 @@
+Build audit: v1.3.84 - Incremental True Delta Certification
+
+Verified before ZIP:
+- worker.js SYSTEM_VERSION: v1.3.84 - Incremental True Delta Certification
+- control_room.html visible version tag: v1.3.84 - Incremental True Delta Certification
+- README version: v1.3.84
+- Control Room includes Certify Live Incremental button calling certify_incremental_live_tables
+- worker.js passes node --check
+- Flat ZIP root only
