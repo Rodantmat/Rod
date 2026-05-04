@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.72 - Incremental Daily Delta Runner Repair";
+const SYSTEM_VERSION = "v1.3.73 - Incremental Auto Runner No Manual Tick";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -123,6 +123,7 @@ const JOB_DISPLAY_LABELS = {
   weekly_static_temp_refresh_auto: "SCHEDULED > Weekly Static Temp Refresh Auto",
   schedule_incremental_temp_refresh_once: "INCREMENTAL TEMP > Schedule Daily Refresh Test",
   run_incremental_temp_refresh_tick: "INCREMENTAL TEMP > Run One Refresh Tick",
+  run_incremental_temp_refresh_auto: "INCREMENTAL TEMP > Start/Continue Auto Refresh",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -739,6 +740,7 @@ const JOBS = {
   clean_static_temp_tables: { prompt: null, tables: ["ref_venues_temp", "ref_team_aliases_temp", "ref_players_temp"], note: "clean temp static staging tables after successful promotion" },
   schedule_incremental_temp_refresh_once: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "schedule protected daily incremental temp pipeline" },
   run_incremental_temp_refresh_tick: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "advance protected daily incremental temp pipeline" },
+  run_incremental_temp_refresh_auto: { prompt: null, tables: ["incremental_temp_refresh_runs", "player_game_logs_temp", "ref_player_splits_temp", "player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "one-click auto-runner: schedules or continues the daily incremental pipeline and lets minute cron finish without manual ticks" },
   check_incremental_temp_all: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp"], note: "check daily incremental temp staging tables" },
   audit_incremental_temp_certification: { prompt: null, tables: ["player_game_logs_temp", "ref_player_splits_temp", "incremental_temp_certification_audits"], note: "certify daily incremental temp before promotion" },
   promote_incremental_temp_to_live: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "promote certified daily incremental temp and rebuild derived after cleanup" },
@@ -995,19 +997,19 @@ export default {
               note: 'Minute cron handled the weekly static-temp scheduler/tick. No daily Phase 3 fallback, no old odds-only cron, and no stale legacy scheduled branches run from the minute cron.'
             };
           } else {
-            const incrementalTick = await runIncrementalTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_tick', max_players: 20 }, env);
+            const incrementalTick = await runIncrementalTempAutoLoop({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_auto', max_players: 20, max_ms: 24000, max_ticks: 3, from_minute_cron: true }, env);
             if (incrementalTick && incrementalTick.status !== 'idle_no_due_temp_refresh') {
               result = {
                 ok: true,
                 data_ok: !!incrementalTick?.data_ok,
                 version: SYSTEM_VERSION,
                 job: 'incremental_refresh_minute_scheduler',
-                status: 'incremental_refresh_advanced',
+                status: 'incremental_refresh_auto_advanced',
                 cron,
                 scheduled_admin_refresh: scheduledAdminRefresh,
                 scheduled_static_refresh: staticSchedule,
-                incremental_tick: incrementalTick,
-                note: 'Minute cron advanced the daily incremental temp pipeline. This keeps player_game_logs/ref_player_splits/incremental_player_metrics current without Safari dependency.'
+                incremental_auto: incrementalTick,
+                note: 'Minute cron auto-advanced the daily incremental temp pipeline in bounded loops. No Safari/manual tick dependency.'
               };
             } else {
               result = {
@@ -1019,7 +1021,7 @@ export default {
                 cron,
                 scheduled_admin_refresh: scheduledAdminRefresh,
                 scheduled_static_refresh: staticSchedule,
-                incremental_tick: incrementalTick,
+                incremental_auto: incrementalTick,
                 note: 'No admin/manual full refresh request, no scheduled full-refresh slot, no due incremental-temp work, and no weekly static-temp work is due. The cron exits without heavy work.'
               };
             }
@@ -1146,6 +1148,7 @@ function executableJobNames() {
     "clean_static_temp_tables",
     "schedule_incremental_temp_refresh_once",
     "run_incremental_temp_refresh_tick",
+    "run_incremental_temp_refresh_auto",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -7164,14 +7167,52 @@ async function runIncrementalTempScheduledTick(input, env) {
     }
     const nextStep = result?.needs_continue ? step : nextIncrementalTempStep(step); const complete = nextStep === 'completed';
     const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
-    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp fetch/stage, audit, protected promotion, temp cleanup, and derived rebuild finished. Error state cleared on completion.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and will continue the same step on the next minute cron.' : 'Daily incremental pipeline advanced one protected step. Minute cron will continue.') };
-    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN datetime('now', '+1 minute') ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, result?.needs_continue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:result, counts, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed: temp fetch/stage, audit, protected promotion, temp cleanup, and derived rebuild finished. Error state cleared on completion.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and remains immediately due for the auto-runner/minute cron. No manual tick needed.' : 'Daily incremental pipeline advanced one protected step. Auto-runner/minute cron will continue.') };
+    const shouldStayDue = !!result?.needs_continue || !!input?.auto_continue;
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'failed_exception', error:String(err?.message || err), live_tables_touched:false };
     await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(failure.error, JSON.stringify(failure), requestId).run().catch(() => null);
     return failure;
   }
+}
+
+async function runIncrementalTempAutoLoop(input, env) {
+  await ensureIncrementalTempTables(env);
+  const started = Date.now();
+  const maxMs = Math.max(5000, Math.min(Number(input?.max_ms || 24000), 26000));
+  const maxTicks = Math.max(1, Math.min(Number(input?.max_ticks || 3), 4));
+  const maxPlayers = Math.max(1, Math.min(Number(input?.max_players || input?.limit || 20), 25));
+  const ticks = [];
+  let last = null;
+  for (let i = 0; i < maxTicks; i++) {
+    if (Date.now() - started > maxMs) break;
+    const tick = await runIncrementalTempScheduledTick({ ...(input || {}), job:'run_incremental_temp_refresh_tick', trigger: input?.trigger || 'auto_loop', max_players: maxPlayers, auto_continue: true }, env);
+    ticks.push(tick);
+    last = tick;
+    if (!tick || tick.status === 'idle_no_due_temp_refresh' || tick.status === 'pipeline_blocked' || tick.status === 'failed_exception' || tick.refresh_complete) break;
+  }
+  const latest = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,1200) AS output_preview FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
+  const active = latest && ['pending','running'].includes(String(latest.status || '').toLowerCase());
+  return {
+    ok: true,
+    data_ok: last?.data_ok !== false,
+    version: SYSTEM_VERSION,
+    job: input.job || 'run_incremental_temp_refresh_auto',
+    status: last?.status === 'idle_no_due_temp_refresh' ? 'idle_no_due_temp_refresh' : (last?.refresh_complete ? 'completed' : 'auto_continue_scheduled'),
+    ticks_run: ticks.length,
+    elapsed_ms: Date.now() - started,
+    latest_temp_refresh: latest,
+    counts,
+    last_tick: last,
+    auto_continue_active: !!active,
+    manual_ticks_required: false,
+    live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
+    next_action: last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : 'Do not manually tick. Minute cron will continue the active incremental request until completed.',
+    note: 'One-click/cron auto-runner for incremental data. It advances bounded safe batches per request and leaves the request due for the next minute cron, so Safari/manual repeated ticking is not required.'
+  };
 }
 async function checkIncrementalTempData(input, env) {
   await ensureIncrementalTempTables(env);
@@ -8599,8 +8640,13 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_full_scoring_refresh_v1") return await runFullScoringRefreshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_full_scoring_refresh_button" }, env);
   if (jobName === "check_auto_scoring_mesh_v1") return await checkAutoScoringMeshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
-  if (jobName === "schedule_incremental_temp_refresh_once") return await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "schedule_incremental_temp_refresh_once") {
+    const scheduled = await scheduleIncrementalTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+    const kickoff = await runIncrementalTempAutoLoop({ ...(body || {}), job:'run_incremental_temp_refresh_auto', slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger:'manual_schedule_kickoff', max_players:20, max_ms:24000, max_ticks:2 }, env);
+    return { ...scheduled, kickoff, status: scheduled.status === 'already_scheduled_or_running' ? 'already_scheduled_or_running_auto_continued' : 'scheduled_and_auto_started', manual_ticks_required:false, next_action:'Do not manually tick. Minute cron will continue the active incremental request until completed.' };
+  }
+  if (jobName === "run_incremental_temp_refresh_auto") return await runIncrementalTempAutoLoop({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_auto" }, env);
+  if (jobName === "run_incremental_temp_refresh_tick") return await runIncrementalTempAutoLoop({ ...(body || {}), job:'run_incremental_temp_refresh_auto', slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_tick_auto_redirect", max_players:20, max_ms:24000, max_ticks:2 }, env);
   if (jobName === "check_incremental_temp_all") return await checkIncrementalTempData({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "audit_incremental_temp_certification") return await auditIncrementalTempCertification({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "promote_incremental_temp_to_live") return await promoteIncrementalTempToLive({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);

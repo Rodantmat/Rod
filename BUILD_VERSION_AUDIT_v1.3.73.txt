@@ -1,0 +1,17 @@
+AlphaDog Build Version Audit
+Expected build: v1.3.73 - Incremental Auto Runner No Manual Tick
+
+Verified labels:
+- ZIP filename: alphadog_v1.3.73_incremental_auto_runner_no_manual_tick.zip
+- worker.js SYSTEM_VERSION: v1.3.73 - Incremental Auto Runner No Manual Tick
+- control_room.html visible tag: v1.3.73 - Incremental Auto Runner No Manual Tick
+- control_room.html client version/debugConfig: control_room_v1_3_73_incremental_auto_runner_no_manual_tick
+- README: README_v1.3.73.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.73.txt
+
+Certification:
+- node --check worker.js passes.
+- Flat package only.
+- No scheduled backend scoring/math touched.
+- No D1 migration required.
+- Incremental temp auto-runner added and wired.
