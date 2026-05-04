@@ -1,0 +1,3 @@
+worker.js SYSTEM_VERSION=v1.3.90.1 - Deploy Verification Cascade Guard
+control_room.html version tag=v1.3.90.1 - Deploy Verification Cascade Guard
+wrangler.jsonc main=worker.js

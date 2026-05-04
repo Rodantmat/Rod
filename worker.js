@@ -1,6 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.90 - Orchestrator Cascade Gate Repair";
+// DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_90_1_DEPLOY_VERIFICATION_CASCADE_GUARD
+const SYSTEM_VERSION = "v1.3.90.1 - Deploy Verification Cascade Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
