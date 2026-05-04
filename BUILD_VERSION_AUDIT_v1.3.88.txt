@@ -1,0 +1,5 @@
+ZIP filename: alphadog_v1.3.88_incremental_daily_production_guard.zip
+worker.js SYSTEM_VERSION: v1.3.88 - Incremental Daily Production Guard
+control_room.html version tag: v1.3.88 - Incremental Daily Production Guard
+README: README_v1.3.88.txt
+Flat folder: yes
