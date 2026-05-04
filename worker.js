@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.89 - Production Refresh Clock Orchestrator";
+const SYSTEM_VERSION = "v1.3.90 - Orchestrator Cascade Gate Repair";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -6991,6 +6991,11 @@ async function ensureRefreshOrchestratorTables(env) {
   const catalog = refreshOrchestratorCatalogRows();
   const stmts = catalog.map(j => env.DB.prepare(`INSERT OR REPLACE INTO data_refresh_catalog (job_key, display_name, job_name, group_name, sequence_order, default_selected, supports_cascade, notes, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`).bind(j.job_key, j.display_name, j.job_name, j.group_name, j.sequence_order, j.default_selected ? 1 : 0, j.supports_cascade === false ? 0 : 1, j.notes || null));
   if (stmts.length) await env.DB.batch(stmts);
+  // v1.3.90: remove deprecated Sleeper rows from the orchestrator catalog. Sleeper is manual/feed-driven only.
+  await env.DB.prepare(`DELETE FROM data_refresh_catalog WHERE job_key IN ('sleeper_board','sleeper_morning_window')`).run().catch(() => null);
+  // v1.3.90: split normal cron progress ticks from true failure/retry attempts.
+  await env.DB.prepare(`ALTER TABLE data_refresh_queue ADD COLUMN tick_count INTEGER DEFAULT 0`).run().catch(() => null);
+  await env.DB.prepare(`ALTER TABLE data_refresh_queue ADD COLUMN retry_count INTEGER DEFAULT 0`).run().catch(() => null);
 }
 
 function refreshOrchestratorCatalogRows() {
@@ -7151,7 +7156,7 @@ async function refreshOrchestratorEvent(env, event) {
 async function refreshOrchestratorStatus(input, env) {
   await ensureRefreshOrchestratorTables(env);
   const catalog = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, default_selected, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
-  const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, attempt_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,700) AS output_preview, error FROM data_refresh_queue ORDER BY datetime(created_at) DESC, sequence_order ASC LIMIT 50`);
+  const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', catalog_count:catalog.length, catalog, active_summary:active, recent_queue:queue, note:'Database-backed refresh orchestrator is active. Minute cron processes one due queue row at a time; cascade rows wait for previous rows to complete.' };
 }
@@ -7195,7 +7200,7 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
 }
 
 async function markRefreshQueueCompleted(env, row, wrapped) {
-  await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+  await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
   const next = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE chain_id=? AND status='pending' AND run_after IS NULL ORDER BY sequence_order ASC, created_at ASC LIMIT 1`).bind(row.chain_id).first().catch(() => null);
   if (next) await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(next.request_id).run();
 }
@@ -7209,6 +7214,50 @@ function refreshResultIsPartial(result) {
   return false;
 }
 
+function isPrizePicksBoardWaitingResult(result) {
+  const status = String(result?.status || result?.result?.status || result?.error || '').toLowerCase();
+  return status.includes('github_workflow_dispatched_waiting_for_board_update') || status.includes('waiting_for_board_update');
+}
+
+async function prizePicksBoardFreshnessGate(env, row) {
+  const anchor = row?.started_at || row?.updated_at || row?.created_at || null;
+  const meta = await env.DB.prepare(`
+    SELECT COUNT(*) AS rows_count, MIN(updated_at) AS oldest_updated_at, MAX(updated_at) AS latest_updated_at
+    FROM mlb_stats
+    WHERE updated_at >= datetime(COALESCE(?, CURRENT_TIMESTAMP), '-2 minutes')
+  `).bind(anchor).first().catch(() => ({ rows_count:0, latest_updated_at:null, oldest_updated_at:null }));
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS total_rows, MAX(updated_at) AS latest_any_updated_at FROM mlb_stats`).first().catch(() => ({ total_rows:0, latest_any_updated_at:null }));
+  return {
+    ok: Number(meta?.rows_count || 0) > 0,
+    anchor,
+    fresh_rows_after_anchor: Number(meta?.rows_count || 0),
+    oldest_fresh_updated_at: meta?.oldest_updated_at || null,
+    latest_fresh_updated_at: meta?.latest_updated_at || null,
+    total_rows: Number(total?.total_rows || 0),
+    latest_any_updated_at: total?.latest_any_updated_at || null
+  };
+}
+
+async function compactRefreshQueueOutput(wrapped) {
+  const result = wrapped?.result || {};
+  return {
+    ok: wrapped?.ok !== false,
+    data_ok: wrapped?.data_ok !== false,
+    version: wrapped?.version,
+    job: wrapped?.job,
+    request_id: wrapped?.request_id,
+    chain_id: wrapped?.chain_id,
+    job_key: wrapped?.job_key,
+    display_name: wrapped?.display_name,
+    routed_job: wrapped?.routed_job,
+    result_status: result?.status || null,
+    result_job: result?.job || null,
+    partial: refreshResultIsPartial(result),
+    elapsed_ms: wrapped?.elapsed_ms,
+    note: result?.note || wrapped?.note || null
+  };
+}
+
 async function runRefreshOrchestratorTick(input, env) {
   await ensureRefreshOrchestratorTables(env);
   const started = Date.now();
@@ -7216,9 +7265,9 @@ async function runRefreshOrchestratorTick(input, env) {
   const processed = [];
   let last = null;
   while ((Date.now() - started) < maxMs) {
-    const row = await env.DB.prepare(`SELECT * FROM data_refresh_queue WHERE status IN ('pending','running') AND (run_after IS NULL OR run_after <= CURRENT_TIMESTAMP) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, sequence_order ASC, created_at ASC LIMIT 1`).first().catch(() => null);
+    const row = await env.DB.prepare(`SELECT * FROM data_refresh_queue WHERE status='running' OR (status='pending' AND run_after IS NOT NULL AND run_after <= CURRENT_TIMESTAMP) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, sequence_order ASC, created_at ASC LIMIT 1`).first().catch(() => null);
     if (!row) break;
-    await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1 WHERE request_id=?`).bind(row.request_id).run();
+    await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(row.request_id).run();
     await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'start', status:'running', message:row.display_name });
     let result;
     try {
@@ -7231,18 +7280,32 @@ async function runRefreshOrchestratorTick(input, env) {
       } else {
         result = await executeTaskJob(row.job_name, { ...(body || {}), job:row.job_name, trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
       }
+      if ((result?.ok === false || result?.data_ok === false) && row.job_key === 'prizepicks_board' && isPrizePicksBoardWaitingResult(result)) {
+        const freshnessGate = await prizePicksBoardFreshnessGate(env, row);
+        if (freshnessGate.ok) {
+          result = {
+            ...result,
+            ok: true,
+            data_ok: true,
+            status: 'board_refresh_confirmed_by_mlb_stats_freshness',
+            board_refresh_complete: true,
+            freshness_gate: freshnessGate,
+            note: 'GitHub dispatch returned waiting, but mlb_stats refreshed after dispatch. Orchestrator treats PrizePicks Board as complete and safely advances to Phase 2C.'
+          };
+        }
+      }
       const wrapped = { ok:result?.ok !== false, data_ok:result?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, display_name:row.display_name, routed_job:row.job_name, result, elapsed_ms:Date.now()-started };
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:result?.status || (result?.ok === false ? 'failed' : 'pass'), partial:refreshResultIsPartial(result) });
       if (result?.ok === false || result?.data_ok === false) {
         const attempts = Number(row.attempt_count || 0) + 1;
         const terminal = attempts >= Number(row.max_attempts || 3);
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed':'retry', status:terminal?'failed':'pending', message:String(result?.error || result?.status || 'refresh_job_failed'), payload_json:wrapped });
         break;
       }
       if (refreshResultIsPartial(result)) {
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'partial_continue', status:'running', message:'Will continue on next minute cron.', payload_json:wrapped });
         break;
       }
@@ -7256,7 +7319,7 @@ async function runRefreshOrchestratorTick(input, env) {
       const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error };
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error });
-      await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, error, JSON.stringify(wrapped).slice(0,10000), row.request_id).run();
+      await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, error, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
       await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed_exception':'retry_exception', status:terminal?'failed':'pending', message:error, payload_json:wrapped });
       break;
     }
@@ -9367,10 +9430,23 @@ async function phase2cGetOrStartRun(env, slateDate, latestUpdatedAt, totalRows, 
     const existing = await env.DB.prepare(`
       SELECT * FROM phase2c_market_context_runs
       WHERE slate_date=? AND latest_board_updated_at=? AND status IN ('started','partial_continue')
-      ORDER BY updated_at DESC
+      ORDER BY processed_rows DESC, updated_at DESC
       LIMIT 1
     `).bind(slateDate, latestUpdatedAt).first();
-    if (existing?.run_id) return { run: existing, is_new: false };
+    if (existing?.run_id) {
+      await env.DB.prepare(`
+        UPDATE phase2c_market_context_runs
+        SET status='superseded_duplicate', updated_at=CURRENT_TIMESTAMP, completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP), warnings_json='["v1.3.90 superseded duplicate active Phase 2C run for same board timestamp"]'
+        WHERE slate_date=? AND latest_board_updated_at=? AND status IN ('started','partial_continue') AND run_id<>?
+      `).bind(slateDate, latestUpdatedAt, existing.run_id).run().catch(() => null);
+      return { run: existing, is_new: false };
+    }
+  } else {
+    await env.DB.prepare(`
+      UPDATE phase2c_market_context_runs
+      SET status='superseded_by_force_new', updated_at=CURRENT_TIMESTAMP, completed_at=COALESCE(completed_at,CURRENT_TIMESTAMP)
+      WHERE slate_date=? AND latest_board_updated_at=? AND status IN ('started','partial_continue')
+    `).bind(slateDate, latestUpdatedAt).run().catch(() => null);
   }
   const runId = crypto.randomUUID();
   await env.DB.prepare(`
