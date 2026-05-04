@@ -1,0 +1,15 @@
+Build Version Audit
+Expected version: v1.3.77 - Incremental Temp Unique Insert Guard
+
+Files checked:
+- worker.js: SYSTEM_VERSION updated.
+- control_room.html: visible version tag updated.
+- README_v1.3.77.txt included.
+- BUILD_VERSION_AUDIT_v1.3.77.txt included.
+
+Patch certification:
+- Flat deploy folder preserved.
+- No scoring constants changed.
+- No candidate-board logic changed.
+- No Main UI files included.
+- Incremental temp duplicate guard added at temp-table creation/reset and after each bounded stage batch.
