@@ -1,0 +1,16 @@
+Build Version Audit
+Expected version: v1.3.82 - Incremental Split Stale Finalizer
+
+Files checked:
+- worker.js SYSTEM_VERSION updated
+- control_room.html visible version tag updated
+- control_room.html debugConfig version updated
+- README_v1.3.82.txt included
+- BUILD_VERSION_AUDIT_v1.3.82.txt included
+
+Critical checks:
+- stage_logs hard reconciler preserved
+- stage_splits hard reconciler threshold aligned to 650 clean rows
+- audit threshold aligned to 650 clean split rows
+- promotion remains INSERT OR REPLACE, not destructive
+- no scheduled backend scoring/math changes
