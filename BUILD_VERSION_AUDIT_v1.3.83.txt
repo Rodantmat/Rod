@@ -1,0 +1,6 @@
+Build: v1.3.83 - Incremental Pristine Certification Guard
+Worker SYSTEM_VERSION: v1.3.83 - Incremental Pristine Certification Guard
+Control Room version tag: v1.3.83 - Incremental Pristine Certification Guard
+README: README_v1.3.83.txt
+Patch: live incremental certification guard + durable certification audit table.
+Validated: node --check worker.js passed.
