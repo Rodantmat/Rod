@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.79 - Incremental Force-Due Cursor Advance Repair
+
+Verified package intent:
+- worker.js SYSTEM_VERSION updated to v1.3.79 - Incremental Force-Due Cursor Advance Repair.
+- control_room.html visible version tag updated to v1.3.79 - Incremental Force-Due Cursor Advance Repair.
+- README_v1.3.79.txt included.
+- BUILD_VERSION_AUDIT_v1.3.79.txt included.
+- Prior README/audit files removed from delivery package.
+
+Surgical scope:
+- Incremental runner force-due selection fixed.
+- Incremental terminal empty-selection guards added.
+- No scoring math touched.
+- No Main UI touched.
+- No D1 schema destructive migration added.
