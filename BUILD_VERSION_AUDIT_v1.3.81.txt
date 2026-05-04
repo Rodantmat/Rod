@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+Expected version: v1.3.81 - Incremental Hard Stage Reconciler
+
+Files included:
+- worker.js
+- control_room.html
+- wrangler.jsonc
+- package.json
+- README_v1.3.81.txt
+- BUILD_VERSION_AUDIT_v1.3.81.txt
+
+Validation performed:
+- worker.js SYSTEM_VERSION checked.
+- control_room.html visible version tag checked.
+- node --check worker.js passed.
+- Flat ZIP only, no subfolders.
