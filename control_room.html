@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.3.88 - Incremental Daily Production Guard -->
+<!-- v1.3.89 - Production Refresh Clock Orchestrator -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -48,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.3.88 - Incremental Daily Production Guard</div>
+<div id="versionTag">v1.3.89 - Production Refresh Clock Orchestrator</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -66,29 +66,31 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 
 
 
-<div class="section"><h3>DATA REFRESHING • ORCHESTRATOR</h3>
-<div class="small">Database-backed queue. Select one or more refreshers, then schedule selected-only or cascade from the first checked step. Minute cron continues the queue; no manual repeated ticking.</div>
+<div class="section"><h3>DATA REFRESHING • PRODUCTION CLOCK ORCHESTRATOR</h3>
+<div class="small">Database-backed queue and schedule table. Minute cron only wakes the worker; the worker checks the schedule/queue tables and runs one safe unit at a time. Sleeper board remains manual and is intentionally excluded from production clock cascades.</div>
 <div class="refreshGrid" id="refreshOrchestratorChecks">
-<label class="refreshItem"><input type="checkbox" data-refresh-key="incremental_daily" checked><div><b>01 Incremental Daily</b><span>Fresh game logs/splits → audit → promote → derived metrics.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="static_weekly"><div><b>00 Static Weekly</b><span>Monday 12:30 AM PT. Static/reference temp → certify → promote → clean.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="incremental_daily" checked><div><b>01 Incremental Daily Delta</b><span>Daily 1:30 AM PT. True delta logs → audit → promote → derived → live certify.</span></div></label>
 <label class="refreshItem"><input type="checkbox" data-refresh-key="everyday_phase1"><div><b>02 Everyday Phase 1</b><span>Games, starters, bullpens, lineups, usage, candidate prep.</span></div></label>
 <label class="refreshItem"><input type="checkbox" data-refresh-key="weather_roof"><div><b>03 Weather/Roof</b><span>Phase 2A weather, wind, roof context.</span></div></label>
 <label class="refreshItem"><input type="checkbox" data-refresh-key="lineup_context"><div><b>04 Lineup/Scratch</b><span>Phase 2B lineup confirmation and fallback context.</span></div></label>
 <label class="refreshItem"><input type="checkbox" data-refresh-key="prizepicks_board"><div><b>05 PrizePicks Board</b><span>Trigger board refresh bridge.</span></div></label>
 <label class="refreshItem"><input type="checkbox" data-refresh-key="prizepicks_context"><div><b>06 PrizePicks Context</b><span>Phase 2C current-board market context.</span></div></label>
-<label class="refreshItem"><input type="checkbox" data-refresh-key="sleeper_board"><div><b>07 Sleeper Board</b><span>Sleeper RBI/RFI board ingest.</span></div></label>
-<label class="refreshItem"><input type="checkbox" data-refresh-key="sleeper_morning_window"><div><b>08 Sleeper Morning Window</b><span>RBI/RFI Sleeper signal window.</span></div></label>
-<label class="refreshItem"><input type="checkbox" data-refresh-key="odds_api_morning"><div><b>09 Odds API Morning</b><span>External odds/player props refresh.</span></div></label>
-<label class="refreshItem"><input type="checkbox" data-refresh-key="scoring_refresh"><div><b>10 Scoring Board</b><span>Score refresh and candidate board rebuild.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="odds_api_morning"><div><b>07 Odds API Morning</b><span>Morning external odds/player props refresh.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="odds_api_afternoon"><div><b>08 Odds API Intraday</b><span>Afternoon/evening external odds/player props refresh.</span></div></label>
+<label class="refreshItem"><input type="checkbox" data-refresh-key="scoring_refresh"><div><b>09 Scoring Board</b><span>Score refresh and candidate board rebuild.</span></div></label>
 </div>
 <div class="refreshActions">
 <button class="warn" onclick="orchestratorSelectedOnly()">Schedule Selected Only</button>
 <button class="warn" onclick="orchestratorCascade()">Cascade From First Checked</button>
+<button class="check" onclick="runJobButton('DATA REFRESHING > Production Clock Status','refresh_orchestrator_schedule_status')">Production Clock Status</button>
 <button class="check" onclick="runJobButton('DATA REFRESHING > Orchestrator Status','refresh_orchestrator_status')">Orchestrator Status</button>
 <button class="audit" onclick="runJobButton('DATA REFRESHING > Run One Queue Tick','refresh_orchestrator_tick')">Run Queue Tick</button>
+<button class="debug" onclick="runJobButton('DATA REFRESHING > Init Production Clock','refresh_orchestrator_seed_production_clock')">Init Clock</button>
 <button class="debug" onclick="runJobButton('DATA REFRESHING > Init Tables','refresh_orchestrator_init')">Init Tables</button>
 <button class="danger" onclick="runJobButton('DATA REFRESHING > Cancel Queue','refresh_orchestrator_cancel_all')">Cancel Active Queue</button>
 </div>
-<div class="small">Selected Only = independent checked jobs, one at a time. Cascade = starts at the first checked step and continues through later steps only after each previous step completes.</div>
+<div class="small">Production schedule: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; intraday cascades at 9:00 AM, 1:00 PM, and 10:00 PM PT. Selected Only = independent checked jobs. Cascade = ordered chain, one at a time.</div>
 </div>
 
 <div class="section"><h3>SCRAPE</h3><div class="grid">
@@ -293,7 +295,7 @@ function clearMinePulse(){const el=document.getElementById("minePulse");if(el){e
 function loading(l,e){setStatus("RUNNING: "+l);if(l.indexOf("Board Queue Auto Mine Raw")>=0)setMinePulse("MINER PULSE\nStarting...\n"+(e||""));else clearMinePulse();setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_3_88_incremental_daily_production_guard",deferred_full_run_url:DEFER_FULL_RUN_URL})}
+function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_3_89_production_refresh_clock_orchestrator",deferred_full_run_url:DEFER_FULL_RUN_URL})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const body=r&&r.body?r.body:null;const httpOk=!!(r&&r.http_status&&r.http_status<400);if(j==="refresh_orchestrator_cancel_all")return false;if(body&&body.ok===true){const st=String(body.status||"").toLowerCase();if(st.includes("cancel"))return false;if(j==="check_mlb_scoring_v1"&&(body.latest_run_completed===true||body.scoring_engine_ok===true||((body.latest_runs||[])[0]&&String((body.latest_runs||[])[0].status||"").toUpperCase()==="COMPLETED")))return false;if(j==="inspect_mlb_score_audit_v1")return false;if(j==="build_mlb_score_candidate_board_v1")return false;if(j==="run_mlb_scoring_v1")return false;}const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||(!httpOk&&raw.includes("cancelled")))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine"||j==="check_mlb_scoring_v1"||j==="run_mlb_scoring_v1"||j==="refresh_orchestrator_cancel_all")return false;return true}}return false}
@@ -671,7 +673,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.3.88 - Incremental Daily Production Guard",
+    version: "v1.3.89 - Production Refresh Clock Orchestrator",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

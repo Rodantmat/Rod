@@ -1,6 +1,6 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-const SYSTEM_VERSION = "v1.3.88 - Incremental Daily Production Guard";
+const SYSTEM_VERSION = "v1.3.89 - Production Refresh Clock Orchestrator";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -130,6 +130,8 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_tick: "DATA REFRESHING > Run One Queue Tick",
   refresh_orchestrator_status: "DATA REFRESHING > Orchestrator Status",
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
+  refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
+  refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -975,20 +977,22 @@ export default {
         // v1.3.59: the only active cron is the minute poller.
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
+        const productionClock = await enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' });
         const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
-        if (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') {
+        if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue')) {
           result = {
             ok: true,
-            data_ok: !!orchestratorTick.data_ok,
+            data_ok: !!orchestratorTick.data_ok && productionClock.data_ok !== false,
             version: SYSTEM_VERSION,
-            job: 'global_refresh_orchestrator_minute_scheduler',
-            status: 'orchestrator_advanced',
+            job: 'production_refresh_clock_minute_scheduler',
+            status: orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue' ? 'orchestrator_advanced' : 'production_clock_checked',
             cron,
+            production_clock: productionClock,
             orchestrator_tick: orchestratorTick,
-            note: 'Minute cron advanced the database-backed refresh orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
+            note: 'Minute cron checked the production schedule table and advanced the database-backed orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
           };
         } else {
-        const scheduledAdminRefresh = await scheduleDueAdminFullRefreshFromMinuteCron(env, cron);
+        const scheduledAdminRefresh = { ok:true, status:'legacy_admin_schedule_disabled_by_v1.3.89', note:'Production Refresh Clock owns scheduled refreshes. Manual admin buttons still work, but old direct 9/12/21 full-refresh slots are disabled to prevent collisions.' };
         const adminDueTick = await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
           result = {
@@ -1003,8 +1007,8 @@ export default {
             note: 'Minute cron advanced one bounded Admin/Main UI freshness step. Manual button requests and scheduled 9AM/12PM/9PM PT full refreshes share this same backend-safe dispatcher.'
           };
         } else {
-          const staticSchedule = await scheduleDueWeeklyStaticRefreshFromMinuteCron(env, cron);
-          const staticTick = await runStaticTempScheduledTick({ cron, trigger: 'scheduled_minute_tick', job: 'run_static_temp_refresh_tick' }, env);
+          const staticSchedule = { ok:true, status:'not_due', note:'Weekly static is now controlled by data_refresh_schedule_plan Monday 12:30 AM PT.' };
+          const staticTick = { ok:true, status:'idle_no_due_static_refresh' };
           if ((staticSchedule && staticSchedule.status !== 'not_due') || (staticTick && staticTick.status !== 'idle_no_due_static_refresh')) {
             result = {
               ok: true,
@@ -1018,7 +1022,7 @@ export default {
               note: 'Minute cron handled the weekly static-temp scheduler/tick. No daily Phase 3 fallback, no old odds-only cron, and no stale legacy scheduled branches run from the minute cron.'
             };
           } else {
-            const incrementalTick = await runIncrementalTempAutoLoop({ cron, trigger: 'scheduled_minute_tick', job: 'run_incremental_temp_refresh_auto', max_players: 20, max_ms: 24000, max_ticks: 3, from_minute_cron: true }, env);
+            const incrementalTick = { ok:true, status:'idle_no_due_temp_refresh', note:'Daily incremental is now controlled by data_refresh_schedule_plan at 1:30 AM PT.' };
             if (incrementalTick && incrementalTick.status !== 'idle_no_due_temp_refresh') {
               result = {
                 ok: true,
@@ -1177,6 +1181,8 @@ function executableJobNames() {
     "refresh_orchestrator_tick",
     "refresh_orchestrator_status",
     "refresh_orchestrator_cancel_all",
+    "refresh_orchestrator_schedule_status",
+    "refresh_orchestrator_seed_production_clock",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -6989,17 +6995,148 @@ async function ensureRefreshOrchestratorTables(env) {
 
 function refreshOrchestratorCatalogRows() {
   return [
-    { job_key:'incremental_daily', display_name:'Incremental Daily Temp', job_name:'run_incremental_temp_refresh_auto', group_name:'01 Foundation', sequence_order:10, default_selected:1, notes:'Fresh current-season game logs/splits into temp, audit, promote, clean, rebuild derived metrics.' },
+    { job_key:'static_weekly', display_name:'Static Weekly Temp', job_name:'run_static_temp_refresh_auto', group_name:'00 Weekly Reference', sequence_order:5, default_selected:0, notes:'Weekly certified static/reference refresh. Runs Monday 12:30 AM PT through temp/certify/promote/clean.' },
+    { job_key:'incremental_daily', display_name:'Incremental Daily Delta', job_name:'run_incremental_temp_refresh_auto', group_name:'01 Foundation', sequence_order:10, default_selected:1, notes:'True daily delta game logs; audit, promote, clean, rebuild derived metrics, certify live.' },
     { job_key:'everyday_phase1', display_name:'Everyday Phase 1 Baseline', job_name:'everyday_phase1_all_direct', group_name:'02 Everyday Data', sequence_order:20, notes:'Games/market shell/starters/bullpens/lineups/usage/candidate prep baseline.' },
     { job_key:'weather_roof', display_name:'Phase 2A Weather/Roof', job_name:'scrape_phase2_weather_context', group_name:'02 Everyday Data', sequence_order:30, notes:'Weather, wind, roof context.' },
     { job_key:'lineup_context', display_name:'Phase 2B Lineup/Scratch', job_name:'scrape_phase2_lineup_context', group_name:'02 Everyday Data', sequence_order:40, notes:'Confirmed/last-available lineup context.' },
     { job_key:'prizepicks_board', display_name:'PrizePicks Board Refresh', job_name:'trigger_prizepicks_github_board_refresh', group_name:'03 Market Boards', sequence_order:50, notes:'Dispatch PrizePicks GitHub board refresh bridge.' },
     { job_key:'prizepicks_context', display_name:'Phase 2C Market Context', job_name:'scrape_phase2c_market_context', group_name:'03 Market Boards', sequence_order:60, notes:'Internal PrizePicks current-board context normalization.' },
-    { job_key:'sleeper_board', display_name:'Sleeper RBI/RFI Board', job_name:'run_sleeper_rbi_rfi_market_board', group_name:'03 Market Boards', sequence_order:70, notes:'Sleeper RBI/RFI market board ingestion.' },
-    { job_key:'sleeper_morning_window', display_name:'Sleeper Morning Window', job_name:'run_sleeper_rbi_rfi_window_morning', group_name:'04 Signals', sequence_order:80, notes:'Sleeper morning window runner.' },
-    { job_key:'odds_api_morning', display_name:'Odds API Morning', job_name:'run_odds_api_morning', group_name:'04 Signals', sequence_order:90, notes:'Odds API player props/game markets morning refresh.' },
+    { job_key:'odds_api_morning', display_name:'Odds API Morning', job_name:'run_odds_api_morning', group_name:'04 Market/Odds', sequence_order:90, notes:'Odds API player props/game markets morning refresh.' },
+    { job_key:'odds_api_afternoon', display_name:'Odds API Refresh', job_name:'run_odds_api_afternoon', group_name:'04 Market/Odds', sequence_order:92, notes:'Odds API player props/game markets intraday refresh.' },
     { job_key:'scoring_refresh', display_name:'Scoring + Candidate Board', job_name:'run_full_scoring_refresh_v1', group_name:'05 Release Board', sequence_order:100, notes:'Stored-data scoring refresh and candidate board rebuild.' }
   ];
+}
+
+
+async function ensureProductionRefreshScheduleTables(env) {
+  await ensureRefreshOrchestratorTables(env);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_refresh_schedule_plan (
+    plan_key TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    schedule_kind TEXT NOT NULL,
+    byday TEXT,
+    hour_pt INTEGER NOT NULL,
+    minute_pt INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    selected_job_keys_json TEXT NOT NULL,
+    last_enqueued_key TEXT,
+    last_enqueued_at TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  const plans = productionRefreshSchedulePlans();
+  const stmts = plans.map(pl => env.DB.prepare(`
+    INSERT INTO data_refresh_schedule_plan
+      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, notes, updated_at)
+    VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(plan_key) DO UPDATE SET
+      display_name=excluded.display_name,
+      schedule_kind=excluded.schedule_kind,
+      byday=excluded.byday,
+      hour_pt=excluded.hour_pt,
+      minute_pt=excluded.minute_pt,
+      mode=excluded.mode,
+      selected_job_keys_json=excluded.selected_job_keys_json,
+      notes=excluded.notes,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(pl.plan_key, pl.display_name, pl.schedule_kind, pl.byday || null, pl.hour_pt, pl.minute_pt, pl.mode, JSON.stringify(pl.job_keys), pl.notes || null));
+  if (stmts.length) await env.DB.batch(stmts);
+}
+
+function productionRefreshSchedulePlans() {
+  const intradayMorning = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','scoring_refresh'];
+  const intradayLater = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_afternoon','scoring_refresh'];
+  return [
+    { plan_key:'weekly_static_monday_0030_pt', display_name:'Weekly Static Reference Refresh', schedule_kind:'weekly', byday:'Mon', hour_pt:0, minute_pt:30, mode:'selected', job_keys:['static_weekly'], notes:'Monday 12:30 AM PT. Static/reference only; runs before daily incremental and cannot overlap due global queue.' },
+    { plan_key:'daily_incremental_0130_pt', display_name:'Daily Incremental Delta', schedule_kind:'daily', hour_pt:1, minute_pt:30, mode:'selected', job_keys:['incremental_daily'], notes:'Daily 1:30 AM PT. True delta when live base is A/A+ certified.' },
+    { plan_key:'intraday_full_0900_pt', display_name:'Intraday Refresh 9:00 AM', schedule_kind:'daily', hour_pt:9, minute_pt:0, mode:'cascade', job_keys:intradayMorning, notes:'Everyday phases + PrizePicks board/context + morning Odds API + scoring. Sleeper board is intentionally excluded/manual.' },
+    { plan_key:'intraday_full_1300_pt', display_name:'Intraday Refresh 1:00 PM', schedule_kind:'daily', hour_pt:13, minute_pt:0, mode:'cascade', job_keys:intradayLater, notes:'Everyday phases + PrizePicks board/context + Odds API refresh + scoring. Sleeper board is intentionally excluded/manual.' },
+    { plan_key:'intraday_full_2200_pt', display_name:'Intraday Refresh 10:00 PM', schedule_kind:'daily', hour_pt:22, minute_pt:0, mode:'cascade', job_keys:intradayLater, notes:'Late refresh for next-board/rollover context. Sleeper board is intentionally excluded/manual.' }
+  ];
+}
+
+function productionPlanIsDue(plan, pt) {
+  if (!plan || Number(plan.enabled) !== 1) return false;
+  if (Number(plan.hour_pt) !== Number(pt.hour) || Number(plan.minute_pt) !== Number(pt.minute)) return false;
+  if (String(plan.schedule_kind || '').toLowerCase() === 'weekly') {
+    return String(pt.weekday || '').slice(0,3).toLowerCase() === String(plan.byday || '').slice(0,3).toLowerCase();
+  }
+  return true;
+}
+
+async function enqueueProductionPlan(env, plan, pt, input = {}) {
+  await ensureProductionRefreshScheduleTables(env);
+  const dueKey = `${plan.plan_key}|${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
+  if (String(plan.last_enqueued_key || '') === dueKey) {
+    return { ok:true, data_ok:true, status:'already_enqueued_for_slot', plan_key:plan.plan_key, due_key:dueKey };
+  }
+  const active = await env.DB.prepare(`SELECT request_id, chain_id, job_key, status, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 1`).first().catch(() => null);
+  if (active) {
+    return { ok:true, data_ok:true, status:'blocked_active_queue_waiting', plan_key:plan.plan_key, active, due_key:dueKey, note:'Production clock will retry this due slot on the next minute until the global queue is idle. No overlapping refresh jobs are allowed.' };
+  }
+  let jobKeys = [];
+  try { jobKeys = JSON.parse(plan.selected_job_keys_json || '[]'); } catch (_) { jobKeys = []; }
+  const catalogRows = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
+  const byKey = Object.fromEntries(catalogRows.map(r => [r.job_key, r]));
+  const selected = jobKeys.map(k => byKey[k]).filter(Boolean);
+  if (!selected.length) return { ok:false, data_ok:false, status:'no_valid_jobs_for_plan', plan_key:plan.plan_key, job_keys:jobKeys };
+  const slate = resolveSlateDate({ slate_mode:'AUTO' });
+  const chainId = `clock|${dueKey}|${crypto.randomUUID()}`;
+  const mode = String(plan.mode || 'selected');
+  const stmts = selected.map((j, idx) => env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ${idx === 0 ? 'CURRENT_TIMESTAMP' : 'NULL'}, ?, ?, ?, ?)`).bind(
+    crypto.randomUUID(), chainId, j.job_key, j.display_name, j.job_name, j.group_name, Number(j.sequence_order) + idx, mode === 'cascade' ? 1 : 0, slate.slate_date, slate.slate_mode, 5,
+    JSON.stringify({ trigger:'production_refresh_clock', plan_key:plan.plan_key, due_key:dueKey, pt, slate_date:slate.slate_date, slate_mode:slate.slate_mode }).slice(0,4000)
+  ));
+  await env.DB.batch(stmts);
+  await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, plan.plan_key).run();
+  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'production_clock_enqueue', status:'pending', message:`${plan.display_name} enqueued`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys: selected.map(j=>j.job_key), pt } });
+  return { ok:true, data_ok:true, status:'enqueued', plan_key:plan.plan_key, display_name:plan.display_name, due_key:dueKey, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, job_name:j.job_name, sequence_order:j.sequence_order })), note:'Production clock enqueued this refresh plan into the database queue. Minute cron/orchestrator will process one job at a time.' };
+}
+
+async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
+  await ensureProductionRefreshScheduleTables(env);
+  const pt = getPTScheduleParts();
+  const plans = await sampleRows(env, `SELECT * FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
+  const duePlans = plans.filter(pl => productionPlanIsDue(pl, pt));
+  const results = [];
+  for (const plan of duePlans) results.push(await enqueueProductionPlan(env, plan, pt, input));
+  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue.' };
+}
+
+async function productionRefreshClockStatus(input, env) {
+  await ensureProductionRefreshScheduleTables(env);
+  const pt = getPTScheduleParts();
+  const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
+  const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
+  const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Sleeper board is excluded/manual.' };
+}
+
+async function runStaticTempAutoLoop(input, env) {
+  const started = Date.now();
+  const maxMs = Math.max(6000, Math.min(Number(input?.max_ms || 22000), 26000));
+  const maxTicks = Math.max(1, Math.min(Number(input?.max_ticks || 3), 6));
+  let latest = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,800) AS output_preview FROM static_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  let scheduled = null;
+  if (!latest) {
+    scheduled = await scheduleStaticTempRefreshOnce({ ...(input || {}), job:'schedule_static_temp_refresh_once', trigger:input?.trigger || 'static_auto_loop' }, env);
+    latest = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,800) AS output_preview FROM static_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
+  }
+  const ticks = [];
+  let lastTick = null;
+  for (let i=0; i<maxTicks && (Date.now()-started)<maxMs; i++) {
+    lastTick = await runStaticTempScheduledTick({ ...(input || {}), job:'run_static_temp_refresh_tick', trigger:input?.trigger || 'static_auto_loop' }, env);
+    ticks.push({ status:lastTick?.status, current_step:lastTick?.next_step || lastTick?.current_step || null, complete:lastTick?.refresh_complete === true });
+    if (lastTick?.status === 'idle_no_due_temp_refresh') break;
+    if (lastTick?.ok === false || lastTick?.data_ok === false) break;
+    if (lastTick?.refresh_complete === true || String(lastTick?.status || '').includes('completed')) break;
+  }
+  latest = await env.DB.prepare(`SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_json,1,800) AS output_preview FROM static_temp_refresh_runs ORDER BY datetime(created_at) DESC LIMIT 1`).first().catch(() => null);
+  const complete = String(latest?.status || '').toLowerCase() === 'completed' || lastTick?.refresh_complete === true;
+  return { ok:lastTick?.ok !== false, data_ok:lastTick?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'run_static_temp_refresh_auto', status: complete ? 'completed' : 'auto_continue_scheduled', scheduled_static:scheduled, ticks_run:ticks.length, ticks, latest_static_refresh:latest, auto_continue_active:!complete, manual_ticks_required:false, elapsed_ms:Date.now()-started, live_tables_touched: !!lastTick?.live_tables_touched, note: complete ? 'Weekly static refresh completed through the orchestrator.' : 'Weekly static refresh advanced one or more bounded steps. Minute cron will continue it without overlap.' };
 }
 
 async function refreshOrchestratorEvent(env, event) {
@@ -7089,6 +7226,8 @@ async function runRefreshOrchestratorTick(input, env) {
       const slate = resolveSlateDate({ ...(body || {}), slate_date:row.requested_slate_date || body.slate_date, slate_mode:row.slate_mode || body.slate_mode });
       if (row.job_name === 'run_incremental_temp_refresh_auto') {
         result = await runIncrementalTempAutoLoop({ ...(body || {}), job:'run_incremental_temp_refresh_auto', trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_players:20, max_ms:22000, max_ticks:3, force_due:true, force_schedule:true }, env);
+      } else if (row.job_name === 'run_static_temp_refresh_auto') {
+        result = await runStaticTempAutoLoop({ ...(body || {}), job:'run_static_temp_refresh_auto', trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_ms:22000, max_ticks:3 }, env);
       } else {
         result = await executeTaskJob(row.job_name, { ...(body || {}), job:row.job_name, trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
       }
@@ -7215,7 +7354,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const taskRes = await env.DB.prepare(`
       UPDATE task_runs
       SET status='stale_reset', finished_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.88 stale incremental task finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.89 stale incremental task finalized after six-hour safety window')
       WHERE status='running'
         AND started_at < datetime('now','-15 minutes')
         AND job_name IN (
@@ -7230,7 +7369,7 @@ async function finalizeStaleIncrementalTaskState(env) {
     const refreshRes = await env.DB.prepare(`
       UPDATE incremental_temp_refresh_runs
       SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'v1.3.88 stale incremental temp refresh finalized after six-hour safety window')
+          error=COALESCE(error, 'v1.3.89 stale incremental temp refresh finalized after six-hour safety window')
       WHERE status IN ('pending','running')
         AND updated_at < datetime('now','-6 hours')
         AND NOT (
@@ -7521,7 +7660,7 @@ async function stageIncrementalGameLogsTemp(input, env) {
   const remaining = stageFinalizer.finalize ? 0 : Math.max(0, active.length - doneCount);
   const needsContinue = remaining > 0;
   const dataOk = needsContinue ? true : Number(tempCount.rows_count || 0) >= 10000;
-  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'player_game_logs_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_player_game_logs_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_logs:skippedNoLogs, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_log_samples:noLogSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}', note: stageFinalizer.finalize ? 'Stage logs finalized by certified coverage threshold; advancing to split staging on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season game logs into player_game_logs_temp. v1.3.88 preserves hard log/split reconciliation and adds true-delta audit-gate repair so the state machine can finish without manual babysitting.' };
+  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'player_game_logs_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_player_game_logs_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_logs:skippedNoLogs, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_log_samples:noLogSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=gameLog&group={hitting|pitching}&season={season}', note: stageFinalizer.finalize ? 'Stage logs finalized by certified coverage threshold; advancing to split staging on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season game logs into player_game_logs_temp. v1.3.89 preserves hard log/split reconciliation and adds true-delta audit-gate repair so the state machine can finish without manual babysitting.' };
 }
 async function stageIncrementalSplitsTemp(input, env) {
   await ensureIncrementalTempTables(env);
@@ -7593,7 +7732,7 @@ async function stageIncrementalSplitsTemp(input, env) {
   const remaining = stageFinalizer.finalize ? 0 : Math.max(0, active.length - doneCount);
   const needsContinue = remaining > 0;
   const dataOk = needsContinue ? true : Number(tempCount.rows_count || 0) >= 1000;
-  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'ref_player_splits_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_ref_player_splits_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_splits:skippedNoSplits, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_split_samples:noSplitSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr', note: stageFinalizer.finalize ? 'Stage splits finalized by certified coverage threshold; advancing to audit on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season split rows into ref_player_splits_temp. v1.3.88 finalizes split staging and repairs true-delta audit gating from clean certified temp coverage; promotion is INSERT OR REPLACE and does not delete existing live split rows.' };
+  return { ok:true, data_ok:dataOk, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:needsContinue ? 'partial_continue' : 'pass', table:'ref_player_splits_temp', season, selected_players_total:active.length, batch_limit:hardLimit, attempted_players:selected.length, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches, inserted_rows:inserted, total_ref_player_splits_temp_after:tempCount.rows_count, players_completed_this_run:playersCompleted, skipped_players_no_splits:skippedNoSplits, progress_done:doneCount, remaining_players_after:remaining, needs_continue:needsContinue, stage_finalizer:stageFinalizer, progress_reconciliation:{ before_batch:pre_reconcile, after_batch:post_reconcile }, duplicate_guard:dedupe, live_tables_touched:false, errors:errors.slice(0,10), no_split_samples:noSplitSamples.slice(0,10), api_endpoint_pattern:'/api/v1/people/{playerId}/stats?stats=statSplits&group={hitting|pitching}&season={season}&sitCodes=vl,vr', note: stageFinalizer.finalize ? 'Stage splits finalized by certified coverage threshold; advancing to audit on next tick.' : 'Daily incremental temp fetches fresh MLB StatsAPI current-season split rows into ref_player_splits_temp. v1.3.89 finalizes split staging and repairs true-delta audit gating from clean certified temp coverage; promotion is INSERT OR REPLACE and does not delete existing live split rows.' };
 }
 
 
@@ -7752,7 +7891,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
   const hasSplitDupes = duplicateSplits.length > 0;
   const decisions = [];
 
-  // v1.3.88: true-delta mode can finish with a small non-zero temp set and audit safely.
+  // v1.3.89: true-delta mode can finish with a small non-zero temp set and audit safely.
   // If the delta cursor/output stalls after staging clean rows, advance to audit.
   // This does not touch live tables; audit/promote/certification still own final safety.
   let staleMinutes = 0;
@@ -7786,7 +7925,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
     await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain='incremental_temp_splits' AND season=?`).bind(Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4))).run().catch(() => null);
   }
 
-  // v1.3.88: audit gate repair for true-delta requests.
+  // v1.3.89: audit gate repair for true-delta requests.
   // A delta request has already staged a small clean overlap window. It must not be held
   // to full-safe rebuild temp thresholds or wait for split rows. Create the temp audit
   // record and advance to promote; promotion remains protected by INSERT OR REPLACE and
@@ -7817,14 +7956,14 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
       counts,
       quality:{ failures:[], warnings:auditWarnings },
       live_tables_touched:false,
-      note:'v1.3.88 repaired the delta audit gate: clean non-zero delta temp logs certify for idempotent promotion without requiring full rebuild thresholds.'
+      note:'v1.3.89 repaired the delta audit gate: clean non-zero delta temp logs certify for idempotent promotion without requiring full rebuild thresholds.'
     };
     await env.DB.prepare(`INSERT OR REPLACE INTO incremental_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, 'A', 1, 'certified', requestId, JSON.stringify(counts), JSON.stringify([]), JSON.stringify(auditWarnings), JSON.stringify(auditResult)).run().catch(() => null);
     step = 'promote';
     decisions.push({ from:'audit', to:'promote', reason:'true_delta_clean_temp_audit_certified', audit_id:auditId, rows:countMap.player_game_logs_temp, temp_split_rows:countMap.ref_player_splits_temp, note:'Delta audit is certified and promotion can run. Final live certification still controls completion.' });
   }
 
-  // v1.3.88: delta promote executor repair.
+  // v1.3.89: delta promote executor repair.
   // If a true-delta request reaches promote, execute the whole safe tail immediately:
   // promote with INSERT OR REPLACE, clean temp, rebuild derived metrics, certify live, and complete.
   // This prevents cron/orchestrator/check flows from leaving a certified delta stuck at promote.
@@ -7854,7 +7993,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
         counts,
         quality:{ failures:[], warnings:auditWarnings },
         live_tables_touched:false,
-        note:'v1.3.88 created/verified the delta audit immediately before executing idempotent promotion.'
+        note:'v1.3.89 created/verified the delta audit immediately before executing idempotent promotion.'
       };
       await env.DB.prepare(`INSERT OR REPLACE INTO incremental_temp_certification_audits (audit_id, grade, data_ok, status, temp_refresh_request_id, counts_json, failures_json, warnings_json, output_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(auditId, 'A', 1, 'certified', requestId, JSON.stringify(counts), JSON.stringify([]), JSON.stringify(auditWarnings), JSON.stringify(auditResult)).run().catch(() => null);
     }
@@ -7890,7 +8029,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
       derived_result:compactIncrementalStepResult(derivedResult),
       live_certification:liveCertification,
       live_tables_touched:true,
-      note:'v1.3.88 executed the true-delta promote tail directly: INSERT OR REPLACE, clean temp, rebuild derived metrics, certify live, complete.'
+      note:'v1.3.89 executed the true-delta promote tail directly: INSERT OR REPLACE, clean temp, rebuild derived metrics, certify live, complete.'
     };
     await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`)
       .bind(completedOk ? 'completed' : 'failed', completedOk ? 'completed' : 'live_certification_failed', completedOk ? null : 'incremental live certification failed after delta promote executor', JSON.stringify(finalOutput), requestId).run();
@@ -8027,7 +8166,7 @@ async function runIncrementalTempAutoLoop(input, env) {
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
     next_action: last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.'),
-    note: 'One-click/cron auto-runner for incremental data. v1.3.88 production guard keeps true-delta as the certified default, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
+    note: 'One-click/cron auto-runner for incremental data. v1.3.89 production guard keeps true-delta as the certified default, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
   };
 }
 async function checkIncrementalTempData(input, env) {
@@ -8037,7 +8176,7 @@ async function checkIncrementalTempData(input, env) {
   const duplicateTempLogs = await sampleRows(env, `SELECT player_id, game_pk, group_type, COUNT(*) AS rows_count FROM player_game_logs_temp GROUP BY player_id, game_pk, group_type HAVING COUNT(*) > 1 LIMIT 20`);
   const duplicateTempSplits = await sampleRows(env, `SELECT player_id, season, group_type, split_code, COUNT(*) AS rows_count FROM ref_player_splits_temp GROUP BY player_id, season, group_type, split_code HAVING COUNT(*) > 1 LIMIT 20`);
   let latestBefore = await env.DB.prepare(`SELECT * FROM incremental_temp_refresh_runs ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-  // v1.3.88 recovery: if the six-hour stale guard already failed a clean delta run at promote,
+  // v1.3.89 recovery: if the six-hour stale guard already failed a clean delta run at promote,
   // re-open that single request and let the delta promote executor finish it safely.
   if (latestBefore && String(latestBefore.status || '').toLowerCase() === 'failed' && latestBefore.current_step === 'promote' && !duplicateTempLogs.length && !duplicateTempSplits.length && Number(counts[0]?.rows_count || 0) > 0) {
     await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', finished_at=NULL, error=NULL, run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(latestBefore.request_id).run().catch(() => null);
@@ -8069,11 +8208,11 @@ async function auditIncrementalTempCertification(input, env) {
     if (isDeltaMode) {
       warnings.push({ code:'TRUE_DELTA_TEMP_AUDIT', temp_game_log_rows:m.player_game_logs_temp || 0, temp_split_rows:m.ref_player_splits_temp || 0, note:'True delta mode accepts small or zero temp batches. Live tables are protected by INSERT OR REPLACE plus final live certification.' });
     } else {
-      if ((m.player_game_logs_temp || 0) < 9000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:9000, note:'v1.3.88 fallback full-safe rebuild uses deduped temp rows; 9000+ unique player/game/group rows is acceptable before split audit.' });
-      if ((m.ref_player_splits_temp || 0) < 650) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:650, note:'v1.3.88 accepts clean partial daily split coverage in fallback mode; promotion upserts rows and does not delete existing live split rows.' });
+      if ((m.player_game_logs_temp || 0) < 9000) failures.push({ code:'TEMP_GAME_LOG_ROWS_LOW', rows_count:m.player_game_logs_temp, required_min:9000, note:'v1.3.89 fallback full-safe rebuild uses deduped temp rows; 9000+ unique player/game/group rows is acceptable before split audit.' });
+      if ((m.ref_player_splits_temp || 0) < 650) failures.push({ code:'TEMP_SPLIT_ROWS_LOW', rows_count:m.ref_player_splits_temp, required_min:650, note:'v1.3.89 accepts clean partial daily split coverage in fallback mode; promotion upserts rows and does not delete existing live split rows.' });
     }
   } else if (isCompletedFinalState) {
-    if ((m.player_game_logs || 0) < 9000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.player_game_logs, required_min:9000, note:'v1.3.88 uses deduped live rows; 9000+ unique player/game/group rows is acceptable.' });
+    if ((m.player_game_logs || 0) < 9000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.player_game_logs, required_min:9000, note:'v1.3.89 uses deduped live rows; 9000+ unique player/game/group rows is acceptable.' });
     if ((m.ref_player_splits || 0) < 1000) failures.push({ code:'LIVE_SPLIT_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.ref_player_splits, required_min:1000 });
     if ((m.incremental_player_metrics || 0) < 700) failures.push({ code:'DERIVED_METRIC_ROWS_LOW_AFTER_COMPLETED_PIPELINE', rows_count:m.incremental_player_metrics, required_min:700 });
     if (isPostCleanEmptyTemp) warnings.push({ code:'TEMP_TABLES_EMPTY_AFTER_SUCCESSFUL_CLEAN', note:'Expected after completed pipeline. Audit used live table counts and final completed state.' });
@@ -9538,6 +9677,8 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_tick") return await runRefreshOrchestratorTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);
   if (jobName === "refresh_orchestrator_status") return await refreshOrchestratorStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".
@@ -9610,6 +9751,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "scrape_static_bvp_current_slate") return await syncStaticBvpCurrentSlate({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "scrape_static_all_fast") return await syncStaticAllFast({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "schedule_static_temp_refresh_once") return await scheduleStaticTempRefreshOnce({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "run_static_temp_refresh_auto") return await runStaticTempAutoLoop({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "run_static_temp_refresh_tick") return await runStaticTempScheduledTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
   if (jobName === "check_static_temp_venues") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_venues_temp");
   if (jobName === "check_static_temp_team_aliases") return await checkStaticTempData({ ...(body || {}), job: jobName }, env, "ref_team_aliases_temp");
