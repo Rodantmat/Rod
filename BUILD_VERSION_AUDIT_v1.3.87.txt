@@ -1,0 +1,2 @@
+Build version audit: v1.3.87 - Incremental Delta Promote Executor Repair
+worker.js SYSTEM_VERSION, control_room.html version tag, README, ZIP filename, and final response must match v1.3.87.
