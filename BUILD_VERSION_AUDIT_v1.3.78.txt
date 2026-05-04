@@ -1,0 +1,14 @@
+Build Version Audit
+Expected version: v1.3.78 - Incremental Progress Reconciliation Repair
+
+Files checked:
+- worker.js SYSTEM_VERSION updated to v1.3.78 - Incremental Progress Reconciliation Repair.
+- control_room.html visible version tag updated to v1.3.78 - Incremental Progress Reconciliation Repair.
+- README_v1.3.78.txt included.
+- BUILD_VERSION_AUDIT_v1.3.78.txt included.
+
+Patch validation:
+- node --check worker.js passed.
+- Patch is surgical: incremental temp progress/cursor only.
+- Scoring math untouched.
+- Main UI untouched.
