@@ -1,0 +1,2 @@
+Build version audit: v1.3.86 - Incremental Delta Audit Gate Repair
+worker.js SYSTEM_VERSION matches package README and final ZIP name.
