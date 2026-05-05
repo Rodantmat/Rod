@@ -1,0 +1,6 @@
+Build version audit
+ZIP: alphadog_v1.4.07_rbi_under_known_risk_gate.zip
+SYSTEM_VERSION: v1.4.07 - RBI Under Known Risk Gate
+README: README_v1.4.07.txt
+Build tag: v1.4.07_rbi_under_known_risk_gate
+Patch scope: worker.js only logic change; docs/version labels updated.
