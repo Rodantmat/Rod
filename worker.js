@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.07 - RBI Under Known Risk Gate";
+const SYSTEM_VERSION = "v1.4.08 - RBI Under Elite Archetype Gate Repair";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -12780,7 +12780,7 @@ function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lin
     const paired = Number(oddsSupport?.paired_book_count || 0);
     const books = Number(oddsSupport?.book_count || 0);
     const geminiBonus = Number(marketBonus?.bonus || 0);
-    if (books <= 0) maxFinal = (geminiBonus > 0 && cleanEliteUnderProfile) ? 86 : 82;
+    if (books <= 0) maxFinal = cleanEliteUnderProfile ? 86 : 82;
     else if (paired <= 0) maxFinal = cleanEliteUnderProfile ? 84 : 82;
     else if (paired === 1) maxFinal = 86;
     else if (paired === 2) maxFinal = 90;
@@ -13389,7 +13389,7 @@ async function getRbiGeminiUnderSignalBonus(env, slateDate, row, sourceBoard, so
     };
   };
 
-  // v1.4.07 critical reconnect preserved:
+  // v1.4.08 critical reconnect preserved:
   // Look for any valid same-slate positive Sleeper RBI UNDER signal BEFORE reading an exact current-version no-bonus row.
   // v1.4.03 could overwrite the exact signal_id with a fresh Gemini no-signal/503 row, which blocked older valid v1.3.99/v1.4.02 bonus rows.
   // Positive cache rows are safe because they are same slate + same normalized player + same 0.5 RBI UNDER market.
@@ -13626,7 +13626,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
     blocks,
     player_context:player,
     fallback_reason:'PrizePicks standard Hits/Total Bases line exists but Odds API consensus scoring was missing or too thin; conservative stored-data fallback scored only exact regular board sides.',
-    score_calibration_version:'v1.4.07_rbi_under_known_risk_gate'
+    score_calibration_version:'v1.4.08_rbi_under_elite_archetype_gate_repair'
   };
 }
 
@@ -13716,8 +13716,8 @@ function prizePicksStandardHitsTbFallbackSummary(out){
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, skipped_gemini_sleeper_bridge: 0, skipped_gemini_cap: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, skipped_sleeper_bridge:0, skipped_cap:0, errors:0, call_failures:0, parse_failures:0, malformed_or_truncated:0, retry_successes:0, cache_hits:0, cache_bonus_rows:0, fresh_attempts:0, policy:'Gemini grounded RBI UNDER market signal remains bounded: max 45 calls per scoring run, Sleeper only, only after deterministic pre-score exceeds 75, and valid same-slate positive cache may be reused across versions.' } };
   const rbiGeminiMaxAttempts = 45;
-  const existing = new Set(); // v1.4.07: do not skip current Sleeper board rows because prior scoring runs already wrote the same source_line_id.
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.4.07 preserves RBI UNDER elite gate caps and adds one surgical known-risk gate so established contact/RBI-floor profiles cannot be lifted to elite by cold form plus Gemini alone.'] };
+  const existing = new Set(); // v1.4.08: do not skip current Sleeper board rows because prior scoring runs already wrote the same source_line_id.
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.4.08 preserves RBI UNDER elite gate caps and adds one surgical known-risk gate plus no-book elite archetype gate repair so established contact/RBI-floor profiles cannot be lifted to elite by cold form plus Gemini alone.'] };
   const rbiOddsSupportCtx = await loadRbiOddsApiSupportContext(env, slateDate);
   out.odds_api_rbi_support_context = { rows:rbiOddsSupportCtx.rows, grouped_rows:rbiOddsSupportCtx.grouped_rows, warnings:rbiOddsSupportCtx.warnings || [] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
@@ -13784,7 +13784,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'Sleeper RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt or reuse valid same-slate favorable cache',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.4.07_rbi_under_known_risk_gate',
+      score_calibration_version: 'v1.4.08_rbi_under_elite_archetype_gate_repair',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; valid same-slate favorable cache may be reused across versions; no hard 85 cap; hard safety clamp 96 only'
     };
@@ -14183,16 +14183,16 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_RUNNING', error='Auto-finalized stale long RUNNING scoring run before new start', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='RUNNING' AND created_at < datetime('now','-15 minutes')`).bind(slateDate).run();
   const activeRun = await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
   if (activeRun && activeRun.run_id) {
-    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, retry_safe:true, next_action:'Do not press Run again. Use Check MLB Scores or the scoring_runs SQL to watch this active run finish.', note:'A fresh scoring run is already active. v1.4.07 preserves no-restart protection, skips invalid one-sided market groups, keeps Total Bases calibration, and applies RBI UNDER known-risk gates after all bonuses.' };
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, retry_safe:true, next_action:'Do not press Run again. Use Check MLB Scores or the scoring_runs SQL to watch this active run finish.', note:'A fresh scoring run is already active. v1.4.08 preserves no-restart protection, skips invalid one-sided market groups, keeps Total Bases calibration, and applies RBI UNDER known-risk gate plus no-book elite archetype gate repairs plus no-book elite archetype gate repair after all bonuses.' };
   }
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-  await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.4.07_rbi_under_known_risk_gate'})).run();
+  await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.4.08_rbi_under_elite_archetype_gate_repair'})).run();
   await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',no_external_data:true})).run().catch(()=>null);
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,guard:'v1.4.07'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,guard:'v1.4.08'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -14207,7 +14207,7 @@ async function runMlbScoringV1(input,env){
   for(const [k,g] of groups.entries()){
    scoringGroupIndex++;
    if (scoringGroupIndex % 25 === 0) {
-    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_progress',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.07_rbi_under_known_risk_gate'}),runId).run().catch(()=>null);
+    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_progress',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.08_rbi_under_elite_archetype_gate_repair'}),runId).run().catch(()=>null);
    }
    try{
    const s=g.sample; const fam=String(s.prop_family||propFamilyFromMarket(s.market_key)); const byBook=new Map();
@@ -14267,7 +14267,7 @@ async function runMlbScoringV1(input,env){
     final=Math.max(0,Math.min(cap,final)); const conf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost)); // freshness audit-only, no confidence drag
     const rec=scoreRec(final,blocks), grade=scoreGrade(final,conf);
     const source=`odds_consensus|${slateDate}|${s.event_id}|${scoreNormName(s.player_name)}|${s.market_key}|${Number(s.outcome_point)}|${dir}`; const scratchId=`scratch|${runId}|${source}`; const scoreId=`score|${runId}|${source}|${simpleHashText(JSON.stringify({prob,final,conf,rec,grade}))}`;
-    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,hit_contact_profile:hitContactProfile,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.4.07_rbi_under_known_risk_gate',score_calibration_note:'v1.4.03 preserves backend scoring orchestration, HITS thin-market calibration, one-sided skip guard, Total Bases calibration, and reconnects bounded Sleeper RBI Gemini bonus reuse/fresh-call logic.'};
+    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,hit_contact_profile:hitContactProfile,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.4.08_rbi_under_elite_archetype_gate_repair',score_calibration_note:'v1.4.03 preserves backend scoring orchestration, HITS thin-market calibration, one-sided skip guard, Total Bases calibration, and reconnects bounded Sleeper RBI Gemini bonus reuse/fresh-call logic.'};
     scratchStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_scoring_scratchpad (run_id,scratch_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,scratchId,blocks.length?'BLOCKED':'CERTIFIED','MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),null,modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,scoreAmerican(prob),prob,prob,conf,raw,final,grade,rec,JSON.stringify(modBundle.mods),JSON.stringify(caps),JSON.stringify(pen),JSON.stringify(blocks),JSON.stringify(audit),SYSTEM_VERSION));
     scratch++; if(blocks.length)continue; cert++;
     const table=scoreTable(fam); if(!table)continue;
@@ -14282,21 +14282,21 @@ async function runMlbScoringV1(input,env){
     continue;
    }
   }
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_complete_before_fallbacks',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.07_rbi_under_known_risk_gate'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_complete_before_fallbacks',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.08_rbi_under_elite_archetype_gate_repair'}),runId).run().catch(()=>null);
   const rbiBoardFallback = await buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx);
   scoreStmts.push(...rbiBoardFallback.scoreStmts);
   activeStmts.push(...rbiBoardFallback.activeStmts);
   auditStmts.push(...rbiBoardFallback.auditStmts);
   promoted += rbiBoardFallback.promoted;
   active += rbiBoardFallback.active;
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'rbi_fallback_complete_before_pp_fallback',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,guard:'v1.4.07_rbi_under_known_risk_gate'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'rbi_fallback_complete_before_pp_fallback',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,guard:'v1.4.08_rbi_under_elite_archetype_gate_repair'}),runId).run().catch(()=>null);
   const ppStandardHitsTbFallback = await buildPrizePicksStandardHitsTbFallbackScoreStatements(env, slateDate, runId, modifierCtx, preparedExactKeys);
   scoreStmts.push(...ppStandardHitsTbFallback.scoreStmts);
   activeStmts.push(...ppStandardHitsTbFallback.activeStmts);
   auditStmts.push(...ppStandardHitsTbFallback.auditStmts);
   promoted += ppStandardHitsTbFallback.promoted;
   active += ppStandardHitsTbFallback.active;
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'statements_built',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.07'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'statements_built',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.08'}),runId).run().catch(()=>null);
   // v1.3.94: do not wipe readable score/active tables until the replacement statement set has been fully built.
   for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
     await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=?`).bind(slateDate).run();
@@ -14304,13 +14304,13 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=?`).bind(slateDate).run();
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.4.07_rbi_under_known_risk_gate',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.4.08_rbi_under_elite_archetype_gate_repair',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_backend_orchestrated_sleeper_rbi_gemini_bonus_reconnect',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.4.07 keeps orchestrated scoring, preserves HITS/TB calibration, promotes Sleeper RBI rows, reconnects Gemini cache, and applies RBI UNDER known-risk gates after bonuses.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_backend_orchestrated_sleeper_rbi_gemini_bonus_reconnect',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.4.08 keeps orchestrated scoring, preserves HITS/TB calibration, promotes Sleeper RBI rows, reconnects Gemini cache, and applies RBI UNDER known-risk gate plus no-book elite archetype gate repairs plus no-book elite archetype gate repair after bonuses.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.07_rbi_under_known_risk_gate',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.4.07 preserves HITS/TB calibration, bridges Sleeper RBI rows with Odds API RBI reinforcement, reconnects positive Gemini cache reuse, and applies RBI UNDER known-risk gates after bonuses.'};
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.08_rbi_under_elite_archetype_gate_repair',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.4.08 preserves HITS/TB calibration, bridges Sleeper RBI rows with Odds API RBI reinforcement, reconnects positive Gemini cache reuse, and applies RBI UNDER known-risk gate plus no-book elite archetype gate repairs plus no-book elite archetype gate repair after bonuses.'};
  }
 }
 

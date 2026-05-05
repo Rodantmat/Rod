@@ -1,0 +1,6 @@
+BUILD VERSION AUDIT
+ZIP: alphadog_v1.4.08_rbi_under_elite_archetype_gate_repair.zip
+SYSTEM_VERSION: v1.4.08 - RBI Under Elite Archetype Gate Repair
+README: README_v1.4.08.txt
+Build tag: v1.4.08_rbi_under_elite_archetype_gate_repair
+Flat folder: yes
