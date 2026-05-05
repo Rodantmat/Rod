@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_92_ODDS_API_RBI_KEY_REVERT
-const SYSTEM_VERSION = "v1.3.92 - Odds API RBI Key Revert";
+const SYSTEM_VERSION = "v1.3.93 - HITS Thin-Market Variance Patch";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -12343,6 +12343,38 @@ function scorePickPlayerContext(s,ctx){
   const team=(rbi&&rbi.team)||(lu&&lu.team)||(metrics&&metrics.team)||null; const opponent=team&&home&&away?(team===home?away:home):null;
   return {key,home,away,team,opponent,lineup_slot:(rbi&&Number.isFinite(rbi.slot)?rbi.slot:(lu&&Number.isFinite(lu.slot)?lu.slot:null)),bats:(rbi&&rbi.bats)||(lu&&lu.bats)||null,opposing_throws:rbi&&rbi.throws||null,rbi,metrics};
 }
+function scoreHitsContactProfile(player, probability){
+  const metrics = player && player.metrics ? player.metrics : null;
+  const slot = Number(player && player.lineup_slot);
+  const prob = Number(probability);
+  let hitPerGame = null, hitsPerAb = null, kRate = null;
+  if (metrics) {
+    const hpCandidates = [];
+    if (Number(metrics.last20_games) > 0) hpCandidates.push(Number(metrics.last20_hits || 0) / Number(metrics.last20_games));
+    if (Number(metrics.last10_games) > 0) hpCandidates.push(Number(metrics.last10_hits || 0) / Number(metrics.last10_games));
+    if (Number(metrics.last5_games) > 0) hpCandidates.push(Number(metrics.last5_hits || 0) / Number(metrics.last5_games));
+    if (Number(metrics.games) > 0) hpCandidates.push(Number(metrics.hits || 0) / Number(metrics.games));
+    const validHp = hpCandidates.filter(Number.isFinite).filter(v => v >= 0);
+    if (validHp.length) hitPerGame = validHp.reduce((a,b)=>a+b,0) / validHp.length;
+    if (Number(metrics.ab) > 0) hitsPerAb = Number(metrics.hits || 0) / Number(metrics.ab);
+    if (Number(metrics.pa) > 0) kRate = Number(metrics.k || 0) / Number(metrics.pa);
+  }
+  let eliteSignals = 0;
+  if (Number.isFinite(hitPerGame) && hitPerGame >= 1.0) eliteSignals++;
+  if (Number.isFinite(slot) && slot <= 3) eliteSignals++;
+  if (Number.isFinite(hitsPerAb) && hitsPerAb >= 0.275) eliteSignals++;
+  if (Number.isFinite(prob) && prob >= 0.66) eliteSignals++;
+  const highVariance = (Number.isFinite(kRate) && kRate >= 0.25) || (Number.isFinite(hitsPerAb) && hitsPerAb < 0.240);
+  return {
+    hit_per_game: Number.isFinite(hitPerGame) ? +hitPerGame.toFixed(3) : null,
+    hits_per_ab: Number.isFinite(hitsPerAb) ? +hitsPerAb.toFixed(3) : null,
+    k_rate: Number.isFinite(kRate) ? +kRate.toFixed(3) : null,
+    lineup_slot: Number.isFinite(slot) ? slot : null,
+    elite_contact_signals: eliteSignals,
+    elite_contact_exception: eliteSignals >= 3 && !highVariance,
+    high_variance_contact_flag: !!highVariance
+  };
+}
 function scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,ctx,prob,spread,maxHold){
   const mods=[]; const player=scorePickPlayerContext(s,ctx); const home=player.home; const park=PARK_CONTEXT_BY_HOME_TEAM[home]||{}; const total=ctx.totalsByEvent.get(String(s.event_id||'')); const weather=ctx.weatherByHome.get(home)||null;
   const add=(id,value,reason,source)=>{value=scoreClamp(value,-12,12); if(Math.abs(value)>=0.01)mods.push({id,value:+value.toFixed(2),reason,source});};
@@ -12365,9 +12397,9 @@ function scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,ctx,prob,spread,max
   if(weather){let v=0; const temp=Number(weather.temp), wind=Number(weather.wind), risk=String(weather.weather_risk||'').toLowerCase(); if(Number.isFinite(temp)){if(temp>=82)v+=1.5; else if(temp<=50)v-=2;} if(Number.isFinite(wind)){if(wind>=15)v+=fam==='TOTAL_BASES'?1.5:.75;} if(risk.includes('red'))v-=6; else if(risk.includes('orange'))v-=3; if(dir==='UNDER')v*=-0.5; add('M_WEATHER',scoreClamp(v,-5,4),`temp_${Number.isFinite(temp)?temp:'na'}_wind_${Number.isFinite(wind)?wind:'na'}_risk_${weather.weather_risk||'na'}`,'game_weather_context');}
   else add('M_WEATHER_MISSING',0,'weather unavailable','audit_only');
   const rbi=player.rbi; if(fam==='RBI'&&rbi){let v=0; if(Number.isFinite(rbi.setter))v+=(rbi.setter-3)*0.8; if(String(rbi.tier||'').includes('A_POOL'))v+=3; else if(String(rbi.tier||'').includes('B_POOL'))v+=1.5; if(String(rbi.run_flag||'').includes('positive'))v+=1.5; add('M_RBI_TABLE_SETTER',scoreClamp(v,-5,7),'edge_candidate_rbi_context','edge_candidates_rbi');}
-  if(player.bats&&player.opposing_throws){const b=String(player.bats).toUpperCase()[0],t=String(player.opposing_throws).toUpperCase()[0]; if((b==='L'&&t==='R')||(b==='R'&&t==='L'))add('M_PITCHER_HANDEDNESS',fam==='TOTAL_BASES'?2:1.5,'platoon_advantage','edge_candidates_rbi'); else if(b&&t&&b===t)add('M_PITCHER_HANDEDNESS',fam==='TOTAL_BASES'?-1.5:-1,'same_side_matchup','edge_candidates_rbi');}
+  if(player.bats&&player.opposing_throws){const b=String(player.bats).toUpperCase()[0],t=String(player.opposing_throws).toUpperCase()[0]; if((b==='L'&&t==='R')||(b==='R'&&t==='L'))add('M_PITCHER_HANDEDNESS',fam==='TOTAL_BASES'?2:1.5,'platoon_advantage','edge_candidates_rbi'); else if(b&&t&&b===t)add('M_PITCHER_HANDEDNESS',fam==='HITS'?-2.5:(fam==='TOTAL_BASES'?-1.5:-1),'same_side_matchup','edge_candidates_rbi');}
   else add('M_PITCHER_HANDEDNESS_MISSING',0,'handedness unavailable','audit_only');
-  let md=0; if(pairs.length>=5)md=3; else if(pairs.length>=3)md=2; else if(pairs.length===2)md=0.5; else md=-2.5; if(spread>.07)md-=2; if(maxHold>.25)md-=1; add('M_MARKET_DEPTH',scoreClamp(md,-4,4),`${pairs.length}_paired_books_spread_${spread.toFixed(3)}`,'odds_api_player_props');
+  let md=0; if(fam==='HITS'){ if(pairs.length>=5)md=3; else if(pairs.length>=3)md=2; else if(pairs.length===2)md=-1; else md=-2.5; } else { if(pairs.length>=5)md=3; else if(pairs.length>=3)md=2; else if(pairs.length===2)md=0.5; else md=-2.5; } if(spread>.07)md-=2; if(maxHold>.25)md-=1; add('M_MARKET_DEPTH',scoreClamp(md,-4,4),`${pairs.length}_paired_books_spread_${spread.toFixed(3)}`,'odds_api_player_props');
   if(lineType==='alt')add('M_LINE_TYPE_ALT',-3,'alt_line_conservative_drag','line_type_policy'); else if(lineType==='demon')add('M_LINE_TYPE_DEMON',-12,'demon_tail_risk_drag','line_type_policy');
   let totalMod=mods.reduce((a,m)=>a+Number(m.value||0),0); const maxMod=fam==='RBI'?12:10; if(totalMod>maxMod){mods.push({id:'M_AGGREGATE_POSITIVE_CLAMP',value:+(maxMod-totalMod).toFixed(2),reason:`positive_modifiers_clamped_to_${maxMod}`,source:'anti_inflation_governor'}); totalMod=maxMod;} if(totalMod<-12){mods.push({id:'M_AGGREGATE_NEGATIVE_CLAMP',value:+(-12-totalMod).toFixed(2),reason:'negative_modifiers_clamped_to_-12',source:'anti_inflation_governor'}); totalMod=-12;}
   const confidenceBoost=Math.max(0,Math.min(.25,mods.filter(m=>String(m.id).startsWith('M_')&&Number(m.value)>0).length*.035));
@@ -13089,13 +13121,21 @@ function scoreHitsTbStrategicProbabilityLift(propFamily, probability, sourceKind
   if (!['HITS','TOTAL_BASES'].includes(prop) || !Number.isFinite(prob)) return { effective_prob: prob, lift: 0, applied: false, reason: 'not_eligible' };
   let lift = 0;
   let reason = '';
-  if (kind === 'odds_consensus' && books >= 2 && prob >= 0.63) { lift = 0.02; reason = 'two_book_market_prob_63_plus'; }
-  else if (kind === 'odds_consensus' && books >= 2 && prob >= 0.60) { lift = 0.015; reason = 'two_book_market_prob_60_plus'; }
-  else if (kind === 'prizepicks_standard_board' && prob >= 0.63) { lift = 0.015; reason = 'exact_pp_standard_prob_63_plus'; }
-  else if (kind === 'prizepicks_standard_board' && prob >= 0.60) { lift = 0.01; reason = 'exact_pp_standard_prob_60_plus'; }
+  if (prop === 'HITS') {
+    if (kind === 'odds_consensus' && books >= 3 && prob >= 0.63) { lift = 0.015; reason = 'three_plus_book_hits_prob_63_plus'; }
+    else if (kind === 'odds_consensus' && books === 2 && prob >= 0.63) { lift = 0.005; reason = 'two_book_hits_thin_prob_63_plus_limited'; }
+    else if (kind === 'odds_consensus' && books >= 3 && prob >= 0.60) { lift = 0.01; reason = 'three_plus_book_hits_prob_60_plus'; }
+    else if (kind === 'prizepicks_standard_board') { lift = 0; reason = 'no_lift_zero_book_hits_fallback'; }
+  } else {
+    if (kind === 'odds_consensus' && books >= 2 && prob >= 0.63) { lift = 0.02; reason = 'two_book_market_prob_63_plus'; }
+    else if (kind === 'odds_consensus' && books >= 2 && prob >= 0.60) { lift = 0.015; reason = 'two_book_market_prob_60_plus'; }
+    else if (kind === 'prizepicks_standard_board' && prob >= 0.63) { lift = 0.015; reason = 'exact_pp_standard_prob_63_plus'; }
+    else if (kind === 'prizepicks_standard_board' && prob >= 0.60) { lift = 0.01; reason = 'exact_pp_standard_prob_60_plus'; }
+  }
   const effective = scoreClamp(prob + lift, 0, 0.665);
   return { effective_prob: +effective.toFixed(5), lift: +lift.toFixed(3), applied: lift > 0, reason: reason || 'below_lift_threshold' };
 }
+
 
 function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, ctx, sourceBoard, lineType){
   const prop = String(fam || '').toUpperCase();
@@ -13120,7 +13160,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
   let overProb;
   if (Number.isFinite(hitPerGame)) {
     const poissonHit = 1 - Math.exp(-Math.max(0, Math.min(2.1, hitPerGame)));
-    overProb = scoreClamp(poissonHit, 0.36, 0.78);
+    overProb = prop === 'HITS' && dir === 'UNDER' ? scoreClamp(poissonHit, 0.18, 0.78) : scoreClamp(poissonHit, 0.36, 0.78);
     add('PP_STD_HIT_RATE_MODEL', (dir === 'UNDER' ? (0.55 - overProb) : (overProb - 0.55)) * 18, `hit_per_game_${hitPerGame.toFixed(3)}_${dir.toLowerCase()}_oriented`, 'incremental_player_metrics');
   } else {
     overProb = 0.54;
@@ -13150,18 +13190,40 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
   let totalMod = mods.reduce((a,m)=>a+Number(m.value||0),0);
   totalMod = scoreClamp(totalMod, -10, 10);
   let final = raw + totalMod;
-  const caps = [prob >= 0.58 ? 'C_PP_STANDARD_BOARD_FALLBACK_76_HIGH_PROB' : 'C_PP_STANDARD_BOARD_FALLBACK_72', 'C_NO_PAIRED_BOOK_CONSENSUS_FALLBACK'];
+  const caps = ['C_NO_PAIRED_BOOK_CONSENSUS_FALLBACK'];
   const penalties = [];
   const blocks = [];
   let cap = 98;
-  if (prob < 0.58) cap = Math.min(cap, 72);
-  if (dir === 'UNDER') {
-    if (prob >= 0.58) {
-      cap = Math.min(cap, 76);
-      caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_76_HIGH_PROB');
-    } else {
-      cap = Math.min(cap, 68);
-      caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_68');
+  if (prop === 'HITS') {
+    final -= 2;
+    penalties.push('P_HITS_ZERO_BOOK_FALLBACK_MINUS2');
+    cap = Math.min(cap, 74);
+    caps.push('C_PP_STANDARD_HITS_ZERO_BOOK_CAP_74');
+    if (dir === 'UNDER') {
+      let underCap = 74;
+      if (Number.isFinite(hitPerGame)) {
+        if (hitPerGame >= 0.50) underCap = 68;
+        else if (hitPerGame >= 0.45) underCap = 70;
+        else if (hitPerGame >= 0.35) underCap = 72;
+        else if (hitPerGame >= 0.25) underCap = 73;
+      }
+      cap = Math.min(cap, underCap);
+      caps.push(`C_PP_STD_HITS_UNDER_DYNAMIC_CAP_${underCap}`);
+    } else if (dir === 'OVER') {
+      let overCap = 74;
+      if (Number.isFinite(hitPerGame)) {
+        if (hitPerGame < 0.75) overCap = 68;
+        else if (hitPerGame < 1.00) overCap = 72;
+      }
+      cap = Math.min(cap, overCap);
+      caps.push(`C_PP_STD_HITS_OVER_DYNAMIC_CAP_${overCap}`);
+    }
+  } else {
+    caps.push(prob >= 0.58 ? 'C_PP_STANDARD_BOARD_FALLBACK_76_HIGH_PROB' : 'C_PP_STANDARD_BOARD_FALLBACK_72');
+    if (prob < 0.58) cap = Math.min(cap, 72);
+    if (dir === 'UNDER') {
+      if (prob >= 0.58) { cap = Math.min(cap, 76); caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_76_HIGH_PROB'); }
+      else { cap = Math.min(cap, 68); caps.push('C_PP_STD_HITS_TB_UNDER_FALLBACK_68'); }
     }
   }
   if (!metrics) { cap = Math.min(cap, 64); caps.push('C_MISSING_INCREMENTAL_METRICS_64'); }
@@ -13187,7 +13249,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
     blocks,
     player_context:player,
     fallback_reason:'PrizePicks standard Hits/Total Bases line exists but Odds API consensus scoring was missing or too thin; conservative stored-data fallback scored only exact regular board sides.',
-    score_calibration_version:'v1.3.71_hits_tb_strategic_probability_lift'
+    score_calibration_version:'v1.3.93_hits_thin_market_variance_patch'
   };
 }
 
@@ -13277,7 +13339,7 @@ function prizePicksStandardHitsTbFallbackSummary(out){
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, sleeper_rows: 0, skipped_existing: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, errors:0, call_failures:0, parse_failures:0, malformed_or_truncated:0, retry_successes:0, policy:'Gemini grounded RBI UNDER market signal runs only after deterministic RBI UNDER score is over 75; favorable signals add a small bonus only.' } };
   const existing = new Set((await scoreRowsSafe(env, `SELECT source_line_id FROM mlb_rbi_scores WHERE slate_date=?`, [slateDate])).map(r => String(r.source_line_id || '')));
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.71 preserves RBI Gemini grounded JSON parsing; Hits/TB scoring now applies a small strategic effective-probability lift for high-probability two-book consensus and exact PrizePicks standard rows.'] };
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.3.93 preserves RBI Gemini grounded JSON parsing; HITS scoring now applies thin-market variance controls while Total Bases behavior remains unchanged.'] };
   const addRow = async (row, sourceBoard, sourceId, lineType, direction, sourceLineNumber) => {
     const dir = String(direction || 'UNDER').toUpperCase();
     const lineNumber = Number(sourceLineNumber);
@@ -13330,7 +13392,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
       gemini_signal_policy: 'only deterministic RBI UNDER scores over 75 trigger Gemini grounded market-signal prompt',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.3.71_hits_tb_strategic_probability_lift',
+      score_calibration_version: 'v1.3.93_hits_thin_market_variance_patch',
       market_bonus: scored.market_bonus,
       market_bonus_policy: 'Gemini grounded market signal only after deterministic score over 75; no hard 85 cap; hard safety clamp 96 only'
     };
@@ -13719,9 +13781,17 @@ async function runMlbScoringV1(input,env){
     let raw=scoreBase(liftInfo.effective_prob), final=raw, cap=98; const caps=[],pen=[],blocks=[];
     const modBundle=scoreDerivedModifierBundle(fam,dir,s,pairs,lineType,modifierCtx,prob,spread,maxHold);
     final+=modBundle.totalMod;
+    const hitContactProfile = fam==='HITS' ? scoreHitsContactProfile(modBundle.player_context, prob) : null;
     if(pairs.length===1){cap=Math.min(cap,60);caps.push('C01_SINGLE_BOOK_60');} else if(pairs.length<3){
       const projectedConf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost));
-      if(prob>=0.60 && projectedConf>=0.40 && maxHold<=0.25 && spread<=0.07){cap=Math.min(cap,82);caps.push('C01_THIN_UNDER3_HIGH_PROB_82');}
+      if(fam==='HITS'){
+        if(dir==='OVER' && lineType==='standard' && hitContactProfile && hitContactProfile.elite_contact_exception && prob>=0.66 && projectedConf>=0.40 && maxHold<=0.25 && spread<=0.07){
+          cap=Math.min(cap,82);caps.push('C_HITS_THIN_2_BOOK_ELITE_CONTACT_82');
+        } else {
+          cap=Math.min(cap,75);caps.push('C_HITS_THIN_2_BOOK_NON_ELITE_75');
+          if(dir==='OVER'){final-=2.5;pen.push('P_HITS_THIN_2_BOOK_OVER_MINUS2_5');}
+        }
+      } else if(prob>=0.60 && projectedConf>=0.40 && maxHold<=0.25 && spread<=0.07){cap=Math.min(cap,82);caps.push('C01_THIN_UNDER3_HIGH_PROB_82');}
       else {cap=Math.min(cap,75);caps.push('C01_THIN_UNDER3_75');}
     }
     if(fam==='RBI'){cap=Math.min(cap,92);caps.push('C04_RBI_CAP_92');}
@@ -13733,7 +13803,7 @@ async function runMlbScoringV1(input,env){
     final=Math.max(0,Math.min(cap,final)); const conf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost)); // freshness audit-only, no confidence drag
     const rec=scoreRec(final,blocks), grade=scoreGrade(final,conf);
     const source=`odds_consensus|${slateDate}|${s.event_id}|${scoreNormName(s.player_name)}|${s.market_key}|${Number(s.outcome_point)}|${dir}`; const scratchId=`scratch|${runId}|${source}`; const scoreId=`score|${runId}|${source}|${simpleHashText(JSON.stringify({prob,final,conf,rec,grade}))}`;
-    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.3.71_hits_tb_strategic_probability_lift',score_calibration_note:'v1.3.71 adds a small internal effective-probability lift for high-probability HITS/TOTAL_BASES consensus rows so strong 60%+ signals separate without manufacturing 90s; active board replaced per run'};
+    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,hit_contact_profile:hitContactProfile,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.3.93_hits_thin_market_variance_patch',score_calibration_note:'v1.3.93 keeps Total Bases behavior but tightens HITS: 2-book markets are thin, zero-book PrizePicks fallback is capped/dynamic, and elite-contact hitters get the only high thin-market exception.'};
     scratchStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_scoring_scratchpad (run_id,scratch_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,scratchId,blocks.length?'BLOCKED':'CERTIFIED','MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),null,modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,scoreAmerican(prob),prob,prob,conf,raw,final,grade,rec,JSON.stringify(modBundle.mods),JSON.stringify(caps),JSON.stringify(pen),JSON.stringify(blocks),JSON.stringify(audit),SYSTEM_VERSION));
     scratch++; if(blocks.length)continue; cert++;
     const table=scoreTable(fam); if(!table)continue;
@@ -13756,13 +13826,13 @@ async function runMlbScoringV1(input,env){
   active += ppStandardHitsTbFallback.active;
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.71_hits_tb_strategic_probability_lift',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status='COMPLETED', rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.93_hits_thin_market_variance_patch',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.71 adds a small strategic Hits/Total Bases effective-probability lift on top of the previous cap calibration: 60%+ two-book consensus receives +0.015, 63%+ receives +0.02, exact PrizePicks standard fallback receives +0.01/+0.015, capped at 0.665. Goblin/demon remain More-only; unders are never manufactured for non-standard PrizePicks rows. RBI Gemini behavior is preserved.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.93 tightens HITS scoring only: 2-book HITS markets are thin, zero-book PrizePicks HITS fallback is capped/dynamic, the flat 76 HITS cluster is removed, and elite-contact hitters receive the only thin-market exception. Total Bases/RBI behavior is preserved.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.3.71 keeps RBI Gemini over75 behavior and adds the Hits/TB strategic probability lift.'};
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. Scoring is stored-data first. v1.3.93 preserves RBI behavior and tightens HITS thin-market/fallback calibration.'};
  }
 }
 

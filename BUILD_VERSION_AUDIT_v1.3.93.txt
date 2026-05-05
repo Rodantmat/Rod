@@ -1,0 +1,15 @@
+AlphaDog Build Version Audit
+
+Expected build: v1.3.93 - HITS Thin-Market Variance Patch
+
+Checklist
+- ZIP filename: alphadog_v1.3.93_hits_thin_market_variance_patch.zip
+- worker.js SYSTEM_VERSION: v1.3.93 - HITS Thin-Market Variance Patch
+- control_room.html visible tag: v1.3.93 - HITS Thin-Market Variance Patch
+- control_room.html debugConfig version: control_room_v1_3_93_hits_thin_market_variance_patch
+- README: README_v1.3.93.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.93.txt
+
+Scope
+- HITS scoring calibration only.
+- Total Bases, RBI, orchestrator, scheduler, and Main UI are not intentionally changed.
