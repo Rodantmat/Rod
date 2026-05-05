@@ -1,0 +1,6 @@
+Version audit: v1.4.03 - RBI Under Power Environment Calibration
+worker.js SYSTEM_VERSION: v1.4.03 - RBI Under Power Environment Calibration
+control_room.html versionTag: v1.4.03 - RBI Under Power Environment Calibration
+README: README_v1.4.03.txt
+Patch scope: scheduled backend only; scoring calibration only; no main UI changes; no HITS/TB scoring changes intended.
+Validation: node --check worker.js passed.
