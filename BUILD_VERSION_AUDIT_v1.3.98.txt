@@ -1,0 +1,5 @@
+ZIP/version audit: v1.3.98 - Total Bases Market-Confidence Patch
+worker.js SYSTEM_VERSION: v1.3.98 - Total Bases Market-Confidence Patch
+control_room.html version tag: v1.3.98 - Total Bases Market-Confidence Patch
+README: README_v1.3.98.txt
+Delivery rule: flat folder, no subdirectories.
