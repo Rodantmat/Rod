@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
-// DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_91_ODDS_API_RBI_MARKET_KEY_REPAIR
-const SYSTEM_VERSION = "v1.3.91 - Odds API RBI Market Key Repair";
+// DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_92_ODDS_API_RBI_KEY_REVERT
+const SYSTEM_VERSION = "v1.3.92 - Odds API RBI Key Revert";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -22,12 +22,12 @@ const ODDS_API_SPORT_KEY = "baseball_mlb";
 const ODDS_API_REGIONS = "us";
 const ODDS_API_BOOKMAKERS = "draftkings,fanduel,betmgm,caesars,betrivers,espnbet,fanatics,bovada,betonlineag";
 const ODDS_API_GAME_MARKETS = "h2h,spreads,totals";
-const ODDS_API_PROP_MARKETS = "batter_hits,batter_total_bases,batter_runs_batted_in";
+const ODDS_API_PROP_MARKETS = "batter_hits,batter_total_bases,batter_rbis";
 const ODDS_API_HITS_TB_BOOKMAKERS = "";
 const ODDS_API_HITS_TB_PROP_MARKETS = "batter_hits,batter_total_bases";
 const ODDS_API_RBI_BOOKMAKERS = "";
-const ODDS_API_RBI_PROP_MARKETS = "batter_runs_batted_in";
-const ODDS_API_BATTER_PROP_MARKETS = "batter_hits,batter_total_bases,batter_runs_batted_in";
+const ODDS_API_RBI_PROP_MARKETS = "batter_rbis";
+const ODDS_API_BATTER_PROP_MARKETS = "batter_hits,batter_total_bases,batter_rbis";
 const ODDS_API_ODDS_FORMAT = "american";
 const ODDS_API_WINDOW_SPLIT_MINUTES = 13 * 60;
 const ODDS_API_START_BUFFER_MINUTES = 15;
@@ -12235,7 +12235,7 @@ async function runOddsApiMarketIntel(input, env) {
     promotion,
     cleanup,
     sample_events:eventResults.slice(0,25),
-    rules:['mine Odds API into temp tables first','certify temp before promotion','promote temp to main only when game odds, selected events, Hits, and Total Bases pass','RBI expanded-book rows are useful but not fatal if low/empty','clean temp after certified promotion','keep failed temp rows for debug','Hits/Total Bases use strongest six books only','Player prop requests use regions=us and the official Odds API market keys; RBI maps to batter_runs_batted_in','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','no Gemini','no scoring'],
+    rules:['mine Odds API into temp tables first','certify temp before promotion','promote temp to main only when game odds, selected events, Hits, and Total Bases pass','RBI expanded-book rows are useful but not fatal if low/empty','clean temp after certified promotion','keep failed temp rows for debug','Hits/Total Bases use strongest six books only','Player prop requests use regions=us; RBI uses Odds API key batter_rbis after live 422 validation rejected the expanded key','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','no Gemini','no scoring'],
     next_action: certification.ok ? 'Run ODDS API > Check Market Intel. If check is clean, move to scoring logic wiring.' : 'Certification failed. Check certification.failures and temp rows before rerunning.',
     note:'v1.3.33 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success. Dedicated cron wiring is locked for 4:30 AM PT morning odds, 6:00 AM PT morning refresh with Sleeper, and 11:00 AM PT early-afternoon odds.'
   };
@@ -13338,10 +13338,10 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
     const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
     const opponent = scoreTeamKey(oppRaw) || oppRaw || null;
     const gameTime = row.start_time || null;
-    out.scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_rbi_scores (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),null,team,opponent,null,'RBI','batter_runs_batted_in',lineType,lineNumber,dir,sourceBoard,source,null,null,null,scored.conf,scored.raw,scored.final,scored.grade,scored.rec,JSON.stringify(scored.mods),JSON.stringify(audit.caps),JSON.stringify([]),JSON.stringify([]),JSON.stringify(audit),SYSTEM_VERSION));
+    out.scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_rbi_scores (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),null,team,opponent,null,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,null,null,scored.conf,scored.raw,scored.final,scored.grade,scored.rec,JSON.stringify(scored.mods),JSON.stringify(audit.caps),JSON.stringify([]),JSON.stringify([]),JSON.stringify(audit),SYSTEM_VERSION));
     out.promoted++;
     if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec)) {
-      out.activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),team,opponent,'RBI','batter_runs_batted_in',lineType,lineNumber,dir,sourceBoard,source,null,scored.final,scored.grade,scored.rec,scored.conf,JSON.stringify(audit),SYSTEM_VERSION));
+      out.activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),team,opponent,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,scored.final,scored.grade,scored.rec,scored.conf,JSON.stringify(audit),SYSTEM_VERSION));
       out.active++;
     }
     out.auditStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`audit|${scoreId}`,runId,scoreId,`scratch|${scoreId}`,slateDate,'RBI',source,row.player_name,scored.rec,`RBI board fallback ${scored.rec}: ${row.player_name} ${dir} ${lineNumber} = ${scored.final.toFixed(2)}`,JSON.stringify(audit)));

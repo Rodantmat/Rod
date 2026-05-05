@@ -1,0 +1,10 @@
+AlphaDog v1.3.92 - Odds API RBI Key Revert
+
+worker_version: PASS
+control_version: PASS
+rbi_key_restored: PASS
+bad_expanded_key_absent_worker: PASS
+old_version_absent_worker: PASS
+old_version_absent_control: PASS
+
+Files included in ZIP are flat/no subfolders.
