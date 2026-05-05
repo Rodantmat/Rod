@@ -1,0 +1,16 @@
+AlphaDog Build Version Audit
+
+Expected build: v1.3.94 - Scoring Startup Guard
+
+Checklist
+- ZIP filename: alphadog_v1.3.94_scoring_startup_guard.zip
+- worker.js SYSTEM_VERSION: v1.3.94 - Scoring Startup Guard
+- control_room.html visible tag: v1.3.94 - Scoring Startup Guard
+- control_room.html debugConfig version: control_room_v1_3_94_scoring_startup_guard
+- README: README_v1.3.94.txt
+- BUILD_VERSION_AUDIT: BUILD_VERSION_AUDIT_v1.3.94.txt
+
+Scope
+- HITS scoring calibration from v1.3.93 is preserved.
+- Scoring startup/progress guard is added to run_mlb_scoring_v1.
+- Total Bases, RBI, orchestrator, scheduler, and Main UI are not intentionally changed.
