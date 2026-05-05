@@ -1,0 +1,6 @@
+Version audit: v1.4.06 - RBI Under Elite Gate Caps
+worker.js SYSTEM_VERSION: v1.4.06 - RBI Under Elite Gate Caps
+control_room.html versionTag: v1.4.06 - RBI Under Elite Gate Caps
+README: README_v1.4.06.txt
+Patch scope: worker.js scoring calibration only + version labels/docs.
+No intended HITS/TOTAL_BASES calibration changes.
