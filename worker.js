@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.3.96 - One-Sided Market Skip Guard";
+const SYSTEM_VERSION = "v1.3.97 - Backend Scoring Orchestrator";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7168,6 +7168,36 @@ async function refreshOrchestratorInit(input, env) {
   return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_init', status:'ready', tables:['data_refresh_catalog','data_refresh_queue','data_refresh_events'], catalog_count:status.catalog_count, catalog:status.catalog, note:'Orchestrator tables were created/verified and catalog was seeded. No refresh job was scheduled.' };
 }
 
+
+async function enqueueBackendScoringRefresh(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const slate = resolveSlateDate(input || {});
+  const slateDate = String(input?.slate_date || slate.slate_date);
+  const active = await env.DB.prepare(`
+    SELECT request_id, chain_id, job_key, display_name, status, run_after, started_at, updated_at
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running')
+    ORDER BY datetime(created_at) ASC, sequence_order ASC
+    LIMIT 1
+  `).first().catch(() => null);
+  if (active) {
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'enqueue_backend_scoring_refresh', status:active.job_key === 'scoring_refresh' ? 'scoring_already_queued_or_running' : 'blocked_existing_orchestrator_queue', slate_date:slateDate, active_queue:active, backend_orchestrator:true, manual_retry_required:false, note: active.job_key === 'scoring_refresh' ? 'Scoring is already owned by DATA REFRESHING > Production Clock Orchestrator. Do not press Run MLB Scores again; minute cron will continue it in the backend.' : 'A Data Refreshing orchestrator queue is already active. Scoring was not started separately because all refresh/scoring work must run through one backend queue.' };
+  }
+  const catalog = await env.DB.prepare(`SELECT * FROM data_refresh_catalog WHERE job_key='scoring_refresh' LIMIT 1`).first().catch(() => null);
+  const requestId = crypto.randomUUID();
+  const chainId = `backend_scoring|${slateDate}|${crypto.randomUUID()}`;
+  await env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, 'scoring_refresh', ?, 'run_full_scoring_refresh_v1', ?, 100, 1, 'pending', CURRENT_TIMESTAMP, ?, ?, 5, ?)`)
+    .bind(requestId, chainId, catalog?.display_name || 'Scoring + Candidate Board', catalog?.group_name || '05 Release Board', slateDate, slate.slate_mode, JSON.stringify({ ...(input || {}), backend_orchestrator:true, orchestrator_internal:true, slate_date:slateDate, slate_mode:slate.slate_mode, trigger:'backend_orchestrator_scoring_manual_enqueue' }).slice(0,4000))
+    .run();
+  await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:'scoring_refresh', event_type:'backend_scoring_enqueue', status:'pending', message:'Scoring moved to Production Clock Orchestrator backend queue.', payload_json:{ slate_date:slateDate, requested_by:input?.job || null } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input?.job || 'enqueue_backend_scoring_refresh', status:'queued_in_production_clock_orchestrator', slate_date:slateDate, chain_id:chainId, request_id:requestId, backend_orchestrator:true, manual_retry_required:false, next_action:'Use DATA REFRESHING > Production Clock Status or Orchestrator Status. The minute cron will run scoring in the backend.', note:'SCORING V1 manual run no longer executes the long scorer in the browser request. It only enqueues scoring_refresh in DATA REFRESHING > PRODUCTION CLOCK ORCHESTRATOR.' };
+}
+
+function scoringRequestIsBackendOwned(input) {
+  const trigger = String(input?.trigger || '').toLowerCase();
+  return trigger.includes('refresh_orchestrator_tick') || input?.backend_orchestrator === true || input?.orchestrator_internal === true;
+}
+
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await ensureRefreshOrchestratorTables(env);
   const slate = resolveSlateDate(input || {});
@@ -9784,17 +9814,35 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "run_sleeper_rbi_rfi_prep_morning") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env);
   if (jobName === "run_sleeper_rbi_rfi_prep_afternoon") return await runSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env);
   if (jobName === "check_sleeper_rbi_rfi_window_prep") return await checkSleeperRbiRfiWindowMiningPrep({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_odds_api_morning") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_morning" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Morning Odds API promotion when data_ok." }; }
-  if (jobName === "run_odds_api_afternoon") { const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: "manual" }, env); const scoring = odds.data_ok ? await runFullScoringRefreshV1({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_after_odds_api_afternoon" }, env) : { ok:false, status:"skipped_odds_not_promoted" }; return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Auto Scoring Mesh refreshed scores and candidate board after Afternoon Odds API promotion when data_ok." }; }
+  if (jobName === "run_odds_api_morning") {
+    const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "MORNING", trigger: body?.trigger || "manual" }, env);
+    let scoring = { ok:false, status:"skipped_odds_not_promoted" };
+    if (odds.data_ok) scoring = scoringRequestIsBackendOwned(body || {}) ? { ok:true, status:"scoring_deferred_to_next_orchestrator_row" } : await enqueueBackendScoringRefresh({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger:"manual_after_odds_api_morning_enqueue" }, env);
+    return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Scoring is backend-owned by DATA REFRESHING > Production Clock Orchestrator." };
+  }
+  if (jobName === "run_odds_api_afternoon") {
+    const odds = await runOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, window_name: "EARLY_AFTERNOON", trigger: body?.trigger || "manual" }, env);
+    let scoring = { ok:false, status:"skipped_odds_not_promoted" };
+    if (odds.data_ok) scoring = scoringRequestIsBackendOwned(body || {}) ? { ok:true, status:"scoring_deferred_to_next_orchestrator_row" } : await enqueueBackendScoringRefresh({ ...(body || {}), slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger:"manual_after_odds_api_afternoon_enqueue" }, env);
+    return { ...odds, auto_scoring_refresh: scoring, note: String(odds.note || "") + " Scoring is backend-owned by DATA REFRESHING > Production Clock Orchestrator." };
+  }
   if (jobName === "check_odds_api_market_intel") return await checkOddsApiMarketIntel({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "debug_rbi_gemini_signal_one") return await debugRbiGeminiSignalOne({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_debug_forced_fresh" }, env);
-  if (jobName === "run_mlb_scoring_v1") return await runMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual" }, env);
+  if (jobName === "run_mlb_scoring_v1") {
+    const payload = { ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: body?.trigger || "manual" };
+    if (!scoringRequestIsBackendOwned(payload)) return await enqueueBackendScoringRefresh(payload, env);
+    return await runMlbScoringV1(payload, env);
+  }
   if (jobName === "check_mlb_scoring_v1") return await checkMlbScoringV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_audit_v1") return await inspectMlbScoreAuditV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "build_mlb_score_candidate_board_v1") return await buildMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "inspect_mlb_score_candidate_board_v1") return await inspectMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "export_mlb_score_candidate_board_v1") return await exportMlbScoreCandidateBoardV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
-  if (jobName === "run_full_scoring_refresh_v1") return await runFullScoringRefreshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_full_scoring_refresh_button" }, env);
+  if (jobName === "run_full_scoring_refresh_v1") {
+    const payload = { ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: body?.trigger || "manual_full_scoring_refresh_button" };
+    if (!scoringRequestIsBackendOwned(payload)) return await enqueueBackendScoringRefresh(payload, env);
+    return await runFullScoringRefreshV1(payload, env);
+  }
   if (jobName === "check_auto_scoring_mesh_v1") return await checkAutoScoringMeshV1({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   if (jobName === "schedule_incremental_temp_refresh_once") {
@@ -13433,6 +13481,7 @@ function scoringMeshShouldScoreAfterMine(result){
 }
 
 async function runFullScoringRefreshV1(input, env) {
+  if (!scoringRequestIsBackendOwned(input || {})) return await enqueueBackendScoringRefresh({ ...(input || {}), job: input?.job || 'run_full_scoring_refresh_v1' }, env);
   const slate = resolveSlateDate(input || {});
   const requestedSlateDate = String(input?.slate_date || slate.slate_date);
   const trigger = String(input?.trigger || 'manual_full_scoring_refresh');
@@ -13865,7 +13914,7 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.3.96_one_sided_market_skip_guard',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.96 skips one-sided Odds API market groups, preserves the HITS thin-market calibration, and keeps the no-restart guard so browser retries cannot supersede active scoring runs.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_prizepicks_standard_hits_tb_fallback_plus_rbi_gemini_signal_promoted',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.3.97 routes manual scoring into the DATA REFRESHING Production Clock Orchestrator backend queue; internal orchestrator scoring preserves the one-sided market skip guard and HITS calibration.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
