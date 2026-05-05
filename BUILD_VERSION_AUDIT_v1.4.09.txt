@@ -1,0 +1,6 @@
+BUILD VERSION AUDIT
+ZIP: alphadog_v1.4.09_rbi_under_math_gate_purge.zip
+SYSTEM_VERSION: v1.4.09 - RBI Under Math Gate Purge
+README: README_v1.4.09.txt
+Build tag: v1.4.09_rbi_under_math_gate_purge
+Flat folder: yes
