@@ -1,0 +1,4 @@
+ZIP/version audit: v1.3.95 - Scoring No-Restart Guard
+worker.js SYSTEM_VERSION matches v1.3.95.
+control_room.html version labels updated where applicable.
+README version matches ZIP version.
