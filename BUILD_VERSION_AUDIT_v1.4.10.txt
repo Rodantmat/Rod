@@ -1,0 +1,8 @@
+BUILD VERSION AUDIT
+ZIP: alphadog_v1.4.10_rbi_under_no_book_playable_clamp.zip
+SYSTEM_VERSION: v1.4.10 - RBI Under No-Book Playable Clamp
+README: README_v1.4.10.txt
+Build tag: v1.4.10_rbi_under_no_book_playable_clamp
+Flat folder: yes
+Touched files: worker.js, control_room.html, README_v1.4.10.txt, BUILD_VERSION_AUDIT_v1.4.10.txt
+Untouched behavior: HITS, TOTAL_BASES, scheduler, cron, schema, Main UI
