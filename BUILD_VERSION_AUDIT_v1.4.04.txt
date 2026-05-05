@@ -1,0 +1,6 @@
+Version audit: v1.4.04 - RBI Calibration Gemini Reconnect Final
+worker.js SYSTEM_VERSION: v1.4.04 - RBI Calibration Gemini Reconnect Final
+control_room.html versionTag: v1.4.04 - RBI Calibration Gemini Reconnect Final
+README: README_v1.4.04.txt
+Patch: positive same-slate Gemini RBI UNDER cache lookup now runs before current-version no-bonus cache blocking.
+Folder policy: flat ZIP, no subdirectories.
