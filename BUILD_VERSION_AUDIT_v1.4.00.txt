@@ -1,0 +1,5 @@
+Version audit: v1.4.00 - Sleeper RBI Bridge Finalizer Fix
+worker.js SYSTEM_VERSION: v1.4.00 - Sleeper RBI Bridge Finalizer Fix
+control_room.html labels updated to v1.4.00
+README: README_v1.4.00.txt
+Patch verified: no v1.3.99 labels remain in build files except historical comments/output text if any.
