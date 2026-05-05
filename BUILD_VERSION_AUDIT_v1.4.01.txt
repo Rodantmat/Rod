@@ -1,0 +1,8 @@
+Version audit: v1.4.01 - Sleeper RBI Odds Reinforcement
+worker.js SYSTEM_VERSION: v1.4.01 - Sleeper RBI Odds Reinforcement
+control_room.html labels updated to v1.4.01
+README: README_v1.4.01.txt
+Patch type: scheduled backend / scoring logic only
+Long-run policy: scoring remains queued through DATA REFRESHING > PRODUCTION CLOCK ORCHESTRATOR
+Syntax validation: node --check worker.js PASS
+Simulation validation: RBI odds-support helper + scoring cap simulation PASS
