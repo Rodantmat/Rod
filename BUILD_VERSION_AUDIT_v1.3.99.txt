@@ -1,0 +1,7 @@
+ZIP/version audit: v1.3.99 - Sleeper RBI Promotion Bridge
+worker.js SYSTEM_VERSION: v1.3.99 - Sleeper RBI Promotion Bridge
+control_room.html version tag: v1.3.99 - Sleeper RBI Promotion Bridge
+README: README_v1.3.99.txt
+Flat folder: yes
+Orchestrator policy: long/heavy scoring remains backend Production Clock Orchestrator-owned
+Primary patch: Sleeper RBI current rows are bridged from sleeper_rbi_rfi_board into mlb_rbi_scores and active_score_board with source_board = sleeper
