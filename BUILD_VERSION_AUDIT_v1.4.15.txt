@@ -1,0 +1,7 @@
+ZIP: alphadog_v1.4.15_rbi_sharp_probability_buffer.zip
+worker.js: v1.4.15 - RBI Sharp Probability Buffer
+control_room.html: v1.4.15 - RBI Sharp Probability Buffer
+README: README_v1.4.15.txt
+Flat folder: yes
+Main UI files included: no
+Scheduled backend/control-room only: yes

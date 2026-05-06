@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.14 - RBI Probability Sharpener Status Fix";
+const SYSTEM_VERSION = "v1.4.15 - RBI Sharp Probability Buffer";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -12430,7 +12430,7 @@ function rbiUnderMathRiskProfile(player, sample){
 function scoreClamp(v,lo,hi){v=Number(v); if(!Number.isFinite(v))return 0; return Math.max(lo,Math.min(hi,v));}
 async function scoreRowsSafe(env,sql,binds=[]){try{return (await env.DB.prepare(sql).bind(...binds).all()).results||[];}catch(_e){return [];}}
 async function loadMlbScoringModifierContext(env,slateDate){
-  const ctx={lineupsByPlayer:new Map(),rbiByPlayer:new Map(),metricsByPlayer:new Map(),powerByPlayer:new Map(),weatherByHome:new Map(),totalsByEvent:new Map(),totalsByTeamPair:new Map(),source_counts:{lineups:0,rbi_edges:0,incremental_metrics:0,power_splits:0,weather:0,game_totals:0}};
+  const ctx={lineupsByPlayer:new Map(),rbiByPlayer:new Map(),metricsByPlayer:new Map(),powerByPlayer:new Map(),weatherByHome:new Map(),totalsByEvent:new Map(),totalsByTeamPair:new Map(),startersByGameTeam:new Map(),source_counts:{lineups:0,rbi_edges:0,incremental_metrics:0,power_splits:0,weather:0,game_totals:0,starters:0}};
   const lineups=await scoreRowsSafe(env,`SELECT player_name, team_id, game_id, slot, bats FROM lineups_current`);
   for(const r of lineups){const key=scoreNormName(r.player_name); if(!key)continue; if(!ctx.lineupsByPlayer.has(key))ctx.lineupsByPlayer.set(key,[]); ctx.lineupsByPlayer.get(key).push({team:scoreTeamKey(r.team_id),game_id:r.game_id,slot:Number(r.slot),bats:r.bats||null});}
   ctx.source_counts.lineups=lineups.length;
@@ -12465,6 +12465,17 @@ async function loadMlbScoringModifierContext(env,slateDate){
   for(const t of teamTotals){const home=scoreTeamKey(t.home_team), away=scoreTeamKey(t.away_team), pt=Number(t.outcome_point); if(!home||!away||!Number.isFinite(pt)||pt<=0)continue; const k1=`${home}|${away}`, k2=`${away}|${home}`; if(!tmpPair.has(k1))tmpPair.set(k1,[]); if(!tmpPair.has(k2))tmpPair.set(k2,[]); tmpPair.get(k1).push(pt); tmpPair.get(k2).push(pt);}
   for(const [k,arr] of tmpPair.entries()){ctx.totalsByTeamPair.set(k,arr.reduce((a,b)=>a+b,0)/arr.length);}
   ctx.source_counts.game_totals=ctx.totalsByEvent.size;
+  const starters=await scoreRowsSafe(env,`SELECT game_id, team_id, starter_name, era, strikeouts, innings_pitched FROM starters_current WHERE game_id LIKE ?`,[`${slateDate}_%`]);
+  for(const st of starters){
+    const gameId=String(st.game_id||'');
+    const team=scoreTeamKey(st.team_id);
+    if(!gameId||!team)continue;
+    const strikeouts=Number(st.strikeouts);
+    const ip=Number(st.innings_pitched);
+    const k9=(Number.isFinite(strikeouts)&&Number.isFinite(ip)&&ip>0)?(strikeouts/ip*9):null;
+    ctx.startersByGameTeam.set(`${gameId}|${team}`,{name:st.starter_name||null,team,era:Number(st.era),strikeouts,innings_pitched:ip,k9:Number.isFinite(k9)?k9:null});
+  }
+  ctx.source_counts.starters=starters.length;
   return ctx;
 }
 function scorePickPlayerContext(s,ctx){
@@ -12480,7 +12491,9 @@ function scorePickPlayerContext(s,ctx){
   const rawTeam=(rbi&&rbi.team)||(lu&&lu.team)||(metrics&&metrics.team)||(power&&power.team)||null;
   const team=scoreValidTeamKey(rawTeam) || rawTeam;
   const opponent=team&&home&&away?(team===home?away:home):null;
-  return {key,home,away,team,opponent,lineup_slot:(rbi&&Number.isFinite(rbi.slot)?rbi.slot:(lu&&Number.isFinite(lu.slot)?lu.slot:null)),bats:(rbi&&rbi.bats)||(lu&&lu.bats)||null,opposing_throws:rbi&&rbi.throws||null,rbi,metrics,power,matchup_home:home,matchup_away:away};
+  const game_id=(lu&&lu.game_id)||null;
+  const opposing_starter=(game_id&&opponent&&ctx.startersByGameTeam)?ctx.startersByGameTeam.get(`${game_id}|${opponent}`)||null:null;
+  return {key,home,away,team,opponent,game_id,opposing_starter,lineup_slot:(rbi&&Number.isFinite(rbi.slot)?rbi.slot:(lu&&Number.isFinite(lu.slot)?lu.slot:null)),bats:(rbi&&rbi.bats)||(lu&&lu.bats)||null,opposing_throws:rbi&&rbi.throws||null,rbi,metrics,power,matchup_home:home,matchup_away:away};
 }
 function scoreHitsContactProfile(player, probability){
   const metrics = player && player.metrics ? player.metrics : null;
@@ -12697,7 +12710,7 @@ function rbiNoRbiProbabilityFromScored(scored, sample, modifierCtx, oddsSupport)
   let total=modifierCtx?.totalsByEvent?.get(String(sample.event_id||''));
   if(!Number.isFinite(total)&&player.team&&player.opponent)total=modifierCtx?.totalsByTeamPair?.get(`${player.team}|${player.opponent}`);
   let projectedPa=rbiProjectedPaForSlot(slot);
-  let mu=(Number.isFinite(rbiRate)?Math.max(0.008,Math.min(0.16,rbiRate)):0.070)*projectedPa;
+  let mu=(Number.isFinite(rbiRate)?Math.max(0.008,Math.min(0.16,rbiRate)):0.055)*projectedPa;
   const factors=[];
   const mult=(m,label)=>{ if(Number.isFinite(m)&&m>0){ mu*=m; factors.push(`${label}_${m.toFixed(2)}`); } };
   if(Number.isFinite(slot)){
@@ -12713,6 +12726,13 @@ function rbiNoRbiProbabilityFromScored(scored, sample, modifierCtx, oddsSupport)
     else if(total>=10.0)mult(1.28,'high_total_rbi_inflation');
     else if(total>=9.0)mult(1.15,'above_avg_total_rbi_inflation');
   }
+  const oppStarter=player.opposing_starter||null;
+  const oppK9=Number(oppStarter&&oppStarter.k9);
+  const oppEra=Number(oppStarter&&oppStarter.era);
+  if(Number.isFinite(oppK9)||Number.isFinite(oppEra)){
+    if((Number.isFinite(oppK9)&&oppK9>=10.0)||(Number.isFinite(oppEra)&&oppEra<=3.25))mult(0.80,'opposing_pitcher_ace_resistance');
+    else if((Number.isFinite(oppK9)&&oppK9>=9.0)||(Number.isFinite(oppEra)&&oppEra<=3.75))mult(0.88,'opposing_pitcher_plus_resistance');
+  }
   if(Number.isFinite(hrRate)){
     if(hrRate<=0.006)mult(0.62,'zero_to_tiny_hr_self_rbi_suppression');
     else if(hrRate<=0.012)mult(0.72,'very_low_hr_self_rbi_suppression');
@@ -12727,6 +12747,11 @@ function rbiNoRbiProbabilityFromScored(scored, sample, modifierCtx, oddsSupport)
     else if(avg>=0.270)mult(1.06,'solid_avg_contact_floor_risk');
   }
   if(Number.isFinite(kRate)&&kRate>=0.29)mult(0.86,'high_k_contact_suppression');
+  const last3Avg=(Number(metrics.last3_ab)>0)?Number(metrics.last3_hits||0)/Number(metrics.last3_ab):null;
+  const last5Avg=(Number(metrics.last5_ab)>0)?Number(metrics.last5_hits||0)/Number(metrics.last5_ab):null;
+  if(Number.isFinite(last3Avg)&&last3Avg<=0.100)mult(0.72,'last3_contact_ice_cold');
+  else if(Number.isFinite(last3Avg)&&last3Avg<=0.180)mult(0.82,'last3_contact_cold');
+  if(Number.isFinite(last5Avg)&&last5Avg<=0.120)mult(0.85,'last5_contact_cold_stack');
   const opp=Number(rbi.opp);
   if(Number.isFinite(opp)){
     if(opp<=2)mult(0.82,'low_rbi_opportunity_context');
@@ -12747,7 +12772,7 @@ function rbiNoRbiProbabilityFromScored(scored, sample, modifierCtx, oddsSupport)
     factors.push(`score_blend_${score.toFixed(1)}`);
   }
 
-  // v1.4.14 surgical RBI UNDER sharpener:
+  // v1.4.15 surgical RBI UNDER sharp probability buffer:
   // Do not reward player pedigree or a one-game RBI outlier. For low-power / low-contact profiles,
   // the display probability is protected by production floors derived only from stored metrics.
   const lowPower = !Number.isFinite(hrRate) || hrRate <= 0.020;
@@ -12760,17 +12785,25 @@ function rbiNoRbiProbabilityFromScored(scored, sample, modifierCtx, oddsSupport)
   const lowTotalResistance = Number.isFinite(total) && total < 8.0;
   const highTotalEnvironment = Number.isFinite(total) && total >= 9.0;
   const highKSuppression = Number.isFinite(kRate) && kRate >= 0.285;
-  if(subMendoza && lowPower){ p0 = Math.max(p0, 0.900); factors.push('floor_sub_mendoza_low_power_90'); }
-  if(subMendoza && lowRbiRate){ p0 = Math.max(p0, 0.900); factors.push('floor_sub_mendoza_low_rbi_rate_90'); }
-  if(rookieSample && weakAvg && lowPower){ p0 = Math.max(p0, 0.885); factors.push('floor_rookie_wall_weak_avg_low_power_88_5'); }
-  if(bottomOpportunity && lowPower && lowRbiRate){ p0 = Math.max(p0, 0.880); factors.push('floor_bottom_or_table_setter_low_power_88'); }
-  if(highKSuppression && weakAvg){ p0 = Math.max(p0, 0.890); factors.push('floor_high_k_weak_contact_89'); }
-  if(lowTotalResistance && lowPower && lowRbiRate){ p0 = Math.max(p0, 0.885); factors.push('floor_low_total_low_power_88_5'); }
+  const weakCurrent = Number.isFinite(avg) && avg < 0.210;
+  const iceColdRecent = (Number.isFinite(last3Avg)&&last3Avg<=0.100) || (Number.isFinite(last5Avg)&&last5Avg<=0.120);
+  const acePitcher = (Number.isFinite(oppK9)&&oppK9>=10.0) || (Number.isFinite(oppEra)&&oppEra<=3.25);
+  const plusPitcher = acePitcher || (Number.isFinite(oppK9)&&oppK9>=9.0) || (Number.isFinite(oppEra)&&oppEra<=3.75);
+  if(subMendoza && lowPower){ p0 = Math.max(p0, 0.920); factors.push('floor_sub_mendoza_low_power_92'); }
+  if(subMendoza && lowRbiRate){ p0 = Math.max(p0, 0.920); factors.push('floor_sub_mendoza_low_rbi_rate_92'); }
+  if(weakCurrent && lowPower){ p0 = Math.max(p0, 0.900); factors.push('floor_sub_210_low_power_90'); }
+  if(rookieSample && weakAvg && lowPower){ p0 = Math.max(p0, 0.900); factors.push('floor_rookie_wall_weak_avg_low_power_90'); }
+  if(bottomOpportunity && lowPower && lowRbiRate){ p0 = Math.max(p0, 0.900); factors.push('floor_bottom_or_table_setter_low_power_90'); }
+  if(iceColdRecent && lowPower){ p0 = Math.max(p0, 0.900); factors.push('floor_recent_contact_ice_cold_low_power_90'); }
+  if(highKSuppression && weakAvg){ p0 = Math.max(p0, 0.900); factors.push('floor_high_k_weak_contact_90'); }
+  if(lowTotalResistance && lowPower && lowRbiRate){ p0 = Math.max(p0, 0.900); factors.push('floor_low_total_low_power_90'); }
+  if(acePitcher && Number.isFinite(slot) && slot >= 7){ p0 = Math.max(p0, 0.915); factors.push('floor_ace_pitcher_bottom_order_91_5'); }
+  else if(plusPitcher && weakCurrent && lowPower){ p0 = Math.max(p0, 0.900); factors.push('floor_plus_pitcher_weak_low_power_90'); }
   if(highTotalEnvironment && !(subMendoza && tinyPower)){ p0 = Math.min(p0, 0.890); factors.push('cap_high_total_non_ghost_89'); }
 
   const review=p0>0.95;
   p0=Math.max(0.60,Math.min(0.95,p0));
-  return { hit_probability:+p0.toFixed(4), hit_probability_pct:Math.round(p0*100), adjusted_mu:+mu.toFixed(4), projected_pa:+projectedPa.toFixed(2), factors, review_flag:review?'P_GT_95_MANUAL_REVIEW':null, model:'v1.4.14_poisson_no_rbi_probability_sharpener' };
+  return { hit_probability:+p0.toFixed(4), hit_probability_pct:Math.round(p0*100), adjusted_mu:+mu.toFixed(4), projected_pa:+projectedPa.toFixed(2), factors, review_flag:review?'P_GT_95_MANUAL_REVIEW':null, model:'v1.4.15_poisson_no_rbi_probability_sharp_buffer' };
 }
 function scoreRbiFallbackFromStoredData(direction, sample, ctx, sourceBoard, lineType, marketBonus = null, oddsSupport = null){
   const dir = String(direction || 'UNDER').toUpperCase();
@@ -13816,7 +13849,7 @@ function scoreHitsTbFallbackFromStoredData(fam, direction, lineNumber, sample, c
     blocks,
     player_context:player,
     fallback_reason:'PrizePicks standard Hits/Total Bases line exists but Odds API consensus scoring was missing or too thin; conservative stored-data fallback scored only exact regular board sides.',
-    score_calibration_version:'v1.4.14_rbi_probability_sharpener_status_fix'
+    score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer'
   };
 }
 
@@ -13906,8 +13939,8 @@ function prizePicksStandardHitsTbFallbackSummary(out){
 async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx){
   const out = { scoreStmts: [], activeStmts: [], auditStmts: [], promoted: 0, active: 0, prizepicks_rows: 0, prizepicks_rows_skipped: 0, sleeper_rows: 0, sleeper_source_rows: 0, sleeper_candidates_ranked: 0, sleeper_candidates_pickable: 0, sleeper_candidates_started_or_unknown: 0, skipped_existing: 0, skipped_gemini_sleeper_bridge: 0, skipped_gemini_cap: 0, market_bonus_rows: 0, market_bonus_total: 0, market_bonus_context: null, gemini_signal_rows: 0, gemini_signal_bonus_rows: 0, gemini_signal_context: { eligible_over75:0, attempted:0, favorable:0, skipped_pre75:0, skipped_disabled:0, skipped_sleeper_bridge:0, skipped_cap:0, errors:0, call_failures:0, parse_failures:0, malformed_or_truncated:0, retry_successes:0, cache_hits:0, cache_bonus_rows:0, fresh_attempts:0, policy:'RBI UNDER Gemini market signal is disabled in scoring. Sleeper RBI UNDER uses deterministic stored-data math only.' } };
   const rbiGeminiMaxAttempts = 0;
-  const existing = new Set(); // v1.4.14: do not skip current Sleeper board rows because prior scoring runs already wrote the same source_line_id.
-  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.4.14 keeps RBI UNDER Gemini disabled, skips PrizePicks RBI rows, ranks only pickable Sleeper RBI UNDER 0.5 candidates by sharpened deterministic No-RBI probability, and promotes the top 20 valid displayable legs.'] };
+  const existing = new Set(); // v1.4.15: do not skip current Sleeper board rows because prior scoring runs already wrote the same source_line_id.
+  out.market_bonus_context = { rows:0, sleeper_rows:0, bettingpros_rows:0, warnings:['v1.4.15 keeps RBI UNDER Gemini disabled, skips PrizePicks RBI rows, ranks only pickable Sleeper RBI UNDER 0.5 candidates by sharply calibrated No-RBI probability, and promotes a top-30 backend reserve buffer so the Main UI can display 20 valid legs after start-time hiding.'] };
   const rbiOddsSupportCtx = await loadRbiOddsApiSupportContext(env, slateDate);
   const rbiGameStartCtx = await loadRbiGameStartContext(env, slateDate);
   out.odds_api_rbi_support_context = { rows:rbiOddsSupportCtx.rows, grouped_rows:rbiOddsSupportCtx.grouped_rows, warnings:rbiOddsSupportCtx.warnings || [] };
@@ -13927,7 +13960,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
     if (sourceBoard === 'sleeper' && dir === 'UNDER') {
       if (Math.abs(lineNumber - 0.5) <= 0.001 && Number(baseScored.final || 0) > 75) out.gemini_signal_context.eligible_over75++;
       out.gemini_signal_context.skipped_disabled++;
-      marketBonus = { bonus:0, confidence_bump:0, source:'deterministic_rbi_under_math_only', reason:'rbi_under_gemini_disabled_by_v1_4_14', favorable:false, skipped:true };
+      marketBonus = { bonus:0, confidence_bump:0, source:'deterministic_rbi_under_math_only', reason:'rbi_under_gemini_disabled_by_v1_4_15', favorable:false, skipped:true };
     }
     const scored = baseScored;
     const gameTimeResolved = rbiGameStartForRow(row, sample, rbiGameStartCtx);
@@ -13967,11 +14000,11 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
       odds_api_rbi_paired_book_count: Number(oddsSupport?.paired_book_count || 0),
       fallback_reason: 'Odds API RBI coverage is thin or supplemental; scored from stored board/history/game/RBI context.',
       freshness_policy: 'AUDIT_ONLY_NO_SCORE_EFFECT',
-      gemini_signal_policy: 'RBI UNDER Gemini disabled in v1.4.14; deterministic Sleeper top-20 sharpened probability math only',
+      gemini_signal_policy: 'RBI UNDER Gemini disabled in v1.4.15; deterministic Sleeper probability math only',
       odds_api_supplemental_only_for_rbi: true,
-      score_calibration_version: 'v1.4.14_rbi_probability_sharpener_status_fix',
+      score_calibration_version: 'v1.4.15_rbi_sharp_probability_buffer',
       market_bonus: scored.market_bonus,
-      market_bonus_policy: 'No Gemini bonus for RBI UNDER in v1.4.14; PrizePicks RBI skipped; Sleeper RBI UNDER top 20 selected by sharpened deterministic probability math only'
+      market_bonus_policy: 'No Gemini bonus for RBI UNDER in v1.4.15; PrizePicks RBI skipped; Sleeper RBI UNDER selected by sharply calibrated deterministic probability math with reserve buffer'
     };
     const team = scoreTeamKey(row.team) || row.team || null;
     const oppRaw = String(row.opponent || '').replace(/^(@|vs)\s*/i,'').trim();
@@ -14044,7 +14077,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
   sleeperCandidates.sort((a,b) => (b.hit_probability - a.hit_probability) || (b.preview_score - a.preview_score) || (b.preview_conf - a.preview_conf) || String(a.player_key).localeCompare(String(b.player_key)));
   out.sleeper_candidates_ranked = sleeperCandidates.length;
   out.sleeper_candidates_pickable = sleeperCandidates.length;
-  const selectedSleeper = sleeperCandidates.slice(0, 20);
+  const selectedSleeper = sleeperCandidates.slice(0, 30); // v1.4.15: promote a reserve buffer so Main UI can still display 20 after client-side started-game hiding.
   for (const c of selectedSleeper) {
     await addRow(c.row, 'sleeper', c.sleeperId, c.lineType, c.direction, c.normalizedLine);
     out.sleeper_rows++;
@@ -14381,16 +14414,16 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_RUNNING', error='Auto-finalized stale long RUNNING scoring run before new start', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='RUNNING' AND created_at < datetime('now','-15 minutes')`).bind(slateDate).run();
   const activeRun = await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
   if (activeRun && activeRun.run_id) {
-    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, retry_safe:true, next_action:'Do not press Run again. Use Check MLB Scores or the scoring_runs SQL to watch this active run finish.', note:'A fresh scoring run is already active. v1.4.14 preserves no-restart protection, skips invalid one-sided market groups, keeps Total Bases calibration, and builds the Sleeper RBI UNDER top-20 probability board.' };
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, retry_safe:true, next_action:'Do not press Run again. Use Check MLB Scores or the scoring_runs SQL to watch this active run finish.', note:'A fresh scoring run is already active. v1.4.15 preserves no-restart protection, skips invalid one-sided market groups, keeps Total Bases calibration, and builds the Sleeper RBI UNDER top-20 probability board.' };
   }
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-  await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.4.14_rbi_probability_sharpener_status_fix'})).run();
+  await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.4.15_rbi_sharp_probability_buffer'})).run();
   await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',no_external_data:true})).run().catch(()=>null);
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,guard:'v1.4.14'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,guard:'v1.4.15'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -14405,7 +14438,7 @@ async function runMlbScoringV1(input,env){
   for(const [k,g] of groups.entries()){
    scoringGroupIndex++;
    if (scoringGroupIndex % 25 === 0) {
-    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_progress',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.14_rbi_probability_sharpener_status_fix'}),runId).run().catch(()=>null);
+    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_progress',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.15_rbi_sharp_probability_buffer'}),runId).run().catch(()=>null);
    }
    try{
    const s=g.sample; const fam=String(s.prop_family||propFamilyFromMarket(s.market_key)); const byBook=new Map();
@@ -14465,7 +14498,7 @@ async function runMlbScoringV1(input,env){
     final=Math.max(0,Math.min(cap,final)); const conf=Math.max(0,Math.min(1,(pairs.length/6)*(spread>.07?.75:1)+modBundle.confidenceBoost)); // freshness audit-only, no confidence drag
     const rec=scoreRec(final,blocks), grade=scoreGrade(final,conf);
     const source=`odds_consensus|${slateDate}|${s.event_id}|${scoreNormName(s.player_name)}|${s.market_key}|${Number(s.outcome_point)}|${dir}`; const scratchId=`scratch|${runId}|${source}`; const scoreId=`score|${runId}|${source}|${simpleHashText(JSON.stringify({prob,final,conf,rec,grade}))}`;
-    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,hit_contact_profile:hitContactProfile,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.4.14_rbi_probability_sharpener_status_fix',score_calibration_note:'v1.4.03 preserves backend scoring orchestration, HITS thin-market calibration, one-sided skip guard, Total Bases calibration, and reconnects bounded Sleeper RBI Gemini bonus reuse/fresh-call logic.'};
+    const audit={book_count:pairs.length,paired_books:pairs.map(p=>({book:p.book,over:p.over.outcome_price,under:p.under.outcome_price,fair_over:+p.fo.toFixed(5),fair_under:+p.fu.toFixed(5),hold:+p.hold.toFixed(5)})),no_vig_prob:+prob.toFixed(5),effective_no_vig_prob:+liftInfo.effective_prob.toFixed(5),probability_lift:+liftInfo.lift.toFixed(3),probability_lift_reason:liftInfo.reason,base_score:+raw.toFixed(2),derived_modifier_total:modBundle.totalMod,derived_modifiers:modBundle.mods,player_context:modBundle.player_context,game_total:modBundle.game_total,park_context:modBundle.park_context,weather_context:modBundle.weather_context,modifier_source_counts:modifierCtx.source_counts,hit_contact_profile:hitContactProfile,spread:+spread.toFixed(5),max_hold:+maxHold.toFixed(5),odds_age_seconds:stale, freshness_policy:'AUDIT_ONLY_NO_SCORE_EFFECT', caps,penalties:pen,blocks,no_gemini:true,immutable_history:true,batch_governor:true,derived_modifier_calibration:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',score_calibration_note:'v1.4.03 preserves backend scoring orchestration, HITS thin-market calibration, one-sided skip guard, Total Bases calibration, and reconnects bounded Sleeper RBI Gemini bonus reuse/fresh-call logic.'};
     scratchStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_scoring_scratchpad (run_id,scratch_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,scratchId,blocks.length?'BLOCKED':'CERTIFIED','MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),null,modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,scoreAmerican(prob),prob,prob,conf,raw,final,grade,rec,JSON.stringify(modBundle.mods),JSON.stringify(caps),JSON.stringify(pen),JSON.stringify(blocks),JSON.stringify(audit),SYSTEM_VERSION));
     scratch++; if(blocks.length)continue; cert++;
     const table=scoreTable(fam); if(!table)continue;
@@ -14480,21 +14513,21 @@ async function runMlbScoringV1(input,env){
     continue;
    }
   }
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_complete_before_fallbacks',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.14_rbi_probability_sharpener_status_fix'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_complete_before_fallbacks',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.15_rbi_sharp_probability_buffer'}),runId).run().catch(()=>null);
   const rbiBoardFallback = await buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modifierCtx);
   scoreStmts.push(...rbiBoardFallback.scoreStmts);
   activeStmts.push(...rbiBoardFallback.activeStmts);
   auditStmts.push(...rbiBoardFallback.auditStmts);
   promoted += rbiBoardFallback.promoted;
   active += rbiBoardFallback.active;
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'rbi_fallback_complete_before_pp_fallback',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,guard:'v1.4.14_rbi_probability_sharpener_status_fix'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'rbi_fallback_complete_before_pp_fallback',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,guard:'v1.4.15_rbi_sharp_probability_buffer'}),runId).run().catch(()=>null);
   const ppStandardHitsTbFallback = await buildPrizePicksStandardHitsTbFallbackScoreStatements(env, slateDate, runId, modifierCtx, preparedExactKeys);
   scoreStmts.push(...ppStandardHitsTbFallback.scoreStmts);
   activeStmts.push(...ppStandardHitsTbFallback.activeStmts);
   auditStmts.push(...ppStandardHitsTbFallback.auditStmts);
   promoted += ppStandardHitsTbFallback.promoted;
   active += ppStandardHitsTbFallback.active;
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'statements_built',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.14'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'statements_built',scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.15'}),runId).run().catch(()=>null);
   // v1.3.94: do not wipe readable score/active tables until the replacement statement set has been fully built.
   for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
     await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=?`).bind(slateDate).run();
@@ -14502,13 +14535,13 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=?`).bind(slateDate).run();
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
-  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.4.14_rbi_probability_sharpener_status_fix',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_replace:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_backend_orchestrated_sleeper_rbi_top20_probability_board',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.4.14 keeps orchestrated scoring, preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes the top 20 pickable Sleeper RBI UNDER 0.5 candidates by sharpened deterministic hit probability.'};
+  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_backend_orchestrated_sleeper_rbi_top20_probability_board',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.4.15 keeps orchestrated scoring, preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes the top 20 pickable Sleeper RBI UNDER 0.5 candidates by sharply calibrated deterministic hit probability with display reserve buffer.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.14_rbi_probability_sharpener_status_fix',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. v1.4.14 preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes only top-20 pickable Sleeper RBI UNDER probability candidates.'};
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.15_rbi_sharp_probability_buffer',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. v1.4.15 preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes only top-20 pickable Sleeper RBI UNDER probability candidates with reserve buffer.'};
  }
 }
 
