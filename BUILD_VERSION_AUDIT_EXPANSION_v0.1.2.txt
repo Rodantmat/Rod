@@ -1,0 +1,15 @@
+BUILD VERSION AUDIT
+Version: v0.1.2 - Expansion Worker-Hosted Control Room
+ZIP filename: alphadog_expansion_v0.1.2_worker_hosted_control_room.zip
+Worker file: alphadog_expansion_worker.js
+Control room file: alphadog_expansion_control_room.html
+Wrangler var: v0.1.2 - Expansion Worker-Hosted Control Room
+Package version: 0.1.2
+Scope: isolated expansion worker + xp_* tables only
+Current production scoring worker touched: NO
+Current main UI touched: NO
+Current old control room touched: NO
+Manual SQL: read-only only
+Copy Output: included
+Base URL field: removed
+Root worker route serves control room: YES

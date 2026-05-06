@@ -1,5 +1,5 @@
-const SYSTEM_VERSION = 'v0.1.1 - Expansion Hardcoded Admin Lock';
-const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v011-admin-9f4d2e87-6a13-4c59-9b2d-0a8c5e77b411';
+const SYSTEM_VERSION = 'v0.1.2 - Expansion Worker-Hosted Control Room';
+const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v012-admin-7d3f5b1e-8a2c-4c78-91ab-2e9f6d41b203';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
 const TARGET_STAT_TYPES = [
@@ -17,6 +17,8 @@ const TARGET_STAT_TYPES = [
   'Total Bases',
   'RBIs'
 ];
+
+const CONTROL_ROOM_HTML = '<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1" />\n  <title>AlphaDog Expansion Control Room</title>\n  <style>\n    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }\n    body { margin: 0; background: #090b10; color: #f5f7fb; }\n    header { padding: 18px 16px; border-bottom: 1px solid #232734; background: #111520; position: sticky; top: 0; z-index: 2; }\n    h1 { margin: 0; font-size: 21px; }\n    .version { margin-top: 4px; color: #aab3c5; font-size: 13px; }\n    main { padding: 14px; max-width: 980px; margin: 0 auto; }\n    .card { border: 1px solid #252b3a; background: #111520; border-radius: 14px; padding: 14px; margin: 12px 0; }\n    label { display: block; font-size: 12px; color: #aab3c5; margin-bottom: 6px; }\n    select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #2c3447; border-radius: 10px; padding: 11px; background: #090b10; color: #fff; font-size: 14px; }\n    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }\n    button { border: 0; border-radius: 12px; padding: 12px; background: #2d6cdf; color: white; font-weight: 700; font-size: 14px; }\n    button.secondary { background: #273044; }\n    button.warn { background: #7c4d15; }\n    button.good { background: #17633a; }\n    button:active { transform: translateY(1px); }\n    pre { white-space: pre-wrap; word-break: break-word; background: #06080c; border: 1px solid #222838; border-radius: 12px; padding: 12px; min-height: 260px; font-size: 12px; line-height: 1.4; color: #d9e2f2; }\n    .note { color: #aab3c5; font-size: 13px; line-height: 1.45; }\n    .pill { display:inline-block; padding: 5px 9px; border-radius:999px; background:#182033; border:1px solid #2b3448; color:#c8d2e5; font-size:12px; margin-top:8px; }\n  </style>\n</head>\n<body>\n  <header>\n    <h1>AlphaDog Expansion Control Room</h1>\n    <div class="version">v0.1.2 - Expansion Worker-Hosted Control Room</div>\n  </header>\n  <main>\n    <section class="card">\n      <div class="note">Fresh isolated control room served by the Expansion Worker itself. It reads PrizePicks from the current database and writes only to <b>xp_*</b> tables. No current scoring buttons, no old control-room logic.</div>\n      <div class="pill">Worker URL locked to this page origin</div>\n      <div class="pill">Embedded admin token active</div>\n    </section>\n\n    <section class="card">\n      <div class="grid">\n        <button onclick="callApi(\'/xp/health\',\'GET\')">Health</button>\n        <button onclick="callApi(\'/xp/schema/apply\',\'POST\')" class="warn">Apply Schema</button>\n        <button onclick="callApi(\'/xp/board/refresh\',\'POST\',{include_started:false})">Refresh Pickable Board</button>\n        <button onclick="callApi(\'/xp/board/counts\',\'GET\')">Counts</button>\n        <button onclick="callApi(\'/xp/jobs\',\'GET\')" class="secondary">Jobs</button>\n        <button onclick="callApi(\'/xp/logs\',\'GET\')" class="secondary">Logs</button>\n      </div>\n    </section>\n\n    <section class="card">\n      <div class="grid">\n        <div>\n          <label>Sample Prop</label>\n          <select id="sampleProp">\n            <option>Hitter Strikeouts</option>\n            <option>Walks</option>\n            <option>Singles</option>\n            <option>Doubles</option>\n            <option>Home Runs</option>\n            <option>Runs</option>\n            <option>Hits+Runs+RBIs</option>\n            <option>Hitter Fantasy Score</option>\n            <option>Triples</option>\n            <option>Stolen Bases</option>\n            <option>Hits</option>\n            <option>Total Bases</option>\n            <option>RBIs</option>\n          </select>\n        </div>\n        <div>\n          <label>&nbsp;</label>\n          <button onclick="sampleProp()">Load Sample</button>\n        </div>\n      </div>\n    </section>\n\n    <section class="card">\n      <label>Manual SQL Output</label>\n      <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 50</textarea>\n      <div class="grid" style="margin-top:10px;">\n        <button onclick="runManualSql()" class="warn">Run Manual SQL</button>\n        <button onclick="copyOutput()" class="good">Copy Output</button>\n        <button onclick="clearOutput()" class="secondary">Clear Output</button>\n      </div>\n      <div class="note" style="margin-top:8px;">Manual SQL is read-only in this expansion room: SELECT, WITH, and PRAGMA only.</div>\n    </section>\n\n    <section class="card">\n      <label>Output</label>\n      <pre id="output">Ready.</pre>\n    </section>\n  </main>\n\n  <script>\n    const VERSION = \'v0.1.2 - Expansion Worker-Hosted Control Room\';\n    const EMBEDDED_EXPANSION_ADMIN_TOKEN = \'alphadog-xp-v012-admin-7d3f5b1e-8a2c-4c78-91ab-2e9f6d41b203\';\n    const output = document.getElementById(\'output\');\n\n    function print(data) {\n      output.textContent = typeof data === \'string\' ? data : JSON.stringify(data, null, 2);\n    }\n\n    async function callApi(path, method, body) {\n      const headers = {\n        \'Content-Type\': \'application/json\',\n        \'Authorization\': \'Bearer \' + EMBEDDED_EXPANSION_ADMIN_TOKEN,\n        \'X-Admin-Token\': EMBEDDED_EXPANSION_ADMIN_TOKEN\n      };\n      print(\'Running \' + method + \' \' + path + \'...\');\n      try {\n        const res = await fetch(path, {\n          method: method,\n          headers: headers,\n          body: method === \'POST\' ? JSON.stringify(body || {}) : undefined\n        });\n        const text = await res.text();\n        let data;\n        try { data = JSON.parse(text); } catch (e) { data = text; }\n        print({ http_status: res.status, version: VERSION, response: data });\n      } catch (err) {\n        print({ ok: false, version: VERSION, error: err.message || String(err) });\n      }\n    }\n\n    function sampleProp() {\n      const stat = encodeURIComponent(document.getElementById(\'sampleProp\').value);\n      callApi(\'/xp/board/sample?stat_type=\' + stat + \'&limit=50\', \'GET\');\n    }\n\n    function runManualSql() {\n      const sql = document.getElementById(\'manualSql\').value || \'\';\n      callApi(\'/xp/manual-sql\', \'POST\', { sql: sql, max_rows: 100 });\n    }\n\n    async function copyOutput() {\n      try {\n        await navigator.clipboard.writeText(output.textContent || \'\');\n        const old = output.textContent;\n        output.textContent = \'Copied output.\\n\\n\' + old;\n      } catch (err) {\n        output.textContent = \'Copy failed. Select the output text and copy manually.\\n\\n\' + output.textContent;\n      }\n    }\n\n    function clearOutput() { output.textContent = \'Ready.\'; }\n  </script>\n</body>\n</html>\n';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS xp_schema_migrations (
@@ -106,7 +108,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.1', 'Expansion bootstrap xp_* isolated schema', CURRENT_TIMESTAMP);
+VALUES ('v0.1.2', 'Expansion bootstrap xp_* isolated schema with worker-hosted control room and read-only manual SQL', CURRENT_TIMESTAMP);
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),
@@ -141,6 +143,10 @@ function jsonResponse(body, status = 200) {
 
 function textResponse(body, status = 200, contentType = 'text/plain; charset=utf-8') {
   return new Response(body, { status, headers: { ...corsHeaders(), 'Content-Type': contentType } });
+}
+
+function htmlResponse(body, status = 200) {
+  return new Response(body, { status, headers: { ...corsHeaders(), 'Content-Type': 'text/html; charset=utf-8' } });
 }
 
 function makeId(prefix) {
@@ -381,6 +387,42 @@ async function getLogs(env) {
   return { ok: true, version: SYSTEM_VERSION, rows: rows.results || [] };
 }
 
+
+function isReadOnlySql(sql) {
+  const cleaned = String(sql || '').trim().replace(/^\s*--.*$/gm, '').trim();
+  const lowered = cleaned.toLowerCase();
+  if (!cleaned) return false;
+  if (!(lowered.startsWith('select') || lowered.startsWith('with') || lowered.startsWith('pragma'))) return false;
+  const banned = [' insert ', ' update ', ' delete ', ' drop ', ' alter ', ' create ', ' replace ', ' attach ', ' detach ', ' vacuum ', ' reindex ', ' truncate '];
+  const padded = ' ' + lowered.replace(/[\n\r\t]+/g, ' ') + ' ';
+  return !banned.some(word => padded.includes(word));
+}
+
+async function runManualSql(env, body) {
+  const sql = String(body?.sql || '').trim();
+  const maxRows = Math.max(1, Math.min(Number(body?.max_rows) || 50, 100));
+  if (!isReadOnlySql(sql)) {
+    return { ok: false, version: SYSTEM_VERSION, error: 'Manual SQL is read-only here. Use SELECT, WITH, or PRAGMA only.' };
+  }
+  const started = Date.now();
+  try {
+    const result = await env.DB.prepare(sql).all();
+    const rows = result.results || [];
+    return {
+      ok: true,
+      version: SYSTEM_VERSION,
+      sql,
+      rows: rows.slice(0, maxRows),
+      row_count: rows.length,
+      returned_rows: Math.min(rows.length, maxRows),
+      truncated: rows.length > maxRows,
+      duration_ms: Date.now() - started
+    };
+  } catch (err) {
+    return { ok: false, version: SYSTEM_VERSION, sql, error: err && err.message ? err.message : String(err), duration_ms: Date.now() - started };
+  }
+}
+
 async function parseBody(request) {
   if (request.method !== 'POST') return {};
   const text = await request.text();
@@ -394,7 +436,11 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
 
-    if (path === '/' || path === '/xp/health') {
+    if (path === '/') {
+      return htmlResponse(CONTROL_ROOM_HTML);
+    }
+
+    if (path === '/xp/health') {
       return jsonResponse({
         ok: true,
         version: SYSTEM_VERSION,
@@ -403,7 +449,8 @@ export default {
         source_read_table: SOURCE_TABLE,
         writes_allowed_only_to: 'xp_* tables',
         admin_secret_configured: Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN),
-        embedded_control_room_token_enabled: true
+        embedded_control_room_token_enabled: true,
+        control_room_served_by_worker: true
       });
     }
 
@@ -433,6 +480,11 @@ export default {
       if (path === '/xp/board/sample') return jsonResponse(await getSamples(env, url.searchParams.get('stat_type'), url.searchParams.get('limit')));
       if (path === '/xp/jobs') return jsonResponse(await getJobs(env));
       if (path === '/xp/logs') return jsonResponse(await getLogs(env));
+      if (path === '/xp/manual-sql' && request.method === 'POST') {
+        const body = await parseBody(request);
+        const result = await runManualSql(env, body);
+        return jsonResponse(result, result.ok ? 200 : 400);
+      }
 
       return jsonResponse({ ok: false, version: SYSTEM_VERSION, error: `Unknown route: ${path}` }, 404);
     } catch (err) {

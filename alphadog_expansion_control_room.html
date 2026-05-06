@@ -13,37 +13,29 @@
     main { padding: 14px; max-width: 980px; margin: 0 auto; }
     .card { border: 1px solid #252b3a; background: #111520; border-radius: 14px; padding: 14px; margin: 12px 0; }
     label { display: block; font-size: 12px; color: #aab3c5; margin-bottom: 6px; }
-    input, select { width: 100%; box-sizing: border-box; border: 1px solid #2c3447; border-radius: 10px; padding: 11px; background: #090b10; color: #fff; font-size: 14px; }
+    select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #2c3447; border-radius: 10px; padding: 11px; background: #090b10; color: #fff; font-size: 14px; }
+    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
     button { border: 0; border-radius: 12px; padding: 12px; background: #2d6cdf; color: white; font-weight: 700; font-size: 14px; }
     button.secondary { background: #273044; }
     button.warn { background: #7c4d15; }
+    button.good { background: #17633a; }
     button:active { transform: translateY(1px); }
     pre { white-space: pre-wrap; word-break: break-word; background: #06080c; border: 1px solid #222838; border-radius: 12px; padding: 12px; min-height: 260px; font-size: 12px; line-height: 1.4; color: #d9e2f2; }
     .note { color: #aab3c5; font-size: 13px; line-height: 1.45; }
+    .pill { display:inline-block; padding: 5px 9px; border-radius:999px; background:#182033; border:1px solid #2b3448; color:#c8d2e5; font-size:12px; margin-top:8px; }
   </style>
 </head>
 <body>
   <header>
     <h1>AlphaDog Expansion Control Room</h1>
-    <div class="version">v0.1.1 - Expansion Hardcoded Admin Lock</div>
+    <div class="version">v0.1.2 - Expansion Worker-Hosted Control Room</div>
   </header>
   <main>
     <section class="card">
-      <div class="note">Fresh isolated control room. It reads PrizePicks from the current database and writes only to <b>xp_*</b> tables. No current scoring buttons, no old control-room logic.</div>
-    </section>
-
-    <section class="card">
-      <div class="grid">
-        <div>
-          <label>Expansion Worker Base URL</label>
-          <input id="baseUrl" placeholder="https://alphadog-expansion-v001.your-subdomain.workers.dev" />
-        </div>
-        <div>
-          <label>Admin</label>
-          <input id="adminStatus" value="Embedded token active" readonly />
-        </div>
-      </div>
+      <div class="note">Fresh isolated control room served by the Expansion Worker itself. It reads PrizePicks from the current database and writes only to <b>xp_*</b> tables. No current scoring buttons, no old control-room logic.</div>
+      <div class="pill">Worker URL locked to this page origin</div>
+      <div class="pill">Embedded admin token active</div>
     </section>
 
     <section class="card">
@@ -85,45 +77,47 @@
     </section>
 
     <section class="card">
+      <label>Manual SQL Output</label>
+      <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 50</textarea>
+      <div class="grid" style="margin-top:10px;">
+        <button onclick="runManualSql()" class="warn">Run Manual SQL</button>
+        <button onclick="copyOutput()" class="good">Copy Output</button>
+        <button onclick="clearOutput()" class="secondary">Clear Output</button>
+      </div>
+      <div class="note" style="margin-top:8px;">Manual SQL is read-only in this expansion room: SELECT, WITH, and PRAGMA only.</div>
+    </section>
+
+    <section class="card">
       <label>Output</label>
       <pre id="output">Ready.</pre>
     </section>
   </main>
 
   <script>
-    const VERSION = 'v0.1.1 - Expansion Hardcoded Admin Lock';
-    const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v011-admin-9f4d2e87-6a13-4c59-9b2d-0a8c5e77b411';
-    const baseInput = document.getElementById('baseUrl');
+    const VERSION = 'v0.1.2 - Expansion Worker-Hosted Control Room';
+    const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v012-admin-7d3f5b1e-8a2c-4c78-91ab-2e9f6d41b203';
     const output = document.getElementById('output');
-
-    baseInput.value = localStorage.getItem('xp_base_url') || location.origin;
-
-    function saveSettings() {
-      localStorage.setItem('xp_base_url', baseInput.value.trim());
-    }
 
     function print(data) {
       output.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
     }
 
     async function callApi(path, method, body) {
-      saveSettings();
-      const base = baseInput.value.trim().replace(/\/+$/, '');
       const headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + EMBEDDED_EXPANSION_ADMIN_TOKEN,
         'X-Admin-Token': EMBEDDED_EXPANSION_ADMIN_TOKEN
       };
-      print(`Running ${method} ${path}...`);
+      print('Running ' + method + ' ' + path + '...');
       try {
-        const res = await fetch(base + path, {
-          method,
-          headers,
+        const res = await fetch(path, {
+          method: method,
+          headers: headers,
           body: method === 'POST' ? JSON.stringify(body || {}) : undefined
         });
         const text = await res.text();
         let data;
-        try { data = JSON.parse(text); } catch { data = text; }
+        try { data = JSON.parse(text); } catch (e) { data = text; }
         print({ http_status: res.status, version: VERSION, response: data });
       } catch (err) {
         print({ ok: false, version: VERSION, error: err.message || String(err) });
@@ -132,8 +126,25 @@
 
     function sampleProp() {
       const stat = encodeURIComponent(document.getElementById('sampleProp').value);
-      callApi(`/xp/board/sample?stat_type=${stat}&limit=50`, 'GET');
+      callApi('/xp/board/sample?stat_type=' + stat + '&limit=50', 'GET');
     }
+
+    function runManualSql() {
+      const sql = document.getElementById('manualSql').value || '';
+      callApi('/xp/manual-sql', 'POST', { sql: sql, max_rows: 100 });
+    }
+
+    async function copyOutput() {
+      try {
+        await navigator.clipboard.writeText(output.textContent || '');
+        const old = output.textContent;
+        output.textContent = 'Copied output.\n\n' + old;
+      } catch (err) {
+        output.textContent = 'Copy failed. Select the output text and copy manually.\n\n' + output.textContent;
+      }
+    }
+
+    function clearOutput() { output.textContent = 'Ready.'; }
   </script>
 </body>
 </html>
