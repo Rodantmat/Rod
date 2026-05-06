@@ -1,0 +1,11 @@
+ZIP: alphadog_v1.4.12_rbi_sleeper_top20_no_gemini.zip
+worker.js: v1.4.12 - RBI Sleeper Top 20 No Gemini
+control_room.html: v1.4.12 - RBI Sleeper Top 20 No Gemini
+README: README_v1.4.12.txt
+Flat folder: yes
+Main UI touched: no
+HITS touched: no intentional scoring change
+TOTAL_BASES touched: no intentional scoring change
+RBI Gemini scoring calls: disabled for Sleeper RBI UNDER
+PrizePicks RBI fallback: skipped
+Sleeper RBI fallback: top 20 deterministic UNDER 0.5 only
