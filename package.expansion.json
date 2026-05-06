@@ -1,1 +1,1 @@
-{"scripts":{"deploy:expansion":"wrangler deploy --config wrangler.expansion.jsonc"},"devDependencies":{"wrangler":"latest"}}
+{"scripts":{"deploy:expansion":"wrangler deploy --config wrangler.expansion.jsonc"},"devDependencies":{"wrangler":"latest"}

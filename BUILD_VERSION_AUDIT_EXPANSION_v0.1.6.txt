@@ -1,0 +1,12 @@
+AlphaDog Expansion v0.1.6 - Expansion UI Brace Repair Certified
+
+Build integrity checks:
+- Standalone HTML version: v0.1.6
+- Worker SYSTEM_VERSION: v0.1.6
+- Worker embedded HTML version: v0.1.6
+- CSS double-brace regression removed: PASS
+- JS double-brace regression removed: PASS
+- node --check worker.js: PASS
+- node --check extracted browser script: PASS
+- Output-preserve behavior for Clear SQL / Select SQL / Copy Output: PASS
+- Command output auto-scroll behavior retained: PASS
