@@ -4,7 +4,7 @@
   "main": "alphadog_expansion_worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {
-    "XP_SYSTEM_VERSION": "v0.1.3 - Expansion Clean Output Worker-Origin Guard",
+    "XP_SYSTEM_VERSION": "v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge",
     "XP_ALLOWED_SOURCE_TABLE": "prizepicks_current_market_context"
   },
   "d1_databases": [
