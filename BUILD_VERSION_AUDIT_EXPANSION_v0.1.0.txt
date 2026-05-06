@@ -1,0 +1,9 @@
+Build audit: PASS
+Version: v0.1.0 - Expansion Bootstrap Isolated
+Worker file version: v0.1.0 - Expansion Bootstrap Isolated
+Control room version: v0.1.0 - Expansion Bootstrap Isolated
+Wrangler worker name: alphadog-expansion-v001
+Schema namespace: xp_*
+Current production table writes: none intended
+Source read table: prizepicks_current_market_context
+Cron: one-minute cron enabled on separate expansion worker

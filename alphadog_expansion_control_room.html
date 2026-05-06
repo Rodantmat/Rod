@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AlphaDog Expansion Control Room</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #090b10; color: #f5f7fb; }
+    header { padding: 18px 16px; border-bottom: 1px solid #232734; background: #111520; position: sticky; top: 0; z-index: 2; }
+    h1 { margin: 0; font-size: 21px; }
+    .version { margin-top: 4px; color: #aab3c5; font-size: 13px; }
+    main { padding: 14px; max-width: 980px; margin: 0 auto; }
+    .card { border: 1px solid #252b3a; background: #111520; border-radius: 14px; padding: 14px; margin: 12px 0; }
+    label { display: block; font-size: 12px; color: #aab3c5; margin-bottom: 6px; }
+    input, select { width: 100%; box-sizing: border-box; border: 1px solid #2c3447; border-radius: 10px; padding: 11px; background: #090b10; color: #fff; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    button { border: 0; border-radius: 12px; padding: 12px; background: #2d6cdf; color: white; font-weight: 700; font-size: 14px; }
+    button.secondary { background: #273044; }
+    button.warn { background: #7c4d15; }
+    button:active { transform: translateY(1px); }
+    pre { white-space: pre-wrap; word-break: break-word; background: #06080c; border: 1px solid #222838; border-radius: 12px; padding: 12px; min-height: 260px; font-size: 12px; line-height: 1.4; color: #d9e2f2; }
+    .note { color: #aab3c5; font-size: 13px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AlphaDog Expansion Control Room</h1>
+    <div class="version">v0.1.0 - Expansion Bootstrap Isolated</div>
+  </header>
+  <main>
+    <section class="card">
+      <div class="note">Fresh isolated control room. It reads PrizePicks from the current database and writes only to <b>xp_*</b> tables. No current scoring buttons, no old control-room logic.</div>
+    </section>
+
+    <section class="card">
+      <div class="grid">
+        <div>
+          <label>Expansion Worker Base URL</label>
+          <input id="baseUrl" placeholder="https://alphadog-expansion-v001.your-subdomain.workers.dev" />
+        </div>
+        <div>
+          <label>Admin Token</label>
+          <input id="token" type="password" placeholder="EXPANSION_ADMIN_TOKEN or INGEST_TOKEN" />
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="grid">
+        <button onclick="callApi('/xp/health','GET')">Health</button>
+        <button onclick="callApi('/xp/schema/apply','POST')" class="warn">Apply Schema</button>
+        <button onclick="callApi('/xp/board/refresh','POST',{include_started:false})">Refresh Pickable Board</button>
+        <button onclick="callApi('/xp/board/counts','GET')">Counts</button>
+        <button onclick="callApi('/xp/jobs','GET')" class="secondary">Jobs</button>
+        <button onclick="callApi('/xp/logs','GET')" class="secondary">Logs</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="grid">
+        <div>
+          <label>Sample Prop</label>
+          <select id="sampleProp">
+            <option>Hitter Strikeouts</option>
+            <option>Walks</option>
+            <option>Singles</option>
+            <option>Doubles</option>
+            <option>Home Runs</option>
+            <option>Runs</option>
+            <option>Hits+Runs+RBIs</option>
+            <option>Hitter Fantasy Score</option>
+            <option>Triples</option>
+            <option>Stolen Bases</option>
+            <option>Hits</option>
+            <option>Total Bases</option>
+            <option>RBIs</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button onclick="sampleProp()">Load Sample</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <label>Output</label>
+      <pre id="output">Ready.</pre>
+    </section>
+  </main>
+
+  <script>
+    const VERSION = 'v0.1.0 - Expansion Bootstrap Isolated';
+    const baseInput = document.getElementById('baseUrl');
+    const tokenInput = document.getElementById('token');
+    const output = document.getElementById('output');
+
+    baseInput.value = localStorage.getItem('xp_base_url') || location.origin;
+    tokenInput.value = localStorage.getItem('xp_token') || '';
+
+    function saveSettings() {
+      localStorage.setItem('xp_base_url', baseInput.value.trim());
+      localStorage.setItem('xp_token', tokenInput.value.trim());
+    }
+
+    function print(data) {
+      output.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    }
+
+    async function callApi(path, method, body) {
+      saveSettings();
+      const base = baseInput.value.trim().replace(/\/+$/, '');
+      const token = tokenInput.value.trim();
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
+      print(`Running ${method} ${path}...`);
+      try {
+        const res = await fetch(base + path, {
+          method,
+          headers,
+          body: method === 'POST' ? JSON.stringify(body || {}) : undefined
+        });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = text; }
+        print({ http_status: res.status, version: VERSION, response: data });
+      } catch (err) {
+        print({ ok: false, version: VERSION, error: err.message || String(err) });
+      }
+    }
+
+    function sampleProp() {
+      const stat = encodeURIComponent(document.getElementById('sampleProp').value);
+      callApi(`/xp/board/sample?stat_type=${stat}&limit=50`, 'GET');
+    }
+  </script>
+</body>
+</html>
