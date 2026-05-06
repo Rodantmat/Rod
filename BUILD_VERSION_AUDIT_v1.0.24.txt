@@ -1,0 +1,6 @@
+Version audit PASS
+ZIP target: v1.0.24 - RBI Probability Boot-Safe Lock
+index.html title/header/script: v1.0.24
+worker MAIN_ALPHADOG_UI_VERSION: v1.0.24
+Embedded INDEX_HTML regenerated from patched index.html
+Syntax guard: no pctfunction / setRbiTabfunction duplicate-token bug

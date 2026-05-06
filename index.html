@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>AlphaDog v1.0.23</title>
+  <title>AlphaDog v1.0.24</title>
   <link rel="icon" type="image/png" href="/main_alphadog_favicon.png">
   <link rel="apple-touch-icon" href="/main_alphadog_apple_touch_icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,7 +18,7 @@
 <body>
 <main class="wrap">
   <header class="hero">
-    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.23 - RBI DB Probability Display Lock</div></div></div>
+    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.24 - RBI Probability Boot-Safe Lock</div></div></div>
     <div class="menuWrap"><button class="menuBtn" type="button" id="menuOpen" aria-label="Open menu">☰</button><div class="menuPanel hidden" id="mainMenu"><button class="menuItem" type="button" id="menuBoard">🏠 Board</button><button class="menuItem" type="button" id="menuRbi">⚾ RBI</button><button class="menuItem" type="button" id="menuSleeperFeed">Sleeper Feed</button><button class="menuItem" type="button" id="menuAdmin">⚙️ Admin</button></div></div>
   </header>
   <section id="boardScreen">
@@ -39,7 +39,7 @@
   </section>
   <section id="rbiScreen" class="hidden">
     <div class="bar"><button class="backBtn" type="button" id="rbiBackBoard">← Board</button><button class="primary" type="button" id="rbiRefresh">Refresh Candidate Board</button></div>
-    <section class="panel rbiHeader"><div><p class="rbiTitle">RBI Under 0.5</p><div class="rbiSub">Read-only Sleeper RBI Under board. Shows backend top-20 candidates from the 30-row reserve buffer. Uses DB hit_probability only. No browser scoring, no mining, no database writes.</div></div><div class="tabRow"><button class="tabBtn active" type="button" id="rbiSlipTab">2-Pick Slips</button><button class="tabBtn" type="button" id="rbiListTab">Top 20 RBI List</button></div><div class="status" id="rbiStatus">Loading RBI board...</div></section>
+    <section class="panel rbiHeader"><div><p class="rbiTitle">RBI Under 0.5</p><div class="rbiSub">Read-only Sleeper RBI Under board. Shows backend reserve candidates and displays DB hit_probability. No browser scoring, no mining, no database writes.</div></div><div class="tabRow"><button class="tabBtn active" type="button" id="rbiSlipTab">2-Pick Slips</button><button class="tabBtn" type="button" id="rbiListTab">Top 20 RBI List</button></div><div class="status" id="rbiStatus">Loading RBI board...</div></section>
     <section id="rbiSlips"></section>
     <section class="rbiList hidden" id="rbiCards"></section>
   </section>
@@ -62,7 +62,7 @@
 <script>
 (function(){
 'use strict';
-const UI_VERSION='v1.0.23 - RBI DB Probability Display Lock';
+const UI_VERSION='v1.0.24 - RBI Probability Boot-Safe Lock';
 const TEAM={ARI:'Arizona Diamondbacks',ATL:'Atlanta Braves',BAL:'Baltimore Orioles',BOS:'Boston Red Sox',CHC:'Chicago Cubs',CWS:'Chicago White Sox',CHW:'Chicago White Sox',CIN:'Cincinnati Reds',CLE:'Cleveland Guardians',COL:'Colorado Rockies',DET:'Detroit Tigers',HOU:'Houston Astros',KC:'Kansas City Royals',KCR:'Kansas City Royals',LAA:'Los Angeles Angels',LAD:'Los Angeles Dodgers',MIA:'Miami Marlins',MIL:'Milwaukee Brewers',MIN:'Minnesota Twins',NYM:'New York Mets',NYY:'New York Yankees',ATH:'Athletics',OAK:'Athletics',PHI:'Philadelphia Phillies',PIT:'Pittsburgh Pirates',SD:'San Diego Padres',SDP:'San Diego Padres',SEA:'Seattle Mariners',SF:'San Francisco Giants',SFG:'San Francisco Giants',STL:'St. Louis Cardinals',TB:'Tampa Bay Rays',TBR:'Tampa Bay Rays',TEX:'Texas Rangers',TOR:'Toronto Blue Jays',WSH:'Washington Nationals',WAS:'Washington Nationals'};
 const TEAM_NAMES=TEAM;
 let rows=[];
@@ -99,10 +99,10 @@ function projectedPa(slot){const s=Number(slot);if(s===1)return 4.6;if(s===2)ret
 function backendRbiHitProb(r){const audit=auditObj(r);const keys=['hit_probability','no_rbi_probability','rbi_under_probability','rbi_no_rbi_probability'];for(const k of keys){let n=numVal(r[k]);if(n===null)n=numVal(audit[k]);if(n!==null){if(n>1)n=n/100;return Math.max(0.55,Math.min(0.95,n));}}return null}
 function fallbackRbiHitProb(r){const slot=lineupSlot(r);const rate=rbiPerPa(r);let mu=(rate===null?0.055:Math.max(0.01,rate))*projectedPa(slot);const txt=modText(r);if(/HIGH_GAME_TOTAL|park_run_1\.0[3-9]|park_run_1\.[1-9]/i.test(txt))mu*=1.08;if(/LOW_GAME_TOTAL|park_run_0\.9/i.test(txt))mu*=0.88;if(/NO_DIRECT_PAIRED_SUPPORT|NO_BOOK/i.test(txt))mu*=1.03;if(/last5_rbi_0|last_5_rbi_0|last3_rbi_0|last_3_rbi_0/i.test(txt))mu*=0.72;let p=Math.exp(-Math.max(0,mu));const score=Number(r.final_score||0)/100;if(Number.isFinite(score)&&score>0)p=Math.max(p,Math.min(0.92,score));if(p>0.95)p=0.95;if(p<0.55)p=0.55;return p}
 function rbiHitProb(r){const backend=backendRbiHitProb(r);return backend!==null?backend:fallbackRbiHitProb(r)}
-function pctfunction pct(v){return Math.round(Number(v||0)*100)+'%'}
+function pct(v){return Math.round(Number(v||0)*100)+'%'}
 function legLine(r){return esc(r.player_name)+' - '+esc(team(r.team))+' vs '+esc(team(r.opponent))+' - '+esc(fmtDate(r.game_datetime_utc||r.start_time,r.game_time_label))+' - <span class="prob">'+pct(rbiHitProb(r))+'</span>'+(rbiHitProb(r)>=0.95?'<span class="manualFlag">REVIEW</span>':'')}
 function makeSlips(legs){const pool=legs.slice().sort((a,b)=>rbiHitProb(b)-rbiHitProb(a)||String(a.player_name||'').localeCompare(String(b.player_name||'')));const slips=[];while(pool.length>1&&slips.length<10){const a=pool.shift();const teamA=String(a.team_abbrev||a.team||'');let idx=pool.findIndex(b=>String(b.team_abbrev||b.team||'')!==teamA);let sameTeam=false;if(idx<0){idx=0;sameTeam=true}const b=pool.splice(idx,1)[0];let p=rbiHitProb(a)*rbiHitProb(b);if(sameTeam)p=Math.min(0.97,p*1.08);slips.push({a,b,p,sameTeam})}return slips}
-function setRbiTabfunction setRbiTab(tab){rbiTab=tab;const slip=$('rbiSlips'), list=$('rbiCards'), a=$('rbiSlipTab'), b=$('rbiListTab');if(tab==='list'){slip.classList.add('hidden');list.classList.remove('hidden');a.classList.remove('active');b.classList.add('active')}else{list.classList.add('hidden');slip.classList.remove('hidden');b.classList.remove('active');a.classList.add('active')}}
+function setRbiTab(tab){rbiTab=tab;const slip=$('rbiSlips'), list=$('rbiCards'), a=$('rbiSlipTab'), b=$('rbiListTab');if(tab==='list'){slip.classList.add('hidden');list.classList.remove('hidden');a.classList.remove('active');b.classList.add('active')}else{list.classList.add('hidden');slip.classList.remove('hidden');b.classList.remove('active');a.classList.add('active')}}
 function bindFilters(){document.querySelectorAll('input[type=checkbox][data-set]').forEach(el=>{const set=filters[el.dataset.set];if(set){el.checked=set.has(el.dataset.value);el.addEventListener('change',()=>{el.checked?set.add(el.dataset.value):set.delete(el.dataset.value);render();});}});$('scoreFilter').value=String(filters.score);$('scoreFilter').addEventListener('change',e=>{filters.score=Number(e.target.value);render();});}
 function render(){let shown=rows.filter(r=>isPickableNow(r)&&r.prop_family!=='RBI'&&filters.props.has(r.prop_family)&&filters.types.has(normalizeType(r))&&Number(r.final_score||0)>=filters.score);$('status').textContent=shown.length+' shown / '+rows.length+' loaded • RBI hidden from main board • started/unknown hidden • backend release trusted • '+UI_VERSION;if(!shown.length){$('cards').innerHTML='<div class="empty" style="grid-column:1/-1">No legs match these filters.</div>';return}$('cards').innerHTML=shown.map(r=>{let t=normalizeType(r);let score=Number(r.final_score||0);return '<article class="card"><div class="top"><div class="player">'+esc(r.player_name)+'</div><div><div class="badge '+t+'">'+typeLabel(t)+'</div>'+sourceBadge(r)+'</div></div><div class="teams">'+esc(team(r.team))+'<br>vs '+esc(team(r.opponent))+'</div><div class="date">'+esc(fmtDate(r.game_datetime_utc||r.start_time,r.game_time_label))+'</div><div class="lineBox"><span>'+esc(propLabel(r.prop_family))+'</span><span class="side">'+esc(r.line_direction)+'</span><span>'+esc(r.line_number)+'</span></div><div class="comment">'+esc(friendlyComment(r))+'</div><div class="score"><div class="scoreLbl">Score</div><div class="scoreNum">'+score.toFixed(1)+'</div></div></article>'}).join('')}
 function renderRbi(){let candidates=rbiLegs();$('rbiStatus').textContent=candidates.length+' Sleeper RBI Under legs • 10 two-pick slip builder • DB hit_probability locked • started/unknown hidden • '+UI_VERSION;if(!candidates.length){$('rbiSlips').innerHTML='<div class="empty">No current Sleeper RBI Under 0.5 legs are pickable right now.</div>';$('rbiCards').innerHTML='';return}const slips=makeSlips(candidates);$('rbiSlips').innerHTML=slips.map((s,i)=>'<article class="rbiSlip"><div class="slipTitle">Slip '+(i+1)+' - <span class="prob">'+pct(s.p)+'</span></div><div class="legLine">'+legLine(s.a)+'</div><div class="legLine">'+legLine(s.b)+'</div></article>').join('');$('rbiCards').innerHTML=candidates.map((r,i)=>'<article class="rbiSimpleCard"><div class="rbiSimpleName">'+(i+1)+'. '+esc(r.player_name)+'</div><div class="rbiSimpleMeta">'+esc(team(r.team))+' vs '+esc(team(r.opponent))+' - '+esc(fmtDate(r.game_datetime_utc||r.start_time,r.game_time_label))+' - <span class="prob">'+pct(rbiHitProb(r))+'</span></div></article>').join('');setRbiTab(rbiTab)}
