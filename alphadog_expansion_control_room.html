@@ -5,44 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AlphaDog Expansion Control Room</title>
   <style>
-    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #090b10; color: #f5f7fb; }
-    header { padding: 18px 16px; border-bottom: 1px solid #232734; background: #111520; position: sticky; top: 0; z-index: 2; }
-    h1 { margin: 0; font-size: 21px; }
-    .version { margin-top: 4px; color: #aab3c5; font-size: 13px; }
-    main { padding: 14px; max-width: 980px; margin: 0 auto; }
-    .card { border: 1px solid #252b3a; background: #111520; border-radius: 14px; padding: 14px; margin: 12px 0; }
-    label { display: block; font-size: 12px; color: #aab3c5; margin-bottom: 6px; }
-    select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #2c3447; border-radius: 10px; padding: 11px; background: #090b10; color: #fff; font-size: 14px; }
-    textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-    button { border: 0; border-radius: 12px; padding: 12px; background: #2d6cdf; color: white; font-weight: 700; font-size: 14px; }
-    button.secondary { background: #273044; }
-    button.warn { background: #7c4d15; }
-    button.good { background: #17633a; }
-    button:active { transform: translateY(1px); }
-    pre { white-space: pre-wrap; word-break: break-word; background: #06080c; border: 1px solid #222838; border-radius: 12px; padding: 12px; min-height: 260px; font-size: 12px; line-height: 1.4; color: #d9e2f2; }
-    .note { color: #aab3c5; font-size: 13px; line-height: 1.45; }
-    .pill { display:inline-block; padding: 5px 9px; border-radius:999px; background:#182033; border:1px solid #2b3448; color:#c8d2e5; font-size:12px; margin-top:8px; }
+    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    body { margin:0; background:#070b11; color:#65ff99; }
+    header { padding:18px 16px; border-bottom:2px solid #252b35; background:#070b11; }
+    h1 { margin:0; color:#f8f2e9; font-size:24px; letter-spacing:.5px; }
+    .version { color:#65ff99; margin-top:6px; font-size:13px; }
+    main { max-width:1050px; margin:0 auto; padding:14px; }
+    .card { border-top:2px solid #29313d; padding:18px 0; }
+    .note { color:#65ff99; font-size:18px; line-height:1.35; margin:0 0 12px 0; }
+    .small { color:#9aa5b5; font-size:12px; line-height:1.35; }
+    textarea { width:100%; min-height:185px; box-sizing:border-box; border:2px solid #2d3542; border-radius:14px; background:#111; color:#65ff99; padding:12px; font-size:14px; font-family:inherit; outline:none; }
+    .buttons { display:flex; gap:18px; flex-wrap:wrap; margin-top:12px; }
+    button { border:0; border-radius:14px; padding:17px 18px; color:white; background:#8757e6; font-size:20px; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-width:138px; }
+    button.gold { background:#dfa51c; }
+    button.green { background:#17633a; }
+    button.secondary { background:#8757e6; }
+    button.full { width:100%; margin-top:16px; letter-spacing:2px; }
+    button:active { transform:translateY(1px); }
+    select { width:100%; box-sizing:border-box; border:2px solid #2d3542; border-radius:12px; background:#111; color:#65ff99; padding:12px; font-size:15px; font-family:inherit; }
+    pre { white-space:pre-wrap; word-break:break-word; background:#050505; color:#65ff99; border:2px solid #2d3542; border-radius:14px; padding:18px; min-height:150px; max-height:380px; overflow:auto; font-size:15px; line-height:1.35; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; align-items:end; }
   </style>
 </head>
 <body>
   <header>
     <h1>AlphaDog Expansion Control Room</h1>
-    <div class="version">v0.1.2 - Expansion Worker-Hosted Control Room</div>
+    <div class="version">v0.1.3 - Expansion Clean Output Worker-Origin Guard</div>
   </header>
   <main>
     <section class="card">
-      <div class="note">Fresh isolated control room served by the Expansion Worker itself. It reads PrizePicks from the current database and writes only to <b>xp_*</b> tables. No current scoring buttons, no old control-room logic.</div>
-      <div class="pill">Worker URL locked to this page origin</div>
-      <div class="pill">Embedded admin token active</div>
-    </section>
-
-    <section class="card">
-      <div class="grid">
+      <p class="note">Fresh isolated expansion room. Writes only to xp_* tables. Current production scoring/database tables are read-only inputs.</p>
+      <p class="small" id="originHint">Worker-origin guard active.</p>
+      <div class="buttons">
         <button onclick="callApi('/xp/health','GET')">Health</button>
-        <button onclick="callApi('/xp/schema/apply','POST')" class="warn">Apply Schema</button>
-        <button onclick="callApi('/xp/board/refresh','POST',{include_started:false})">Refresh Pickable Board</button>
+        <button onclick="callApi('/xp/schema/apply','POST')" class="gold">Apply Schema</button>
+        <button onclick="callApi('/xp/board/refresh','POST',{include_started:false})">Refresh Board</button>
         <button onclick="callApi('/xp/board/counts','GET')">Counts</button>
         <button onclick="callApi('/xp/jobs','GET')" class="secondary">Jobs</button>
         <button onclick="callApi('/xp/logs','GET')" class="secondary">Logs</button>
@@ -52,7 +49,7 @@
     <section class="card">
       <div class="grid">
         <div>
-          <label>Sample Prop</label>
+          <p class="note">Sample Prop</p>
           <select id="sampleProp">
             <option>Hitter Strikeouts</option>
             <option>Walks</option>
@@ -69,82 +66,86 @@
             <option>RBIs</option>
           </select>
         </div>
-        <div>
-          <label>&nbsp;</label>
-          <button onclick="sampleProp()">Load Sample</button>
-        </div>
+        <button onclick="sampleProp()">Load Sample</button>
       </div>
     </section>
 
     <section class="card">
-      <label>Manual SQL Output</label>
+      <h1>MANUAL SQL</h1>
+      <p class="note">Output guard active: max 50 rows, long text cells truncated to prevent browser/app crashes.</p>
       <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 50</textarea>
-      <div class="grid" style="margin-top:10px;">
-        <button onclick="runManualSql()" class="warn">Run Manual SQL</button>
-        <button onclick="copyOutput()" class="good">Copy Output</button>
-        <button onclick="clearOutput()" class="secondary">Clear Output</button>
+      <div class="buttons">
+        <button onclick="runManualSql()" class="gold">Run SQL</button>
+        <button onclick="clearSql()">Clear SQL</button>
+        <button onclick="selectSql()">Select SQL</button>
       </div>
-      <div class="note" style="margin-top:8px;">Manual SQL is read-only in this expansion room: SELECT, WITH, and PRAGMA only.</div>
     </section>
 
     <section class="card">
-      <label>Output</label>
       <pre id="output">Ready.</pre>
+      <button onclick="copyOutput()" class="full">COPY OUTPUT</button>
     </section>
   </main>
 
   <script>
-    const VERSION = 'v0.1.2 - Expansion Worker-Hosted Control Room';
-    const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v012-admin-7d3f5b1e-8a2c-4c78-91ab-2e9f6d41b203';
+    const VERSION = 'v0.1.3 - Expansion Clean Output Worker-Origin Guard';
+    const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
     const output = document.getElementById('output');
+    const originHint = document.getElementById('originHint');
 
-    function print(data) {
-      output.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+    function isGithubPagesOrigin() { return location.hostname.endsWith('github.io'); }
+    function compactText(text) {
+      const s = String(text || '');
+      if (s.includes('There isn't a GitHub Pages site here') || s.includes('GitHub Pages')) {
+        return { ok:false, connection_issue:'WRONG_ORIGIN', diagnosis:'This page is running from GitHub Pages, so relative /xp/* calls hit rodantmat.github.io instead of the Cloudflare Worker. Open the Expansion Worker URL root, or deploy this HTML from the Worker route. Worker was not contacted.' };
+      }
+      if (s.trim().startsWith('<!DOCTYPE') || s.trim().startsWith('<html')) {
+        return { ok:false, connection_issue:'NON_JSON_HTML_RESPONSE', preview:s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,700) };
+      }
+      return s.length > 1600 ? s.slice(0,1600) + '
+...[truncated by control room]' : s;
     }
-
+    function compactData(data) {
+      if (typeof data === 'string') return compactText(data);
+      return data;
+    }
+    function print(data) {
+      const cleaned = compactData(data);
+      output.textContent = typeof cleaned === 'string' ? cleaned : JSON.stringify(cleaned, null, 2);
+    }
+    function apiUrl(path) { return path; }
     async function callApi(path, method, body) {
-      const headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + EMBEDDED_EXPANSION_ADMIN_TOKEN,
-        'X-Admin-Token': EMBEDDED_EXPANSION_ADMIN_TOKEN
-      };
+      if (isGithubPagesOrigin()) {
+        print({ ok:false, version:VERSION, connection_issue:'WRONG_ORIGIN', current_origin:location.origin, attempted_path:path, diagnosis:'You are on GitHub Pages. This control room must be opened from the Cloudflare Worker URL root so /xp/* routes hit the worker, not GitHub Pages.' });
+        return;
+      }
+      const headers = { 'Content-Type':'application/json', 'Authorization':'Bearer ' + EMBEDDED_EXPANSION_ADMIN_TOKEN, 'X-Admin-Token':EMBEDDED_EXPANSION_ADMIN_TOKEN };
       print('Running ' + method + ' ' + path + '...');
       try {
-        const res = await fetch(path, {
-          method: method,
-          headers: headers,
-          body: method === 'POST' ? JSON.stringify(body || {}) : undefined
-        });
+        const res = await fetch(apiUrl(path), { method, headers, body: method === 'POST' ? JSON.stringify(body || {}) : undefined });
         const text = await res.text();
-        let data;
-        try { data = JSON.parse(text); } catch (e) { data = text; }
-        print({ http_status: res.status, version: VERSION, response: data });
-      } catch (err) {
-        print({ ok: false, version: VERSION, error: err.message || String(err) });
+        let response;
+        try { response = JSON.parse(text); } catch(e) { response = compactText(text); }
+        print({ http_status:res.status, version:VERSION, response });
+      } catch(err) {
+        print({ ok:false, version:VERSION, error: err.message || String(err) });
       }
     }
-
-    function sampleProp() {
-      const stat = encodeURIComponent(document.getElementById('sampleProp').value);
-      callApi('/xp/board/sample?stat_type=' + stat + '&limit=50', 'GET');
-    }
-
-    function runManualSql() {
-      const sql = document.getElementById('manualSql').value || '';
-      callApi('/xp/manual-sql', 'POST', { sql: sql, max_rows: 100 });
-    }
-
+    function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=50','GET'); }
+    function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:50 }); }
+    function clearSql() { document.getElementById('manualSql').value = ''; }
+    function selectSql() { const el=document.getElementById('manualSql'); el.focus(); el.select(); }
     async function copyOutput() {
-      try {
-        await navigator.clipboard.writeText(output.textContent || '');
-        const old = output.textContent;
-        output.textContent = 'Copied output.\n\n' + old;
-      } catch (err) {
-        output.textContent = 'Copy failed. Select the output text and copy manually.\n\n' + output.textContent;
-      }
-    }
+      try { await navigator.clipboard.writeText(output.textContent || ''); }
+      catch(err) { output.textContent = 'Copy failed. Select output manually.
 
-    function clearOutput() { output.textContent = 'Ready.'; }
+' + output.textContent; }
+    }
+    if (isGithubPagesOrigin()) {
+      originHint.textContent = 'Wrong origin detected: this page is on GitHub Pages. Open the Cloudflare Worker URL root for live buttons.';
+    } else {
+      originHint.textContent = 'Worker origin detected: live /xp/* buttons should reach the Expansion Worker.';
+    }
   </script>
 </body>
 </html>
