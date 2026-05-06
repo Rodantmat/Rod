@@ -4,10 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "deploy:expansion": "wrangler deploy --config wrangler.expansion.jsonc"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "latest"
   }
 }
