@@ -1,0 +1,6 @@
+ZIP: alphadog_v1.4.13_rbi_top20_probability_board.zip
+worker.js: v1.4.13 - RBI Top 20 Probability Board
+control_room.html: v1.4.13 - RBI Top 20 Probability Board
+README: README_v1.4.13.txt
+Flat folder: yes
+Main UI touched: no
