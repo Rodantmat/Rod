@@ -1,0 +1,9 @@
+Build: v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge
+Files verified:
+- alphadog_expansion_worker.js contains v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge
+- alphadog_expansion_control_room.html contains v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge
+- wrangler.expansion.jsonc contains v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge
+- README_EXPANSION_v0.1.4.txt contains v0.1.4 - Expansion UI Event + Hardcoded Worker Bridge
+Flat folder: yes
+Current production tables: read-only inputs only
+Expansion writes: xp_* only
