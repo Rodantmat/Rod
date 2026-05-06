@@ -1,0 +1,8 @@
+BUILD VERSION AUDIT
+Expected version: v0.1.5 - Expansion Output Preserve CORS-Safe Bridge
+worker.js version: v0.1.5 - Expansion Output Preserve CORS-Safe Bridge
+control_room.html version: v0.1.5 - Expansion Output Preserve CORS-Safe Bridge
+wrangler var version: v0.1.5 - Expansion Output Preserve CORS-Safe Bridge
+Flat folder: YES
+Current production scoring files touched: NO
+Writes limited to xp_* tables: YES

@@ -1,13 +1,1 @@
-{
-  "name": "alphadog-expansion-worker",
-  "version": "0.1.4",
-  "type": "module",
-  "private": true,
-  "scripts": {
-    "deploy:expansion": "wrangler deploy --config wrangler.expansion.jsonc",
-    "dev:expansion": "wrangler dev --config wrangler.expansion.jsonc"
-  },
-  "devDependencies": {
-    "wrangler": "^4.0.0"
-  }
-}
+{"scripts":{"deploy:expansion":"wrangler deploy --config wrangler.expansion.jsonc"},"devDependencies":{"wrangler":"latest"}}
