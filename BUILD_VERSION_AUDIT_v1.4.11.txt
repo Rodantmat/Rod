@@ -1,0 +1,5 @@
+ZIP: alphadog_v1.4.11_rbi_under_direct_support_lock.zip
+worker.js: v1.4.11 - RBI Under Direct Support Lock
+control_room.html: v1.4.11 - RBI Under Direct Support Lock
+README: README_v1.4.11.txt
+Patch scope: Scheduled backend / Control Room only. Main UI untouched.
