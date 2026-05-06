@@ -1,0 +1,5 @@
+ZIP/version audit: v1.0.22 - Main UI RBI Recovery Tabs
+index.html: v1.0.22
+main_alphadog_worker.js: v1.0.22
+README: v1.0.22
+Flat folder only.
