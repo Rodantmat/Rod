@@ -1,0 +1,8 @@
+Build audit: v1.0.23 - RBI DB Probability Display Lock
+
+index.html: v1.0.23 - RBI DB Probability Display Lock
+main_alphadog_worker.js: v1.0.23 - RBI DB Probability Display Lock
+Scope: Main UI only
+Risk: Surgical display/probability patch
+DB writes: none
+Scheduled backend touched: no
