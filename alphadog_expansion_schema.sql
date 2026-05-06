@@ -1,5 +1,5 @@
 -- AlphaDog/OXYGEN-COBALT Expansion Bootstrap Schema
--- Version: v0.1.0 - Expansion Bootstrap Isolated
+-- Version: v0.1.1 - Expansion Hardcoded Admin Lock
 -- Rule: this schema creates ONLY xp_* tables. It does not alter current production tables.
 
 CREATE TABLE IF NOT EXISTS xp_schema_migrations (
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.0', 'Expansion bootstrap xp_* isolated schema', CURRENT_TIMESTAMP);
+VALUES ('v0.1.1', 'Expansion bootstrap xp_* isolated schema', CURRENT_TIMESTAMP);
 
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),

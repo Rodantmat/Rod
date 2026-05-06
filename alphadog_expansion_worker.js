@@ -1,4 +1,5 @@
-const SYSTEM_VERSION = 'v0.1.0 - Expansion Bootstrap Isolated';
+const SYSTEM_VERSION = 'v0.1.1 - Expansion Hardcoded Admin Lock';
+const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v011-admin-9f4d2e87-6a13-4c59-9b2d-0a8c5e77b411';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
 const TARGET_STAT_TYPES = [
@@ -105,7 +106,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.0', 'Expansion bootstrap xp_* isolated schema', CURRENT_TIMESTAMP);
+VALUES ('v0.1.1', 'Expansion bootstrap xp_* isolated schema', CURRENT_TIMESTAMP);
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),
@@ -158,11 +159,10 @@ function tokenFromRequest(request) {
 }
 
 function requireAdmin(request, env) {
-  const expected = env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN || '';
-  if (!expected) return { ok: true, warning: 'No EXPANSION_ADMIN_TOKEN or INGEST_TOKEN is set; admin routes are open. Set a secret before production use.' };
+  const validTokens = [env.EXPANSION_ADMIN_TOKEN, env.INGEST_TOKEN, EMBEDDED_EXPANSION_ADMIN_TOKEN].filter(Boolean);
   const got = tokenFromRequest(request);
-  if (got && got === expected) return { ok: true };
-  return { ok: false, error: 'Unauthorized. Set/paste EXPANSION_ADMIN_TOKEN or INGEST_TOKEN and send it as Bearer token or X-Admin-Token.' };
+  if (got && validTokens.includes(got)) return { ok: true };
+  return { ok: false, error: 'Unauthorized expansion admin request. The control room must be deployed from the matching v0.1.1 build.' };
 }
 
 async function log(db, runId, level, message, details = null) {
@@ -402,7 +402,8 @@ export default {
         mode: 'isolated_xp_tables_only',
         source_read_table: SOURCE_TABLE,
         writes_allowed_only_to: 'xp_* tables',
-        admin_secret_configured: Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN)
+        admin_secret_configured: Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN),
+        embedded_control_room_token_enabled: true
       });
     }
 

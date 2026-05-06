@@ -26,7 +26,7 @@
 <body>
   <header>
     <h1>AlphaDog Expansion Control Room</h1>
-    <div class="version">v0.1.0 - Expansion Bootstrap Isolated</div>
+    <div class="version">v0.1.1 - Expansion Hardcoded Admin Lock</div>
   </header>
   <main>
     <section class="card">
@@ -40,8 +40,8 @@
           <input id="baseUrl" placeholder="https://alphadog-expansion-v001.your-subdomain.workers.dev" />
         </div>
         <div>
-          <label>Admin Token</label>
-          <input id="token" type="password" placeholder="EXPANSION_ADMIN_TOKEN or INGEST_TOKEN" />
+          <label>Admin</label>
+          <input id="adminStatus" value="Embedded token active" readonly />
         </div>
       </div>
     </section>
@@ -91,17 +91,15 @@
   </main>
 
   <script>
-    const VERSION = 'v0.1.0 - Expansion Bootstrap Isolated';
+    const VERSION = 'v0.1.1 - Expansion Hardcoded Admin Lock';
+    const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v011-admin-9f4d2e87-6a13-4c59-9b2d-0a8c5e77b411';
     const baseInput = document.getElementById('baseUrl');
-    const tokenInput = document.getElementById('token');
     const output = document.getElementById('output');
 
     baseInput.value = localStorage.getItem('xp_base_url') || location.origin;
-    tokenInput.value = localStorage.getItem('xp_token') || '';
 
     function saveSettings() {
       localStorage.setItem('xp_base_url', baseInput.value.trim());
-      localStorage.setItem('xp_token', tokenInput.value.trim());
     }
 
     function print(data) {
@@ -111,9 +109,11 @@
     async function callApi(path, method, body) {
       saveSettings();
       const base = baseInput.value.trim().replace(/\/+$/, '');
-      const token = tokenInput.value.trim();
-      const headers = { 'Content-Type': 'application/json' };
-      if (token) headers.Authorization = `Bearer ${token}`;
+      const headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + EMBEDDED_EXPANSION_ADMIN_TOKEN,
+        'X-Admin-Token': EMBEDDED_EXPANSION_ADMIN_TOKEN
+      };
       print(`Running ${method} ${path}...`);
       try {
         const res = await fetch(base + path, {

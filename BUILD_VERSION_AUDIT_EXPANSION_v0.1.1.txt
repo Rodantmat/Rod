@@ -1,0 +1,17 @@
+AlphaDog/OXYGEN-COBALT Expansion Build Audit
+Version: v0.1.1 - Expansion Hardcoded Admin Lock
+
+Audit result: PASS
+
+Version alignment checked:
+- Worker SYSTEM_VERSION: v0.1.1 - Expansion Hardcoded Admin Lock
+- Control Room visible version: v0.1.1 - Expansion Hardcoded Admin Lock
+- Wrangler XP_SYSTEM_VERSION: v0.1.1 - Expansion Hardcoded Admin Lock
+- README version: v0.1.1 - Expansion Hardcoded Admin Lock
+
+Scope checked:
+- Current scheduled backend not modified.
+- Current Main UI not modified.
+- Existing scoring tables are read only for expansion worker.
+- Writes are restricted to xp_* tables.
+- Admin token is embedded in Control Room and accepted by Worker.
