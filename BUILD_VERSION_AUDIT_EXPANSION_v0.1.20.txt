@@ -1,0 +1,11 @@
+Build: v0.1.20 - Set-Based Context Builder
+
+Version label audit:
+- worker.js SYSTEM_VERSION: v0.1.20 - Set-Based Context Builder
+- control room embedded version: v0.1.20 - Set-Based Context Builder
+- README: v0.1.20
+
+Validation performed before packaging:
+- node --check passed for alphadog_expansion_worker.js.
+- Grep check found no stale v0.1.19 / Prop Definitions Reset Pipeline Fix labels.
+- Context builder changed from per-row D1 prepare/run loop to set-based INSERT...SELECT statements to avoid Cloudflare single-invocation subrequest/API request limit.
