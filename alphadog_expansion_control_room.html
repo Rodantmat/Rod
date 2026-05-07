@@ -7,39 +7,53 @@
   <style>
     :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#7c3df0; --gold:#dfa51c; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     * { box-sizing:border-box; }
-    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    main { width:100%; max-width:980px; margin:0 auto; padding:22px 20px 34px; }
-    h1 { color:#19ff82; margin:0; font-size:30px; line-height:1.15; letter-spacing:1px; text-transform:uppercase; font-weight:900; }
-    h2 { color:#f7f2ea; margin:0 0 14px; font-size:22px; letter-spacing:1px; text-transform:uppercase; }
-    .version { color:#bff7cc; font-size:17px; line-height:1.35; margin-top:12px; font-weight:700; }
-    .top { padding-bottom:20px; border-bottom:2px solid var(--line); }
-    .section { padding:22px 0; border-bottom:2px solid var(--line); }
-    .desc { margin:0 0 12px; color:var(--green); font-size:21px; line-height:1.35; }
-    .small { color:var(--muted); font-size:16px; line-height:1.35; margin:12px 0 0; }
-    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:10px; background:#101010; padding:10px 12px; margin-top:14px; min-height:42px; font-size:15px; line-height:1.35; }
-    .button-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:18px; }
-    .sql-buttons { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
-    button { border:0; border-radius:13px; padding:16px 12px; color:white; background:var(--purple); font-size:19px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:58px; cursor:pointer; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:15px; }
+    main { width:100%; max-width:980px; margin:0 auto; padding:18px 20px 32px; }
+    h1 { color:#19ff82; margin:0; font-size:26px; line-height:1.15; letter-spacing:1px; text-transform:uppercase; font-weight:900; }
+    h2 { color:#f7f2ea; margin:0 0 12px; font-size:20px; letter-spacing:1px; text-transform:uppercase; font-weight:900; }
+    .version { color:#bff7cc; font-size:16px; line-height:1.3; margin-top:10px; font-weight:700; }
+    .top { padding-bottom:18px; border-bottom:2px solid var(--line); }
+    .section { padding:18px 0; border-bottom:2px solid var(--line); }
+    .desc { margin:0 0 10px; color:var(--green); font-size:18px; line-height:1.35; }
+    .small { color:var(--muted); font-size:15px; line-height:1.35; margin:10px 0 0; }
+    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:12px; min-height:38px; font-size:14px; line-height:1.35; }
+    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:14px; }
+    .sql-buttons { display:flex; flex-wrap:nowrap; gap:8px; margin-top:10px; }
+    button { border:0; border-radius:10px; padding:9px 9px; color:white; background:var(--purple); font-size:15px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:44px; cursor:pointer; line-height:1.15; }
     button.gold { background:var(--gold); }
     button.green { background:#188336; }
     button.teal { background:var(--teal); }
-    button.full { width:100%; margin-top:18px; letter-spacing:2px; text-transform:uppercase; }
+    button.full { width:100%; margin-top:14px; letter-spacing:2px; text-transform:uppercase; min-height:48px; }
     button:active { transform:translateY(1px); }
-    select, textarea { width:100%; border:2px solid var(--line); border-radius:13px; background:#101010; color:var(--green); font-family:inherit; font-size:17px; outline:none; }
-    select { padding:16px 14px; }
-    textarea { min-height:150px; padding:16px; line-height:1.35; resize:vertical; }
-    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:13px; padding:16px; min-height:170px; max-height:330px; overflow:auto; font-size:16px; line-height:1.35; margin:0; }
-    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:end; }
-    .pill { border:2px solid var(--line); border-radius:12px; background:#111; color:var(--muted); padding:12px; font-size:14px; line-height:1.35; }
-    @media (min-width:700px) { .button-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-    @media (max-width:520px) { main { padding:18px 14px 30px; } h1 { font-size:27px; } .desc { font-size:20px; } .sample-row { grid-template-columns:1fr; } button { font-size:18px; } }
+    select, textarea { width:100%; border:2px solid var(--line); border-radius:10px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }
+    select { padding:10px 10px; min-height:42px; }
+    textarea { min-height:116px; max-height:180px; padding:10px; line-height:1.3; resize:vertical; }
+    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:10px; padding:12px; min-height:165px; max-height:245px; overflow:auto; font-size:14px; line-height:1.3; margin:0; }
+    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
+    .pill { border:2px solid var(--line); border-radius:10px; background:#111; color:var(--muted); padding:10px; font-size:13px; line-height:1.35; }
+    @media (min-width:700px) { .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } }
+    @media (max-width:520px) {
+      main { padding:16px 12px 28px; }
+      h1 { font-size:24px; }
+      h2 { font-size:19px; }
+      .version { font-size:15px; }
+      .desc { font-size:17px; }
+      .small { font-size:14px; }
+      button { font-size:14px; min-height:42px; border-radius:9px; padding:8px 7px; }
+      .button-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+      .sample-row { grid-template-columns:1fr 1.1fr; gap:8px; }
+      textarea { min-height:112px; font-size:14px; }
+      pre { min-height:160px; max-height:230px; font-size:13.5px; padding:10px; }
+      button.full { min-height:46px; }
+    }
   </style>
 </head>
 <body>
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.8 - Expansion Schema Statement Runner Lock</div>
+      <div class="version">v0.1.9 - Expansion Control Room 1to1 Mobile Fit</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
@@ -78,7 +92,7 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.8 - Expansion Schema Statement Runner Lock";
+      var VERSION = "v0.1.9 - Expansion Control Room 1to1 Mobile Fit";
       var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
       var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
       var output = document.getElementById('output');
@@ -101,7 +115,7 @@
       };
       function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }
       function setStatus(msg) { actionStatus.textContent = msg; }
-      function jumpOutput() { setTimeout(function() { outputSection.scrollIntoView({ behavior:'smooth', block:'start' }); }, 50); }
+      function jumpOutput() { setTimeout(function() { var copy = document.getElementById('btnCopy'); if (copy) copy.scrollIntoView({ behavior:'smooth', block:'end' }); else outputSection.scrollIntoView({ behavior:'smooth', block:'end' }); }, 80); }
       function safeText(value) {
         var s = String(value == null ? '' : value);
         if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);
@@ -122,9 +136,11 @@
           var response;
           try { response = JSON.parse(text); } catch(e) { response = safeText(text); }
           show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });
+          jumpOutput();
           setStatus('Finished ' + label + ' • HTTP ' + res.status);
         } catch(err) {
           show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });
+          jumpOutput();
           setStatus('Failed ' + label);
         }
       }

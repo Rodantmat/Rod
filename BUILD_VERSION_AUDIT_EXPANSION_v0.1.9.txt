@@ -1,0 +1,20 @@
+AlphaDog Expansion Build Audit
+Version: v0.1.9 - Expansion Control Room 1to1 Mobile Fit
+
+Files validated:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- wrangler.expansion.jsonc
+- package.expansion.json
+
+Checks:
+- Flat folder only: PASS
+- Worker name remains alphadog-expansion-v001: PASS
+- D1 binding remains DB: PASS
+- Writes restricted to xp_* tables: PASS
+- Existing production tables treated as read-only inputs: PASS
+- Control Room CSS reduced to match original mobile sizing: PASS
+- Command jump scrolls to output area with COPY OUTPUT visible: PASS
+- Clear SQL / Select SQL preserve last real output: PASS
+- Function/action names included in output payloads: PASS

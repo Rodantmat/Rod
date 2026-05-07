@@ -4,7 +4,7 @@
   "main": "alphadog_expansion_worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {
-    "XP_SYSTEM_VERSION": "v0.1.8 - Expansion Schema Statement Runner Lock",
+    "XP_SYSTEM_VERSION": "v0.1.9 - Expansion Control Room 1to1 Mobile Fit",
     "XP_ALLOWED_SOURCE_TABLE": "prizepicks_current_market_context"
   },
   "d1_databases": [
