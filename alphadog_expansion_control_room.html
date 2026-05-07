@@ -39,7 +39,7 @@
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.6 - Expansion UI Brace Repair Certified</div>
+      <div class="version">v0.1.7 - Expansion Worker URL Auth Alias Lock</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
@@ -78,8 +78,8 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.6 - Expansion UI Brace Repair Certified";
-      var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodantmat.workers.dev";
+      var VERSION = "v0.1.7 - Expansion Worker URL Auth Alias Lock";
+      var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
       var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
       var output = document.getElementById('output');
       var outputSection = document.getElementById('outputSection');
@@ -90,6 +90,16 @@
       function apiBase() { return fromGithubPages() ? HARD_CODED_WORKER_BASE : location.origin; }
       function withToken(path) { return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }
       function apiUrl(path) { return apiBase().replace(/\/$/, '') + withToken(path); }
+      var ACTION_META = {
+        '/xp/health':'Health / handleHealth',
+        '/xp/schema/apply':'Apply Schema / handleApplySchema',
+        '/xp/board/refresh':'Refresh Board / handleRefreshBoard',
+        '/xp/board/counts':'Counts / handleCounts',
+        '/xp/jobs':'Jobs / handleJobs',
+        '/xp/logs':'Logs / handleLogs',
+        '/xp/manual-sql':'Manual SQL / handleManualSql'
+      };
+      function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }
       function setStatus(msg) { actionStatus.textContent = msg; }
       function jumpOutput() { setTimeout(function() { outputSection.scrollIntoView({ behavior:'smooth', block:'start' }); }, 50); }
       function safeText(value) {
@@ -100,8 +110,9 @@
       }
       function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }
       async function callApi(path, method, body) {
-        setStatus('Running ' + method + ' ' + path);
-        show('Running ' + method + ' ' + path + '\nBase: ' + apiBase());
+        var label = actionLabel(path);
+        setStatus('Running ' + label);
+        show('ACTION: ' + label.split(' / ')[0] + '\nFUNCTION: ' + label.split(' / ')[1] + '\nMETHOD: ' + method + '\nROUTE: ' + path + '\nBASE: ' + apiBase());
         jumpOutput();
         try {
           var opts = { method:method };
@@ -110,11 +121,11 @@
           var text = await res.text();
           var response;
           try { response = JSON.parse(text); } catch(e) { response = safeText(text); }
-          show({ http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });
-          setStatus('Finished ' + method + ' ' + path + ' • HTTP ' + res.status);
+          show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });
+          setStatus('Finished ' + label + ' • HTTP ' + res.status);
         } catch(err) {
-          show({ ok:false, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });
-          setStatus('Failed ' + method + ' ' + path);
+          show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });
+          setStatus('Failed ' + label);
         }
       }
       function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }

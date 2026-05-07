@@ -1,0 +1,13 @@
+ALPHADOG EXPANSION v0.1.7 BUILD AUDIT
+
+Version: v0.1.7 - Expansion Worker URL Auth Alias Lock
+
+Verified checks:
+- worker.js syntax passed node --check
+- standalone control room and worker-embedded control room both use alphadog-expansion-v001.rodolfoaamattos.workers.dev
+- old rodantmat workers.dev URL removed
+- /health and /xp/health both return public health JSON
+- protected write routes still require embedded token
+- output console now labels ACTION and FUNCTION for real commands
+- Clear SQL / Select SQL / Copy Output preserve last real output
+
