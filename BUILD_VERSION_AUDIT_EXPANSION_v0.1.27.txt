@@ -1,0 +1,11 @@
+ZIP: alphadog_expansion_v0.1.27_expansion_only_clean.zip
+Worker file: alphadog_expansion_worker.js
+Control room file: alphadog_expansion_control_room.html
+Schema file: alphadog_expansion_schema.sql
+Wrangler config: wrangler.expansion.jsonc
+Package file: package.expansion.json
+Version: v0.1.27 - Expansion Only Clean Package
+Wrangler main: alphadog_expansion_worker.js
+Route present: /xp/phase2/home-runs/score-scaffold
+Generic files intentionally excluded: worker.js, control_room.html, wrangler.jsonc, package.json, schema.sql
+Production mutation declaration: NO_PRODUCTION_TABLE_WRITES_XP_ONLY
