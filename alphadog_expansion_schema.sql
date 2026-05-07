@@ -1,4 +1,6 @@
-CREATE TABLE IF NOT EXISTS xp_prop_definitions (
+DROP TABLE IF EXISTS xp_prop_definitions;
+
+CREATE TABLE xp_prop_definitions (
   stat_type TEXT PRIMARY KEY,
   prop_family TEXT,
   expansion_phase INTEGER,
