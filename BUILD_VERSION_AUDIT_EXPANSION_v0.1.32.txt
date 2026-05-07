@@ -1,0 +1,9 @@
+VERSION AUDIT
+worker.js SYSTEM_VERSION: v0.1.32 - UI Token Route Hardening
+control room header: v0.1.32 - UI Token Route Hardening
+embedded HTML VERSION: v0.1.32 - UI Token Route Hardening
+wrangler.expansion.jsonc XP_SYSTEM_VERSION: v0.1.32 - UI Token Route Hardening
+package.expansion.json version: 0.1.32
+Expansion-only filenames retained.
+No production scheduled backend mutation.
+No Main UI mutation.
