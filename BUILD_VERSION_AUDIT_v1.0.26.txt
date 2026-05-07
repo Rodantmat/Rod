@@ -1,0 +1,2 @@
+Version labels checked: index.html, main_alphadog_worker.js, README, audit all v1.0.26.
+Flat ZIP expected.
