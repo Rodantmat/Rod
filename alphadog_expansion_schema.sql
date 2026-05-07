@@ -1,5 +1,5 @@
 -- AlphaDog/OXYGEN-COBALT Expansion Bootstrap Schema
--- Version: v0.1.2 - Expansion Hardcoded Admin Lock
+-- Version: v0.1.8 - Expansion Schema Statement Runner Lock
 -- Rule: this schema creates ONLY xp_* tables. It does not alter current production tables.
 
 CREATE TABLE IF NOT EXISTS xp_schema_migrations (
@@ -99,14 +99,14 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.2', 'Expansion bootstrap xp_* isolated schema with worker-hosted control room and read-only manual SQL', CURRENT_TIMESTAMP);
+VALUES ('v0.1.8', 'Expansion schema statement runner lock - xp_* isolated schema with worker-hosted control room and read-only manual SQL', CURRENT_TIMESTAMP);
 
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),
 ('Singles', 'SINGLES', 2, 'READY_PHASE_2', 'MEDIUM', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Component prop for total bases and fantasy score.', CURRENT_TIMESTAMP),
 ('Doubles', 'DOUBLES', 2, 'READY_PHASE_2', 'MEDIUM', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Component prop for total bases and fantasy score.', CURRENT_TIMESTAMP),
-('Home Runs', 'HOME_RUNS', 2, 'READY_PHASE_2', 'MEDIUM_HIGH', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Component prop; weather/park context later.', CURRENT_TIMESTAMP),
+('Home Runs', 'HOME_RUNS', 2, 'READY_PHASE_2', 'MEDIUM_HIGH', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Component prop - weather/park context later.', CURRENT_TIMESTAMP),
 ('Runs', 'RUNS', 3, 'READY_PHASE_3', 'MEDIUM', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Needed before HRR and fantasy score.', CURRENT_TIMESTAMP),
 ('Hits+Runs+RBIs', 'HRR', 4, 'READY_PHASE_4', 'MEDIUM_HIGH', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Composite after hits, runs, and RBI context exists.', CURRENT_TIMESTAMP),
 ('Hitter Fantasy Score', 'HITTER_FANTASY_SCORE', 5, 'READY_LATER', 'HIGH', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Keep, but build after components are proven.', CURRENT_TIMESTAMP),

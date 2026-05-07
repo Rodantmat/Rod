@@ -1,0 +1,19 @@
+ALPHADOG EXPANSION v0.1.8 BUILD AUDIT
+
+Version: v0.1.8 - Expansion Schema Statement Runner Lock
+
+Validated before delivery:
+- worker.js syntax check passed with node --check.
+- wrangler.expansion.jsonc version matches v0.1.8.
+- control room HTML version matches v0.1.8.
+- worker embedded control room version matches v0.1.8.
+- README version matches v0.1.8.
+- Worker name remains alphadog-expansion-v001.
+- Worker URL remains https://alphadog-expansion-v001.rodolfoaamattos.workers.dev.
+- applySchema no longer uses env.DB.exec(SCHEMA_SQL).
+- applySchema now runs schema one statement at a time with prepare().run().
+- All schema writes remain restricted to xp_* tables.
+
+Primary fix:
+- D1 multi-statement exec was failing on CREATE TABLE xp_schema_migrations with incomplete input.
+- v0.1.8 avoids the D1 exec parser path entirely.
