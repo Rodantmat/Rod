@@ -1,0 +1,8 @@
+VERSION AUDIT
+worker.js SYSTEM_VERSION: v0.1.33 - Embedded HTML Script Escape Fix
+control room header: v0.1.33 - Embedded HTML Script Escape Fix
+embedded HTML VERSION: v0.1.33 - Embedded HTML Script Escape Fix
+wrangler.expansion.jsonc XP_SYSTEM_VERSION: v0.1.33 - Embedded HTML Script Escape Fix
+package.expansion.json version: 0.1.33
+Root cause fixed: CONTROL_ROOM_HTML now uses String.raw so embedded browser JavaScript keeps escaped sequences like \n and does not become a Safari syntax error.
+Expansion-only files. No production scheduled backend mutation. No Main UI mutation.
