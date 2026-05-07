@@ -1,0 +1,23 @@
+AlphaDog Expansion Build Audit
+Version: v0.1.10 - Expansion Refresh Source Qualifier Lock
+
+Files validated:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- wrangler.expansion.jsonc
+- package.expansion.json
+
+Checks:
+- Flat folder only: PASS
+- Worker name remains alphadog-expansion-v001: PASS
+- D1 binding remains DB: PASS
+- Writes restricted to xp_* tables: PASS
+- Existing production tables treated as read-only inputs: PASS
+- Worker JavaScript syntax check: PASS
+- package.expansion.json parse check: PASS
+- v0.1.9 refresh failure root cause fixed: PASS
+- Source board refresh query now qualifies p.stat_type and other source-table filters: PASS
+- Ambiguous column name stat_type prevention: PASS
+- Control Room CSS stays compact/mobile-fit: PASS
+- Command output keeps action/function/route/http/version fields: PASS
