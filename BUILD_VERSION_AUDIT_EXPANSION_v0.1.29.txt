@@ -1,0 +1,11 @@
+ZIP: alphadog_expansion_v0.1.29_expansion_own_files_only.zip
+Version: v0.1.29 - Expansion Own Files Only
+Files included: expansion files only.
+Default package.json included: NO
+Default wrangler.jsonc included: NO
+Expansion package: package.expansion.json
+Expansion wrangler config: wrangler.expansion.jsonc
+Worker target: alphadog-expansion-v001
+Production/current control room files touched: NO
+Main UI touched: NO
+Production scheduled backend touched: NO
