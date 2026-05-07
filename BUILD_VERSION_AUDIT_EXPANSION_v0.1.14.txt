@@ -1,0 +1,15 @@
+Build Version Audit
+
+ZIP: alphadog_expansion_v0.1.14_Phase_1_Internal_Score_Scaffold.zip
+Worker SYSTEM_VERSION: v0.1.14 - Phase 1 Internal Score Scaffold
+Control Room visible version: v0.1.14 - Phase 1 Internal Score Scaffold
+README: v0.1.14 - Phase 1 Internal Score Scaffold
+Schema migration: v0.1.14
+
+Validation intent:
+- Expansion-only isolated build.
+- Writes only xp_* tables.
+- Adds internal-only Phase 1 score scaffold.
+- Production scheduled backend untouched.
+- Main UI untouched.
+- No external market/odds/final betting score.

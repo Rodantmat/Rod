@@ -1,5 +1,5 @@
-const SYSTEM_VERSION = 'v0.1.13 - Phase 1 Context Snapshot';
-const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
+const SYSTEM_VERSION = 'v0.1.14 - Phase 1 Internal Score Scaffold';
+const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v014-admin-1a9e5c7b-6b2d-44f6-8bb3-e2c14d0f7b91';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
 const TARGET_STAT_TYPES = [
@@ -18,7 +18,7 @@ const TARGET_STAT_TYPES = [
   'RBIs'
 ];
 
-const CONTROL_ROOM_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Expansion Control Room</title>\n  <style>\n    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#6d35d9; --gold:#c89119; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    * { box-sizing:border-box; }\n    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    main { width:100%; max-width:1040px; margin:0 auto; padding:16px 12px 30px; }\n    h1 { color:#19ff82; margin:0; font-size:24px; line-height:1.12; letter-spacing:.7px; text-transform:uppercase; font-weight:900; }\n    h2 { color:#f7f2ea; margin:0 0 10px; font-size:18px; letter-spacing:.7px; text-transform:uppercase; }\n    .version { color:#bff7cc; font-size:14px; line-height:1.3; margin-top:8px; font-weight:700; }\n    .top { padding-bottom:14px; border-bottom:2px solid var(--line); }\n    .section { padding:14px 0; border-bottom:2px solid var(--line); }\n    .desc { margin:0 0 10px; color:var(--green); font-size:16px; line-height:1.35; }\n    .small { color:var(--muted); font-size:13px; line-height:1.35; margin:8px 0 0; }\n    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:10px; min-height:36px; font-size:13px; line-height:1.3; }\n    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }\n    .sql-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:8px; }\n    button { border:0; border-radius:9px; padding:8px 7px; color:white; background:var(--purple); font-size:14px; font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif; min-height:42px; cursor:pointer; font-weight:700; }\n    button.gold { background:var(--gold); }\n    button.green { background:#188336; }\n    button.teal { background:var(--teal); }\n    button.full { width:100%; margin-top:10px; letter-spacing:1.6px; text-transform:uppercase; min-height:44px; }\n    button:active { transform:translateY(1px); }\n    select, textarea { width:100%; border:2px solid var(--line); border-radius:9px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }\n    select { padding:10px; min-height:42px; }\n    textarea { min-height:118px; max-height:260px; padding:10px; line-height:1.32; resize:vertical; }\n    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:9px; padding:10px; min-height:185px; max-height:520px; overflow:auto; font-size:13.5px; line-height:1.3; margin:0; }\n    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }\n    .pill { border:2px solid var(--line); border-radius:9px; background:#111; color:var(--muted); padding:9px; font-size:12.5px; line-height:1.35; }\n    @media (min-width:760px) { main { padding:18px 16px 34px; } .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } .sample-row { grid-template-columns:1fr 180px; } pre { max-height:620px; } }\n    @media (max-width:390px) { h1 { font-size:22px; } button { font-size:13px; min-height:40px; } .button-grid, .sql-buttons { gap:7px; } pre { font-size:13px; } }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"top\">\n      <h1>AlphaDog Expansion Control Room</h1>\n      <div class=\"version\">v0.1.13 - Phase 1 Context Snapshot</div>\n      <div class=\"small\" id=\"originStatus\">Starting UI...</div>\n      <div class=\"status\" id=\"actionStatus\">Ready.</div>\n    </div>\n\n    <section class=\"section\">\n      <p class=\"desc\">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/context prep only. Production scoring and Main UI stay untouched. No scoring yet.</p>\n      <div class=\"pill\" id=\"bridgeStatus\">Worker bridge loading...</div>\n      <div class=\"button-grid\">\n        <button id=\"btnHealth\">Health</button>\n        <button id=\"btnSchema\" class=\"gold\">Apply Schema</button>\n        <button id=\"btnRefresh\">Refresh Board</button>\n        <button id=\"btnCounts\">Counts</button>\n        <button id=\"btnBridgeBuild\" class=\"green\">Build Bridge</button>\n        <button id=\"btnBridgeCounts\" class=\"teal\">Bridge Counts</button>\n        <button id=\"btnBridgeUnmatched\">Unmatched</button>\n        <button id=\"btnBridgeSample\">Bridge Sample</button>\n        <button id=\"btnContextBuild\" class=\"green\">Build Context</button>\n        <button id=\"btnContextCounts\" class=\"teal\">Context Counts</button>\n        <button id=\"btnContextMissing\">Missing Metrics</button>\n        <button id=\"btnContextComplete\">Completeness</button>\n        <button id=\"btnContextSample\">Context Sample</button>\n        <button id=\"btnJobs\">Jobs</button>\n        <button id=\"btnLogs\">Logs</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Sample Prop</h2>\n      <div class=\"sample-row\">\n        <select id=\"sampleProp\"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select>\n        <button id=\"btnSample\">Load Sample</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Manual SQL</h2>\n      <p class=\"small\">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge/context buttons for xp_* prep diagnostics.</p>\n      <textarea id=\"manualSql\">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>\n      <div class=\"sql-buttons\"><button id=\"btnRunSql\" class=\"gold\">Run SQL</button><button id=\"btnClearSql\">Clear SQL</button><button id=\"btnSelectSql\">Select SQL</button></div>\n    </section>\n\n    <section class=\"section\" id=\"outputSection\"><pre id=\"output\">Ready.</pre><button id=\"btnCopy\" class=\"full\">COPY OUTPUT</button></section>\n  </main>\n\n  <script>\n    (function() {\n      'use strict';\n      var VERSION = \"v0.1.13 - Phase 1 Context Snapshot\";\n      var HARD_CODED_WORKER_BASE = \"https://alphadog-expansion-v001.rodolfoaamattos.workers.dev\";\n      var EMBEDDED_TOKEN = \"alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73\";\n      var OUTPUT_CHAR_LIMIT = 120000;\n      var DEFAULT_SQL_MAX_ROWS = 500;\n      var output = document.getElementById('output');\n      var outputSection = document.getElementById('outputSection');\n      var originStatus = document.getElementById('originStatus');\n      var bridgeStatus = document.getElementById('bridgeStatus');\n      var actionStatus = document.getElementById('actionStatus');\n      function fromGithubPages() { return /(^|\\.)github\\.io$/i.test(location.hostname); }\n      function apiBase() { return fromGithubPages() ? HARD_CODED_WORKER_BASE : location.origin; }\n      function withToken(path) { return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }\n      function apiUrl(path) { return apiBase().replace(/\\/$/, '') + withToken(path); }\n      var ACTION_META = {\n        '/xp/health':'Health / handleHealth',\n        '/xp/schema/apply':'Apply Schema / handleApplySchema',\n        '/xp/board/refresh':'Refresh Board / handleRefreshBoard',\n        '/xp/board/counts':'Counts / handleCounts',\n        '/xp/bridge/build':'Build Bridge / handleBuildGameBridge',\n        '/xp/bridge/counts':'Bridge Counts / handleBridgeCounts',\n        '/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched',\n        '/xp/bridge/sample':'Bridge Sample / handleBridgeSample',\n        '/xp/context/build':'Build Context / handleBuildPhase1Context',\n        '/xp/context/counts':'Context Counts / handleContextCounts',\n        '/xp/context/missing-metrics':'Missing Metrics / handleContextMissingMetrics',\n        '/xp/context/completeness':'Completeness / handleContextCompleteness',\n        '/xp/context/sample':'Context Sample / handleContextSample',\n        '/xp/jobs':'Jobs / handleJobs',\n        '/xp/logs':'Logs / handleLogs',\n        '/xp/manual-sql':'Manual SQL / handleManualSql'\n      };\n      function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }\n      function setStatus(msg) { actionStatus.textContent = msg; }\n      function jumpOutput() { setTimeout(function() { var copy = document.getElementById('btnCopy'); if (copy) copy.scrollIntoView({ behavior:'smooth', block:'end' }); else outputSection.scrollIntoView({ behavior:'smooth', block:'end' }); }, 80); }\n      function safeText(value) {\n        var s = String(value == null ? '' : value);\n        if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);\n        if (/^\\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,900), worker_base:apiBase() }, null, 2);\n        return s.length > OUTPUT_CHAR_LIMIT ? s.slice(0, OUTPUT_CHAR_LIMIT) + '\\n...[truncated by control room output lens at ' + OUTPUT_CHAR_LIMIT + ' chars]' : s;\n      }\n      function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }\n      async function callApi(path, method, body) {\n        var label = actionLabel(path);\n        setStatus('Running ' + label);\n        show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, method:method, version:VERSION, worker_base:apiBase(), status:'RUNNING' });\n        jumpOutput();\n        try {\n          var opts = { method:method };\n          if (method === 'POST') { opts.headers = { 'Content-Type':'text/plain;charset=UTF-8' }; opts.body = JSON.stringify(body || {}); }\n          var res = await fetch(apiUrl(path), opts);\n          var text = await res.text();\n          var response;\n          try { response = JSON.parse(text); } catch(e) { response = safeText(text); }\n          show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });\n          jumpOutput();\n          setStatus('Finished ' + label + ' \u2022 HTTP ' + res.status);\n        } catch(err) {\n          show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });\n          jumpOutput();\n          setStatus('Failed ' + label);\n        }\n      }\n      function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }\n      function selectSql() { var el = document.getElementById('manualSql'); el.focus(); el.select(); setStatus('SQL selected. Output preserved.'); }\n      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:DEFAULT_SQL_MAX_ROWS }); }\n      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=100','GET'); }\n      async function copyOutput() { try { await navigator.clipboard.writeText(output.textContent || ''); setStatus('Output copied. Output preserved.'); } catch(err) { setStatus('Copy failed. Long-press/select the output manually.'); } }\n      function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }\n      bind('btnHealth', function() { callApi('/xp/health','GET'); });\n      bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });\n      bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });\n      bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });\n      bind('btnBridgeBuild', function() { callApi('/xp/bridge/build','POST',{ expansion_phase:1, time_tolerance_minutes:15 }); });\n      bind('btnBridgeCounts', function() { callApi('/xp/bridge/counts','GET'); });\n      bind('btnBridgeUnmatched', function() { callApi('/xp/bridge/unmatched','GET'); });\n      bind('btnBridgeSample', function() { callApi('/xp/bridge/sample?limit=100','GET'); });\n      bind('btnContextBuild', function() { callApi('/xp/context/build','POST',{ expansion_phase:1 }); });\n      bind('btnContextCounts', function() { callApi('/xp/context/counts','GET'); });\n      bind('btnContextMissing', function() { callApi('/xp/context/missing-metrics','GET'); });\n      bind('btnContextComplete', function() { callApi('/xp/context/completeness','GET'); });\n      bind('btnContextSample', function() { callApi('/xp/context/sample?limit=100','GET'); });\n      bind('btnJobs', function() { callApi('/xp/jobs','GET'); });\n      bind('btnLogs', function() { callApi('/xp/logs','GET'); });\n      bind('btnSample', sampleProp);\n      bind('btnRunSql', runManualSql);\n      bind('btnClearSql', clearSql);\n      bind('btnSelectSql', selectSql);\n      bind('btnCopy', copyOutput);\n      originStatus.textContent = fromGithubPages() ? 'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.' : 'Worker-hosted UI detected. Using same-origin Worker routes.';\n      bridgeStatus.textContent = 'API Base: ' + apiBase(); setStatus('Ready.'); show('Ready.');\n    })();\n  </script>\n</body>\n</html>\n";
+const CONTROL_ROOM_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Expansion Control Room</title>\n  <style>\n    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#6d35d9; --gold:#c89119; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    * { box-sizing:border-box; }\n    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    main { width:100%; max-width:1040px; margin:0 auto; padding:16px 12px 30px; }\n    h1 { color:#19ff82; margin:0; font-size:24px; line-height:1.12; letter-spacing:.7px; text-transform:uppercase; font-weight:900; }\n    h2 { color:#f7f2ea; margin:0 0 10px; font-size:18px; letter-spacing:.7px; text-transform:uppercase; }\n    .version { color:#bff7cc; font-size:14px; line-height:1.3; margin-top:8px; font-weight:700; }\n    .top { padding-bottom:14px; border-bottom:2px solid var(--line); }\n    .section { padding:14px 0; border-bottom:2px solid var(--line); }\n    .desc { margin:0 0 10px; color:var(--green); font-size:16px; line-height:1.35; }\n    .small { color:var(--muted); font-size:13px; line-height:1.35; margin:8px 0 0; }\n    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:10px; min-height:36px; font-size:13px; line-height:1.3; }\n    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }\n    .sql-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:8px; }\n    button { border:0; border-radius:9px; padding:8px 7px; color:white; background:var(--purple); font-size:14px; font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif; min-height:42px; cursor:pointer; font-weight:700; }\n    button.gold { background:var(--gold); }\n    button.green { background:#188336; }\n    button.teal { background:var(--teal); }\n    button.full { width:100%; margin-top:10px; letter-spacing:1.6px; text-transform:uppercase; min-height:44px; }\n    button:active { transform:translateY(1px); }\n    select, textarea { width:100%; border:2px solid var(--line); border-radius:9px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }\n    select { padding:10px; min-height:42px; }\n    textarea { min-height:118px; max-height:260px; padding:10px; line-height:1.32; resize:vertical; }\n    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:9px; padding:10px; min-height:185px; max-height:520px; overflow:auto; font-size:13.5px; line-height:1.3; margin:0; }\n    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }\n    .pill { border:2px solid var(--line); border-radius:9px; background:#111; color:var(--muted); padding:9px; font-size:12.5px; line-height:1.35; }\n    @media (min-width:760px) { main { padding:18px 16px 34px; } .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } .sample-row { grid-template-columns:1fr 180px; } pre { max-height:620px; } }\n    @media (max-width:390px) { h1 { font-size:22px; } button { font-size:13px; min-height:40px; } .button-grid, .sql-buttons { gap:7px; } pre { font-size:13px; } }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"top\">\n      <h1>AlphaDog Expansion Control Room</h1>\n      <div class=\"version\">v0.1.14 - Phase 1 Internal Score Scaffold</div>\n      <div class=\"small\" id=\"originStatus\">Starting UI...</div>\n      <div class=\"status\" id=\"actionStatus\">Ready.</div>\n    </div>\n\n    <section class=\"section\">\n      <p class=\"desc\">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/context prep plus internal-only Phase 1 score scaffold. Production scoring and Main UI stay untouched. No market/final betting score yet.</p>\n      <div class=\"pill\" id=\"bridgeStatus\">Worker bridge loading...</div>\n      <div class=\"button-grid\">\n        <button id=\"btnHealth\">Health</button>\n        <button id=\"btnSchema\" class=\"gold\">Apply Schema</button>\n        <button id=\"btnRefresh\">Refresh Board</button>\n        <button id=\"btnCounts\">Counts</button>\n        <button id=\"btnBridgeBuild\" class=\"green\">Build Bridge</button>\n        <button id=\"btnBridgeCounts\" class=\"teal\">Bridge Counts</button>\n        <button id=\"btnBridgeUnmatched\">Unmatched</button>\n        <button id=\"btnBridgeSample\">Bridge Sample</button>\n        <button id=\"btnContextBuild\" class=\"green\">Build Context</button>\n        <button id=\"btnContextCounts\" class=\"teal\">Context Counts</button>\n        <button id=\"btnContextMissing\">Missing Metrics</button>\n        <button id=\"btnContextComplete\">Completeness</button>\n        <button id=\"btnContextSample\">Context Sample</button>\n        <button id=\"btnScoreBuild\" class=\"green\">Build Score</button>\n        <button id=\"btnScoreCounts\" class=\"teal\">Score Counts</button>\n        <button id=\"btnScoreSample\">Score Sample</button>\n        <button id=\"btnJobs\">Jobs</button>\n        <button id=\"btnLogs\">Logs</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Sample Prop</h2>\n      <div class=\"sample-row\">\n        <select id=\"sampleProp\"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select>\n        <button id=\"btnSample\">Load Sample</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Manual SQL</h2>\n      <p class=\"small\">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge/context buttons for xp_* prep diagnostics.</p>\n      <textarea id=\"manualSql\">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>\n      <div class=\"sql-buttons\"><button id=\"btnRunSql\" class=\"gold\">Run SQL</button><button id=\"btnClearSql\">Clear SQL</button><button id=\"btnSelectSql\">Select SQL</button></div>\n    </section>\n\n    <section class=\"section\" id=\"outputSection\"><pre id=\"output\">Ready.</pre><button id=\"btnCopy\" class=\"full\">COPY OUTPUT</button></section>\n  </main>\n\n  <script>\n    (function() {\n      'use strict';\n      var VERSION = \"v0.1.14 - Phase 1 Internal Score Scaffold\";\n      var HARD_CODED_WORKER_BASE = \"https://alphadog-expansion-v001.rodolfoaamattos.workers.dev\";\n      var EMBEDDED_TOKEN = \"alphadog-xp-v014-admin-1a9e5c7b-6b2d-44f6-8bb3-e2c14d0f7b91\";\n      var OUTPUT_CHAR_LIMIT = 120000;\n      var DEFAULT_SQL_MAX_ROWS = 500;\n      var output = document.getElementById('output');\n      var outputSection = document.getElementById('outputSection');\n      var originStatus = document.getElementById('originStatus');\n      var bridgeStatus = document.getElementById('bridgeStatus');\n      var actionStatus = document.getElementById('actionStatus');\n      function fromGithubPages() { return /(^|\\.)github\\.io$/i.test(location.hostname); }\n      function apiBase() { return fromGithubPages() ? HARD_CODED_WORKER_BASE : location.origin; }\n      function withToken(path) { return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }\n      function apiUrl(path) { return apiBase().replace(/\\/$/, '') + withToken(path); }\n      var ACTION_META = {\n        '/xp/health':'Health / handleHealth',\n        '/xp/schema/apply':'Apply Schema / handleApplySchema',\n        '/xp/board/refresh':'Refresh Board / handleRefreshBoard',\n        '/xp/board/counts':'Counts / handleCounts',\n        '/xp/bridge/build':'Build Bridge / handleBuildGameBridge',\n        '/xp/bridge/counts':'Bridge Counts / handleBridgeCounts',\n        '/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched',\n        '/xp/bridge/sample':'Bridge Sample / handleBridgeSample',\n        '/xp/context/build':'Build Context / handleBuildPhase1Context',\n        '/xp/context/counts':'Context Counts / handleContextCounts',\n        '/xp/context/missing-metrics':'Missing Metrics / handleContextMissingMetrics',\n        '/xp/context/completeness':'Completeness / handleContextCompleteness',\n        '/xp/context/sample':'Context Sample / handleContextSample',\n        '/xp/score/build':'Build Score / handleBuildPhase1Score',\n        '/xp/score/counts':'Score Counts / handleScoreCounts',\n        '/xp/score/sample':'Score Sample / handleScoreSample',\n        '/xp/jobs':'Jobs / handleJobs',\n        '/xp/logs':'Logs / handleLogs',\n        '/xp/manual-sql':'Manual SQL / handleManualSql'\n      };\n      function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }\n      function setStatus(msg) { actionStatus.textContent = msg; }\n      function jumpOutput() { setTimeout(function() { var copy = document.getElementById('btnCopy'); if (copy) copy.scrollIntoView({ behavior:'smooth', block:'end' }); else outputSection.scrollIntoView({ behavior:'smooth', block:'end' }); }, 80); }\n      function safeText(value) {\n        var s = String(value == null ? '' : value);\n        if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);\n        if (/^\\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,900), worker_base:apiBase() }, null, 2);\n        return s.length > OUTPUT_CHAR_LIMIT ? s.slice(0, OUTPUT_CHAR_LIMIT) + '\\n...[truncated by control room output lens at ' + OUTPUT_CHAR_LIMIT + ' chars]' : s;\n      }\n      function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }\n      async function callApi(path, method, body) {\n        var label = actionLabel(path);\n        setStatus('Running ' + label);\n        show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, method:method, version:VERSION, worker_base:apiBase(), status:'RUNNING' });\n        jumpOutput();\n        try {\n          var opts = { method:method };\n          if (method === 'POST') { opts.headers = { 'Content-Type':'text/plain;charset=UTF-8' }; opts.body = JSON.stringify(body || {}); }\n          var res = await fetch(apiUrl(path), opts);\n          var text = await res.text();\n          var response;\n          try { response = JSON.parse(text); } catch(e) { response = safeText(text); }\n          show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });\n          jumpOutput();\n          setStatus('Finished ' + label + ' \u2022 HTTP ' + res.status);\n        } catch(err) {\n          show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });\n          jumpOutput();\n          setStatus('Failed ' + label);\n        }\n      }\n      function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }\n      function selectSql() { var el = document.getElementById('manualSql'); el.focus(); el.select(); setStatus('SQL selected. Output preserved.'); }\n      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:DEFAULT_SQL_MAX_ROWS }); }\n      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=100','GET'); }\n      async function copyOutput() { try { await navigator.clipboard.writeText(output.textContent || ''); setStatus('Output copied. Output preserved.'); } catch(err) { setStatus('Copy failed. Long-press/select the output manually.'); } }\n      function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }\n      bind('btnHealth', function() { callApi('/xp/health','GET'); });\n      bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });\n      bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });\n      bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });\n      bind('btnBridgeBuild', function() { callApi('/xp/bridge/build','POST',{ expansion_phase:1, time_tolerance_minutes:15 }); });\n      bind('btnBridgeCounts', function() { callApi('/xp/bridge/counts','GET'); });\n      bind('btnBridgeUnmatched', function() { callApi('/xp/bridge/unmatched','GET'); });\n      bind('btnBridgeSample', function() { callApi('/xp/bridge/sample?limit=100','GET'); });\n      bind('btnContextBuild', function() { callApi('/xp/context/build','POST',{ expansion_phase:1 }); });\n      bind('btnContextCounts', function() { callApi('/xp/context/counts','GET'); });\n      bind('btnContextMissing', function() { callApi('/xp/context/missing-metrics','GET'); });\n      bind('btnContextComplete', function() { callApi('/xp/context/completeness','GET'); });\n      bind('btnContextSample', function() { callApi('/xp/context/sample?limit=100','GET'); });\n      bind('btnScoreBuild', function() { callApi('/xp/score/build','POST',{ expansion_phase:1 }); });\n      bind('btnScoreCounts', function() { callApi('/xp/score/counts','GET'); });\n      bind('btnScoreSample', function() { callApi('/xp/score/sample?limit=100','GET'); });\n      bind('btnJobs', function() { callApi('/xp/jobs','GET'); });\n      bind('btnLogs', function() { callApi('/xp/logs','GET'); });\n      bind('btnSample', sampleProp);\n      bind('btnRunSql', runManualSql);\n      bind('btnClearSql', clearSql);\n      bind('btnSelectSql', selectSql);\n      bind('btnCopy', copyOutput);\n      originStatus.textContent = fromGithubPages() ? 'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.' : 'Worker-hosted UI detected. Using same-origin Worker routes.';\n      bridgeStatus.textContent = 'API Base: ' + apiBase(); setStatus('Ready.'); show('Ready.');\n    })();\n  </script>\n</body>\n</html>\n";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS xp_schema_migrations (
@@ -200,6 +200,42 @@ CREATE INDEX IF NOT EXISTS idx_xp_p1_context_status ON xp_phase1_game_context_cu
 CREATE INDEX IF NOT EXISTS idx_xp_p1_context_game ON xp_phase1_game_context_current(game_id, normalized_team);
 CREATE INDEX IF NOT EXISTS idx_xp_p1_context_flags ON xp_phase1_game_context_current(lineup_match_status, starter_match_status, metric_match_status);
 
+
+CREATE TABLE IF NOT EXISTS xp_phase1_score_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  team TEXT,
+  opponent TEXT,
+  line_score REAL,
+  odds_type TEXT,
+  game_id TEXT,
+  visible_side TEXT,
+  internal_score_0_100 REAL,
+  internal_grade TEXT,
+  score_status TEXT NOT NULL,
+  score_cap REAL,
+  base_component REAL,
+  player_component REAL,
+  starter_component REAL,
+  lineup_component REAL,
+  line_component REAL,
+  warning_component REAL,
+  reliability_component REAL,
+  season_k_rate REAL,
+  season_bb_rate REAL,
+  starter_k_per_ip REAL,
+  starter_bb_per_ip REAL,
+  lineup_slot INTEGER,
+  context_status TEXT,
+  warning_flags TEXT,
+  score_notes TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_status ON xp_phase1_score_current(score_status, stat_type);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_grade ON xp_phase1_score_current(internal_grade, stat_type, internal_score_0_100);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_game ON xp_phase1_score_current(game_id, team);
+
 INSERT OR REPLACE INTO xp_team_alias_map(alias_team, canonical_team, notes, updated_at) VALUES
 ('ATH','OAK','PrizePicks Athletics alias to games table Oakland alias',CURRENT_TIMESTAMP),
 ('OAK','OAK','Identity alias',CURRENT_TIMESTAMP),
@@ -278,7 +314,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.13', 'Phase 1 context snapshot - isolated xp player metrics and game context read-model', CURRENT_TIMESTAMP);
+VALUES ('v0.1.14', 'Phase 1 internal score scaffold - isolated xp score read-model only', CURRENT_TIMESTAMP);
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),
@@ -370,6 +406,143 @@ function rate(numerator, denominator) {
 
 function compactFlags(flags) {
   return flags.filter(Boolean).join('|') || null;
+}
+
+
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
+}
+
+function round2(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+}
+
+function inningsToNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const s = String(value);
+  if (s.includes('.')) {
+    const [whole, frac] = s.split('.');
+    const outs = Number(frac || 0);
+    return Number(whole || 0) + (outs > 0 ? outs / 3 : 0);
+  }
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function gradeInternalScore(score, status) {
+  if (status !== 'SCORED_INTERNAL') return 'BLOCKED';
+  if (score >= 74) return 'WATCH_HIGH_INTERNAL';
+  if (score >= 64) return 'WATCH_MEDIUM_INTERNAL';
+  if (score >= 54) return 'LEAN_INTERNAL';
+  return 'LOW_INTERNAL';
+}
+
+function lineComponentFor(statType, lineScore) {
+  const line = Number(lineScore);
+  if (!Number.isFinite(line)) return -8;
+  if (statType === 'Hitter Strikeouts') {
+    if (line <= 0.5) return 16;
+    if (line <= 1.5) return 0;
+    if (line <= 2.5) return -18;
+    return -30;
+  }
+  if (statType === 'Walks') {
+    if (line <= 0.5) return 10;
+    if (line <= 1.5) return -12;
+    return -25;
+  }
+  return 0;
+}
+
+function lineupComponent(slot) {
+  const n = Number(slot);
+  if (!Number.isFinite(n)) return -4;
+  if (n <= 3) return 6;
+  if (n <= 5) return 4;
+  if (n <= 7) return 2;
+  return 0;
+}
+
+function reliabilityComponent(totalPa) {
+  const n = Number(totalPa);
+  if (!Number.isFinite(n)) return -12;
+  if (n >= 120) return 10;
+  if (n >= 80) return 7;
+  if (n >= 40) return 4;
+  return 1;
+}
+
+function scorePhase1ContextRow(row) {
+  const flags = String(row.warning_flags || '').split('|').filter(Boolean);
+  const isStandard = String(row.odds_type || '').toLowerCase() === 'standard';
+  const scoreCap = isStandard ? 100 : (String(row.odds_type || '').toLowerCase() === 'goblin' ? 82 : 78);
+  const lineComp = lineComponentFor(row.stat_type, row.line_score);
+  const lineupComp = lineupComponent(row.lineup_slot);
+  const reliabilityComp = reliabilityComponent(row.total_pa);
+  const warningComp = -1 * flags.filter((f) => ['MISSING_LINEUP','NON_STANDARD_LINE_TYPE'].includes(f)).length * 3;
+  const ip = inningsToNumber(row.starter_innings_pitched);
+  const starterKPerIp = ip && ip > 0 ? round2(Number(row.starter_strikeouts || 0) / ip) : null;
+  const starterBbPerIp = ip && ip > 0 ? round2(Number(row.starter_walks || 0) / ip) : null;
+  const missingMetrics = row.metric_match_status !== 'MATCHED_NAME_TEAM' && row.metric_match_status !== 'MATCHED_NAME_ONLY_TEAM_MISMATCH';
+  const missingBridge = !String(row.bridge_match_status || '').startsWith('MATCHED');
+  const missingStarter = row.starter_match_status !== 'MATCHED_STARTER';
+  if (missingBridge || missingMetrics || missingStarter) {
+    const blocked = [];
+    if (missingBridge) blocked.push('NO_CLEAN_GAME_BRIDGE');
+    if (missingMetrics) blocked.push('MISSING_PLAYER_METRICS');
+    if (missingStarter) blocked.push('MISSING_STARTER_CONTEXT');
+    return {
+      visible_side: 'NO_SIDE_DECISION_INTERNAL_CONTEXT_ONLY',
+      internal_score_0_100: null,
+      internal_grade: 'BLOCKED',
+      score_status: 'BLOCKED_CONTEXT_INCOMPLETE',
+      score_cap: scoreCap,
+      base_component: 50,
+      player_component: null,
+      starter_component: null,
+      lineup_component: lineupComp,
+      line_component: lineComp,
+      warning_component: warningComp,
+      reliability_component: reliabilityComp,
+      starter_k_per_ip: starterKPerIp,
+      starter_bb_per_ip: starterBbPerIp,
+      score_notes: blocked.join('|')
+    };
+  }
+  let playerComp = 0;
+  let starterComp = 0;
+  if (row.stat_type === 'Hitter Strikeouts') {
+    const kRate = Number(row.season_k_rate || 0);
+    playerComp = (kRate - 0.22) * 140;
+    if (starterKPerIp !== null) starterComp += starterKPerIp >= 1 ? 8 : starterKPerIp >= 0.8 ? 4 : starterKPerIp <= 0.55 ? -5 : 0;
+  } else if (row.stat_type === 'Walks') {
+    const bbRate = Number(row.season_bb_rate || 0);
+    playerComp = (bbRate - 0.09) * 220;
+    if (starterBbPerIp !== null) starterComp += starterBbPerIp >= 0.45 ? 10 : starterBbPerIp >= 0.35 ? 6 : starterBbPerIp <= 0.2 ? -5 : 0;
+  }
+  let raw = 50 + playerComp + starterComp + lineupComp + lineComp + warningComp + reliabilityComp;
+  let capped = Math.min(raw, scoreCap);
+  const finalScore = round2(clampNumber(capped, 0, 100));
+  return {
+    visible_side: 'OVER_ONLY_VISIBLE_BOARD_LINE_INTERNAL',
+    internal_score_0_100: finalScore,
+    internal_grade: gradeInternalScore(finalScore, 'SCORED_INTERNAL'),
+    score_status: 'SCORED_INTERNAL',
+    score_cap: scoreCap,
+    base_component: 50,
+    player_component: round2(playerComp),
+    starter_component: round2(starterComp),
+    lineup_component: lineupComp,
+    line_component: lineComp,
+    warning_component: warningComp,
+    reliability_component: reliabilityComp,
+    starter_k_per_ip: starterKPerIp,
+    starter_bb_per_ip: starterBbPerIp,
+    score_notes: isStandard ? 'STANDARD_LINE_INTERNAL_ONLY_NO_MARKET_ODDS' : 'NON_STANDARD_LINE_VARIANT_INTERNAL_ONLY_NO_UNDER_CREATED'
+  };
 }
 
 async function batchRun(db, statements, chunkSize = 50) {
@@ -1130,6 +1303,110 @@ async function getLogs(env) {
 }
 
 
+
+async function buildPhase1Score(env, body = {}) {
+  const runId = makeId('xp_score');
+  const phase = Math.max(1, Math.min(Number(body?.expansion_phase) || 1, 9));
+  await applySchema(env);
+  await env.DB.prepare(`INSERT INTO xp_job_runs(run_id, job_name, status, source_table) VALUES (?, 'build_phase1_internal_score_scaffold', 'RUNNING', 'xp_phase1_game_context_current')`)
+    .bind(runId)
+    .run();
+  try {
+    const beforeScore = await env.DB.prepare(`SELECT COUNT(*) AS c FROM xp_phase1_score_current`).first();
+    await env.DB.prepare(`DELETE FROM xp_phase1_score_current`).run();
+    const rowsRes = await env.DB.prepare(`
+      SELECT c.*
+      FROM xp_phase1_game_context_current c
+      JOIN xp_prop_lines_current x ON x.xp_line_key = c.xp_line_key
+      WHERE x.expansion_phase = ?
+        AND c.stat_type IN ('Hitter Strikeouts','Walks')
+      ORDER BY c.stat_type ASC, c.game_id ASC, c.player_name ASC, c.line_score ASC, c.xp_line_key ASC
+    `).bind(phase).all();
+    const rows = rowsRes.results || [];
+    const inserts = [];
+    for (const row of rows) {
+      const score = scorePhase1ContextRow(row);
+      inserts.push(env.DB.prepare(`
+        INSERT OR REPLACE INTO xp_phase1_score_current (
+          xp_line_key, stat_type, player_name, team, opponent, line_score, odds_type, game_id,
+          visible_side, internal_score_0_100, internal_grade, score_status, score_cap,
+          base_component, player_component, starter_component, lineup_component, line_component,
+          warning_component, reliability_component, season_k_rate, season_bb_rate, starter_k_per_ip,
+          starter_bb_per_ip, lineup_slot, context_status, warning_flags, score_notes, built_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `).bind(
+        row.xp_line_key, row.stat_type, row.player_name, row.team, row.opponent, row.line_score, row.odds_type, row.game_id,
+        score.visible_side, score.internal_score_0_100, score.internal_grade, score.score_status, score.score_cap,
+        score.base_component, score.player_component, score.starter_component, score.lineup_component, score.line_component,
+        score.warning_component, score.reliability_component, row.season_k_rate, row.season_bb_rate, score.starter_k_per_ip,
+        score.starter_bb_per_ip, row.lineup_slot, row.context_status, row.warning_flags, score.score_notes
+      ));
+    }
+    await batchRun(env.DB, inserts);
+    const scoreCounts = await getScoreCounts(env);
+    const details = {
+      version: SYSTEM_VERSION,
+      expansion_phase: phase,
+      deleted_score_rows: Number(beforeScore?.c || 0),
+      rows_read: rows.length,
+      score_rows_written: inserts.length,
+      counts: scoreCounts.rows || [],
+      totals: scoreCounts.totals || []
+    };
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='COMPLETED', rows_read=?, rows_written=?, rows_deleted=?, completed_at=CURRENT_TIMESTAMP, details_json=? WHERE run_id=?`)
+      .bind(rows.length, inserts.length, Number(beforeScore?.c || 0), JSON.stringify(details), runId)
+      .run();
+    await log(env.DB, runId, 'INFO', 'Phase 1 internal score scaffold built', details);
+    return { ok: true, run_id: runId, ...details };
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='ERROR', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`)
+      .bind(message, runId)
+      .run();
+    await log(env.DB, runId, 'ERROR', 'Phase 1 score build failed', { error: message });
+    return { ok: false, run_id: runId, version: SYSTEM_VERSION, error: message };
+  }
+}
+
+async function getScoreCounts(env) {
+  const totals = await env.DB.prepare(`
+    SELECT 'score_rows' AS bucket, COUNT(*) AS rows_count FROM xp_phase1_score_current
+    UNION ALL SELECT 'scored_internal', COUNT(*) FROM xp_phase1_score_current WHERE score_status = 'SCORED_INTERNAL'
+    UNION ALL SELECT 'blocked_context_incomplete', COUNT(*) FROM xp_phase1_score_current WHERE score_status != 'SCORED_INTERNAL'
+  `).all();
+  const rows = await env.DB.prepare(`
+    SELECT stat_type, odds_type, score_status, internal_grade, COUNT(*) AS rows_count,
+           MIN(internal_score_0_100) AS min_score,
+           MAX(internal_score_0_100) AS max_score,
+           ROUND(AVG(internal_score_0_100), 2) AS avg_score
+    FROM xp_phase1_score_current
+    GROUP BY stat_type, odds_type, score_status, internal_grade
+    ORDER BY stat_type ASC, score_status ASC, avg_score DESC, rows_count DESC
+  `).all();
+  const top = await env.DB.prepare(`
+    SELECT stat_type, player_name, team, opponent, line_score, odds_type, internal_score_0_100, internal_grade, score_status, warning_flags, score_notes
+    FROM xp_phase1_score_current
+    WHERE score_status = 'SCORED_INTERNAL'
+    ORDER BY internal_score_0_100 DESC, stat_type ASC, player_name ASC
+    LIMIT 25
+  `).all();
+  return { ok: true, version: SYSTEM_VERSION, totals: totals.results || [], rows: rows.results || [], top_internal: top.results || [] };
+}
+
+async function getScoreSample(env, limitParam) {
+  const limit = Math.max(1, Math.min(Number(limitParam) || 100, 300));
+  const rows = await env.DB.prepare(`
+    SELECT xp_line_key, stat_type, player_name, team, opponent, line_score, odds_type, game_id,
+           visible_side, internal_score_0_100, internal_grade, score_status, score_cap,
+           player_component, starter_component, lineup_component, line_component, warning_component, reliability_component,
+           season_k_rate, season_bb_rate, starter_k_per_ip, starter_bb_per_ip, lineup_slot, context_status, warning_flags, score_notes
+    FROM xp_phase1_score_current
+    ORDER BY score_status ASC, internal_score_0_100 DESC, stat_type ASC, player_name ASC
+    LIMIT ?
+  `).bind(limit).all();
+  return { ok: true, version: SYSTEM_VERSION, rows: rows.results || [] };
+}
+
 function isReadOnlySql(sql) {
   const cleaned = String(sql || '').trim().replace(/^\s*--.*$/gm, '').trim();
   const lowered = cleaned.toLowerCase();
@@ -1211,7 +1488,8 @@ export default {
         control_room_served_by_worker: true,
         direct_health_alias_enabled: true,
         phase1_bridge_builder_enabled: true,
-        phase1_context_snapshot_enabled: true
+        phase1_context_snapshot_enabled: true,
+        phase1_internal_score_scaffold_enabled: true
       });
     }
 
@@ -1255,6 +1533,13 @@ export default {
       if (path === '/xp/context/missing-metrics') return jsonResponse(await getContextMissingMetrics(env));
       if (path === '/xp/context/completeness') return jsonResponse(await getContextCompleteness(env));
       if (path === '/xp/context/sample') return jsonResponse(await getContextSample(env, url.searchParams.get('limit')));
+      if (path === '/xp/score/build' && request.method === 'POST') {
+        const body = await parseBody(request);
+        const result = await buildPhase1Score(env, body);
+        return jsonResponse({ ...result, auth_warning: admin.warning || null }, result.ok ? 200 : 500);
+      }
+      if (path === '/xp/score/counts') return jsonResponse(await getScoreCounts(env));
+      if (path === '/xp/score/sample') return jsonResponse(await getScoreSample(env, url.searchParams.get('limit')));
       if (path === '/xp/board/sample') return jsonResponse(await getSamples(env, url.searchParams.get('stat_type'), url.searchParams.get('limit')));
       if (path === '/xp/jobs') return jsonResponse(await getJobs(env));
       if (path === '/xp/logs') return jsonResponse(await getLogs(env));

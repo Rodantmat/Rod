@@ -177,6 +177,42 @@ CREATE INDEX IF NOT EXISTS idx_xp_p1_context_status ON xp_phase1_game_context_cu
 CREATE INDEX IF NOT EXISTS idx_xp_p1_context_game ON xp_phase1_game_context_current(game_id, normalized_team);
 CREATE INDEX IF NOT EXISTS idx_xp_p1_context_flags ON xp_phase1_game_context_current(lineup_match_status, starter_match_status, metric_match_status);
 
+
+CREATE TABLE IF NOT EXISTS xp_phase1_score_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  team TEXT,
+  opponent TEXT,
+  line_score REAL,
+  odds_type TEXT,
+  game_id TEXT,
+  visible_side TEXT,
+  internal_score_0_100 REAL,
+  internal_grade TEXT,
+  score_status TEXT NOT NULL,
+  score_cap REAL,
+  base_component REAL,
+  player_component REAL,
+  starter_component REAL,
+  lineup_component REAL,
+  line_component REAL,
+  warning_component REAL,
+  reliability_component REAL,
+  season_k_rate REAL,
+  season_bb_rate REAL,
+  starter_k_per_ip REAL,
+  starter_bb_per_ip REAL,
+  lineup_slot INTEGER,
+  context_status TEXT,
+  warning_flags TEXT,
+  score_notes TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_status ON xp_phase1_score_current(score_status, stat_type);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_grade ON xp_phase1_score_current(internal_grade, stat_type, internal_score_0_100);
+CREATE INDEX IF NOT EXISTS idx_xp_p1_score_game ON xp_phase1_score_current(game_id, team);
+
 INSERT OR REPLACE INTO xp_team_alias_map(alias_team, canonical_team, notes, updated_at) VALUES
 ('ATH','OAK','PrizePicks Athletics alias to games table Oakland alias',CURRENT_TIMESTAMP),
 ('OAK','OAK','Identity alias',CURRENT_TIMESTAMP),
@@ -255,7 +291,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.13', 'Phase 1 context snapshot - isolated xp player metrics and game context read-model', CURRENT_TIMESTAMP);
+VALUES ('v0.1.14', 'Phase 1 internal score scaffold - isolated xp score read-model only', CURRENT_TIMESTAMP);
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),

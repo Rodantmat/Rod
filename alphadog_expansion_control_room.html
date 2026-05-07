@@ -39,13 +39,13 @@
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.13 - Phase 1 Context Snapshot</div>
+      <div class="version">v0.1.14 - Phase 1 Internal Score Scaffold</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
 
     <section class="section">
-      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/context prep only. Production scoring and Main UI stay untouched. No scoring yet.</p>
+      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/context prep plus internal-only Phase 1 score scaffold. Production scoring and Main UI stay untouched. No market/final betting score yet.</p>
       <div class="pill" id="bridgeStatus">Worker bridge loading...</div>
       <div class="button-grid">
         <button id="btnHealth">Health</button>
@@ -61,6 +61,9 @@
         <button id="btnContextMissing">Missing Metrics</button>
         <button id="btnContextComplete">Completeness</button>
         <button id="btnContextSample">Context Sample</button>
+        <button id="btnScoreBuild" class="green">Build Score</button>
+        <button id="btnScoreCounts" class="teal">Score Counts</button>
+        <button id="btnScoreSample">Score Sample</button>
         <button id="btnJobs">Jobs</button>
         <button id="btnLogs">Logs</button>
       </div>
@@ -87,9 +90,9 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.13 - Phase 1 Context Snapshot";
+      var VERSION = "v0.1.14 - Phase 1 Internal Score Scaffold";
       var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
-      var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
+      var EMBEDDED_TOKEN = "alphadog-xp-v014-admin-1a9e5c7b-6b2d-44f6-8bb3-e2c14d0f7b91";
       var OUTPUT_CHAR_LIMIT = 120000;
       var DEFAULT_SQL_MAX_ROWS = 500;
       var output = document.getElementById('output');
@@ -115,6 +118,9 @@
         '/xp/context/missing-metrics':'Missing Metrics / handleContextMissingMetrics',
         '/xp/context/completeness':'Completeness / handleContextCompleteness',
         '/xp/context/sample':'Context Sample / handleContextSample',
+        '/xp/score/build':'Build Score / handleBuildPhase1Score',
+        '/xp/score/counts':'Score Counts / handleScoreCounts',
+        '/xp/score/sample':'Score Sample / handleScoreSample',
         '/xp/jobs':'Jobs / handleJobs',
         '/xp/logs':'Logs / handleLogs',
         '/xp/manual-sql':'Manual SQL / handleManualSql'
@@ -169,6 +175,9 @@
       bind('btnContextMissing', function() { callApi('/xp/context/missing-metrics','GET'); });
       bind('btnContextComplete', function() { callApi('/xp/context/completeness','GET'); });
       bind('btnContextSample', function() { callApi('/xp/context/sample?limit=100','GET'); });
+      bind('btnScoreBuild', function() { callApi('/xp/score/build','POST',{ expansion_phase:1 }); });
+      bind('btnScoreCounts', function() { callApi('/xp/score/counts','GET'); });
+      bind('btnScoreSample', function() { callApi('/xp/score/sample?limit=100','GET'); });
       bind('btnJobs', function() { callApi('/xp/jobs','GET'); });
       bind('btnLogs', function() { callApi('/xp/logs','GET'); });
       bind('btnSample', sampleProp);
