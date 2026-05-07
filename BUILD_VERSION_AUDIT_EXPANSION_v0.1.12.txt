@@ -1,0 +1,24 @@
+BUILD VERSION AUDIT
+
+Expected version everywhere:
+v0.1.12 - Phase 1 Bridge Builder
+
+Files checked:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- wrangler.expansion.jsonc
+- README_EXPANSION_v0.1.12.txt
+- BUILD_VERSION_AUDIT_EXPANSION_v0.1.12.txt
+
+Isolation rules:
+- Writes only xp_* tables.
+- No production scoring writes.
+- No Main UI changes.
+- No Phase 1 score table yet.
+
+New tables:
+- xp_team_alias_map
+- xp_game_bridge_current
+
+Version audit result: PASS

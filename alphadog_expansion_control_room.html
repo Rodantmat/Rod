@@ -39,19 +39,23 @@
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.11 - Control Room Output Lens</div>
+      <div class="version">v0.1.12 - Phase 1 Bridge Builder</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
 
     <section class="section">
-      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Production scoring and Main UI stay untouched.</p>
+      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/build prep only. Production scoring and Main UI stay untouched.</p>
       <div class="pill" id="bridgeStatus">Worker bridge loading...</div>
       <div class="button-grid">
         <button id="btnHealth">Health</button>
         <button id="btnSchema" class="gold">Apply Schema</button>
         <button id="btnRefresh">Refresh Board</button>
         <button id="btnCounts">Counts</button>
+        <button id="btnBridgeBuild" class="green">Build Bridge</button>
+        <button id="btnBridgeCounts" class="teal">Bridge Counts</button>
+        <button id="btnBridgeUnmatched">Unmatched</button>
+        <button id="btnBridgeSample">Bridge Sample</button>
         <button id="btnJobs">Jobs</button>
         <button id="btnLogs">Logs</button>
       </div>
@@ -67,7 +71,7 @@
 
     <section class="section">
       <h2>Manual SQL</h2>
-      <p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Expanded diagnostics: up to 500 returned rows and larger output copy buffer.</p>
+      <p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge buttons for xp_game_bridge_current diagnostics.</p>
       <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>
       <div class="sql-buttons"><button id="btnRunSql" class="gold">Run SQL</button><button id="btnClearSql">Clear SQL</button><button id="btnSelectSql">Select SQL</button></div>
     </section>
@@ -78,7 +82,7 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.11 - Control Room Output Lens";
+      var VERSION = "v0.1.12 - Phase 1 Bridge Builder";
       var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
       var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
       var OUTPUT_CHAR_LIMIT = 120000;
@@ -97,6 +101,10 @@
         '/xp/schema/apply':'Apply Schema / handleApplySchema',
         '/xp/board/refresh':'Refresh Board / handleRefreshBoard',
         '/xp/board/counts':'Counts / handleCounts',
+        '/xp/bridge/build':'Build Bridge / handleBuildGameBridge',
+        '/xp/bridge/counts':'Bridge Counts / handleBridgeCounts',
+        '/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched',
+        '/xp/bridge/sample':'Bridge Sample / handleBridgeSample',
         '/xp/jobs':'Jobs / handleJobs',
         '/xp/logs':'Logs / handleLogs',
         '/xp/manual-sql':'Manual SQL / handleManualSql'
@@ -142,6 +150,10 @@
       bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });
       bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });
       bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });
+      bind('btnBridgeBuild', function() { callApi('/xp/bridge/build','POST',{ expansion_phase:1, time_tolerance_minutes:15 }); });
+      bind('btnBridgeCounts', function() { callApi('/xp/bridge/counts','GET'); });
+      bind('btnBridgeUnmatched', function() { callApi('/xp/bridge/unmatched','GET'); });
+      bind('btnBridgeSample', function() { callApi('/xp/bridge/sample?limit=100','GET'); });
       bind('btnJobs', function() { callApi('/xp/jobs','GET'); });
       bind('btnLogs', function() { callApi('/xp/logs','GET'); });
       bind('btnSample', sampleProp);

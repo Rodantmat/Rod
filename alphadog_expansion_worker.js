@@ -1,4 +1,4 @@
-const SYSTEM_VERSION = 'v0.1.11 - Control Room Output Lens';
+const SYSTEM_VERSION = 'v0.1.12 - Phase 1 Bridge Builder';
 const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
@@ -18,7 +18,7 @@ const TARGET_STAT_TYPES = [
   'RBIs'
 ];
 
-const CONTROL_ROOM_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Expansion Control Room</title>\n  <style>\n    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#6d35d9; --gold:#c89119; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    * { box-sizing:border-box; }\n    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    main { width:100%; max-width:1040px; margin:0 auto; padding:16px 12px 30px; }\n    h1 { color:#19ff82; margin:0; font-size:24px; line-height:1.12; letter-spacing:.7px; text-transform:uppercase; font-weight:900; }\n    h2 { color:#f7f2ea; margin:0 0 10px; font-size:18px; letter-spacing:.7px; text-transform:uppercase; }\n    .version { color:#bff7cc; font-size:14px; line-height:1.3; margin-top:8px; font-weight:700; }\n    .top { padding-bottom:14px; border-bottom:2px solid var(--line); }\n    .section { padding:14px 0; border-bottom:2px solid var(--line); }\n    .desc { margin:0 0 10px; color:var(--green); font-size:16px; line-height:1.35; }\n    .small { color:var(--muted); font-size:13px; line-height:1.35; margin:8px 0 0; }\n    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:10px; min-height:36px; font-size:13px; line-height:1.3; }\n    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }\n    .sql-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:8px; }\n    button { border:0; border-radius:9px; padding:8px 7px; color:white; background:var(--purple); font-size:14px; font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif; min-height:42px; cursor:pointer; font-weight:700; }\n    button.gold { background:var(--gold); }\n    button.green { background:#188336; }\n    button.teal { background:var(--teal); }\n    button.full { width:100%; margin-top:10px; letter-spacing:1.6px; text-transform:uppercase; min-height:44px; }\n    button:active { transform:translateY(1px); }\n    select, textarea { width:100%; border:2px solid var(--line); border-radius:9px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }\n    select { padding:10px; min-height:42px; }\n    textarea { min-height:118px; max-height:260px; padding:10px; line-height:1.32; resize:vertical; }\n    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:9px; padding:10px; min-height:185px; max-height:520px; overflow:auto; font-size:13.5px; line-height:1.3; margin:0; }\n    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }\n    .pill { border:2px solid var(--line); border-radius:9px; background:#111; color:var(--muted); padding:9px; font-size:12.5px; line-height:1.35; }\n    @media (min-width:760px) { main { padding:18px 16px 34px; } .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } .sample-row { grid-template-columns:1fr 180px; } pre { max-height:620px; } }\n    @media (max-width:390px) { h1 { font-size:22px; } button { font-size:13px; min-height:40px; } .button-grid, .sql-buttons { gap:7px; } pre { font-size:13px; } }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"top\">\n      <h1>AlphaDog Expansion Control Room</h1>\n      <div class=\"version\">v0.1.11 - Control Room Output Lens</div>\n      <div class=\"small\" id=\"originStatus\">Starting UI...</div>\n      <div class=\"status\" id=\"actionStatus\">Ready.</div>\n    </div>\n\n    <section class=\"section\">\n      <p class=\"desc\">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Production scoring and Main UI stay untouched.</p>\n      <div class=\"pill\" id=\"bridgeStatus\">Worker bridge loading...</div>\n      <div class=\"button-grid\">\n        <button id=\"btnHealth\">Health</button>\n        <button id=\"btnSchema\" class=\"gold\">Apply Schema</button>\n        <button id=\"btnRefresh\">Refresh Board</button>\n        <button id=\"btnCounts\">Counts</button>\n        <button id=\"btnJobs\">Jobs</button>\n        <button id=\"btnLogs\">Logs</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Sample Prop</h2>\n      <div class=\"sample-row\">\n        <select id=\"sampleProp\"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select>\n        <button id=\"btnSample\">Load Sample</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Manual SQL</h2>\n      <p class=\"small\">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Expanded diagnostics: up to 500 returned rows and larger output copy buffer.</p>\n      <textarea id=\"manualSql\">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>\n      <div class=\"sql-buttons\"><button id=\"btnRunSql\" class=\"gold\">Run SQL</button><button id=\"btnClearSql\">Clear SQL</button><button id=\"btnSelectSql\">Select SQL</button></div>\n    </section>\n\n    <section class=\"section\" id=\"outputSection\"><pre id=\"output\">Ready.</pre><button id=\"btnCopy\" class=\"full\">COPY OUTPUT</button></section>\n  </main>\n\n  <script>\n    (function() {\n      'use strict';\n      var VERSION = \"v0.1.11 - Control Room Output Lens\";\n      var HARD_CODED_WORKER_BASE = \"https://alphadog-expansion-v001.rodolfoaamattos.workers.dev\";\n      var EMBEDDED_TOKEN = \"alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73\";\n      var OUTPUT_CHAR_LIMIT = 120000;\n      var DEFAULT_SQL_MAX_ROWS = 500;\n      var output = document.getElementById('output');\n      var outputSection = document.getElementById('outputSection');\n      var originStatus = document.getElementById('originStatus');\n      var bridgeStatus = document.getElementById('bridgeStatus');\n      var actionStatus = document.getElementById('actionStatus');\n      function fromGithubPages() { return /(^|\\.)github\\.io$/i.test(location.hostname); }\n      function apiBase() { return fromGithubPages() ? HARD_CODED_WORKER_BASE : location.origin; }\n      function withToken(path) { return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }\n      function apiUrl(path) { return apiBase().replace(/\\/$/, '') + withToken(path); }\n      var ACTION_META = {\n        '/xp/health':'Health / handleHealth',\n        '/xp/schema/apply':'Apply Schema / handleApplySchema',\n        '/xp/board/refresh':'Refresh Board / handleRefreshBoard',\n        '/xp/board/counts':'Counts / handleCounts',\n        '/xp/jobs':'Jobs / handleJobs',\n        '/xp/logs':'Logs / handleLogs',\n        '/xp/manual-sql':'Manual SQL / handleManualSql'\n      };\n      function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }\n      function setStatus(msg) { actionStatus.textContent = msg; }\n      function jumpOutput() { setTimeout(function() { var copy = document.getElementById('btnCopy'); if (copy) copy.scrollIntoView({ behavior:'smooth', block:'end' }); else outputSection.scrollIntoView({ behavior:'smooth', block:'end' }); }, 80); }\n      function safeText(value) {\n        var s = String(value == null ? '' : value);\n        if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);\n        if (/^\\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,900), worker_base:apiBase() }, null, 2);\n        return s.length > OUTPUT_CHAR_LIMIT ? s.slice(0, OUTPUT_CHAR_LIMIT) + '\\n...[truncated by control room output lens at ' + OUTPUT_CHAR_LIMIT + ' chars]' : s;\n      }\n      function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }\n      async function callApi(path, method, body) {\n        var label = actionLabel(path);\n        setStatus('Running ' + label);\n        show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, method:method, version:VERSION, worker_base:apiBase(), status:'RUNNING' });\n        jumpOutput();\n        try {\n          var opts = { method:method };\n          if (method === 'POST') { opts.headers = { 'Content-Type':'text/plain;charset=UTF-8' }; opts.body = JSON.stringify(body || {}); }\n          var res = await fetch(apiUrl(path), opts);\n          var text = await res.text();\n          var response;\n          try { response = JSON.parse(text); } catch(e) { response = safeText(text); }\n          show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });\n          jumpOutput();\n          setStatus('Finished ' + label + ' \u2022 HTTP ' + res.status);\n        } catch(err) {\n          show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });\n          jumpOutput();\n          setStatus('Failed ' + label);\n        }\n      }\n      function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }\n      function selectSql() { var el = document.getElementById('manualSql'); el.focus(); el.select(); setStatus('SQL selected. Output preserved.'); }\n      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:DEFAULT_SQL_MAX_ROWS }); }\n      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=100','GET'); }\n      async function copyOutput() { try { await navigator.clipboard.writeText(output.textContent || ''); setStatus('Output copied. Output preserved.'); } catch(err) { setStatus('Copy failed. Long-press/select the output manually.'); } }\n      function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }\n      bind('btnHealth', function() { callApi('/xp/health','GET'); });\n      bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });\n      bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });\n      bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });\n      bind('btnJobs', function() { callApi('/xp/jobs','GET'); });\n      bind('btnLogs', function() { callApi('/xp/logs','GET'); });\n      bind('btnSample', sampleProp);\n      bind('btnRunSql', runManualSql);\n      bind('btnClearSql', clearSql);\n      bind('btnSelectSql', selectSql);\n      bind('btnCopy', copyOutput);\n      originStatus.textContent = fromGithubPages() ? 'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.' : 'Worker-hosted UI detected. Using same-origin Worker routes.';\n      bridgeStatus.textContent = 'API Base: ' + apiBase(); setStatus('Ready.'); show('Ready.');\n    })();\n  </script>\n</body>\n</html>\n";
+const CONTROL_ROOM_HTML = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\" />\n  <title>AlphaDog Expansion Control Room</title>\n  <style>\n    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#6d35d9; --gold:#c89119; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    * { box-sizing:border-box; }\n    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }\n    main { width:100%; max-width:1040px; margin:0 auto; padding:16px 12px 30px; }\n    h1 { color:#19ff82; margin:0; font-size:24px; line-height:1.12; letter-spacing:.7px; text-transform:uppercase; font-weight:900; }\n    h2 { color:#f7f2ea; margin:0 0 10px; font-size:18px; letter-spacing:.7px; text-transform:uppercase; }\n    .version { color:#bff7cc; font-size:14px; line-height:1.3; margin-top:8px; font-weight:700; }\n    .top { padding-bottom:14px; border-bottom:2px solid var(--line); }\n    .section { padding:14px 0; border-bottom:2px solid var(--line); }\n    .desc { margin:0 0 10px; color:var(--green); font-size:16px; line-height:1.35; }\n    .small { color:var(--muted); font-size:13px; line-height:1.35; margin:8px 0 0; }\n    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:10px; min-height:36px; font-size:13px; line-height:1.3; }\n    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }\n    .sql-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:8px; }\n    button { border:0; border-radius:9px; padding:8px 7px; color:white; background:var(--purple); font-size:14px; font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif; min-height:42px; cursor:pointer; font-weight:700; }\n    button.gold { background:var(--gold); }\n    button.green { background:#188336; }\n    button.teal { background:var(--teal); }\n    button.full { width:100%; margin-top:10px; letter-spacing:1.6px; text-transform:uppercase; min-height:44px; }\n    button:active { transform:translateY(1px); }\n    select, textarea { width:100%; border:2px solid var(--line); border-radius:9px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }\n    select { padding:10px; min-height:42px; }\n    textarea { min-height:118px; max-height:260px; padding:10px; line-height:1.32; resize:vertical; }\n    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:9px; padding:10px; min-height:185px; max-height:520px; overflow:auto; font-size:13.5px; line-height:1.3; margin:0; }\n    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }\n    .pill { border:2px solid var(--line); border-radius:9px; background:#111; color:var(--muted); padding:9px; font-size:12.5px; line-height:1.35; }\n    @media (min-width:760px) { main { padding:18px 16px 34px; } .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } .sample-row { grid-template-columns:1fr 180px; } pre { max-height:620px; } }\n    @media (max-width:390px) { h1 { font-size:22px; } button { font-size:13px; min-height:40px; } .button-grid, .sql-buttons { gap:7px; } pre { font-size:13px; } }\n  </style>\n</head>\n<body>\n  <main>\n    <div class=\"top\">\n      <h1>AlphaDog Expansion Control Room</h1>\n      <div class=\"version\">v0.1.12 - Phase 1 Bridge Builder</div>\n      <div class=\"small\" id=\"originStatus\">Starting UI...</div>\n      <div class=\"status\" id=\"actionStatus\">Ready.</div>\n    </div>\n\n    <section class=\"section\">\n      <p class=\"desc\">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/build prep only. Production scoring and Main UI stay untouched.</p>\n      <div class=\"pill\" id=\"bridgeStatus\">Worker bridge loading...</div>\n      <div class=\"button-grid\">\n        <button id=\"btnHealth\">Health</button>\n        <button id=\"btnSchema\" class=\"gold\">Apply Schema</button>\n        <button id=\"btnRefresh\">Refresh Board</button>\n        <button id=\"btnCounts\">Counts</button>\n        <button id=\"btnBridgeBuild\" class=\"green\">Build Bridge</button>\n        <button id=\"btnBridgeCounts\" class=\"teal\">Bridge Counts</button>\n        <button id=\"btnBridgeUnmatched\">Unmatched</button>\n        <button id=\"btnBridgeSample\">Bridge Sample</button>\n        <button id=\"btnJobs\">Jobs</button>\n        <button id=\"btnLogs\">Logs</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Sample Prop</h2>\n      <div class=\"sample-row\">\n        <select id=\"sampleProp\"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select>\n        <button id=\"btnSample\">Load Sample</button>\n      </div>\n    </section>\n\n    <section class=\"section\">\n      <h2>Manual SQL</h2>\n      <p class=\"small\">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge buttons for xp_game_bridge_current diagnostics.</p>\n      <textarea id=\"manualSql\">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>\n      <div class=\"sql-buttons\"><button id=\"btnRunSql\" class=\"gold\">Run SQL</button><button id=\"btnClearSql\">Clear SQL</button><button id=\"btnSelectSql\">Select SQL</button></div>\n    </section>\n\n    <section class=\"section\" id=\"outputSection\"><pre id=\"output\">Ready.</pre><button id=\"btnCopy\" class=\"full\">COPY OUTPUT</button></section>\n  </main>\n\n  <script>\n    (function() {\n      'use strict';\n      var VERSION = \"v0.1.12 - Phase 1 Bridge Builder\";\n      var HARD_CODED_WORKER_BASE = \"https://alphadog-expansion-v001.rodolfoaamattos.workers.dev\";\n      var EMBEDDED_TOKEN = \"alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73\";\n      var OUTPUT_CHAR_LIMIT = 120000;\n      var DEFAULT_SQL_MAX_ROWS = 500;\n      var output = document.getElementById('output');\n      var outputSection = document.getElementById('outputSection');\n      var originStatus = document.getElementById('originStatus');\n      var bridgeStatus = document.getElementById('bridgeStatus');\n      var actionStatus = document.getElementById('actionStatus');\n      function fromGithubPages() { return /(^|\\.)github\\.io$/i.test(location.hostname); }\n      function apiBase() { return fromGithubPages() ? HARD_CODED_WORKER_BASE : location.origin; }\n      function withToken(path) { return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }\n      function apiUrl(path) { return apiBase().replace(/\\/$/, '') + withToken(path); }\n      var ACTION_META = {\n        '/xp/health':'Health / handleHealth',\n        '/xp/schema/apply':'Apply Schema / handleApplySchema',\n        '/xp/board/refresh':'Refresh Board / handleRefreshBoard',\n        '/xp/board/counts':'Counts / handleCounts',\n        '/xp/bridge/build':'Build Bridge / handleBuildGameBridge',\n        '/xp/bridge/counts':'Bridge Counts / handleBridgeCounts',\n        '/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched',\n        '/xp/bridge/sample':'Bridge Sample / handleBridgeSample',\n        '/xp/jobs':'Jobs / handleJobs',\n        '/xp/logs':'Logs / handleLogs',\n        '/xp/manual-sql':'Manual SQL / handleManualSql'\n      };\n      function actionLabel(path) { var clean = String(path || '').split('?')[0]; return ACTION_META[clean] || ('Load Sample / handleSampleProp'); }\n      function setStatus(msg) { actionStatus.textContent = msg; }\n      function jumpOutput() { setTimeout(function() { var copy = document.getElementById('btnCopy'); if (copy) copy.scrollIntoView({ behavior:'smooth', block:'end' }); else outputSection.scrollIntoView({ behavior:'smooth', block:'end' }); }, 80); }\n      function safeText(value) {\n        var s = String(value == null ? '' : value);\n        if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);\n        if (/^\\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\\s+/g,' ').trim().slice(0,900), worker_base:apiBase() }, null, 2);\n        return s.length > OUTPUT_CHAR_LIMIT ? s.slice(0, OUTPUT_CHAR_LIMIT) + '\\n...[truncated by control room output lens at ' + OUTPUT_CHAR_LIMIT + ' chars]' : s;\n      }\n      function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }\n      async function callApi(path, method, body) {\n        var label = actionLabel(path);\n        setStatus('Running ' + label);\n        show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, method:method, version:VERSION, worker_base:apiBase(), status:'RUNNING' });\n        jumpOutput();\n        try {\n          var opts = { method:method };\n          if (method === 'POST') { opts.headers = { 'Content-Type':'text/plain;charset=UTF-8' }; opts.body = JSON.stringify(body || {}); }\n          var res = await fetch(apiUrl(path), opts);\n          var text = await res.text();\n          var response;\n          try { response = JSON.parse(text); } catch(e) { response = safeText(text); }\n          show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, http_status:res.status, version:VERSION, worker_base:apiBase(), response:response });\n          jumpOutput();\n          setStatus('Finished ' + label + ' \u2022 HTTP ' + res.status);\n        } catch(err) {\n          show({ ok:false, action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, version:VERSION, worker_base:apiBase(), error:String(err && err.message ? err.message : err), diagnosis:'Network/CORS/route failure. UI buttons are bound. Confirm the Worker is deployed at the hardcoded worker_base and workers.dev route is active.' });\n          jumpOutput();\n          setStatus('Failed ' + label);\n        }\n      }\n      function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }\n      function selectSql() { var el = document.getElementById('manualSql'); el.focus(); el.select(); setStatus('SQL selected. Output preserved.'); }\n      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:DEFAULT_SQL_MAX_ROWS }); }\n      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=100','GET'); }\n      async function copyOutput() { try { await navigator.clipboard.writeText(output.textContent || ''); setStatus('Output copied. Output preserved.'); } catch(err) { setStatus('Copy failed. Long-press/select the output manually.'); } }\n      function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }\n      bind('btnHealth', function() { callApi('/xp/health','GET'); });\n      bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });\n      bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });\n      bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });\n      bind('btnBridgeBuild', function() { callApi('/xp/bridge/build','POST',{ expansion_phase:1, time_tolerance_minutes:15 }); });\n      bind('btnBridgeCounts', function() { callApi('/xp/bridge/counts','GET'); });\n      bind('btnBridgeUnmatched', function() { callApi('/xp/bridge/unmatched','GET'); });\n      bind('btnBridgeSample', function() { callApi('/xp/bridge/sample?limit=100','GET'); });\n      bind('btnJobs', function() { callApi('/xp/jobs','GET'); });\n      bind('btnLogs', function() { callApi('/xp/logs','GET'); });\n      bind('btnSample', sampleProp);\n      bind('btnRunSql', runManualSql);\n      bind('btnClearSql', clearSql);\n      bind('btnSelectSql', selectSql);\n      bind('btnCopy', copyOutput);\n      originStatus.textContent = fromGithubPages() ? 'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.' : 'Worker-hosted UI detected. Using same-origin Worker routes.';\n      bridgeStatus.textContent = 'API Base: ' + apiBase(); setStatus('Ready.'); show('Ready.');\n    })();\n  </script>\n</body>\n</html>\n";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS xp_schema_migrations (
@@ -69,6 +69,79 @@ CREATE INDEX IF NOT EXISTS idx_xp_lines_stat_start ON xp_prop_lines_current(stat
 CREATE INDEX IF NOT EXISTS idx_xp_lines_slate_stat ON xp_prop_lines_current(slate_date, stat_type);
 CREATE INDEX IF NOT EXISTS idx_xp_lines_target ON xp_prop_lines_current(target_status, expansion_phase);
 CREATE INDEX IF NOT EXISTS idx_xp_lines_player ON xp_prop_lines_current(normalized_player_name, stat_type);
+
+CREATE TABLE IF NOT EXISTS xp_team_alias_map (
+  alias_team TEXT PRIMARY KEY,
+  canonical_team TEXT NOT NULL,
+  notes TEXT,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_xp_team_alias_canonical ON xp_team_alias_map(canonical_team);
+CREATE TABLE IF NOT EXISTS xp_game_bridge_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  original_team TEXT,
+  original_opponent TEXT,
+  normalized_team TEXT,
+  normalized_opponent TEXT,
+  slate_date TEXT,
+  pp_start_time TEXT,
+  pp_start_time_utc TEXT,
+  game_id TEXT,
+  away_team TEXT,
+  home_team TEXT,
+  game_start_time_utc TEXT,
+  time_diff_minutes REAL,
+  match_status TEXT NOT NULL,
+  match_method TEXT,
+  candidate_count INTEGER DEFAULT 0,
+  clean_match_count INTEGER DEFAULT 0,
+  warning TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_xp_bridge_status ON xp_game_bridge_current(match_status, stat_type);
+CREATE INDEX IF NOT EXISTS idx_xp_bridge_game ON xp_game_bridge_current(game_id);
+CREATE INDEX IF NOT EXISTS idx_xp_bridge_pair ON xp_game_bridge_current(normalized_team, normalized_opponent, slate_date);
+INSERT OR REPLACE INTO xp_team_alias_map(alias_team, canonical_team, notes, updated_at) VALUES
+('ATH','OAK','PrizePicks Athletics alias to games table Oakland alias',CURRENT_TIMESTAMP),
+('OAK','OAK','Identity alias',CURRENT_TIMESTAMP),
+('AZ','ARI','PrizePicks Arizona alias to games table ARI alias',CURRENT_TIMESTAMP),
+('ARI','ARI','Identity alias',CURRENT_TIMESTAMP),
+('WSH','WSN','PrizePicks Washington alias to games table WSN alias',CURRENT_TIMESTAMP),
+('WSN','WSN','Identity alias',CURRENT_TIMESTAMP),
+('SFG','SF','Common Giants alias',CURRENT_TIMESTAMP),
+('SF','SF','Identity alias',CURRENT_TIMESTAMP),
+('CHW','CWS','Common White Sox alias',CURRENT_TIMESTAMP),
+('CWS','CWS','Identity alias',CURRENT_TIMESTAMP),
+('SDP','SD','Common Padres alias',CURRENT_TIMESTAMP),
+('SD','SD','Identity alias',CURRENT_TIMESTAMP),
+('TBR','TB','Common Rays alias',CURRENT_TIMESTAMP),
+('TB','TB','Identity alias',CURRENT_TIMESTAMP),
+('KCR','KC','Common Royals alias',CURRENT_TIMESTAMP),
+('KC','KC','Identity alias',CURRENT_TIMESTAMP),
+('LAD','LAD','Identity alias',CURRENT_TIMESTAMP),
+('LAA','LAA','Identity alias',CURRENT_TIMESTAMP),
+('NYY','NYY','Identity alias',CURRENT_TIMESTAMP),
+('NYM','NYM','Identity alias',CURRENT_TIMESTAMP),
+('BOS','BOS','Identity alias',CURRENT_TIMESTAMP),
+('BAL','BAL','Identity alias',CURRENT_TIMESTAMP),
+('TOR','TOR','Identity alias',CURRENT_TIMESTAMP),
+('MIA','MIA','Identity alias',CURRENT_TIMESTAMP),
+('PHI','PHI','Identity alias',CURRENT_TIMESTAMP),
+('PIT','PIT','Identity alias',CURRENT_TIMESTAMP),
+('STL','STL','Identity alias',CURRENT_TIMESTAMP),
+('CHC','CHC','Identity alias',CURRENT_TIMESTAMP),
+('CIN','CIN','Identity alias',CURRENT_TIMESTAMP),
+('CLE','CLE','Identity alias',CURRENT_TIMESTAMP),
+('DET','DET','Identity alias',CURRENT_TIMESTAMP),
+('MIN','MIN','Identity alias',CURRENT_TIMESTAMP),
+('TEX','TEX','Identity alias',CURRENT_TIMESTAMP),
+('HOU','HOU','Identity alias',CURRENT_TIMESTAMP),
+('SEA','SEA','Identity alias',CURRENT_TIMESTAMP),
+('MIL','MIL','Identity alias',CURRENT_TIMESTAMP),
+('COL','COL','Identity alias',CURRENT_TIMESTAMP),
+('ATL','ATL','Identity alias',CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS xp_prop_counts_snapshot (
   snapshot_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
@@ -108,7 +181,7 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_xp_logs_run ON xp_job_logs(run_id, created_at DESC);
 INSERT OR REPLACE INTO xp_schema_migrations(version, description, applied_at)
-VALUES ('v0.1.11', 'Control room output lens - expands diagnostics output and preserves isolated refresh logic', CURRENT_TIMESTAMP);
+VALUES ('v0.1.12', 'Phase 1 bridge builder - isolated xp team aliases and game bridge read-model', CURRENT_TIMESTAMP);
 INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_phase, target_status, complexity_tier, source_scope, scoring_status, notes, updated_at) VALUES
 ('Hitter Strikeouts', 'HITTER_STRIKEOUTS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'First expansion scoring target. Simple count prop with strong board volume.', CURRENT_TIMESTAMP),
 ('Walks', 'WALKS', 1, 'READY_PHASE_1', 'LOW', 'PRIZEPICKS_ONLY', 'NOT_BUILT', 'Second expansion scoring target. Simple count prop.', CURRENT_TIMESTAMP),
@@ -369,6 +442,202 @@ async function refreshPrizePicks(env, options = {}) {
   }
 }
 
+
+async function buildGameBridge(env, body = {}) {
+  const runId = makeId('xp_bridge');
+  const phase = Math.max(1, Math.min(Number(body?.expansion_phase) || 1, 9));
+  const tolerance = Math.max(1, Math.min(Number(body?.time_tolerance_minutes) || 15, 60));
+  await applySchema(env);
+  await env.DB.prepare(`INSERT INTO xp_job_runs(run_id, job_name, status, source_table) VALUES (?, 'build_phase1_game_bridge', 'RUNNING', 'xp_prop_lines_current')`)
+    .bind(runId)
+    .run();
+  try {
+    const before = await env.DB.prepare(`SELECT COUNT(*) AS c FROM xp_game_bridge_current`).first();
+    await env.DB.prepare(`DELETE FROM xp_game_bridge_current`).run();
+    const sql = `
+      INSERT INTO xp_game_bridge_current (
+        xp_line_key, stat_type, player_name, original_team, original_opponent,
+        normalized_team, normalized_opponent, slate_date, pp_start_time, pp_start_time_utc,
+        game_id, away_team, home_team, game_start_time_utc, time_diff_minutes,
+        match_status, match_method, candidate_count, clean_match_count, warning, built_at
+      )
+      WITH phase_lines AS (
+        SELECT
+          x.xp_line_key,
+          x.stat_type,
+          x.player_name,
+          x.team AS original_team,
+          x.opponent AS original_opponent,
+          COALESCE(ta.canonical_team, x.team) AS normalized_team,
+          COALESCE(oa.canonical_team, x.opponent) AS normalized_opponent,
+          x.slate_date,
+          x.start_time AS pp_start_time,
+          datetime(x.start_time) AS pp_start_time_utc
+        FROM xp_prop_lines_current x
+        LEFT JOIN xp_team_alias_map ta ON ta.alias_team = x.team
+        LEFT JOIN xp_team_alias_map oa ON oa.alias_team = x.opponent
+        WHERE x.expansion_phase = ?
+      ),
+      candidates AS (
+        SELECT
+          p.*,
+          g.game_id,
+          g.away_team,
+          g.home_team,
+          g.start_time_utc AS game_start_time_utc,
+          ABS(ROUND((julianday(datetime(p.pp_start_time)) - julianday(datetime(g.start_time_utc))) * 24.0 * 60.0, 2)) AS time_diff_minutes,
+          CASE WHEN p.original_team = p.normalized_team AND p.original_opponent = p.normalized_opponent THEN 'EXACT_TEAM_PAIR' ELSE 'ALIAS_TEAM_PAIR' END AS match_method
+        FROM phase_lines p
+        JOIN games g
+          ON g.game_date = p.slate_date
+         AND (
+              (g.away_team = p.normalized_team AND g.home_team = p.normalized_opponent)
+           OR (g.home_team = p.normalized_team AND g.away_team = p.normalized_opponent)
+         )
+      ),
+      ranked AS (
+        SELECT
+          c.*,
+          COUNT(*) OVER (PARTITION BY c.xp_line_key) AS candidate_count,
+          SUM(CASE WHEN c.time_diff_minutes <= ? THEN 1 ELSE 0 END) OVER (PARTITION BY c.xp_line_key) AS clean_match_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY c.xp_line_key
+            ORDER BY CASE WHEN c.time_diff_minutes <= ? THEN 0 ELSE 1 END ASC, c.time_diff_minutes ASC, c.game_id ASC
+          ) AS rn
+        FROM candidates c
+      )
+      SELECT
+        p.xp_line_key,
+        p.stat_type,
+        p.player_name,
+        p.original_team,
+        p.original_opponent,
+        p.normalized_team,
+        p.normalized_opponent,
+        p.slate_date,
+        p.pp_start_time,
+        p.pp_start_time_utc,
+        CASE WHEN r.clean_match_count = 1 THEN r.game_id ELSE NULL END AS game_id,
+        CASE WHEN r.clean_match_count = 1 THEN r.away_team ELSE NULL END AS away_team,
+        CASE WHEN r.clean_match_count = 1 THEN r.home_team ELSE NULL END AS home_team,
+        CASE WHEN r.clean_match_count = 1 THEN r.game_start_time_utc ELSE NULL END AS game_start_time_utc,
+        r.time_diff_minutes,
+        CASE
+          WHEN p.pp_start_time_utc IS NULL THEN 'TIME_PARSE_NULL'
+          WHEN r.candidate_count IS NULL THEN 'UNMATCHED'
+          WHEN r.clean_match_count = 1 AND r.match_method = 'EXACT_TEAM_PAIR' THEN 'MATCHED_EXACT'
+          WHEN r.clean_match_count = 1 AND r.match_method = 'ALIAS_TEAM_PAIR' THEN 'MATCHED_ALIAS'
+          WHEN r.clean_match_count = 0 THEN 'TIME_MISMATCH'
+          ELSE 'MULTIPLE_MATCHES'
+        END AS match_status,
+        r.match_method,
+        COALESCE(r.candidate_count, 0) AS candidate_count,
+        COALESCE(r.clean_match_count, 0) AS clean_match_count,
+        CASE
+          WHEN p.pp_start_time_utc IS NULL THEN 'PrizePicks start_time did not parse with SQLite datetime().'
+          WHEN r.candidate_count IS NULL THEN 'No game found after team/opponent alias normalization.'
+          WHEN r.clean_match_count = 0 THEN 'Game pair found but no candidate within tolerance minutes.'
+          WHEN r.clean_match_count > 1 THEN 'More than one game candidate within tolerance; unsafe bridge.'
+          WHEN r.match_method = 'ALIAS_TEAM_PAIR' THEN 'Matched through xp_team_alias_map.'
+          ELSE NULL
+        END AS warning,
+        CURRENT_TIMESTAMP
+      FROM phase_lines p
+      LEFT JOIN ranked r ON r.xp_line_key = p.xp_line_key AND r.rn = 1
+    `;
+    await env.DB.prepare(sql).bind(phase, tolerance, tolerance).run();
+
+    const after = await env.DB.prepare(`SELECT COUNT(*) AS c FROM xp_game_bridge_current`).first();
+    const counts = await env.DB.prepare(`
+      SELECT match_status, match_method, COUNT(*) AS rows_count
+      FROM xp_game_bridge_current
+      GROUP BY match_status, match_method
+      ORDER BY match_status ASC, match_method ASC
+    `).all();
+    const unmatchedPairs = await env.DB.prepare(`
+      SELECT original_team, original_opponent, normalized_team, normalized_opponent, match_status, COUNT(*) AS rows_count
+      FROM xp_game_bridge_current
+      WHERE match_status NOT IN ('MATCHED_EXACT','MATCHED_ALIAS')
+      GROUP BY original_team, original_opponent, normalized_team, normalized_opponent, match_status
+      ORDER BY rows_count DESC
+      LIMIT 50
+    `).all();
+    const details = {
+      version: SYSTEM_VERSION,
+      expansion_phase: phase,
+      time_tolerance_minutes: tolerance,
+      deleted_rows: Number(before?.c || 0),
+      rows_written: Number(after?.c || 0),
+      status_counts: counts.results || [],
+      unmatched_pairs: unmatchedPairs.results || []
+    };
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='COMPLETED', rows_written=?, rows_deleted=?, completed_at=CURRENT_TIMESTAMP, details_json=? WHERE run_id=?`)
+      .bind(details.rows_written, details.deleted_rows, JSON.stringify(details), runId)
+      .run();
+    await log(env.DB, runId, 'INFO', 'Phase 1 game bridge built in isolated xp_game_bridge_current', details);
+    return { ok: true, run_id: runId, ...details };
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='ERROR', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`)
+      .bind(message, runId)
+      .run();
+    await log(env.DB, runId, 'ERROR', 'Bridge build failed', { error: message });
+    return { ok: false, run_id: runId, version: SYSTEM_VERSION, error: message };
+  }
+}
+
+async function getBridgeCounts(env) {
+  const rows = await env.DB.prepare(`
+    SELECT match_status, match_method, COUNT(*) AS rows_count,
+           MIN(time_diff_minutes) AS min_time_diff_minutes,
+           MAX(time_diff_minutes) AS max_time_diff_minutes
+    FROM xp_game_bridge_current
+    GROUP BY match_status, match_method
+    ORDER BY match_status ASC, match_method ASC
+  `).all();
+  const pairs = await env.DB.prepare(`
+    SELECT original_team, original_opponent, normalized_team, normalized_opponent, match_status, COUNT(*) AS rows_count
+    FROM xp_game_bridge_current
+    GROUP BY original_team, original_opponent, normalized_team, normalized_opponent, match_status
+    ORDER BY rows_count DESC
+    LIMIT 100
+  `).all();
+  return { ok: true, version: SYSTEM_VERSION, rows: rows.results || [], pairs: pairs.results || [] };
+}
+
+async function getBridgeUnmatched(env) {
+  const rows = await env.DB.prepare(`
+    SELECT original_team, original_opponent, normalized_team, normalized_opponent, match_status, warning, COUNT(*) AS rows_count
+    FROM xp_game_bridge_current
+    WHERE match_status NOT IN ('MATCHED_EXACT','MATCHED_ALIAS')
+    GROUP BY original_team, original_opponent, normalized_team, normalized_opponent, match_status, warning
+    ORDER BY rows_count DESC
+    LIMIT 100
+  `).all();
+  const samples = await env.DB.prepare(`
+    SELECT xp_line_key, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent,
+           slate_date, pp_start_time, pp_start_time_utc, time_diff_minutes, match_status, warning
+    FROM xp_game_bridge_current
+    WHERE match_status NOT IN ('MATCHED_EXACT','MATCHED_ALIAS')
+    ORDER BY match_status ASC, original_team ASC, original_opponent ASC, player_name ASC
+    LIMIT 100
+  `).all();
+  return { ok: true, version: SYSTEM_VERSION, rows: rows.results || [], samples: samples.results || [] };
+}
+
+async function getBridgeSample(env, limit = 100) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 200));
+  const rows = await env.DB.prepare(`
+    SELECT xp_line_key, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent,
+           slate_date, pp_start_time, pp_start_time_utc, game_id, away_team, home_team, game_start_time_utc,
+           time_diff_minutes, match_status, match_method, warning
+    FROM xp_game_bridge_current
+    ORDER BY match_status ASC, slate_date ASC, original_team ASC, original_opponent ASC, player_name ASC
+    LIMIT ${safeLimit}
+  `).all();
+  return { ok: true, version: SYSTEM_VERSION, rows: rows.results || [] };
+}
+
 async function getCounts(env) {
   const rows = await env.DB.prepare(`
     SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count,
@@ -505,7 +774,8 @@ export default {
         admin_secret_configured: Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN),
         embedded_control_room_token_enabled: true,
         control_room_served_by_worker: true,
-        direct_health_alias_enabled: true
+        direct_health_alias_enabled: true,
+        phase1_bridge_builder_enabled: true
       });
     }
 
@@ -532,6 +802,14 @@ export default {
         return jsonResponse({ ...result, auth_warning: admin.warning || null }, result.ok ? 200 : 500);
       }
       if (path === '/xp/board/counts') return jsonResponse(await getCounts(env));
+      if (path === '/xp/bridge/build' && request.method === 'POST') {
+        const body = await parseBody(request);
+        const result = await buildGameBridge(env, body);
+        return jsonResponse({ ...result, auth_warning: admin.warning || null }, result.ok ? 200 : 500);
+      }
+      if (path === '/xp/bridge/counts') return jsonResponse(await getBridgeCounts(env));
+      if (path === '/xp/bridge/unmatched') return jsonResponse(await getBridgeUnmatched(env));
+      if (path === '/xp/bridge/sample') return jsonResponse(await getBridgeSample(env, url.searchParams.get('limit')));
       if (path === '/xp/board/sample') return jsonResponse(await getSamples(env, url.searchParams.get('stat_type'), url.searchParams.get('limit')));
       if (path === '/xp/jobs') return jsonResponse(await getJobs(env));
       if (path === '/xp/logs') return jsonResponse(await getLogs(env));
