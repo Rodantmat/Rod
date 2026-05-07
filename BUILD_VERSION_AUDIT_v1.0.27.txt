@@ -1,0 +1,4 @@
+Build: v1.0.27 - Sleeper Score-Only Queue
+Files checked: index.html, main_alphadog_worker.js, README, audit.
+Patch scope: Main UI Sleeper Feed scheduling only.
+Protected: production scoring math, scheduled backend scoring functions, expansion worker.

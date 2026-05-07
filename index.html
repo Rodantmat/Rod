@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <title>AlphaDog v1.0.26</title>
+  <title>AlphaDog v1.0.27</title>
   <link rel="icon" type="image/png" href="/main_alphadog_favicon.png">
   <link rel="apple-touch-icon" href="/main_alphadog_apple_touch_icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,7 +18,7 @@
 <body>
 <main class="wrap">
   <header class="hero">
-    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.26 - Board Restore Sleeper Date Guard</div></div></div>
+    <div class="brand"><img class="logo" src="/main_alphadog_logo.png" alt="AlphaDog logo"><div><h1>AlphaDog</h1><div class="v">v1.0.27 - Sleeper Score-Only Queue</div></div></div>
     <div class="menuWrap"><button class="menuBtn" type="button" id="menuOpen" aria-label="Open menu">☰</button><div class="menuPanel hidden" id="mainMenu"><button class="menuItem" type="button" id="menuBoard">🏠 Board</button><button class="menuItem" type="button" id="menuRbi">⚾ RBI</button><button class="menuItem" type="button" id="menuSleeperFeed">Sleeper Feed</button><button class="menuItem" type="button" id="menuAdmin">⚙️ Admin</button></div></div>
   </header>
   <section id="boardScreen">
@@ -62,7 +62,7 @@
 <script>
 (function(){
 'use strict';
-const UI_VERSION='v1.0.26 - Board Restore Sleeper Date Guard';
+const UI_VERSION='v1.0.27 - Sleeper Score-Only Queue';
 const TEAM={ARI:'Arizona Diamondbacks',ATL:'Atlanta Braves',BAL:'Baltimore Orioles',BOS:'Boston Red Sox',CHC:'Chicago Cubs',CWS:'Chicago White Sox',CHW:'Chicago White Sox',CIN:'Cincinnati Reds',CLE:'Cleveland Guardians',COL:'Colorado Rockies',DET:'Detroit Tigers',HOU:'Houston Astros',KC:'Kansas City Royals',KCR:'Kansas City Royals',LAA:'Los Angeles Angels',LAD:'Los Angeles Dodgers',MIA:'Miami Marlins',MIL:'Milwaukee Brewers',MIN:'Minnesota Twins',NYM:'New York Mets',NYY:'New York Yankees',ATH:'Athletics',OAK:'Athletics',PHI:'Philadelphia Phillies',PIT:'Pittsburgh Pirates',SD:'San Diego Padres',SDP:'San Diego Padres',SEA:'Seattle Mariners',SF:'San Francisco Giants',SFG:'San Francisco Giants',STL:'St. Louis Cardinals',TB:'Tampa Bay Rays',TBR:'Tampa Bay Rays',TEX:'Texas Rangers',TOR:'Toronto Blue Jays',WSH:'Washington Nationals',WAS:'Washington Nationals'};
 const TEAM_NAMES=TEAM;
 let rows=[];
@@ -122,14 +122,14 @@ async function saveSleeperFeed(){
   try{
     $('saveSleeperFeed').disabled=true;
     status.textContent='Saving Sleeper feed...';
-    const r=await fetch('/main_alphadog_sleeper_feed',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw_text:text,replace_full_board:true,source:'main_ui_sleeper_feed_v1026'}),cache:'no-store'});
+    const r=await fetch('/main_alphadog_sleeper_feed',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({raw_text:text,replace_full_board:true,source:'main_ui_sleeper_feed_v1027'}),cache:'no-store'});
     const raw=await r.text();
     let j;try{j=JSON.parse(raw)}catch(_e){throw Error('Sleeper feed returned non-JSON: '+raw.slice(0,160));}
     if(!j.ok)throw Error(j.error||'Sleeper feed save failed');
     const db=j.db_counts||{};
     const counts=Object.entries(j.counts||{}).map(([k,v])=>k+': '+v).join(' • ')||'No market counts';
     const err=(j.errors||[]).length;
-    status.innerHTML='<span class="good">'+esc(j.user_message||'Sleeper feed saved.')+'</span>\nParsed: '+esc(j.parsed_count)+'\nSaved: '+esc(j.saved_count)+'\nCertified signals: '+esc(j.certified_signal_count||j.saved_signal_count||0)+'\nCurrent board rows: '+esc(db.total_current||j.saved_count)+'\nCounts: '+esc(counts)+'\nErrors: '+esc(err)+'\nSlate dates: '+esc((j.slate_dates||[]).join(', '))+'\nRescore: '+esc((j.rescore&&j.rescore.status)||'not scheduled')+'\nWait: '+esc(j.wait_minutes||'30-35')+' minutes for the new scored board.';
+    status.innerHTML='<span class="good">'+esc(j.user_message||'Sleeper feed saved.')+'</span>\nParsed: '+esc(j.parsed_count)+'\nSaved: '+esc(j.saved_count)+'\nCertified signals: '+esc(j.certified_signal_count||j.saved_signal_count||0)+'\nCurrent board rows: '+esc(db.total_current||j.saved_count)+'\nCounts: '+esc(counts)+'\nErrors: '+esc(err)+'\nSlate dates: '+esc((j.slate_dates||[]).join(', '))+'\nRescore: '+esc((j.rescore&&j.rescore.status)||'not scheduled')+'\nWait: '+esc(j.wait_minutes||'5-10')+' minutes for the updated board.';
     loadAdmin();
   }catch(e){status.innerHTML='<span class="err">Sleeper feed save failed: '+esc(e.message||e)+'</span>';}
   finally{$('saveSleeperFeed').disabled=false;}
