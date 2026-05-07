@@ -1,0 +1,9 @@
+VERSION AUDIT
+worker.js SYSTEM_VERSION: v0.1.30 - Button Wiring Hard Lock
+control room header: v0.1.30 - Button Wiring Hard Lock
+embedded HTML VERSION: v0.1.30 - Button Wiring Hard Lock
+wrangler.expansion.jsonc XP_SYSTEM_VERSION: v0.1.30 - Button Wiring Hard Lock
+package.expansion.json version: 0.1.30
+Expansion-only filenames retained.
+No production scheduled backend mutation.
+No Main UI mutation.
