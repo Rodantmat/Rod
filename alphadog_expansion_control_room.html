@@ -39,13 +39,13 @@
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.12 - Phase 1 Bridge Builder</div>
+      <div class="version">v0.1.13 - Phase 1 Context Snapshot</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
 
     <section class="section">
-      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/build prep only. Production scoring and Main UI stay untouched.</p>
+      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Bridge/context prep only. Production scoring and Main UI stay untouched. No scoring yet.</p>
       <div class="pill" id="bridgeStatus">Worker bridge loading...</div>
       <div class="button-grid">
         <button id="btnHealth">Health</button>
@@ -56,6 +56,11 @@
         <button id="btnBridgeCounts" class="teal">Bridge Counts</button>
         <button id="btnBridgeUnmatched">Unmatched</button>
         <button id="btnBridgeSample">Bridge Sample</button>
+        <button id="btnContextBuild" class="green">Build Context</button>
+        <button id="btnContextCounts" class="teal">Context Counts</button>
+        <button id="btnContextMissing">Missing Metrics</button>
+        <button id="btnContextComplete">Completeness</button>
+        <button id="btnContextSample">Context Sample</button>
         <button id="btnJobs">Jobs</button>
         <button id="btnLogs">Logs</button>
       </div>
@@ -71,7 +76,7 @@
 
     <section class="section">
       <h2>Manual SQL</h2>
-      <p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge buttons for xp_game_bridge_current diagnostics.</p>
+      <p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Use bridge/context buttons for xp_* prep diagnostics.</p>
       <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>
       <div class="sql-buttons"><button id="btnRunSql" class="gold">Run SQL</button><button id="btnClearSql">Clear SQL</button><button id="btnSelectSql">Select SQL</button></div>
     </section>
@@ -82,7 +87,7 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.12 - Phase 1 Bridge Builder";
+      var VERSION = "v0.1.13 - Phase 1 Context Snapshot";
       var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
       var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
       var OUTPUT_CHAR_LIMIT = 120000;
@@ -105,6 +110,11 @@
         '/xp/bridge/counts':'Bridge Counts / handleBridgeCounts',
         '/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched',
         '/xp/bridge/sample':'Bridge Sample / handleBridgeSample',
+        '/xp/context/build':'Build Context / handleBuildPhase1Context',
+        '/xp/context/counts':'Context Counts / handleContextCounts',
+        '/xp/context/missing-metrics':'Missing Metrics / handleContextMissingMetrics',
+        '/xp/context/completeness':'Completeness / handleContextCompleteness',
+        '/xp/context/sample':'Context Sample / handleContextSample',
         '/xp/jobs':'Jobs / handleJobs',
         '/xp/logs':'Logs / handleLogs',
         '/xp/manual-sql':'Manual SQL / handleManualSql'
@@ -154,6 +164,11 @@
       bind('btnBridgeCounts', function() { callApi('/xp/bridge/counts','GET'); });
       bind('btnBridgeUnmatched', function() { callApi('/xp/bridge/unmatched','GET'); });
       bind('btnBridgeSample', function() { callApi('/xp/bridge/sample?limit=100','GET'); });
+      bind('btnContextBuild', function() { callApi('/xp/context/build','POST',{ expansion_phase:1 }); });
+      bind('btnContextCounts', function() { callApi('/xp/context/counts','GET'); });
+      bind('btnContextMissing', function() { callApi('/xp/context/missing-metrics','GET'); });
+      bind('btnContextComplete', function() { callApi('/xp/context/completeness','GET'); });
+      bind('btnContextSample', function() { callApi('/xp/context/sample?limit=100','GET'); });
       bind('btnJobs', function() { callApi('/xp/jobs','GET'); });
       bind('btnLogs', function() { callApi('/xp/logs','GET'); });
       bind('btnSample', sampleProp);

@@ -1,0 +1,26 @@
+AlphaDog Expansion Build Version Audit
+
+Expected version everywhere:
+v0.1.13 - Phase 1 Context Snapshot
+
+Files in flat ZIP:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- package.expansion.json
+- wrangler.expansion.jsonc
+- README_EXPANSION_v0.1.13.txt
+- BUILD_VERSION_AUDIT_EXPANSION_v0.1.13.txt
+
+Scope lock:
+- Expansion worker/control room only.
+- Writes only xp_* tables.
+- Reads current prepared tables only as sources.
+- No production scheduled backend changes.
+- No Main UI changes.
+- No scoring changes.
+
+Feature lock:
+- Phase 1 bridge layer already built/validated before this context snapshot build.
+- v0.1.13 adds isolated Phase 1 context snapshots only.
+- No final scoring or candidate board mutation.
