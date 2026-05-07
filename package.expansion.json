@@ -1,8 +1,5 @@
 {
-  "scripts": {
-    "deploy:expansion": "wrangler deploy --config wrangler.expansion.jsonc"
-  },
-  "devDependencies": {
-    "wrangler": "latest"
-  }
+  "name": "alphadog-expansion-v001",
+  "version": "0.1.23",
+  "description": "AlphaDog isolated expansion worker v0.1.23"
 }

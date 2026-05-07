@@ -1,4 +1,4 @@
-const SYSTEM_VERSION = 'v0.1.22 - Phase 2 Readiness Gate';
+const SYSTEM_VERSION = 'v0.1.23 - Phase 2 Home Run Score Scaffold';
 const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
@@ -14,14 +14,14 @@ const CONTROL_ROOM_HTML = `<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#070b11;--panel:#050505;--line:#2a3340;--green:#59ff92;--muted:#aab0bb;--purple:#6d35d9;--gold:#c89119;--teal:#0d756e;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--green);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}main{width:100%;max-width:1060px;margin:0 auto;padding:16px 12px 30px}h1{color:#19ff82;margin:0;font-size:24px;line-height:1.12;letter-spacing:.7px;text-transform:uppercase;font-weight:900}h2{color:#f7f2ea;margin:0 0 10px;font-size:18px;letter-spacing:.7px;text-transform:uppercase}.version{color:#bff7cc;font-size:14px;line-height:1.3;margin-top:8px;font-weight:700}.top,.section{padding-bottom:14px;border-bottom:2px solid var(--line)}.section{padding:14px 0}.desc{margin:0 0 10px;color:var(--green);font-size:16px;line-height:1.35}.small{color:var(--muted);font-size:13px;line-height:1.35;margin:8px 0 0}.status{color:#f7f2ea;border:2px solid var(--line);border-radius:9px;background:#101010;padding:8px 10px;margin-top:10px;min-height:36px;font-size:13px;line-height:1.3}.button-grid,.sql-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}button{border:0;border-radius:9px;padding:8px 7px;color:white;background:var(--purple);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:42px;cursor:pointer;font-weight:800}button.gold{background:var(--gold)}button.green{background:#188336}button.teal{background:var(--teal)}button.full{width:100%;margin-top:10px;letter-spacing:1.6px;text-transform:uppercase;min-height:44px}button:active{transform:translateY(1px)}select,textarea{width:100%;border:2px solid var(--line);border-radius:9px;background:#101010;color:var(--green);font-family:inherit;font-size:14px;outline:none}select{padding:10px;min-height:42px}textarea{min-height:118px;max-height:260px;padding:10px;line-height:1.32;resize:vertical}pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);color:var(--green);border:2px solid var(--line);border-radius:9px;padding:10px;min-height:185px;max-height:620px;overflow:auto;font-size:13.5px;line-height:1.3;margin:0}.sample-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.pill{border:2px solid var(--line);border-radius:9px;background:#111;color:var(--muted);padding:9px;font-size:12.5px;line-height:1.35}@media(min-width:760px){main{padding:18px 16px 34px}.button-grid{grid-template-columns:repeat(6,minmax(0,1fr))}.sample-row{grid-template-columns:1fr 180px}.sql-buttons{grid-template-columns:repeat(6,minmax(0,1fr))}}@media(max-width:390px){h1{font-size:22px}button{font-size:13px;min-height:40px}.button-grid,.sql-buttons{gap:7px}pre{font-size:13px}}
 </style></head><body><main>
-<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.22 - Phase 2 Readiness Gate</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
+<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.23 - Phase 2 Home Run Score Scaffold</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
 <section class="section"><p class="desc">Isolated expansion room. Reads prepared production data, writes only xp_* tables. Production scoring and Main UI stay untouched.</p><div class="pill" id="bridgeStatus">Worker bridge loading...</div><div class="button-grid"><button id="btnHealth">Health</button><button id="btnSchema" class="gold">Apply Schema</button><button id="btnRefresh">Refresh Board</button><button id="btnCounts">Board Counts</button><button id="btnJobs">Jobs</button><button id="btnLogs">Logs</button></div></section>
 <section class="section"><h2>Phase 1 Pipeline</h2><p class="small">Use RUN PHASE 1 FULL PIPELINE for normal work. It auto-applies schema, refreshes board, builds bridge, builds context, builds score, and returns audit flags. Individual buttons stay available for debugging only.</p><button id="btnPhase1RunAll" class="full green">RUN PHASE 1 FULL PIPELINE</button><div class="button-grid"><button id="btnBridgeBuild" class="teal">Build Bridge</button><button id="btnBridgeCounts">Bridge Counts</button><button id="btnBridgeUnmatched">Unmatched</button><button id="btnContextBuild" class="teal">Build Context</button><button id="btnContextCounts">Context Counts</button><button id="btnContextCompleteness">Completeness</button><button id="btnScoreBuild" class="green">Build Score</button><button id="btnScoreCounts">Score Counts</button><button id="btnScoreAudit" class="gold">Score Audit</button><button id="btnScoreSample">Score Sample</button><button id="btnContextSample">Context Sample</button></div></section>
-<section class="section"><h2>Phase 2 Gate</h2><p class="small">One-button data readiness gate for Singles, Doubles, and Home Runs. It does not create final picks and does not mutate production tables.</p><button id="btnPhase2Audit" class="full gold">RUN PHASE 2 READINESS GATE</button></section>
+<section class="section"><h2>Phase 2 Gate</h2><p class="small">Readiness gate for Singles, Doubles, and Home Runs. Home Runs can now run a basic internal score scaffold only. Singles and Doubles stay blocked until native component metrics exist.</p><button id="btnPhase2Audit" class="full gold">RUN PHASE 2 READINESS GATE</button><button id="btnPhase2HrScore" class="full green">RUN PHASE 2 HOME RUN SCORE SCAFFOLD</button></section>
 <section class="section"><h2>Sample Prop</h2><div class="sample-row"><select id="sampleProp"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select><button id="btnSample">Load Sample</button></div></section>
 <section class="section"><h2>Manual SQL</h2><p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Up to 500 returned rows and larger output copy buffer.</p><textarea id="manualSql">SELECT stat_type, odds_type, score_status, internal_grade, COUNT(*) AS rows_count, MIN(internal_score_0_100) AS min_score, MAX(internal_score_0_100) AS max_score, AVG(internal_score_0_100) AS avg_score FROM xp_phase1_score_current GROUP BY stat_type, odds_type, score_status, internal_grade ORDER BY stat_type, odds_type, max_score DESC LIMIT 100</textarea><div class="sql-buttons"><button id="btnRunSql" class="gold">Run SQL</button><button id="btnClearSql">Clear SQL</button><button id="btnSelectSql">Select SQL</button></div></section>
 <section class="section" id="outputSection"><pre id="output">Ready.</pre><button id="btnCopy" class="full">COPY OUTPUT</button></section>
-</main><script>(function(){'use strict';var VERSION='v0.1.22 - Phase 2 Readiness Gate';var HARD_CODED_WORKER_BASE='https://alphadog-expansion-v001.rodolfoaamattos.workers.dev';var EMBEDDED_TOKEN='alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';var OUTPUT_CHAR_LIMIT=150000;var DEFAULT_SQL_MAX_ROWS=500;var output=document.getElementById('output');var outputSection=document.getElementById('outputSection');var originStatus=document.getElementById('originStatus');var bridgeStatus=document.getElementById('bridgeStatus');var actionStatus=document.getElementById('actionStatus');function fromGithubPages(){return /(^|\.)github\.io$/i.test(location.hostname)}function apiBase(){return fromGithubPages()?HARD_CODED_WORKER_BASE:location.origin}function withToken(path){return path+(path.indexOf('?')>=0?'&':'?')+'xp_token='+encodeURIComponent(EMBEDDED_TOKEN)}function apiUrl(path){return apiBase().replace(/\/$/,'')+withToken(path)}var ACTION_META={'/xp/health':'Health / handleHealth','/xp/schema/apply':'Apply Schema / handleApplySchema','/xp/board/refresh':'Refresh Board / handleRefreshBoard','/xp/board/counts':'Board Counts / handleCounts','/xp/jobs':'Jobs / handleJobs','/xp/logs':'Logs / handleLogs','/xp/manual-sql':'Manual SQL / handleManualSql','/xp/phase1/run-all':'Run Phase 1 Full Pipeline / handlePhase1RunAll','/xp/phase2/readiness-gate':'Run Phase 2 Readiness Gate / handlePhase2ReadinessGate','/xp/bridge/build':'Build Bridge / handleBuildGameBridge','/xp/bridge/counts':'Bridge Counts / handleBridgeCounts','/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched','/xp/context/build':'Build Context / handleBuildPhase1Context','/xp/context/counts':'Context Counts / handleContextCounts','/xp/context/completeness':'Completeness / handleContextCompleteness','/xp/context/sample':'Context Sample / handleContextSample','/xp/score/build':'Build Score / handleBuildPhase1Score','/xp/score/counts':'Score Counts / handleScoreCounts','/xp/score/sample':'Score Sample / handleScoreSample','/xp/score/audit':'Score Audit / handleScoreAudit'};function actionLabel(path){var clean=String(path||'').split('?')[0];return ACTION_META[clean]||'Load Sample / handleSampleProp'}function setStatus(msg){actionStatus.textContent=msg}function jumpOutput(){setTimeout(function(){var copy=document.getElementById('btnCopy');if(copy)copy.scrollIntoView({behavior:'smooth',block:'end'});else outputSection.scrollIntoView({behavior:'smooth',block:'end'})},80)}function safeText(value){var s=String(value==null?'':value);if(/^\s*</.test(s))return JSON.stringify({ok:false,connection_issue:'HTML_RESPONSE_NOT_JSON',http_preview:s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,900),worker_base:apiBase()},null,2);return s.length>OUTPUT_CHAR_LIMIT?s.slice(0,OUTPUT_CHAR_LIMIT)+'\n...[truncated by control room output lens at '+OUTPUT_CHAR_LIMIT+' chars]':s}function show(data){output.textContent=typeof data==='string'?safeText(data):safeText(JSON.stringify(data,null,2))}async function callApi(path,method,body){var label=actionLabel(path);setStatus('Running '+label);show({action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,method:method,version:VERSION,worker_base:apiBase(),status:'RUNNING'});jumpOutput();try{var opts={method:method};if(method==='POST'){opts.headers={'Content-Type':'text/plain;charset=UTF-8'};opts.body=JSON.stringify(body||{})}var res=await fetch(apiUrl(path),opts);var text=await res.text();var response;try{response=JSON.parse(text)}catch(e){response=safeText(text)}show({action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,http_status:res.status,version:VERSION,worker_base:apiBase(),response:response});jumpOutput();setStatus('Finished '+label+' • HTTP '+res.status)}catch(err){show({ok:false,action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,version:VERSION,worker_base:apiBase(),error:String(err&&err.message?err.message:err)});jumpOutput();setStatus('Failed '+label)}}function bind(id,fn){var el=document.getElementById(id);if(el)el.addEventListener('click',fn)}function runManualSql(){callApi('/xp/manual-sql','POST',{sql:document.getElementById('manualSql').value||'',max_rows:DEFAULT_SQL_MAX_ROWS})}function sampleProp(){callApi('/xp/board/sample?stat_type='+encodeURIComponent(document.getElementById('sampleProp').value)+'&limit=100','GET')}async function copyOutput(){try{await navigator.clipboard.writeText(output.textContent||'');setStatus('Output copied.')}catch(err){setStatus('Copy failed. Long-press/select output manually.')}}bind('btnHealth',function(){callApi('/xp/health','GET')});bind('btnPhase1RunAll',function(){callApi('/xp/phase1/run-all','POST',{expansion_phase:1,time_tolerance_minutes:15,include_started:false,audit_limit:50})});bind('btnPhase2Audit',function(){callApi('/xp/phase2/readiness-gate','POST',{expansion_phase:2,time_tolerance_minutes:15,include_started:false})});bind('btnSchema',function(){callApi('/xp/schema/apply','POST')});bind('btnRefresh',function(){callApi('/xp/board/refresh','POST',{include_started:false})});bind('btnCounts',function(){callApi('/xp/board/counts','GET')});bind('btnJobs',function(){callApi('/xp/jobs','GET')});bind('btnLogs',function(){callApi('/xp/logs','GET')});bind('btnBridgeBuild',function(){callApi('/xp/bridge/build','POST',{expansion_phase:1,time_tolerance_minutes:15})});bind('btnBridgeCounts',function(){callApi('/xp/bridge/counts','GET')});bind('btnBridgeUnmatched',function(){callApi('/xp/bridge/unmatched','GET')});bind('btnContextBuild',function(){callApi('/xp/context/build','POST',{expansion_phase:1})});bind('btnContextCounts',function(){callApi('/xp/context/counts','GET')});bind('btnContextCompleteness',function(){callApi('/xp/context/completeness','GET')});bind('btnContextSample',function(){callApi('/xp/context/sample?limit=100','GET')});bind('btnScoreBuild',function(){callApi('/xp/score/build','POST',{expansion_phase:1})});bind('btnScoreCounts',function(){callApi('/xp/score/counts','GET')});bind('btnScoreSample',function(){callApi('/xp/score/sample?limit=100','GET')});bind('btnScoreAudit',function(){callApi('/xp/score/audit?limit=100','GET')});bind('btnSample',sampleProp);bind('btnRunSql',runManualSql);bind('btnClearSql',function(){document.getElementById('manualSql').value='';setStatus('SQL box cleared.')});bind('btnSelectSql',function(){var el=document.getElementById('manualSql');el.focus();el.select();setStatus('SQL selected.')});bind('btnCopy',copyOutput);originStatus.textContent=fromGithubPages()?'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.':'Worker-hosted UI detected. Using same-origin Worker routes.';bridgeStatus.textContent='API Base: '+apiBase();setStatus('Ready.');show('Ready.')})();</script></body></html>`;
+</main><script>(function(){'use strict';var VERSION='v0.1.23 - Phase 2 Home Run Score Scaffold';var HARD_CODED_WORKER_BASE='https://alphadog-expansion-v001.rodolfoaamattos.workers.dev';var EMBEDDED_TOKEN='alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';var OUTPUT_CHAR_LIMIT=150000;var DEFAULT_SQL_MAX_ROWS=500;var output=document.getElementById('output');var outputSection=document.getElementById('outputSection');var originStatus=document.getElementById('originStatus');var bridgeStatus=document.getElementById('bridgeStatus');var actionStatus=document.getElementById('actionStatus');function fromGithubPages(){return /(^|\.)github\.io$/i.test(location.hostname)}function apiBase(){return fromGithubPages()?HARD_CODED_WORKER_BASE:location.origin}function withToken(path){return path+(path.indexOf('?')>=0?'&':'?')+'xp_token='+encodeURIComponent(EMBEDDED_TOKEN)}function apiUrl(path){return apiBase().replace(/\/$/,'')+withToken(path)}var ACTION_META={'/xp/health':'Health / handleHealth','/xp/schema/apply':'Apply Schema / handleApplySchema','/xp/board/refresh':'Refresh Board / handleRefreshBoard','/xp/board/counts':'Board Counts / handleCounts','/xp/jobs':'Jobs / handleJobs','/xp/logs':'Logs / handleLogs','/xp/manual-sql':'Manual SQL / handleManualSql','/xp/phase1/run-all':'Run Phase 1 Full Pipeline / handlePhase1RunAll','/xp/phase2/readiness-gate':'Run Phase 2 Readiness Gate / handlePhase2ReadinessGate','/xp/phase2/home-runs/score-scaffold':'Run Phase 2 Home Run Score Scaffold / handlePhase2HomeRunScoreScaffold','/xp/bridge/build':'Build Bridge / handleBuildGameBridge','/xp/bridge/counts':'Bridge Counts / handleBridgeCounts','/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched','/xp/context/build':'Build Context / handleBuildPhase1Context','/xp/context/counts':'Context Counts / handleContextCounts','/xp/context/completeness':'Completeness / handleContextCompleteness','/xp/context/sample':'Context Sample / handleContextSample','/xp/score/build':'Build Score / handleBuildPhase1Score','/xp/score/counts':'Score Counts / handleScoreCounts','/xp/score/sample':'Score Sample / handleScoreSample','/xp/score/audit':'Score Audit / handleScoreAudit'};function actionLabel(path){var clean=String(path||'').split('?')[0];return ACTION_META[clean]||'Load Sample / handleSampleProp'}function setStatus(msg){actionStatus.textContent=msg}function jumpOutput(){setTimeout(function(){var copy=document.getElementById('btnCopy');if(copy)copy.scrollIntoView({behavior:'smooth',block:'end'});else outputSection.scrollIntoView({behavior:'smooth',block:'end'})},80)}function safeText(value){var s=String(value==null?'':value);if(/^\s*</.test(s))return JSON.stringify({ok:false,connection_issue:'HTML_RESPONSE_NOT_JSON',http_preview:s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,900),worker_base:apiBase()},null,2);return s.length>OUTPUT_CHAR_LIMIT?s.slice(0,OUTPUT_CHAR_LIMIT)+'\n...[truncated by control room output lens at '+OUTPUT_CHAR_LIMIT+' chars]':s}function show(data){output.textContent=typeof data==='string'?safeText(data):safeText(JSON.stringify(data,null,2))}async function callApi(path,method,body){var label=actionLabel(path);setStatus('Running '+label);show({action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,method:method,version:VERSION,worker_base:apiBase(),status:'RUNNING'});jumpOutput();try{var opts={method:method};if(method==='POST'){opts.headers={'Content-Type':'text/plain;charset=UTF-8'};opts.body=JSON.stringify(body||{})}var res=await fetch(apiUrl(path),opts);var text=await res.text();var response;try{response=JSON.parse(text)}catch(e){response=safeText(text)}show({action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,http_status:res.status,version:VERSION,worker_base:apiBase(),response:response});jumpOutput();setStatus('Finished '+label+' • HTTP '+res.status)}catch(err){show({ok:false,action:label.split(' / ')[0],function_name:label.split(' / ')[1],route:path,version:VERSION,worker_base:apiBase(),error:String(err&&err.message?err.message:err)});jumpOutput();setStatus('Failed '+label)}}function bind(id,fn){var el=document.getElementById(id);if(el)el.addEventListener('click',fn)}function runManualSql(){callApi('/xp/manual-sql','POST',{sql:document.getElementById('manualSql').value||'',max_rows:DEFAULT_SQL_MAX_ROWS})}function sampleProp(){callApi('/xp/board/sample?stat_type='+encodeURIComponent(document.getElementById('sampleProp').value)+'&limit=100','GET')}async function copyOutput(){try{await navigator.clipboard.writeText(output.textContent||'');setStatus('Output copied.')}catch(err){setStatus('Copy failed. Long-press/select output manually.')}}bind('btnHealth',function(){callApi('/xp/health','GET')});bind('btnPhase1RunAll',function(){callApi('/xp/phase1/run-all','POST',{expansion_phase:1,time_tolerance_minutes:15,include_started:false,audit_limit:50})});bind('btnPhase2Audit',function(){callApi('/xp/phase2/readiness-gate','POST',{expansion_phase:2,time_tolerance_minutes:15,include_started:false})});bind('btnPhase2HrScore',function(){callApi('/xp/phase2/home-runs/score-scaffold','POST',{expansion_phase:2,time_tolerance_minutes:15,include_started:false,audit_limit:50})});bind('btnSchema',function(){callApi('/xp/schema/apply','POST')});bind('btnRefresh',function(){callApi('/xp/board/refresh','POST',{include_started:false})});bind('btnCounts',function(){callApi('/xp/board/counts','GET')});bind('btnJobs',function(){callApi('/xp/jobs','GET')});bind('btnLogs',function(){callApi('/xp/logs','GET')});bind('btnBridgeBuild',function(){callApi('/xp/bridge/build','POST',{expansion_phase:1,time_tolerance_minutes:15})});bind('btnBridgeCounts',function(){callApi('/xp/bridge/counts','GET')});bind('btnBridgeUnmatched',function(){callApi('/xp/bridge/unmatched','GET')});bind('btnContextBuild',function(){callApi('/xp/context/build','POST',{expansion_phase:1})});bind('btnContextCounts',function(){callApi('/xp/context/counts','GET')});bind('btnContextCompleteness',function(){callApi('/xp/context/completeness','GET')});bind('btnContextSample',function(){callApi('/xp/context/sample?limit=100','GET')});bind('btnScoreBuild',function(){callApi('/xp/score/build','POST',{expansion_phase:1})});bind('btnScoreCounts',function(){callApi('/xp/score/counts','GET')});bind('btnScoreSample',function(){callApi('/xp/score/sample?limit=100','GET')});bind('btnScoreAudit',function(){callApi('/xp/score/audit?limit=100','GET')});bind('btnSample',sampleProp);bind('btnRunSql',runManualSql);bind('btnClearSql',function(){document.getElementById('manualSql').value='';setStatus('SQL box cleared.')});bind('btnSelectSql',function(){var el=document.getElementById('manualSql');el.focus();el.select();setStatus('SQL selected.')});bind('btnCopy',copyOutput);originStatus.textContent=fromGithubPages()?'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.':'Worker-hosted UI detected. Using same-origin Worker routes.';bridgeStatus.textContent='API Base: '+apiBase();setStatus('Ready.');show('Ready.')})();</script></body></html>`;
 
 const SCHEMA_SQL = `DROP TABLE IF EXISTS xp_prop_definitions;
 
@@ -253,6 +253,35 @@ CREATE TABLE IF NOT EXISTS xp_phase2_data_readiness_current (
   readiness_status TEXT,
   block_reason TEXT,
   warning_flags TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+
+
+CREATE TABLE IF NOT EXISTS xp_phase2_score_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  team TEXT,
+  opponent TEXT,
+  line_score REAL,
+  odds_type TEXT,
+  game_id TEXT,
+  visible_side TEXT,
+  data_status TEXT,
+  readiness_status TEXT,
+  score_status TEXT,
+  internal_score_0_100 REAL,
+  internal_grade TEXT,
+  base_rate REAL,
+  line_component REAL,
+  lineup_component REAL,
+  non_standard_component REAL,
+  warning_component REAL,
+  cap_applied TEXT,
+  formula_json TEXT,
+  warning_flags TEXT,
+  score_notes TEXT,
   built_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -773,6 +802,130 @@ async function buildPhase2Readiness(env, options = {}) {
   }
 }
 
+
+async function resetPhase2ScoreTable(env) {
+  await env.DB.prepare(`DROP TABLE IF EXISTS xp_phase2_score_current`).run();
+  await env.DB.prepare(`CREATE TABLE xp_phase2_score_current (
+    xp_line_key TEXT PRIMARY KEY,
+    stat_type TEXT,
+    player_name TEXT,
+    team TEXT,
+    opponent TEXT,
+    line_score REAL,
+    odds_type TEXT,
+    game_id TEXT,
+    visible_side TEXT,
+    data_status TEXT,
+    readiness_status TEXT,
+    score_status TEXT,
+    internal_score_0_100 REAL,
+    internal_grade TEXT,
+    base_rate REAL,
+    line_component REAL,
+    lineup_component REAL,
+    non_standard_component REAL,
+    warning_component REAL,
+    cap_applied TEXT,
+    formula_json TEXT,
+    warning_flags TEXT,
+    score_notes TEXT,
+    built_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+}
+
+function phase2Grade(score) {
+  if (score == null || Number.isNaN(Number(score))) return 'BLOCKED';
+  if (score >= 74) return 'WATCH_HIGH_INTERNAL';
+  if (score >= 64) return 'WATCH_MEDIUM_INTERNAL';
+  if (score >= 54) return 'LEAN_INTERNAL';
+  return 'LOW_INTERNAL';
+}
+
+async function buildPhase2HomeRunScore(env, options = {}) {
+  const runId = makeId('xp_phase2_hr_score');
+  await applySchema(env);
+  await resetPhase2ScoreTable(env);
+  await env.DB.prepare(`INSERT INTO xp_job_runs(run_id, job_name, status, source_table, details_json) VALUES (?, 'build_xp_phase2_home_run_score_scaffold', 'RUNNING', 'xp_phase2_data_readiness_current', ?)`).bind(runId, JSON.stringify({ stat_type:'Home Runs', scaffold_only:true })).run();
+  try {
+    const rows = await env.DB.prepare(`
+      SELECT xp_line_key, stat_type, player_name, team, opponent, line_score, odds_type, game_id, data_status, readiness_status,
+             total_pa, total_ab, total_hits, total_home_runs, home_run_rate, hit_rate, warning_flags
+      FROM xp_phase2_data_readiness_current
+      WHERE stat_type='Home Runs'
+      ORDER BY player_name, line_score
+    `).all();
+    let written = 0;
+    for (const r of rows.results || []) {
+      const ready = r.readiness_status === 'READY_FOR_PHASE2_SCORE_SCAFFOLD' && r.data_status === 'READY_BASIC_POWER_CONTEXT';
+      const odds = String(r.odds_type || 'standard').toLowerCase();
+      const line = Number(r.line_score || 0.5);
+      let score = null;
+      let grade = 'BLOCKED';
+      let scoreStatus = 'BLOCKED_CONTEXT_INCOMPLETE';
+      let scoreNotes = 'PHASE2_HR_BLOCKED_MISSING_POWER_CONTEXT';
+      let capApplied = null;
+      const baseRate = ready ? Number(r.home_run_rate || 0) : null;
+      const lineComponent = ready ? Math.max(0, Math.min(60, (baseRate * 950) + (Number(r.hit_rate || 0) * 10) - Math.max(0, line - 0.5) * 8)) : null;
+      const lineupComponent = ready ? (String(r.warning_flags || '').includes('MISSING_LINEUP') ? -3 : 4) : null;
+      const nonStandardComponent = ready && odds !== 'standard' ? -2 : 0;
+      const warningComponent = ready && String(r.warning_flags || '').includes('MISSING_LINEUP') ? -4 : 0;
+      if (ready) {
+        score = Math.round(Math.max(0, Math.min(100, 35 + lineComponent + lineupComponent + nonStandardComponent + warningComponent)) * 100) / 100;
+        if (odds !== 'standard' && score > 82) { score = 82; capApplied = 'NON_STANDARD_CAP_82'; }
+        grade = phase2Grade(score);
+        scoreStatus = 'SCORED_INTERNAL';
+        scoreNotes = 'PHASE2_HOME_RUN_INTERNAL_SCAFFOLD_NO_MARKET_ODDS';
+      }
+      const formula = ready ? JSON.stringify({ version:SYSTEM_VERSION, stat_type:'Home Runs', base_rate:baseRate, line_component:lineComponent, lineup_component:lineupComponent, non_standard_component:nonStandardComponent, warning_component:warningComponent, cap_applied:capApplied, market_odds:'NOT_USED_PHASE2', external_market:'NOT_USED_PHASE2', scaffold_only:true }) : null;
+      await env.DB.prepare(`INSERT OR REPLACE INTO xp_phase2_score_current(
+        xp_line_key, stat_type, player_name, team, opponent, line_score, odds_type, game_id, visible_side, data_status, readiness_status,
+        score_status, internal_score_0_100, internal_grade, base_rate, line_component, lineup_component, non_standard_component, warning_component,
+        cap_applied, formula_json, warning_flags, score_notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'VISIBLE_PRIZEPICKS_SIDE_ONLY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        r.xp_line_key, r.stat_type, r.player_name, r.team, r.opponent, r.line_score, r.odds_type, r.game_id, r.data_status, r.readiness_status,
+        scoreStatus, score, grade, baseRate, lineComponent, lineupComponent, nonStandardComponent, warningComponent, capApplied, formula, r.warning_flags, scoreNotes
+      ).run();
+      written++;
+    }
+    const counts = await phase2ScoreCounts(env);
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='COMPLETED', rows_read=?, rows_written=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((rows.results || []).length, written, runId).run();
+    return { ok:true, run_id:runId, version:SYSTEM_VERSION, score_mode:'PHASE2_HOME_RUN_INTERNAL_SCAFFOLD_ONLY', score_created:true, singles_doubles_scored:false, rows_read:(rows.results || []).length, score_rows_written:written, score_counts:counts.rows || [], totals:counts.totals || [], top_internal:counts.top_internal || [] };
+  } catch (err) {
+    const msg = err?.message || String(err);
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='ERROR', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg, runId).run();
+    return { ok:false, run_id:runId, version:SYSTEM_VERSION, error:msg };
+  }
+}
+
+async function phase2ScoreCounts(env) {
+  const totals = await env.DB.prepare(`SELECT 'score_rows' AS bucket, COUNT(*) AS rows_count FROM xp_phase2_score_current UNION ALL SELECT 'scored_internal', COUNT(*) FROM xp_phase2_score_current WHERE score_status='SCORED_INTERNAL' UNION ALL SELECT 'blocked_context_incomplete', COUNT(*) FROM xp_phase2_score_current WHERE score_status='BLOCKED_CONTEXT_INCOMPLETE'`).all();
+  const rows = await env.DB.prepare(`SELECT stat_type, odds_type, score_status, internal_grade, COUNT(*) AS rows_count, MIN(internal_score_0_100) AS min_score, MAX(internal_score_0_100) AS max_score, ROUND(AVG(internal_score_0_100),2) AS avg_score FROM xp_phase2_score_current GROUP BY stat_type, odds_type, score_status, internal_grade ORDER BY stat_type, score_status, max_score DESC`).all();
+  const top = await env.DB.prepare(`SELECT stat_type, player_name, team, opponent, line_score, odds_type, internal_score_0_100, internal_grade, score_status, warning_flags, score_notes FROM xp_phase2_score_current ORDER BY internal_score_0_100 DESC NULLS LAST, stat_type, player_name LIMIT 30`).all();
+  return { ok:true, version:SYSTEM_VERSION, totals:totals.results || [], rows:rows.results || [], top_internal:top.results || [] };
+}
+
+async function runPhase2HomeRunScoreScaffold(env, options = {}) {
+  const runId = makeId('xp_phase2_hr_scaffold_pipeline');
+  const expansionPhase = Number(options.expansion_phase || 2);
+  const tol = Number(options.time_tolerance_minutes || 15);
+  const includeStarted = options.include_started === true;
+  const steps = [];
+  function pushStep(name, result) { const ok = Boolean(result && result.ok); steps.push({ step: steps.length + 1, name, ok, result }); return ok; }
+  try {
+    let r = await applySchema(env); if (!pushStep('apply_schema_auto_migration', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'apply_schema_auto_migration', steps };
+    r = await refreshPrizePicks(env, { include_started: includeStarted }); if (!pushStep('refresh_board', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'refresh_board', steps };
+    r = await getCounts(env); pushStep('board_counts', r);
+    r = await buildGameBridge(env, { expansion_phase: expansionPhase, time_tolerance_minutes: tol }); if (!pushStep('build_bridge_phase2', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'build_bridge_phase2', steps };
+    r = await bridgeCounts(env); pushStep('bridge_counts', r);
+    r = await bridgeUnmatched(env); pushStep('bridge_unmatched', r);
+    r = await buildPhase2Readiness(env, { expansion_phase: expansionPhase }); if (!pushStep('phase2_readiness_gate', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'phase2_readiness_gate', steps };
+    r = await buildPhase2HomeRunScore(env, { expansion_phase: expansionPhase }); if (!pushStep('build_home_run_score_scaffold', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'build_home_run_score_scaffold', steps };
+    return { ok:true, version:SYSTEM_VERSION, function_name:'handlePhase2HomeRunScoreScaffold', route:'/xp/phase2/home-runs/score-scaffold', run_id:runId, mode:'ONE_BUTTON_PHASE2_HOME_RUN_SCORE_SCAFFOLD', production_mutation:'NO_PRODUCTION_TABLE_WRITES_XP_ONLY', expansion_phase:expansionPhase, time_tolerance_minutes:tol, steps_count:steps.length, steps, final_phase2_score:r };
+  } catch (err) {
+    return { ok:false, version:SYSTEM_VERSION, function_name:'handlePhase2HomeRunScoreScaffold', route:'/xp/phase2/home-runs/score-scaffold', run_id:runId, error:err?.message || String(err), steps };
+  }
+}
+
 async function runPhase2ReadinessGate(env, options = {}) {
   const runId = makeId('xp_phase2_gate');
   const expansionPhase = Number(options.expansion_phase || 2);
@@ -833,13 +986,14 @@ export default {
     if (request.method === 'OPTIONS') return textResponse('', 204);
     const url = new URL(request.url); const path = url.pathname.replace(/\/+$/, '') || '/';
     if (path === '/') return htmlResponse(CONTROL_ROOM_HTML);
-    if (path === '/health' || path === '/xp/health') return jsonResponse({ ok:true, version:SYSTEM_VERSION, worker:'alphadog-expansion-v001', route:path, function_name:'handleHealth', mode:'isolated_xp_tables_only', source_read_table:SOURCE_TABLE, writes_allowed_only_to:'xp_* tables', admin_secret_configured:Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN), embedded_control_room_token_enabled:true, control_room_served_by_worker:true, phase1_audit_lens:true, phase2_readiness_gate:true });
+    if (path === '/health' || path === '/xp/health') return jsonResponse({ ok:true, version:SYSTEM_VERSION, worker:'alphadog-expansion-v001', route:path, function_name:'handleHealth', mode:'isolated_xp_tables_only', source_read_table:SOURCE_TABLE, writes_allowed_only_to:'xp_* tables', admin_secret_configured:Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN), embedded_control_room_token_enabled:true, control_room_served_by_worker:true, phase1_audit_lens:true, phase2_readiness_gate:true, phase2_home_run_score_scaffold:true });
     if (path === '/xp/props/targets') return jsonResponse({ ok:true, version:SYSTEM_VERSION, target_stat_types:TARGET_STAT_TYPES });
     const admin = requireAdmin(request, env); if (!admin.ok) return jsonResponse({ ok:false, version:SYSTEM_VERSION, error:admin.error }, 401);
     try {
       if (path === '/xp/schema/apply' && request.method === 'POST') return jsonResponse({ ...(await applySchema(env)), auth_warning:admin.warning || null });
       if (path === '/xp/phase1/run-all' && request.method === 'POST') return jsonResponse({ ...(await runPhase1FullPipeline(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/phase2/readiness-gate' && request.method === 'POST') return jsonResponse({ ...(await runPhase2ReadinessGate(env, await parseBody(request))), auth_warning:admin.warning || null });
+      if (path === '/xp/phase2/home-runs/score-scaffold' && request.method === 'POST') return jsonResponse({ ...(await runPhase2HomeRunScoreScaffold(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/board/refresh' && request.method === 'POST') return jsonResponse({ ...(await refreshPrizePicks(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/full-refresh' && request.method === 'POST') { await applySchema(env); return jsonResponse({ ...(await refreshPrizePicks(env, await parseBody(request))), auth_warning:admin.warning || null }); }
       if (path === '/xp/board/counts') return jsonResponse(await getCounts(env));

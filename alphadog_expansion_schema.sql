@@ -231,6 +231,35 @@ CREATE TABLE IF NOT EXISTS xp_phase2_data_readiness_current (
   built_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+
+
+CREATE TABLE IF NOT EXISTS xp_phase2_score_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  team TEXT,
+  opponent TEXT,
+  line_score REAL,
+  odds_type TEXT,
+  game_id TEXT,
+  visible_side TEXT,
+  data_status TEXT,
+  readiness_status TEXT,
+  score_status TEXT,
+  internal_score_0_100 REAL,
+  internal_grade TEXT,
+  base_rate REAL,
+  line_component REAL,
+  lineup_component REAL,
+  non_standard_component REAL,
+  warning_component REAL,
+  cap_applied TEXT,
+  formula_json TEXT,
+  warning_flags TEXT,
+  score_notes TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS xp_phase1_score_current (
   xp_line_key TEXT PRIMARY KEY,
   stat_type TEXT,
