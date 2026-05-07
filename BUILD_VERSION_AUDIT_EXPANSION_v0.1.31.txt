@@ -1,0 +1,9 @@
+VERSION AUDIT
+worker.js SYSTEM_VERSION: v0.1.31 - Event Delegation Button Fix
+control room header: v0.1.31 - Event Delegation Button Fix
+embedded HTML VERSION: v0.1.31 - Event Delegation Button Fix
+wrangler.expansion.jsonc XP_SYSTEM_VERSION: v0.1.31 - Event Delegation Button Fix
+package.expansion.json version: 0.1.30
+Expansion-only filenames retained.
+No production scheduled backend mutation.
+No Main UI mutation.
