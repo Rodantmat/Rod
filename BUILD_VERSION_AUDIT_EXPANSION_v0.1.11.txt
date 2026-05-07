@@ -1,0 +1,31 @@
+AlphaDog Expansion Build Audit
+Version: v0.1.11 - Control Room Output Lens
+
+Files validated:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- wrangler.expansion.jsonc
+- package.expansion.json
+- README_EXPANSION_v0.1.11.txt
+
+Checks:
+- Flat folder only: PASS
+- Worker name remains alphadog-expansion-v001: PASS
+- D1 binding remains DB: PASS
+- XP_SYSTEM_VERSION matches worker version: PASS
+- Control room embedded version matches worker version: PASS
+- Standalone control room version matches worker version: PASS
+- Writes restricted to xp_* tables: PASS
+- Existing production scheduled backend untouched: PASS
+- Current Main UI untouched: PASS
+- No scoring logic added: PASS
+- Manual SQL remains read-only SELECT/WITH/PRAGMA only: PASS
+- Manual SQL max rows expanded to 500: PASS
+- UI output cap expanded to 120,000 chars: PASS
+- Long cell safety cap added at 8,000 chars: PASS
+- Copy Output preserves output console: PASS
+- Clear SQL preserves output console: PASS
+- Select SQL preserves output console: PASS
+- Worker JavaScript syntax check: PASS
+- package.expansion.json parse check: PASS

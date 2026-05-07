@@ -5,61 +5,47 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>AlphaDog Expansion Control Room</title>
   <style>
-    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#7c3df0; --gold:#dfa51c; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    :root { color-scheme: dark; --bg:#070b11; --panel:#050505; --line:#2a3340; --green:#59ff92; --muted:#aab0bb; --purple:#6d35d9; --gold:#c89119; --teal:#0d756e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     * { box-sizing:border-box; }
-    html { scroll-behavior:smooth; }
-    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:15px; }
-    main { width:100%; max-width:980px; margin:0 auto; padding:18px 20px 32px; }
-    h1 { color:#19ff82; margin:0; font-size:26px; line-height:1.15; letter-spacing:1px; text-transform:uppercase; font-weight:900; }
-    h2 { color:#f7f2ea; margin:0 0 12px; font-size:20px; letter-spacing:1px; text-transform:uppercase; font-weight:900; }
-    .version { color:#bff7cc; font-size:16px; line-height:1.3; margin-top:10px; font-weight:700; }
-    .top { padding-bottom:18px; border-bottom:2px solid var(--line); }
-    .section { padding:18px 0; border-bottom:2px solid var(--line); }
-    .desc { margin:0 0 10px; color:var(--green); font-size:18px; line-height:1.35; }
-    .small { color:var(--muted); font-size:15px; line-height:1.35; margin:10px 0 0; }
-    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:12px; min-height:38px; font-size:14px; line-height:1.35; }
-    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:14px; }
-    .sql-buttons { display:flex; flex-wrap:nowrap; gap:8px; margin-top:10px; }
-    button { border:0; border-radius:10px; padding:9px 9px; color:white; background:var(--purple); font-size:15px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:44px; cursor:pointer; line-height:1.15; }
+    body { margin:0; background:var(--bg); color:var(--green); font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    main { width:100%; max-width:1040px; margin:0 auto; padding:16px 12px 30px; }
+    h1 { color:#19ff82; margin:0; font-size:24px; line-height:1.12; letter-spacing:.7px; text-transform:uppercase; font-weight:900; }
+    h2 { color:#f7f2ea; margin:0 0 10px; font-size:18px; letter-spacing:.7px; text-transform:uppercase; }
+    .version { color:#bff7cc; font-size:14px; line-height:1.3; margin-top:8px; font-weight:700; }
+    .top { padding-bottom:14px; border-bottom:2px solid var(--line); }
+    .section { padding:14px 0; border-bottom:2px solid var(--line); }
+    .desc { margin:0 0 10px; color:var(--green); font-size:16px; line-height:1.35; }
+    .small { color:var(--muted); font-size:13px; line-height:1.35; margin:8px 0 0; }
+    .status { color:#f7f2ea; border:2px solid var(--line); border-radius:9px; background:#101010; padding:8px 10px; margin-top:10px; min-height:36px; font-size:13px; line-height:1.3; }
+    .button-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:12px; }
+    .sql-buttons { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:8px; }
+    button { border:0; border-radius:9px; padding:8px 7px; color:white; background:var(--purple); font-size:14px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; min-height:42px; cursor:pointer; font-weight:700; }
     button.gold { background:var(--gold); }
     button.green { background:#188336; }
     button.teal { background:var(--teal); }
-    button.full { width:100%; margin-top:14px; letter-spacing:2px; text-transform:uppercase; min-height:48px; }
+    button.full { width:100%; margin-top:10px; letter-spacing:1.6px; text-transform:uppercase; min-height:44px; }
     button:active { transform:translateY(1px); }
-    select, textarea { width:100%; border:2px solid var(--line); border-radius:10px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }
-    select { padding:10px 10px; min-height:42px; }
-    textarea { min-height:116px; max-height:180px; padding:10px; line-height:1.3; resize:vertical; }
-    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:10px; padding:12px; min-height:165px; max-height:245px; overflow:auto; font-size:14px; line-height:1.3; margin:0; }
-    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
-    .pill { border:2px solid var(--line); border-radius:10px; background:#111; color:var(--muted); padding:10px; font-size:13px; line-height:1.35; }
-    @media (min-width:700px) { .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } }
-    @media (max-width:520px) {
-      main { padding:16px 12px 28px; }
-      h1 { font-size:24px; }
-      h2 { font-size:19px; }
-      .version { font-size:15px; }
-      .desc { font-size:17px; }
-      .small { font-size:14px; }
-      button { font-size:14px; min-height:42px; border-radius:9px; padding:8px 7px; }
-      .button-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
-      .sample-row { grid-template-columns:1fr 1.1fr; gap:8px; }
-      textarea { min-height:112px; font-size:14px; }
-      pre { min-height:160px; max-height:230px; font-size:13.5px; padding:10px; }
-      button.full { min-height:46px; }
-    }
+    select, textarea { width:100%; border:2px solid var(--line); border-radius:9px; background:#101010; color:var(--green); font-family:inherit; font-size:14px; outline:none; }
+    select { padding:10px; min-height:42px; }
+    textarea { min-height:118px; max-height:260px; padding:10px; line-height:1.32; resize:vertical; }
+    pre { white-space:pre-wrap; word-break:break-word; background:var(--panel); color:var(--green); border:2px solid var(--line); border-radius:9px; padding:10px; min-height:185px; max-height:520px; overflow:auto; font-size:13.5px; line-height:1.3; margin:0; }
+    .sample-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:end; }
+    .pill { border:2px solid var(--line); border-radius:9px; background:#111; color:var(--muted); padding:9px; font-size:12.5px; line-height:1.35; }
+    @media (min-width:760px) { main { padding:18px 16px 34px; } .button-grid { grid-template-columns:repeat(6,minmax(0,1fr)); } .sample-row { grid-template-columns:1fr 180px; } pre { max-height:620px; } }
+    @media (max-width:390px) { h1 { font-size:22px; } button { font-size:13px; min-height:40px; } .button-grid, .sql-buttons { gap:7px; } pre { font-size:13px; } }
   </style>
 </head>
 <body>
   <main>
     <div class="top">
       <h1>AlphaDog Expansion Control Room</h1>
-      <div class="version">v0.1.10 - Expansion Refresh Source Qualifier Lock</div>
+      <div class="version">v0.1.11 - Control Room Output Lens</div>
       <div class="small" id="originStatus">Starting UI...</div>
       <div class="status" id="actionStatus">Ready.</div>
     </div>
 
     <section class="section">
-      <p class="desc">Fresh isolated expansion room. Writes only to xp_* tables. Current production scoring/database tables are read-only inputs.</p>
+      <p class="desc">Isolated expansion room. Reads the current PrizePicks board. Writes only to xp_* tables. Production scoring and Main UI stay untouched.</p>
       <div class="pill" id="bridgeStatus">Worker bridge loading...</div>
       <div class="button-grid">
         <button id="btnHealth">Health</button>
@@ -81,8 +67,8 @@
 
     <section class="section">
       <h2>Manual SQL</h2>
-      <p class="small">Output guard active: max 50 rows, long text cells truncated to prevent browser/app crashes.</p>
-      <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 50</textarea>
+      <p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Expanded diagnostics: up to 500 returned rows and larger output copy buffer.</p>
+      <textarea id="manualSql">SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase ASC, stat_type ASC, odds_type ASC LIMIT 100</textarea>
       <div class="sql-buttons"><button id="btnRunSql" class="gold">Run SQL</button><button id="btnClearSql">Clear SQL</button><button id="btnSelectSql">Select SQL</button></div>
     </section>
 
@@ -92,9 +78,11 @@
   <script>
     (function() {
       'use strict';
-      var VERSION = "v0.1.10 - Expansion Refresh Source Qualifier Lock";
+      var VERSION = "v0.1.11 - Control Room Output Lens";
       var HARD_CODED_WORKER_BASE = "https://alphadog-expansion-v001.rodolfoaamattos.workers.dev";
       var EMBEDDED_TOKEN = "alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73";
+      var OUTPUT_CHAR_LIMIT = 120000;
+      var DEFAULT_SQL_MAX_ROWS = 500;
       var output = document.getElementById('output');
       var outputSection = document.getElementById('outputSection');
       var originStatus = document.getElementById('originStatus');
@@ -119,14 +107,14 @@
       function safeText(value) {
         var s = String(value == null ? '' : value);
         if (s.indexOf('There isn') !== -1 && s.indexOf('GitHub Pages') !== -1) return JSON.stringify({ ok:false, connection_issue:'WRONG_ORIGIN_OR_BAD_WORKER_URL', diagnosis:'Request returned GitHub Pages 404 HTML instead of Worker JSON. The UI is working; the Worker URL/deployment/route is wrong.', worker_base:apiBase() }, null, 2);
-        if (/^\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,360), worker_base:apiBase() }, null, 2);
-        return s.length > 1800 ? s.slice(0,1800) + '\n...[truncated by control room]' : s;
+        if (/^\s*</.test(s)) return JSON.stringify({ ok:false, connection_issue:'HTML_RESPONSE_NOT_JSON', http_preview:s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,900), worker_base:apiBase() }, null, 2);
+        return s.length > OUTPUT_CHAR_LIMIT ? s.slice(0, OUTPUT_CHAR_LIMIT) + '\n...[truncated by control room output lens at ' + OUTPUT_CHAR_LIMIT + ' chars]' : s;
       }
       function show(data) { if (typeof data === 'string') output.textContent = safeText(data); else output.textContent = safeText(JSON.stringify(data, null, 2)); }
       async function callApi(path, method, body) {
         var label = actionLabel(path);
         setStatus('Running ' + label);
-        show('ACTION: ' + label.split(' / ')[0] + '\nFUNCTION: ' + label.split(' / ')[1] + '\nMETHOD: ' + method + '\nROUTE: ' + path + '\nBASE: ' + apiBase());
+        show({ action:label.split(' / ')[0], function_name:label.split(' / ')[1], route:path, method:method, version:VERSION, worker_base:apiBase(), status:'RUNNING' });
         jumpOutput();
         try {
           var opts = { method:method };
@@ -146,11 +134,21 @@
       }
       function clearSql() { document.getElementById('manualSql').value = ''; setStatus('SQL box cleared. Output preserved.'); }
       function selectSql() { var el = document.getElementById('manualSql'); el.focus(); el.select(); setStatus('SQL selected. Output preserved.'); }
-      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:50 }); }
-      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=50','GET'); }
+      function runManualSql() { callApi('/xp/manual-sql','POST',{ sql:document.getElementById('manualSql').value || '', max_rows:DEFAULT_SQL_MAX_ROWS }); }
+      function sampleProp() { callApi('/xp/board/sample?stat_type=' + encodeURIComponent(document.getElementById('sampleProp').value) + '&limit=100','GET'); }
       async function copyOutput() { try { await navigator.clipboard.writeText(output.textContent || ''); setStatus('Output copied. Output preserved.'); } catch(err) { setStatus('Copy failed. Long-press/select the output manually.'); } }
       function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); }
-      bind('btnHealth', function() { callApi('/xp/health','GET'); }); bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); }); bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); }); bind('btnCounts', function() { callApi('/xp/board/counts','GET'); }); bind('btnJobs', function() { callApi('/xp/jobs','GET'); }); bind('btnLogs', function() { callApi('/xp/logs','GET'); }); bind('btnSample', sampleProp); bind('btnRunSql', runManualSql); bind('btnClearSql', clearSql); bind('btnSelectSql', selectSql); bind('btnCopy', copyOutput);
+      bind('btnHealth', function() { callApi('/xp/health','GET'); });
+      bind('btnSchema', function() { callApi('/xp/schema/apply','POST'); });
+      bind('btnRefresh', function() { callApi('/xp/board/refresh','POST',{ include_started:false }); });
+      bind('btnCounts', function() { callApi('/xp/board/counts','GET'); });
+      bind('btnJobs', function() { callApi('/xp/jobs','GET'); });
+      bind('btnLogs', function() { callApi('/xp/logs','GET'); });
+      bind('btnSample', sampleProp);
+      bind('btnRunSql', runManualSql);
+      bind('btnClearSql', clearSql);
+      bind('btnSelectSql', selectSql);
+      bind('btnCopy', copyOutput);
       originStatus.textContent = fromGithubPages() ? 'GitHub-hosted UI detected. Using CORS-safe hardcoded Worker bridge.' : 'Worker-hosted UI detected. Using same-origin Worker routes.';
       bridgeStatus.textContent = 'API Base: ' + apiBase(); setStatus('Ready.'); show('Ready.');
     })();
