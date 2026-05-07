@@ -1,5 +1,13 @@
 {
-  "name": "alphadog-expansion-v001",
-  "version": "0.1.24",
-  "description": "AlphaDog isolated expansion worker v0.1.24"
+  "name": "prop-engine-cloudflare-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
 }

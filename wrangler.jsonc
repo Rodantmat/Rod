@@ -1,11 +1,10 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "alphadog-expansion-v001",
+  "name": "prop-ingestion-git",
   "main": "worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {
-    "XP_SYSTEM_VERSION": "v0.1.24 - Deployment File Naming Fix",
-    "XP_ALLOWED_SOURCE_TABLE": "prizepicks_current_market_context"
+    "PROMPT_BASE_URL": "https://raw.githubusercontent.com/Rodantmat/Rod/main"
   },
   "d1_databases": [
     {
