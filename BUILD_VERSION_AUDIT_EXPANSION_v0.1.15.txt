@@ -1,0 +1,16 @@
+Build Version Audit
+
+ZIP version: v0.1.15 - Phase 1 Score Audit Lens
+worker.js SYSTEM_VERSION: v0.1.15 - Phase 1 Score Audit Lens
+control room displayed version: v0.1.15 - Phase 1 Score Audit Lens
+README version: v0.1.15 - Phase 1 Score Audit Lens
+wrangler XP_SYSTEM_VERSION: v0.1.15 - Phase 1 Score Audit Lens
+
+Flat-folder delivery: yes
+Production scheduled backend touched: no
+Main UI touched: no
+Production scoring/candidate tables mutated: no
+Expansion writes limited to xp_* tables: yes
+
+Important note:
+The uploaded ZIP was labeled by the conversation as current, but the file contents were v0.1.11. This build carries forward the required bridge/context/score/audit routes into v0.1.15 in the isolated expansion worker.

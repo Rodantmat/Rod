@@ -4,7 +4,7 @@
   "main": "alphadog_expansion_worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {
-    "XP_SYSTEM_VERSION": "v0.1.14 - Phase 1 Internal Score Scaffold",
+    "XP_SYSTEM_VERSION": "v0.1.15 - Phase 1 Score Audit Lens",
     "XP_ALLOWED_SOURCE_TABLE": "prizepicks_current_market_context"
   },
   "d1_databases": [
