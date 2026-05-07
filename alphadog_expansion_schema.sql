@@ -205,6 +205,32 @@ CREATE TABLE IF NOT EXISTS xp_phase1_game_context_current (
   built_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS xp_phase2_data_readiness_current (
+  xp_line_key TEXT PRIMARY KEY,
+  stat_type TEXT,
+  player_name TEXT,
+  team TEXT,
+  opponent TEXT,
+  line_score REAL,
+  odds_type TEXT,
+  game_id TEXT,
+  bridge_match_status TEXT,
+  metric_match_status TEXT,
+  lineup_match_status TEXT,
+  starter_match_status TEXT,
+  total_pa INTEGER,
+  total_ab INTEGER,
+  total_hits INTEGER,
+  total_home_runs INTEGER,
+  home_run_rate REAL,
+  hit_rate REAL,
+  data_status TEXT,
+  readiness_status TEXT,
+  block_reason TEXT,
+  warning_flags TEXT,
+  built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS xp_phase1_score_current (
   xp_line_key TEXT PRIMARY KEY,
   stat_type TEXT,
