@@ -21,9 +21,9 @@ INSERT OR REPLACE INTO xp_prop_definitions(stat_type, prop_family, expansion_pha
 ('Hitter Fantasy Score','HITTER_FANTASY_SCORE',4,'READY_LATER','LOW','COMPOSITE','NOT_BUILT','Composite prop after components mature.',CURRENT_TIMESTAMP),
 ('Triples','TRIPLES',5,'WATCH_ONLY','LOW','PRIZEPICKS_ONLY','NOT_BUILT','Sparse event prop.',CURRENT_TIMESTAMP),
 ('Stolen Bases','STOLEN_BASES',5,'WATCH_ONLY','LOW','PRIZEPICKS_ONLY','NOT_BUILT','Needs catcher/pitcher/run environment later.',CURRENT_TIMESTAMP),
-('Hits','HITS',3,'READY_PHASE_3','MEDIUM','PRIZEPICKS_PLUS_INTERNAL_CONTEXT','NOT_BUILT','Existing production has hits logic; expansion later.',CURRENT_TIMESTAMP),
+('Hits','HITS',3,'READY_PHASE_3','MEDIUM','PRIZEPICKS_PLUS_INTERNAL_CONTEXT','NOT_BUILT','Existing production has hits logic - expansion later.',CURRENT_TIMESTAMP),
 ('Total Bases','TOTAL_BASES',3,'READY_PHASE_3','MEDIUM','PRIZEPICKS_PLUS_INTERNAL_CONTEXT','NOT_BUILT','Needs hit/power context.',CURRENT_TIMESTAMP),
-('RBIs','RBIS',3,'READY_PHASE_3','MEDIUM','PRIZEPICKS_PLUS_INTERNAL_CONTEXT','NOT_BUILT','Existing production has RBI logic; expansion later.',CURRENT_TIMESTAMP);
+('RBIs','RBIS',3,'READY_PHASE_3','MEDIUM','PRIZEPICKS_PLUS_INTERNAL_CONTEXT','NOT_BUILT','Existing production has RBI logic - expansion later.',CURRENT_TIMESTAMP);
 
 CREATE TABLE IF NOT EXISTS xp_prop_lines_current (
   xp_line_key TEXT PRIMARY KEY,

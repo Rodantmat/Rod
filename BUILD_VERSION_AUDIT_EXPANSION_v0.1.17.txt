@@ -1,0 +1,16 @@
+Build Version Audit
+
+ZIP version: v0.1.17 - Schema Semicolon Guard
+worker.js SYSTEM_VERSION: v0.1.17 - Schema Semicolon Guard
+control room displayed version: v0.1.17 - Schema Semicolon Guard
+README version: v0.1.17 - Schema Semicolon Guard
+wrangler XP_SYSTEM_VERSION: v0.1.17 - Schema Semicolon Guard
+
+Flat-folder delivery: yes
+Production scheduled backend touched: no
+Main UI touched: no
+Production scoring/candidate tables mutated: no
+Expansion writes limited to xp_* tables: yes
+
+Important note:
+v0.1.15 exposed a schema-drift failure on xp_phase1_player_metrics_current: existing deployed xp table did not have metric_team. v0.1.17 fixes this by rebuilding only isolated generated Phase 1 xp read-model tables during Build Context / Build Score. Production tables are untouched.
