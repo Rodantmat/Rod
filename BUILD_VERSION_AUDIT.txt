@@ -1,0 +1,5 @@
+ZIP: alphadog_expansion_v0.1.24_deployment_file_naming_fix.zip
+worker.js version: v0.1.24 - Deployment File Naming Fix
+control_room.html version: v0.1.24 - Deployment File Naming Fix
+wrangler.jsonc main: worker.js
+required route: /xp/phase2/home-runs/score-scaffold
