@@ -1,0 +1,19 @@
+Build: v0.1.18 - Schema Auto-Migration Pipeline Button
+Files expected:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- alphadog_expansion_schema.sql
+- wrangler.expansion.jsonc
+- package.expansion.json
+- README_EXPANSION_v0.1.18.txt
+- BUILD_VERSION_AUDIT_EXPANSION_v0.1.18.txt
+
+Version label validation:
+- Worker SYSTEM_VERSION: v0.1.18 - Schema Auto-Migration Pipeline Button
+- Embedded Control Room VERSION: v0.1.18 - Schema Auto-Migration Pipeline Button
+- README: v0.1.18 - Schema Auto-Migration Pipeline Button
+
+Safety:
+- Production tables are read-only inputs.
+- Expansion writes only xp_* tables.
+- No production candidate-board mutation.
