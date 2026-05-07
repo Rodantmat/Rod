@@ -1,0 +1,12 @@
+AlphaDog Main UI Build Version Audit
+
+ZIP target: v1.0.25 - Sleeper May-Date Auto Rescore Queue
+index.html title/header/script: v1.0.25
+worker MAIN_ALPHADOG_UI_VERSION: v1.0.25
+README: v1.0.25
+
+Patch scope checked:
+- main_alphadog_worker.js patched from uploaded Main UI base.
+- index.html patched to match worker UI version and success message.
+- No production scheduled backend/control-room files added.
+- Flat root folder preserved.
