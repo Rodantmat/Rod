@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.19 - Production Refresh Final Guard";
+const SYSTEM_VERSION = "v1.4.20 - Active Slate Odds Resolver";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2628,7 +2628,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.19 caps this wait so stale board refresh cannot trap the full pipeline.'
+        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.20 caps this wait so stale board refresh cannot trap the full pipeline.'
       };
     }
     return {
@@ -7449,11 +7449,14 @@ async function productionRefreshWatchdog(env, input = {}) {
     FROM score_candidate_board
   `).first().catch(() => ({ rows_count:0, latest_updated_at:null, max_slate_date:null }));
   let recovery_enqueue = null;
-  if (due && active.length === 0 && Number(board?.future_rows || 0) === 0) {
+  const candidateStale = board?.latest_updated_at && (!candidate?.latest_updated_at || Date.parse(String(candidate.latest_updated_at).replace(' ', 'T') + 'Z') < Date.parse(String(board.latest_updated_at).replace(' ', 'T') + 'Z'));
+  if (due && active.length === 0 && (Number(board?.future_rows || 0) === 0 || candidateStale)) {
     recovery_enqueue = await enqueueRefreshOrchestratorRows({
       job:'refresh_orchestrator_enqueue_cascade',
-      trigger:'production_refresh_watchdog_stale_board_recovery',
-      job_keys:['everyday_phase1'],
+      trigger:'production_refresh_watchdog_recovery',
+      job_keys:Number(board?.future_rows || 0) === 0
+        ? ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_afternoon','scoring_refresh']
+        : ['prizepicks_board','prizepicks_context','odds_api_afternoon','scoring_refresh'],
       slate_mode:'AUTO',
       auto_start:true,
       max_attempts:3
@@ -7471,7 +7474,7 @@ async function productionRefreshWatchdog(env, input = {}) {
     prizepicks_context:board,
     candidate_board:candidate,
     recovery_enqueue,
-    note:'Watchdog is diagnostic/recovery only: it recovers stale null-run_after queue blockers, logs board freshness, and at the 11AM/11PM PT diagnostic windows can enqueue one safe cascade if the board has no future rows and no queue is active. It does not change scoring math, routes, URLs, or UI structure.'
+    note:'Watchdog is diagnostic/recovery only: it recovers stale null-run_after queue blockers, logs board freshness, and at the 11AM/11PM PT diagnostic windows can enqueue one safe cascade if the board has no future rows or the candidate board is stale behind the active PrizePicks board. It does not change scoring math, routes, URLs, or UI structure.'
   };
   await refreshOrchestratorEvent(env, { event_type:'production_refresh_watchdog', status:result.status, message:'Production refresh watchdog checked queue and board freshness.', payload_json:result });
   return result;
@@ -7536,8 +7539,10 @@ async function compactRefreshQueueOutput(wrapped) {
     job_key: wrapped?.job_key,
     display_name: wrapped?.display_name,
     routed_job: wrapped?.routed_job,
-    result_status: result?.status || null,
+    result_status: result?.status || result?.certification?.status || null,
     result_job: result?.job || null,
+    result_error: result?.error || result?.certification?.error || null,
+    certification_grade: result?.certification?.certification_grade || null,
     partial: refreshResultIsPartial(result),
     elapsed_ms: wrapped?.elapsed_ms,
     note: result?.note || wrapped?.note || null
@@ -9725,6 +9730,82 @@ async function phase2cLatestBoardMeta(env) {
   };
 }
 
+
+async function dominantFutureBoardDateFromTable(env, tableName) {
+  const sql = tableName === 'mlb_stats'
+    ? `SELECT date(substr(start_time,1,10)) AS board_game_date, COUNT(*) AS rows_count, MIN(start_time) AS first_start_time, MAX(start_time) AS last_start_time, MAX(updated_at) AS newest_updated_at
+       FROM mlb_stats
+       WHERE start_time IS NOT NULL AND datetime(start_time) > datetime('now')
+       GROUP BY date(substr(start_time,1,10))
+       ORDER BY rows_count DESC, board_game_date ASC
+       LIMIT 1`
+    : `SELECT date(substr(start_time,1,10)) AS board_game_date, COUNT(*) AS rows_count, MIN(start_time) AS first_start_time, MAX(start_time) AS last_start_time, MAX(updated_at) AS newest_updated_at
+       FROM prizepicks_current_market_context
+       WHERE is_current=1 AND start_time IS NOT NULL AND datetime(start_time) > datetime('now')
+       GROUP BY date(substr(start_time,1,10))
+       ORDER BY rows_count DESC, board_game_date ASC
+       LIMIT 1`;
+  const row = await env.DB.prepare(sql).first().catch(() => null);
+  if (!row?.board_game_date || Number(row.rows_count || 0) <= 0) return null;
+  return {
+    board_game_date: row.board_game_date,
+    rows_count: Number(row.rows_count || 0),
+    first_start_time: row.first_start_time || null,
+    last_start_time: row.last_start_time || null,
+    newest_updated_at: row.newest_updated_at || null,
+    source_table: tableName
+  };
+}
+
+async function resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input = {}) {
+  const requested = String(requestedSlateDate || '').trim() || resolveSlateDate(input || {}).slate_date;
+  const current = await dominantFutureBoardDateFromTable(env, 'prizepicks_current_market_context');
+  if (current?.board_game_date) {
+    return {
+      requested_slate_date: requested,
+      resolved_slate_date: current.board_game_date,
+      slate_resolution_reason: current.board_game_date === requested ? 'requested_matches_active_prizepicks_future_board' : 'resolved_from_active_prizepicks_future_board',
+      active_board: current
+    };
+  }
+  const raw = await dominantFutureBoardDateFromTable(env, 'mlb_stats');
+  if (raw?.board_game_date) {
+    return {
+      requested_slate_date: requested,
+      resolved_slate_date: raw.board_game_date,
+      slate_resolution_reason: raw.board_game_date === requested ? 'requested_matches_raw_prizepicks_future_board' : 'resolved_from_raw_prizepicks_future_board',
+      active_board: raw
+    };
+  }
+  return {
+    requested_slate_date: requested,
+    resolved_slate_date: requested,
+    slate_resolution_reason: 'fallback_to_requested_no_future_prizepicks_rows',
+    active_board: null
+  };
+}
+
+async function prunePrizePicksCurrentContextToLatestBoard(env, latestUpdatedAt) {
+  if (!latestUpdatedAt) return { pruned:false, reason:'missing_latest_updated_at' };
+  const before = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM prizepicks_current_market_context`).first().catch(() => ({ rows_count:null }));
+  const res = await env.DB.prepare(`
+    DELETE FROM prizepicks_current_market_context
+    WHERE board_updated_at IS NULL
+       OR board_updated_at < datetime(?, '-10 minutes')
+       OR is_current <> 1
+  `).bind(latestUpdatedAt).run().catch(err => ({ meta:{ changes:0 }, error:String(err?.message || err) }));
+  const after = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM prizepicks_current_market_context`).first().catch(() => ({ rows_count:null }));
+  return {
+    pruned:true,
+    keep_rule:'board_updated_at >= latest_board_updated_at minus 10 minutes AND is_current=1',
+    latest_updated_at:latestUpdatedAt,
+    deleted_rows:Number(res?.meta?.changes || 0),
+    before_rows:before?.rows_count == null ? null : Number(before.rows_count || 0),
+    after_rows:after?.rows_count == null ? null : Number(after.rows_count || 0),
+    error:res?.error || null
+  };
+}
+
 async function cleanupPrizePicksBoardSourceHistory(env, latestUpdatedAt) {
   if (!latestUpdatedAt) return { cleaned:false, reason:'missing_latest_updated_at' };
   const before = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM mlb_stats`).first().catch(() => ({ rows_count:null }));
@@ -9868,6 +9949,9 @@ async function scrapePhase2cMarketContext(input = {}, env) {
     SET processed_rows=?, remaining_rows=?, chunk_size=?, status=?, updated_at=CURRENT_TIMESTAMP, completed_at=CASE WHEN ?='completed' THEN CURRENT_TIMESTAMP ELSE completed_at END
     WHERE run_id=?
   `).bind(processedRows, remainingRows, chunkSize, status, status, run.run_id).run();
+  const active_context_prune = status === 'completed'
+    ? await prunePrizePicksCurrentContextToLatestBoard(env, boardMeta.latestUpdatedAt).catch(err => ({ pruned:false, error:String(err?.message || err) }))
+    : { pruned:false, reason:'run_not_completed' };
   if (fallbackRows > 0) warnings.push(`${fallbackRows} rows used fallback_composite identity because line_id was missing.`);
   if (rows.length === 0 && remainingRows > 0) warnings.push("Chunk returned zero rows before run completion. Review latest board window ordering/offset.");
   const statCounts = await env.DB.prepare(`
@@ -9913,6 +9997,7 @@ async function scrapePhase2cMarketContext(input = {}, env) {
       total_rows: boardMeta.totalRows
     },
     raw_board_cleanup,
+    active_context_prune,
     chunk: {
       chunk_size: chunkSize,
       offset_started_at: offset,
@@ -12442,7 +12527,7 @@ async function normalizeAndSavePropOddsToTable(env, tableName, runId, slateDate,
   for (let i=0;i<stmts.length;i+=40) await env.DB.batch(stmts.slice(i,i+40));
   return { prop_rows:propRows, market_counts:marketCounts };
 }
-async function certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResultOk, selectedCount) {
+async function certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResultOk, selectedCount, diagnostics = {}) {
   const ev = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM odds_api_events_temp WHERE run_id=?`).bind(runId).first();
   const gm = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM odds_api_game_markets_temp WHERE run_id=?`).bind(runId).first();
   const pp = await env.DB.prepare(`SELECT prop_family, COUNT(*) AS rows_count FROM odds_api_player_props_temp WHERE run_id=? GROUP BY prop_family`).bind(runId).all();
@@ -12456,12 +12541,12 @@ async function certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResu
   if (!gameResultOk) failures.push('GAME_ODDS_REQUEST_FAILED');
   if (Number(ev?.rows_count || 0) <= 0) failures.push('NO_TEMP_EVENTS');
   if (Number(gm?.rows_count || 0) <= 0) failures.push('NO_TEMP_GAME_MARKETS');
-  if (selectedCount <= 0) failures.push('NO_SELECTED_EVENTS');
+  if (selectedCount <= 0) failures.push(diagnostics?.zero_selected_reason || 'NO_SELECTED_EVENTS');
   if (hitsRows <= 0) failures.push('NO_HITS_ROWS');
   if (tbRows <= 0) failures.push('NO_TOTAL_BASES_ROWS');
   const passed = failures.length === 0;
   const grade = passed ? (rbiRows > 0 ? 'A' : 'B_RBI_MARKET_LOW_OR_EMPTY_ALLOWED') : 'FAIL';
-  await env.DB.prepare(`INSERT INTO odds_api_run_certifications (run_id,slate_date,window_name,status,certification_grade,selected_events,game_events,game_market_rows,prop_rows,hits_rows,rbi_rows,total_bases_rows,error,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(run_id) DO UPDATE SET status=excluded.status,certification_grade=excluded.certification_grade,selected_events=excluded.selected_events,game_events=excluded.game_events,game_market_rows=excluded.game_market_rows,prop_rows=excluded.prop_rows,hits_rows=excluded.hits_rows,rbi_rows=excluded.rbi_rows,total_bases_rows=excluded.total_bases_rows,error=excluded.error,details_json=excluded.details_json`).bind(runId,slateDate,windowName,passed?'CERTIFIED':'FAILED',grade,selectedCount,Number(ev?.rows_count || 0),Number(gm?.rows_count || 0),propRows,hitsRows,rbiRows,tbRows,failures.join('|') || null,JSON.stringify({ failures, prop_family_counts:propCounts, rbi_policy:'RBI rows are useful but not fatal; low coverage is allowed and handled later by Gemini/other sources.' })).run();
+  await env.DB.prepare(`INSERT INTO odds_api_run_certifications (run_id,slate_date,window_name,status,certification_grade,selected_events,game_events,game_market_rows,prop_rows,hits_rows,rbi_rows,total_bases_rows,error,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(run_id) DO UPDATE SET status=excluded.status,certification_grade=excluded.certification_grade,selected_events=excluded.selected_events,game_events=excluded.game_events,game_market_rows=excluded.game_market_rows,prop_rows=excluded.prop_rows,hits_rows=excluded.hits_rows,rbi_rows=excluded.rbi_rows,total_bases_rows=excluded.total_bases_rows,error=excluded.error,details_json=excluded.details_json`).bind(runId,slateDate,windowName,passed?'CERTIFIED':'FAILED',grade,selectedCount,Number(ev?.rows_count || 0),Number(gm?.rows_count || 0),propRows,hitsRows,rbiRows,tbRows,failures.join('|') || null,JSON.stringify({ failures, prop_family_counts:propCounts, diagnostics, rbi_policy:'RBI rows are useful but not fatal; low coverage is allowed and handled later by Gemini/other sources.' })).run();
   return { ok:passed, status:passed?'CERTIFIED':'FAILED', grade, failures, game_events:Number(ev?.rows_count || 0), game_market_rows:Number(gm?.rows_count || 0), prop_rows:propRows, hits_rows:hitsRows, rbi_rows:rbiRows, total_bases_rows:tbRows, prop_family_counts:propCounts };
 }
 async function promoteOddsApiTempRun(env, runId, slateDate, windowName) {
@@ -12513,9 +12598,11 @@ async function runOddsApiMarketIntel(input, env) {
     odds_api_binding: oddsApiBindingStatus(env),
     note:'Odds API key resolver checked all accepted binding names. Health and job execution now use the same resolver.'
   };
-  const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
-  const windowName = String(input.window_name || 'MORNING').toUpperCase();
+  const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   await ensureOddsApiTables(env);
+  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
+  const slateDate = slateResolution.resolved_slate_date;
+  const windowName = String(input.window_name || 'MORNING').toUpperCase();
   const runId = oddsRunId(slateDate, windowName);
   await cleanOddsApiTempRun(env, runId).catch(() => null);
   const cfg = oddsApiConfig(env);
@@ -12557,7 +12644,18 @@ async function runOddsApiMarketIntel(input, env) {
     if (rbi.ok) propRequestBreakdown.rbi_expansion_ok += 1; else propRequestBreakdown.rbi_expansion_failed += 1;
     eventResults.push({ event_id:ev.id, home_team:ev.home_team, away_team:ev.away_team, commence_time:ev.commence_time, pt:oddsEventWindow(ev.commence_time).pt, requests:[hitsTb, rbi] });
   }
-  const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResult.ok, selected.length);
+  const zeroSelectedReason = selected.length <= 0 && allEvents.length > 0 && Number(skippedCounts.SKIPPED_OTHER_DATE || 0) > 0
+    ? 'SELECTED_EVENTS_ZERO_DUE_TO_SLATE_MISMATCH'
+    : 'NO_SELECTED_EVENTS';
+  const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResult.ok, selected.length, {
+    requested_slate_date: requestedSlateDate,
+    resolved_slate_date: slateDate,
+    slate_resolution_reason: slateResolution.slate_resolution_reason,
+    active_board: slateResolution.active_board,
+    zero_selected_reason: zeroSelectedReason,
+    skipped_counts: skippedCounts,
+    game_event_count: allEvents.length
+  });
   let promotion = { promoted:false, reason:'certification_failed' };
   let cleanup = { cleaned:false, reason:'not_promoted' };
   if (certification.ok) {
@@ -12577,6 +12675,9 @@ async function runOddsApiMarketIntel(input, env) {
     version:SYSTEM_VERSION,
     job:input.job || 'run_odds_api_market_intel',
     slate_date:slateDate,
+    requested_slate_date:requestedSlateDate,
+    resolved_odds_slate_date:slateDate,
+    slate_resolution,
     window_name:windowName,
     run_id:runId,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',

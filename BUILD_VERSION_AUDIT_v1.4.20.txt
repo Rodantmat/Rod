@@ -1,0 +1,9 @@
+AlphaDog/OXYGEN-COBALT Build Version Audit
+VERSION: v1.4.20 - Active Slate Odds Resolver
+ZIP: alphadog_v1.4.20_active_slate_odds_resolver.zip
+worker.js: v1.4.20 - Active Slate Odds Resolver
+control_room.html: v1.4.20 - Active Slate Odds Resolver
+README: README_v1.4.20.txt
+wrangler.jsonc: unchanged production worker/config structure
+package.json: unchanged
+Scope: surgical production scheduled-backend fix only; no Main UI, no expansion worker, no scoring math changes.
