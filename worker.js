@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.27 - Scoring Lock Wait Queue Fix";
+const SYSTEM_VERSION = "v1.4.28 - Schedule Cascade Zero Work Return";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7425,10 +7425,10 @@ function scoringRequestIsBackendOwned(input) {
 
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await ensureRefreshOrchestratorTables(env);
-  // v1.4.26: Schedule buttons must never execute a long refresh inside the browser request.
-  // First clean stale locks/queue blockers, then enqueue fast. Minute cron owns execution.
-  const enqueue_reaper = await volatileOverwritePreflight(env, (input && input.slate_date) || null, { releaseScoringLock:true, reason:'enqueue_preflight_lock_reaper' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
-  await recoverStaleRefreshQueueRows(env, { trigger:'enqueue_preflight_stale_queue_reaper', reason:'before_new_enqueue' }).catch(() => null);
+  // v1.4.28: Schedule buttons must do ZERO heavy work inside the browser request.
+  // No purge, no scoring lock mutation, no temp cleanup, no auto tick here.
+  // Heavy cleanup/reaping belongs to minute-cron ticks and job preflight only.
+  const enqueue_reaper = { ok:true, skipped:true, reason:'zero_work_enqueue_fast_return' };
   const slate = resolveSlateDate(input || {});
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const requestedSet = new Set(requested);
@@ -7455,9 +7455,8 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   ));
   await env.DB.batch(stmts);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'enqueue', status:'pending', message:`${selected.length} refresh job(s) enqueued`, payload_json:{ mode, selected_job_keys:selected.map(j => j.job_key), slate } });
-  const autoStartRequested = input?.auto_start === true || input?.force_auto_start === true;
-  const tick = autoStartRequested ? await runRefreshOrchestratorTick({ ...(input || {}), job:'refresh_orchestrator_tick', trigger:'enqueue_auto_start_explicit', max_ms:12000 }, env).catch(e => ({ ok:false, data_ok:false, error:String(e?.message||e), status:'auto_start_error' })) : null;
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. Do not keep the browser request open for long refresh work.', note:'v1.4.26 fast-return enqueue: Schedule Cascade only writes queue rows and returns. Long refresh/scoring execution is backend-owned by minute cron to avoid iPhone/Safari Load failed timeouts.' };
+  const tick = null;
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. This endpoint only enqueues and returns.', note:'v1.4.28 zero-work enqueue: Schedule Cascade only verifies tables, inserts queue rows, writes one event, and returns. No purge, no lock reaper, no scoring, no temp cleanup, and no auto tick runs inside the browser request.' };
 }
 
 function isOptionalRefreshDependency(row) {

@@ -1,0 +1,2 @@
+Version verified: v1.4.28 - Schedule Cascade Zero Work Return
+worker.js SYSTEM_VERSION updated. control_room.html version updated. Enqueue path is zero-work.
