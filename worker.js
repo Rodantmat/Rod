@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.26 - Queue Fast Return Lock Reaper";
+const SYSTEM_VERSION = "v1.4.27 - Scoring Lock Wait Queue Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7607,6 +7607,12 @@ function isPrizePicksBoardWaitingResult(result) {
   return status.includes('github_workflow_dispatched_waiting_for_board_update') || status.includes('waiting_for_board_update');
 }
 
+function isScoringLockWaitResult(row, result) {
+  if (String(row?.job_key || '') !== 'scoring_refresh') return false;
+  const status = String(result?.status || result?.result_status || result?.error || '').toUpperCase();
+  return status === 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK' || status === 'LOCKED_SKIP_SCORING_ALREADY_RUNNING';
+}
+
 async function prizePicksBoardFreshnessGate(env, row) {
   const anchor = row?.started_at || row?.updated_at || row?.created_at || null;
   const meta = await env.DB.prepare(`
@@ -7697,6 +7703,11 @@ async function runRefreshOrchestratorTick(input, env) {
       const wrapped = { ok:result?.ok !== false, data_ok:result?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, display_name:row.display_name, routed_job:row.job_name, result, elapsed_ms:Date.now()-started };
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:result?.status || (result?.ok === false ? 'failed' : 'pass'), partial:refreshResultIsPartial(result) });
+      if (isScoringLockWaitResult(row, result)) {
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
+        await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'scoring_lock_wait', status:'pending', message:'Scoring lock wait preserved without completing or burning retries.', payload_json:wrapped });
+        break;
+      }
       if (result?.ok === false || result?.data_ok === false) {
         const attempts = Number(row.attempt_count || 0) + 1;
         const terminal = isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
@@ -14678,7 +14689,7 @@ async function runFullScoringRefreshV1(input, env) {
     lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
   }
   if (!lock.acquired) {
-    return { ok: true, data_ok: true, partial: true, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Scoring lock is active. This is not a failed scoring run. The orchestrator will keep this row running and retry next minute; stale locks are reaped automatically.' };
+    return { ok: true, data_ok: false, partial: true, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Scoring lock is active. This is not a failed scoring run and must not be marked completed. The orchestrator keeps this row pending and retries next minute without burning retries.' };
   }
   try {
     const scoring = await runMlbScoringV1({ ...(input || {}), job: 'run_mlb_scoring_v1', slate_date: requestedSlateDate, slate_mode: slate.slate_mode, trigger }, env);

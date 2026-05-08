@@ -1,0 +1,4 @@
+Version audit: v1.4.27 - Scoring Lock Wait Queue Fix
+worker.js SYSTEM_VERSION matches delivery label.
+control_room.html label updated.
+Flat ZIP delivery.
