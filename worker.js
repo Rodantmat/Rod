@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.23 - Goblin Demon Pickability Bridge";
+const SYSTEM_VERSION = "v1.4.24 - Pickability Loader Hardening";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -14613,10 +14613,26 @@ async function runFullScoringRefreshV1(input, env) {
     let candidate_board = { ok: false, data_ok: false, status: 'skipped_scoring_not_data_ok' };
     let export_board = { ok: false, data_ok: false, status: 'skipped_candidate_board_not_data_ok' };
     if (scoring && scoring.ok && scoring.data_ok) {
-      candidate_board = await buildMlbScoreCandidateBoardV1({ ...(input || {}), job: 'build_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_candidate_board` }, env);
-      if (candidate_board && candidate_board.ok) export_board = await exportMlbScoreCandidateBoardV1({ ...(input || {}), job: 'export_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_export` }, env);
+      try {
+        candidate_board = await buildMlbScoreCandidateBoardV1({ ...(input || {}), job: 'build_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_candidate_board` }, env);
+      } catch (e) {
+        candidate_board = { ok:false, data_ok:false, status:'candidate_board_exception', error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1400) };
+      }
+      if (candidate_board && candidate_board.ok) {
+        try {
+          export_board = await exportMlbScoreCandidateBoardV1({ ...(input || {}), job: 'export_mlb_score_candidate_board_v1', slate_date: selectedSlateDate, slate_mode: slate.slate_mode, trigger: `${trigger}_export` }, env);
+        } catch (e) {
+          export_board = { ok:false, data_ok:false, status:'export_candidate_board_exception', error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1400) };
+        }
+      }
     }
-    return { ok: true, data_ok: !!(scoring?.data_ok && candidate_board?.data_ok), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_stored_data_plus_rbi_gemini_over75_signal_compact_output', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null } : candidateBoardSummary(export_board), lock_status: 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then Build/Inspect/Export Candidate Board.', note: 'Full scoring refresh uses compact output only. Full row details remain in the DB/read models.' };
+    const scoringOk=!!(scoring?.ok && scoring?.data_ok);
+    const candidateOk=!!(candidate_board?.ok && candidate_board?.data_ok);
+    const failure_stage=!scoringOk?'scoring':(!candidateOk?'candidate_board':null);
+    const failure_error=String(scoring?.error||candidate_board?.error||export_board?.error||'');
+    return { ok: true, data_ok: !!(scoringOk && candidateOk), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_stored_data_plus_rbi_gemini_over75_signal_compact_output', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring_ok: scoringOk, candidate_board_ok: candidateOk, failure_stage, failure_error: failure_error || null, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null, error: export_board.error || null, status: export_board.status || null } : candidateBoardSummary(export_board), lock_status: 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then Build/Inspect/Export Candidate Board.', note: failure_stage ? `Full scoring refresh did not pass at ${failure_stage}: ${failure_error || 'no detailed error returned'}` : 'Full scoring refresh uses compact output only. Full row details remain in the DB/read models.' };
+  } catch (e) {
+    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:'RELEASED', note:'v1.4.24 exposes the real scoring refresh exception instead of allowing the orchestrator to report generic refresh_job_failed.' };
   } finally {
     await releasePipelineLock(env, lockId, lockedBy);
   }
@@ -14692,22 +14708,26 @@ async function loadPickabilityContext(env, slateDate){
     const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prizepicks_current_market_context'").first();
     if(exists){
       ctx.source_tables.prizepicks_current_market_context=true;
+      // v1.4.24: do not depend on SQLite datetime parsing for ISO strings with offsets
+      // and do not require PrizePicks slate_date to equal the scoring slate. PrizePicks
+      // can roll slate_date to tomorrow while the game start_time is still today's
+      // pickable slate. Load current active rows broadly, then apply pickability in JS.
       const res=await env.DB.prepare(`
         SELECT projection_key,line_id,player_name,team,opponent,stat_type,line_score,odds_type,is_promo,start_time,slate_date,board_updated_at,source_confidence,identity_method,is_supported_single,status
         FROM prizepicks_current_market_context
         WHERE status='ACTIVE'
           AND COALESCE(is_current,1)=1
           AND COALESCE(is_stale,0)=0
-          AND (
-            slate_date=?
-            OR date(substr(COALESCE(start_time,''),1,10))=date(?)
-            OR datetime(start_time)>datetime('now')
-          )
-      `).bind(slateDate,slateDate).all();
+        ORDER BY COALESCE(updated_at, created_at, board_updated_at) DESC
+        LIMIT 20000
+      `).all();
       const raw=res.results||[];
-      ctx.prizepicks_rows=raw.filter(r=>isBoardRowStillPickableByStartTime(r.start_time));
+      ctx.prizepicks_rows=raw.filter(r=>isBoardRowStillPickableForSlate(r.start_time, slateDate));
       ctx.expired_or_started.prizepicks=raw.length-ctx.prizepicks_rows.length;
-      ctx.prizepicks_context_policy='ACTIVE_FUTURE_ROWS_PLUS_SCORING_SLATE_DATE_BRIDGE';
+      ctx.prizepicks_context_policy='ACTIVE_CURRENT_ROWS_JS_START_TIME_AND_SLATE_BRIDGE_NO_SQL_DATETIME_DEPENDENCY';
+      ctx.prizepicks_loaded_raw_count=raw.length;
+      ctx.prizepicks_loaded_pickable_count=ctx.prizepicks_rows.length;
+      if(raw.length && !ctx.prizepicks_rows.length) ctx.warnings.push('prizepicks_rows_loaded_but_all_failed_js_pickability_time_filter');
     } else ctx.warnings.push('missing_prizepicks_current_market_context');
   }catch(e){ctx.warnings.push('prizepicks_context_load_failed:'+String(e&&e.message||e));}
   try{
@@ -14733,6 +14753,19 @@ function isBoardRowStillPickableByStartTime(startTime){
   const t=Date.parse(String(startTime));
   if(!Number.isFinite(t))return true;
   return t-Date.now()>15*60*1000;
+}
+function isBoardRowStillPickableForSlate(startTime, slateDate){
+  if(!startTime)return true;
+  const raw=String(startTime);
+  const t=Date.parse(raw);
+  if(Number.isFinite(t)){
+    if(t-Date.now()>15*60*1000)return true;
+  }
+  // Fallback for D1/JS timezone edge cases: if the ISO date part equals the active
+  // scoring slate and the time parser was unavailable/ambiguous, keep it eligible.
+  const datePart=raw.slice(0,10);
+  if(datePart && String(slateDate||'').slice(0,10)===datePart && !Number.isFinite(t))return true;
+  return false;
 }
 function slateRolloverGuardSummary(activeSlate, rows){
   const bySlate={};
@@ -14872,7 +14905,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.23 keeps idempotent candidate-board publishing and fixes the PrizePicks pickability bridge: active future PrizePicks rows can validate the active scoring slate even when PrizePicks slate_date has rolled forward, and goblin/demon rows unlock OVER/MORE only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.24 keeps idempotent candidate-board publishing and hardens the PrizePicks pickability loader: active current PrizePicks rows are loaded without SQLite datetime dependence, then JS start-time/slate filtering validates goblin/demon More-side availability. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();

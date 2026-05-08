@@ -1,0 +1,15 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.24 - Pickability Loader Hardening
+ZIP: alphadog_v1.4.24_pickability_loader_hardening.zip
+worker.js: v1.4.24 - Pickability Loader Hardening
+control_room.html: v1.4.24 - Pickability Loader Hardening
+README: README_v1.4.24.txt
+PATCH TYPE: surgical production scheduled-backend patch
+FLAT ZIP: yes
+SUBDIRECTORIES: none
+
+Validation performed before delivery:
+- worker.js syntax check passed with node --check.
+- Version labels aligned across worker.js, control_room.html, README, audit file, ZIP filename, and final response.
+- No Main UI file included or changed.
+- No expansion files included.
