@@ -1,0 +1,7 @@
+AlphaDog Build Version Audit
+ZIP/version target: v1.4.32 - Queue Stale Killer Safe Publish
+worker.js SYSTEM_VERSION: v1.4.32 - Queue Stale Killer Safe Publish
+control_room.html visible version text: v1.4.32 - Queue Stale Killer Safe Publish
+README: README_v1.4.32.txt
+Flat folder: yes
+Subdirectories: no
