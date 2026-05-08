@@ -1,0 +1,12 @@
+BUILD VERSION AUDIT
+Version: v1.4.33 - Volatile Audit Clamp Final
+worker.js SYSTEM_VERSION: v1.4.33 - Volatile Audit Clamp Final
+control_room.html label: v1.4.33
+README: README_v1.4.33.txt
+Build package: alphadog_v1.4.33_volatile_audit_clamp_final.zip
+
+Validation performed:
+- worker.js syntax parses with node --check
+- version labels synchronized
+- no subdirectories
+- includes worker.js, control_room.html, wrangler.jsonc, package.json, README, build audit
