@@ -1,0 +1,15 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.22 - Candidate Board Idempotent Publish Fix
+ZIP: alphadog_v1.4.22_candidate_board_idempotent_publish_fix.zip
+worker.js: v1.4.22 - Candidate Board Idempotent Publish Fix
+control_room.html: v1.4.22 - Candidate Board Idempotent Publish Fix
+README: README_v1.4.22.txt
+wrangler.jsonc: unchanged
+package.json: unchanged
+
+Surgical fixes only:
+- Odds API slate_resolution ReferenceError fixed.
+- GitHub dispatch secret alias resolver added and wired into health + PrizePicks board refresh.
+- Existing URL/path/worker structure preserved.
+
+- Candidate board idempotent publish fix added. Duplicate candidate_key rows now upsert instead of crashing scoring_refresh.

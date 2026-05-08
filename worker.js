@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.21 - Dispatch Alias Slate Fix";
+const SYSTEM_VERSION = "v1.4.22 - Candidate Board Idempotent Publish Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2729,7 +2729,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.21 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
+        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.22 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
       };
     }
     return {
@@ -14829,12 +14829,36 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     const riskNotes={caps,penalties,blocks,risks,book_count:bookCount,freshness_policy:audit.freshness_policy||'AUDIT_ONLY_NO_SCORE_EFFECT',odds_age_seconds:audit.odds_age_seconds??null,derived_modifier_total:audit.derived_modifier_total??null,base_score:audit.base_score??null,pickability_gate:{required:true,...pickability}};
     const displayRank=status==='DEFERRED_UNPICKABLE'?null:rank;
     const key=[slateDate,r.prop_family,r.player_name,r.line_direction,r.line_number,r.line_type].map(x=>String(x??'').replace(/\|/g,'_')).join('|');
-    inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
+    inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(candidate_key) DO UPDATE SET
+      score_id=excluded.score_id,
+      run_id=excluded.run_id,
+      sport=excluded.sport,
+      slate_date=excluded.slate_date,
+      player_name=excluded.player_name,
+      normalized_player_name=excluded.normalized_player_name,
+      team=excluded.team,
+      opponent=excluded.opponent,
+      prop_family=excluded.prop_family,
+      line_type=excluded.line_type,
+      line_number=excluded.line_number,
+      line_direction=excluded.line_direction,
+      no_vig_prob=excluded.no_vig_prob,
+      final_score=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.final_score ELSE score_candidate_board.final_score END,
+      confidence_grade=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.confidence_grade ELSE score_candidate_board.confidence_grade END,
+      recommendation_status=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.recommendation_status ELSE score_candidate_board.recommendation_status END,
+      market_confidence=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.market_confidence ELSE score_candidate_board.market_confidence END,
+      candidate_status=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.candidate_status ELSE score_candidate_board.candidate_status END,
+      candidate_rank=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.candidate_rank ELSE score_candidate_board.candidate_rank END,
+      risk_notes=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.risk_notes ELSE score_candidate_board.risk_notes END,
+      audit_payload=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.audit_payload ELSE score_candidate_board.audit_payload END,
+      model_version=excluded.model_version,
+      updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
     if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:r.line_number,line_type:r.line_type,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.3.50 replaces only the selected slate in score_candidate_board. Prior slate rows are allowed during MLB/PrizePicks rollover windows; release/export is filtered by selected slate, exact pickability, and start-time gate. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.22 idempotently publishes score_candidate_board rows and replaces only the selected slate in score_candidate_board. Prior slate rows are allowed during MLB/PrizePicks rollover windows; release/export is filtered by selected slate, exact pickability, and start-time gate. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
