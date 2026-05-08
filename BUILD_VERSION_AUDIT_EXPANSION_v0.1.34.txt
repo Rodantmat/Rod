@@ -1,0 +1,10 @@
+Build: v0.1.34 - Expansion Game Bridge Context Lock
+Files expected:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- wrangler.expansion.jsonc
+- package.expansion.json
+- README_EXPANSION_v0.1.34.txt
+
+Version labels match v0.1.34.
+Scope: expansion only, xp_* writes only, no production scoring mutation, no Main UI mutation.

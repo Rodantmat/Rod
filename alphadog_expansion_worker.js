@@ -1,4 +1,4 @@
-const SYSTEM_VERSION = 'v0.1.33 - Embedded HTML Script Escape Fix';
+const SYSTEM_VERSION = 'v0.1.34 - Expansion Game Bridge Context Lock';
 const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
@@ -14,9 +14,9 @@ const CONTROL_ROOM_HTML = String.raw`<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#070b11;--panel:#050505;--line:#2a3340;--green:#59ff92;--muted:#aab0bb;--purple:#6d35d9;--gold:#c89119;--teal:#0d756e;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--green);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}main{width:100%;max-width:1060px;margin:0 auto;padding:16px 12px 30px}h1{color:#19ff82;margin:0;font-size:24px;line-height:1.12;letter-spacing:.7px;text-transform:uppercase;font-weight:900}h2{color:#f7f2ea;margin:0 0 10px;font-size:18px;letter-spacing:.7px;text-transform:uppercase}.version{color:#bff7cc;font-size:14px;line-height:1.3;margin-top:8px;font-weight:700}.top,.section{padding-bottom:14px;border-bottom:2px solid var(--line)}.section{padding:14px 0}.desc{margin:0 0 10px;color:var(--green);font-size:16px;line-height:1.35}.small{color:var(--muted);font-size:13px;line-height:1.35;margin:8px 0 0}.status{color:#f7f2ea;border:2px solid var(--line);border-radius:9px;background:#101010;padding:8px 10px;margin-top:10px;min-height:36px;font-size:13px;line-height:1.3}.button-grid,.sql-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}button{border:0;border-radius:9px;padding:8px 7px;color:white;background:var(--purple);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:42px;cursor:pointer;font-weight:800;touch-action:manipulation;-webkit-tap-highlight-color:transparent}button.gold{background:var(--gold)}button.green{background:#188336}button.teal{background:var(--teal)}button.full{width:100%;margin-top:10px;letter-spacing:1.6px;text-transform:uppercase;min-height:44px}button:active{transform:translateY(1px)}select,textarea{width:100%;border:2px solid var(--line);border-radius:9px;background:#101010;color:var(--green);font-family:inherit;font-size:14px;outline:none}select{padding:10px;min-height:42px}textarea{min-height:118px;max-height:260px;padding:10px;line-height:1.32;resize:vertical}pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);color:var(--green);border:2px solid var(--line);border-radius:9px;padding:10px;min-height:185px;max-height:620px;overflow:auto;font-size:13.5px;line-height:1.3;margin:0}.sample-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.pill{border:2px solid var(--line);border-radius:9px;background:#111;color:var(--muted);padding:9px;font-size:12.5px;line-height:1.35}@media(min-width:760px){main{padding:18px 16px 34px}.button-grid{grid-template-columns:repeat(6,minmax(0,1fr))}.sample-row{grid-template-columns:1fr 180px}.sql-buttons{grid-template-columns:repeat(6,minmax(0,1fr))}}@media(max-width:390px){h1{font-size:22px}button{font-size:13px;min-height:40px}.button-grid,.sql-buttons{gap:7px}pre{font-size:13px}}
 </style></head><body><main>
-<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.33 - Embedded HTML Script Escape Fix</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
+<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.34 - Expansion Game Bridge Context Lock</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
 <section class="section"><p class="desc">Isolated expansion room. Reads prepared production data, writes only xp_* tables. Production scoring and Main UI stay untouched.</p><div class="pill" id="bridgeStatus">Worker bridge loading...</div><div class="button-grid"><button type="button" data-xp-action="self-test">Button Self Test</button><button type="button" data-xp-action="health">Health</button><button type="button" data-xp-action="auth-check">Auth Check</button><button type="button" class="gold" data-xp-action="schema">Apply Schema</button><button type="button" data-xp-action="refresh-board">Refresh Board</button><button type="button" data-xp-action="board-counts">Board Counts</button><button type="button" data-xp-action="jobs">Jobs</button><button type="button" data-xp-action="logs">Logs</button></div></section>
-<section class="section"><h2>Phase 1 Pipeline</h2><p class="small">Use RUN PHASE 1 FULL PIPELINE for normal work. It auto-applies schema, refreshes board, builds bridge, builds context, builds score, and returns audit flags.</p><button type="button" class="full green" data-xp-action="phase1-run-all">RUN PHASE 1 FULL PIPELINE</button><div class="button-grid"><button type="button" class="teal" data-xp-action="bridge-build">Build Bridge</button><button type="button" data-xp-action="bridge-counts">Bridge Counts</button><button type="button" data-xp-action="bridge-unmatched">Unmatched</button><button type="button" class="teal" data-xp-action="context-build">Build Context</button><button type="button" data-xp-action="context-counts">Context Counts</button><button type="button" data-xp-action="context-completeness">Completeness</button><button type="button" class="green" data-xp-action="score-build">Build Score</button><button type="button" data-xp-action="score-counts">Score Counts</button><button type="button" class="gold" data-xp-action="score-audit">Score Audit</button><button type="button" data-xp-action="score-sample">Score Sample</button><button type="button" data-xp-action="context-sample">Context Sample</button></div></section>
+<section class="section"><h2>Phase 1 Pipeline</h2><p class="small">Use RUN PHASE 1 FULL PIPELINE for normal work. It auto-applies schema, refreshes board, builds bridge, builds context, builds score, and returns audit flags.</p><button type="button" class="full green" data-xp-action="phase1-run-all">RUN PHASE 1 FULL PIPELINE</button><div class="button-grid"><button type="button" class="full gold" data-xp-action="bridge-context-lock">RUN BRIDGE CONTEXT LOCK</button><button type="button" class="teal" data-xp-action="bridge-build">Build Bridge</button><button type="button" data-xp-action="bridge-counts">Bridge Counts</button><button type="button" data-xp-action="bridge-unmatched">Unmatched</button><button type="button" data-xp-action="bridge-audit">Bridge Audit</button><button type="button" class="teal" data-xp-action="context-build">Build Context</button><button type="button" data-xp-action="context-counts">Context Counts</button><button type="button" data-xp-action="context-completeness">Completeness</button><button type="button" class="green" data-xp-action="score-build">Build Score</button><button type="button" data-xp-action="score-counts">Score Counts</button><button type="button" class="gold" data-xp-action="score-audit">Score Audit</button><button type="button" data-xp-action="score-sample">Score Sample</button><button type="button" data-xp-action="context-sample">Context Sample</button></div></section>
 <section class="section"><h2>Phase 2 Gate</h2><p class="small">Readiness gate for Singles, Doubles, and Home Runs. Home Runs can run a basic internal score scaffold. Singles and Doubles stay blocked until native component metrics exist.</p><button type="button" class="full gold" data-xp-action="phase2-readiness">RUN PHASE 2 READINESS GATE</button><button type="button" class="full green" data-xp-action="phase2-hr-score">RUN PHASE 2 HOME RUN SCORE SCAFFOLD</button></section>
 <section class="section"><h2>Sample Prop</h2><div class="sample-row"><select id="sampleProp"><option>Hitter Strikeouts</option><option>Walks</option><option>Singles</option><option>Doubles</option><option>Home Runs</option><option>Runs</option><option>Hits+Runs+RBIs</option><option>Hitter Fantasy Score</option><option>Triples</option><option>Stolen Bases</option><option>Hits</option><option>Total Bases</option><option>RBIs</option></select><button type="button" data-xp-action="sample-prop">Load Sample</button></div></section>
 <section class="section"><h2>Manual SQL</h2><p class="small">Read-only guard active. Supports SELECT, WITH, and PRAGMA. Up to 500 returned rows and larger output copy buffer.</p><textarea id="manualSql">SELECT stat_type, odds_type, score_status, internal_grade, COUNT(*) AS rows_count, MIN(internal_score_0_100) AS min_score, MAX(internal_score_0_100) AS max_score, AVG(internal_score_0_100) AS avg_score FROM xp_phase1_score_current GROUP BY stat_type, odds_type, score_status, internal_grade ORDER BY stat_type, odds_type, max_score DESC LIMIT 100</textarea><div class="sql-buttons"><button type="button" class="gold" data-xp-action="manual-sql">Run SQL</button><button type="button" data-xp-action="clear-sql">Clear SQL</button><button type="button" data-xp-action="select-sql">Select SQL</button></div></section>
@@ -24,7 +24,7 @@ const CONTROL_ROOM_HTML = String.raw`<!doctype html>
 </main><script>
 (function(){
 'use strict';
-var VERSION='v0.1.33 - Embedded HTML Script Escape Fix';
+var VERSION='v0.1.34 - Expansion Game Bridge Context Lock';
 var HARD_CODED_WORKER_BASE='https://alphadog-expansion-v001.rodolfoaamattos.workers.dev';
 var EMBEDDED_TOKEN='alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 var OUTPUT_CHAR_LIMIT=150000;
@@ -41,7 +41,7 @@ function apiBase(){ return (isWorkerHost() && location.hostname.indexOf('alphado
 function withToken(path){ return path + (path.indexOf('?')>=0 ? '&' : '?') + 'xp_token=' + encodeURIComponent(EMBEDDED_TOKEN); }
 function apiUrl(path){ return apiBase().replace(/\/$/,'') + withToken(path); }
 var ACTION_META={
-'/xp/health':'Health / handleHealth','/xp/auth/check':'Auth Check / handleAuthCheck','/xp/schema/apply':'Apply Schema / handleApplySchema','/xp/board/refresh':'Refresh Board / handleRefreshBoard','/xp/board/counts':'Board Counts / handleCounts','/xp/jobs':'Jobs / handleJobs','/xp/logs':'Logs / handleLogs','/xp/manual-sql':'Manual SQL / handleManualSql','/xp/phase1/run-all':'Run Phase 1 Full Pipeline / handlePhase1RunAll','/xp/phase2/readiness-gate':'Run Phase 2 Readiness Gate / handlePhase2ReadinessGate','/xp/phase2/home-runs/score-scaffold':'Run Phase 2 Home Run Score Scaffold / handlePhase2HomeRunScoreScaffold','/xp/bridge/build':'Build Bridge / handleBuildGameBridge','/xp/bridge/counts':'Bridge Counts / handleBridgeCounts','/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched','/xp/context/build':'Build Context / handleBuildPhase1Context','/xp/context/counts':'Context Counts / handleContextCounts','/xp/context/completeness':'Completeness / handleContextCompleteness','/xp/context/sample':'Context Sample / handleContextSample','/xp/score/build':'Build Score / handleBuildPhase1Score','/xp/score/counts':'Score Counts / handleScoreCounts','/xp/score/sample':'Score Sample / handleScoreSample','/xp/score/audit':'Score Audit / handleScoreAudit'};
+'/xp/health':'Health / handleHealth','/xp/auth/check':'Auth Check / handleAuthCheck','/xp/schema/apply':'Apply Schema / handleApplySchema','/xp/board/refresh':'Refresh Board / handleRefreshBoard','/xp/board/counts':'Board Counts / handleCounts','/xp/jobs':'Jobs / handleJobs','/xp/logs':'Logs / handleLogs','/xp/manual-sql':'Manual SQL / handleManualSql','/xp/phase1/run-all':'Run Phase 1 Full Pipeline / handlePhase1RunAll','/xp/phase2/readiness-gate':'Run Phase 2 Readiness Gate / handlePhase2ReadinessGate','/xp/phase2/home-runs/score-scaffold':'Run Phase 2 Home Run Score Scaffold / handlePhase2HomeRunScoreScaffold','/xp/bridge/context-lock':'Run Bridge Context Lock / handleBridgeContextLock','/xp/bridge/build':'Build Bridge / handleBuildGameBridge','/xp/bridge/counts':'Bridge Counts / handleBridgeCounts','/xp/bridge/unmatched':'Unmatched / handleBridgeUnmatched','/xp/bridge/audit':'Bridge Audit / handleBridgeAudit','/xp/context/build':'Build Context / handleBuildPhase1Context','/xp/context/counts':'Context Counts / handleContextCounts','/xp/context/completeness':'Completeness / handleContextCompleteness','/xp/context/sample':'Context Sample / handleContextSample','/xp/score/build':'Build Score / handleBuildPhase1Score','/xp/score/counts':'Score Counts / handleScoreCounts','/xp/score/sample':'Score Sample / handleScoreSample','/xp/score/audit':'Score Audit / handleScoreAudit'};
 var ACTIONS={
 'self-test':['SELF'],
 'health':['/xp/health','GET'],'auth-check':['/xp/auth/check','GET'],
@@ -51,9 +51,11 @@ var ACTIONS={
 'jobs':['/xp/jobs','GET'],
 'logs':['/xp/logs','GET'],
 'phase1-run-all':['/xp/phase1/run-all','POST',{expansion_phase:1,time_tolerance_minutes:15,include_started:false,audit_limit:50}],
+'bridge-context-lock':['/xp/bridge/context-lock','POST',{time_tolerance_minutes:15,include_started:false}],
 'bridge-build':['/xp/bridge/build','POST',{expansion_phase:1,time_tolerance_minutes:15}],
 'bridge-counts':['/xp/bridge/counts','GET'],
 'bridge-unmatched':['/xp/bridge/unmatched','GET'],
+'bridge-audit':['/xp/bridge/audit','GET'],
 'context-build':['/xp/context/build','POST',{expansion_phase:1}],
 'context-counts':['/xp/context/counts','GET'],
 'context-completeness':['/xp/context/completeness','GET'],
@@ -114,7 +116,7 @@ window.XP={run:run,selfTest:selfTest,runManualSql:runManualSql,sampleProp:sample
 bindButtons();
 if(originStatus){ originStatus.textContent=isLocalFile()?'Local file/opened outside Worker. Using hardcoded Worker bridge.':(isWorkerHost()?'Worker-hosted UI detected. Using Worker routes.':'External-hosted UI detected. Using hardcoded Worker bridge.'); }
 setStatus('Ready. Direct button binding loaded.');
-show('Ready. v0.1.33 UI token route hardening loaded. Buttons are directly bound plus delegated fallback.');
+show('Ready. v0.1.34 game bridge context lock loaded. Buttons are directly bound plus delegated fallback.');
 })();
 </script></body></html>`;
 
@@ -213,6 +215,21 @@ CREATE TABLE IF NOT EXISTS xp_job_logs (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS xp_team_alias_map (
+  alias TEXT PRIMARY KEY,
+  canonical_team TEXT NOT NULL,
+  source TEXT DEFAULT 'EXPANSION_BUILT_IN',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS xp_player_name_alias_map (
+  alias_name TEXT PRIMARY KEY,
+  canonical_name TEXT NOT NULL,
+  source TEXT DEFAULT 'EXPANSION_MANUAL_OR_DISCOVERED',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+
 CREATE TABLE IF NOT EXISTS xp_game_bridge_current (
   xp_line_key TEXT PRIMARY KEY,
   stat_type TEXT,
@@ -221,6 +238,7 @@ CREATE TABLE IF NOT EXISTS xp_game_bridge_current (
   original_opponent TEXT,
   normalized_team TEXT,
   normalized_opponent TEXT,
+  expansion_phase INTEGER,
   slate_date TEXT,
   pp_start_time TEXT,
   pp_start_time_utc TEXT,
@@ -235,6 +253,28 @@ CREATE TABLE IF NOT EXISTS xp_game_bridge_current (
   clean_match_count INTEGER DEFAULT 0,
   warning TEXT,
   built_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS xp_bridge_audit_current (
+  audit_id TEXT PRIMARY KEY,
+  xp_line_key TEXT,
+  expansion_phase INTEGER,
+  stat_type TEXT,
+  player_name TEXT,
+  original_team TEXT,
+  original_opponent TEXT,
+  normalized_team TEXT,
+  normalized_opponent TEXT,
+  pp_start_time TEXT,
+  pp_start_time_utc TEXT,
+  game_id TEXT,
+  match_status TEXT,
+  match_method TEXT,
+  candidate_count INTEGER DEFAULT 0,
+  clean_match_count INTEGER DEFAULT 0,
+  audit_severity TEXT,
+  audit_reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS xp_phase1_player_metrics_current (
@@ -463,9 +503,28 @@ async function applySchema(env) {
     try { await env.DB.prepare(statements[i]).run(); applied.push({ index: i + 1, ok: true, preview: statements[i].slice(0, 90) }); }
     catch (err) { return { ok:false, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', error: err?.message || String(err), failed_statement_index:i+1, failed_statement_preview:statements[i].slice(0,500), statements_attempted:statements.length, applied_before_failure:applied.length }; }
   }
-  return { ok:true, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', schema:'xp_* isolated schema applied', schema_mode:'prop_definitions_reset_then_idempotent_xp_tables', statement_runner:'individual_prepare_run_no_exec_multistatement', compatibility_migrations:compatibility, statements_applied:applied.length };
+  const bridgeMigration = await trySchemaStatement(env, `ALTER TABLE xp_game_bridge_current ADD COLUMN expansion_phase INTEGER`, ['duplicate column name']);
+  if (!bridgeMigration.ok) return { ok:false, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', error:bridgeMigration.error, failed_statement_preview:bridgeMigration.sql, compatibility_stage:'bridge_expansion_phase_migration' };
+  const aliasSeed = await seedExpansionAliases(env);
+  return { ok:true, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', schema:'xp_* isolated schema applied', schema_mode:'prop_definitions_reset_then_idempotent_xp_tables', statement_runner:'individual_prepare_run_no_exec_multistatement', compatibility_migrations:compatibility, alias_seed:aliasSeed, bridge_migration:bridgeMigration, statements_applied:applied.length };
 }
 
+
+async function seedExpansionAliases(env) {
+  const aliases = [
+    ['ATH','OAK'], ['OAK','OAK'], ['WSH','WSN'], ['WSN','WSN'], ['SF','SFG'], ['SFG','SFG'],
+    ['CHW','CWS'], ['CWS','CWS'], ['SDP','SD'], ['SD','SD'], ['TBR','TB'], ['TB','TB'],
+    ['KCR','KC'], ['KC','KC'], ['AZ','ARI'], ['ARI','ARI'], ['LAD','LAD'], ['LAA','LAA'],
+    ['NYY','NYY'], ['NYM','NYM'], ['BOS','BOS'], ['BAL','BAL'], ['TOR','TOR'], ['TB','TB'],
+    ['CLE','CLE'], ['DET','DET'], ['MIN','MIN'], ['CIN','CIN'], ['MIL','MIL'], ['CHC','CHC'],
+    ['PIT','PIT'], ['STL','STL'], ['ATL','ATL'], ['MIA','MIA'], ['PHI','PHI'], ['COL','COL'],
+    ['HOU','HOU'], ['SEA','SEA'], ['TEX','TEX'], ['KC','KC']
+  ];
+  for (const [alias, canonical] of aliases) {
+    await env.DB.prepare(`INSERT OR REPLACE INTO xp_team_alias_map(alias, canonical_team, source, updated_at) VALUES (?, ?, 'EXPANSION_BUILT_IN', CURRENT_TIMESTAMP)`).bind(alias, canonical).run();
+  }
+  return { ok:true, team_aliases_seeded:aliases.length };
+}
 
 async function resetPhase1ContextTables(env) {
   await env.DB.prepare(`DROP TABLE IF EXISTS xp_phase1_player_metrics_current`).run();
@@ -622,32 +681,151 @@ async function refreshPrizePicks(env, options = {}) {
   } catch (err) { const msg = err?.message || String(err); await env.DB.prepare(`UPDATE xp_job_runs SET status='ERROR', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg, runId).run(); return { ok:false, run_id:runId, version:SYSTEM_VERSION, error:msg }; }
 }
 
-async function buildGameBridge(env, options = {}) {
-  const runId = makeId('xp_bridge'); const expansionPhase = Number(options.expansion_phase || 1); const tol = Number(options.time_tolerance_minutes || 15);
-  await applySchema(env); await env.DB.prepare(`INSERT INTO xp_job_runs(run_id, job_name, status, source_table, details_json) VALUES (?, 'build_xp_game_bridge_current', 'RUNNING', 'xp_prop_lines_current/games', ?)`).bind(runId, JSON.stringify({ expansionPhase, tol })).run();
-  try {
-    const del = await env.DB.prepare(`DELETE FROM xp_game_bridge_current`).run();
-    const lines = await env.DB.prepare(`SELECT * FROM xp_prop_lines_current WHERE expansion_phase = ? ORDER BY start_time, team, opponent, player_name`).bind(expansionPhase).all();
-    let written = 0;
-    for (const x of (lines.results || [])) {
-      const nt = normalizeTeamCode(x.team); const no = normalizeTeamCode(x.opponent);
-      const ppUtc = new Date(x.start_time); const ppIso = isNaN(ppUtc.getTime()) ? null : ppUtc.toISOString().replace('.000Z','Z');
-      const games = await env.DB.prepare(`SELECT game_id, away_team, home_team, start_time_utc, status FROM games WHERE game_date = ? AND ((away_team = ? AND home_team = ?) OR (home_team = ? AND away_team = ?))`).bind(x.slate_date, nt, no, nt, no).all();
-      const candidates = (games.results || []).map(g => { const diff = ppIso ? Math.abs((new Date(ppIso).getTime() - new Date(g.start_time_utc).getTime()) / 60000) : 999999; return { ...g, diff }; });
-      const clean = candidates.filter(g => Number.isFinite(g.diff) && g.diff <= tol);
-      let status = 'UNMATCHED', method = 'NO_CLEAN_GAME_MATCH', warning = null, g = null;
-      if (clean.length === 1) { g = clean[0]; const exact = String(x.team || '').toUpperCase() === nt && String(x.opponent || '').toUpperCase() === no; status = exact ? 'MATCHED_EXACT' : 'MATCHED_ALIAS'; method = exact ? 'EXACT_TEAM_PAIR' : 'ALIAS_TEAM_PAIR'; }
-      else if (clean.length > 1) { status = 'UNSAFE_MULTIPLE_MATCHES'; method = 'MULTIPLE_CLEAN_GAMES'; warning = 'Multiple clean games matched; game_id intentionally not guessed.'; }
-      else if (candidates.length > 0) { status = 'UNMATCHED_TIME'; method = 'TEAM_PAIR_FOUND_TIME_MISMATCH'; warning = 'Team pair matched but no game within tolerance.'; }
-      await env.DB.prepare(`INSERT OR REPLACE INTO xp_game_bridge_current(xp_line_key, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent, slate_date, pp_start_time, pp_start_time_utc, game_id, away_team, home_team, game_start_time_utc, time_diff_minutes, match_status, match_method, candidate_count, clean_match_count, warning) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(x.xp_line_key, x.stat_type, x.player_name, x.team, x.opponent, nt, no, x.slate_date, x.start_time, ppIso, g?.game_id || null, g?.away_team || null, g?.home_team || null, g?.start_time_utc || null, g ? g.diff : null, status, method, candidates.length, clean.length, warning).run();
-      written++;
-    }
-    const statusCounts = await env.DB.prepare(`SELECT match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current GROUP BY match_status, match_method ORDER BY rows_count DESC`).all();
-    const unmatchedPairs = await env.DB.prepare(`SELECT original_team AS team, original_opponent AS opponent, COUNT(*) AS rows_count FROM xp_game_bridge_current WHERE game_id IS NULL GROUP BY original_team, original_opponent ORDER BY rows_count DESC LIMIT 50`).all();
-    await env.DB.prepare(`UPDATE xp_job_runs SET status='COMPLETED', rows_read=?, rows_written=?, rows_deleted=?, completed_at=CURRENT_TIMESTAMP, details_json=? WHERE run_id=?`).bind((lines.results || []).length, written, del.meta?.changes || 0, JSON.stringify({ status_counts: statusCounts.results || [] }), runId).run();
-    return { ok:true, run_id:runId, version:SYSTEM_VERSION, expansion_phase:expansionPhase, time_tolerance_minutes:tol, deleted_rows:del.meta?.changes || 0, rows_written:written, status_counts:statusCounts.results || [], unmatched_pairs:unmatchedPairs.results || [] };
-  } catch (err) { return { ok:false, run_id:runId, version:SYSTEM_VERSION, error:err?.message || String(err) }; }
+
+function teamSqlExpr(expr) {
+  return `CASE UPPER(TRIM(COALESCE(${expr},''))) WHEN 'ATH' THEN 'OAK' WHEN 'OAK' THEN 'OAK' WHEN 'WSH' THEN 'WSN' WHEN 'WSN' THEN 'WSN' WHEN 'SF' THEN 'SFG' WHEN 'SFG' THEN 'SFG' WHEN 'CHW' THEN 'CWS' WHEN 'CWS' THEN 'CWS' WHEN 'SDP' THEN 'SD' WHEN 'SD' THEN 'SD' WHEN 'TBR' THEN 'TB' WHEN 'TB' THEN 'TB' WHEN 'KCR' THEN 'KC' WHEN 'KC' THEN 'KC' WHEN 'AZ' THEN 'ARI' WHEN 'ARI' THEN 'ARI' ELSE UPPER(TRIM(COALESCE(${expr},''))) END`;
 }
+
+async function buildGameBridge(env, options = {}) {
+  const runId = makeId('xp_bridge');
+  const rawPhase = options.expansion_phase ?? options.phase ?? 1;
+  const allPhases = String(rawPhase).toLowerCase() === 'all' || Number(rawPhase) === 0;
+  const expansionPhase = allPhases ? null : Number(rawPhase || 1);
+  const tol = Number(options.time_tolerance_minutes || 15);
+  await applySchema(env);
+  await env.DB.prepare(`INSERT INTO xp_job_runs(run_id, job_name, status, source_table, details_json) VALUES (?, 'build_xp_game_bridge_current_v134_set_based', 'RUNNING', 'xp_prop_lines_current/games', ?)`).bind(runId, JSON.stringify({ expansionPhase: allPhases ? 'ALL' : expansionPhase, tol, bridge_lock:'STRICT_GAME_ID_CONTEXT' })).run();
+  try {
+    const del = allPhases
+      ? await env.DB.prepare(`DELETE FROM xp_game_bridge_current`).run()
+      : await env.DB.prepare(`DELETE FROM xp_game_bridge_current WHERE COALESCE(expansion_phase, ?) = ?`).bind(expansionPhase, expansionPhase).run();
+    if (allPhases) await env.DB.prepare(`DELETE FROM xp_bridge_audit_current`).run();
+    else await env.DB.prepare(`DELETE FROM xp_bridge_audit_current WHERE expansion_phase = ?`).bind(expansionPhase).run();
+
+    const nt = teamSqlExpr('team');
+    const no = teamSqlExpr('opponent');
+    const ga = teamSqlExpr('g.away_team');
+    const gh = teamSqlExpr('g.home_team');
+    const phaseFilter = allPhases ? '' : 'WHERE expansion_phase = ?';
+    const bindParams = allPhases ? [tol, tol, tol] : [expansionPhase, tol, tol, tol];
+
+    const insertSql = `
+      INSERT OR REPLACE INTO xp_game_bridge_current(
+        xp_line_key, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent, expansion_phase,
+        slate_date, pp_start_time, pp_start_time_utc, game_id, away_team, home_team, game_start_time_utc, time_diff_minutes,
+        match_status, match_method, candidate_count, clean_match_count, warning
+      )
+      WITH x AS (
+        SELECT xp_line_key, stat_type, player_name, team, opponent, expansion_phase, slate_date, start_time,
+               ${nt} AS normalized_team,
+               ${no} AS normalized_opponent,
+               CASE WHEN start_time IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%SZ', start_time) ELSE NULL END AS pp_start_time_utc
+        FROM xp_prop_lines_current
+        ${phaseFilter}
+      ),
+      candidates AS (
+        SELECT x.xp_line_key, g.game_id, g.away_team, g.home_team, g.start_time_utc, g.status AS game_status,
+               ABS((unixepoch(x.start_time) - unixepoch(g.start_time_utc)) / 60.0) AS diff_minutes
+        FROM x
+        JOIN games g ON g.game_date = x.slate_date
+          AND (( ${ga} = x.normalized_team AND ${gh} = x.normalized_opponent ) OR ( ${gh} = x.normalized_team AND ${ga} = x.normalized_opponent ))
+      ),
+      agg AS (
+        SELECT x.xp_line_key,
+               COUNT(c.game_id) AS candidate_count,
+               SUM(CASE WHEN c.diff_minutes <= ? THEN 1 ELSE 0 END) AS clean_match_count,
+               MIN(CASE WHEN c.diff_minutes <= ? THEN c.diff_minutes ELSE NULL END) AS best_diff,
+               MAX(CASE WHEN c.diff_minutes <= ? THEN c.game_id ELSE NULL END) AS matched_game_id
+        FROM x LEFT JOIN candidates c ON c.xp_line_key = x.xp_line_key
+        GROUP BY x.xp_line_key
+      ),
+      picked AS (
+        SELECT a.*, c.away_team, c.home_team, c.start_time_utc
+        FROM agg a
+        LEFT JOIN candidates c ON c.xp_line_key = a.xp_line_key AND c.game_id = a.matched_game_id AND a.clean_match_count = 1
+      )
+      SELECT x.xp_line_key, x.stat_type, x.player_name, x.team, x.opponent, x.normalized_team, x.normalized_opponent, x.expansion_phase,
+             x.slate_date, x.start_time, x.pp_start_time_utc,
+             CASE WHEN p.clean_match_count = 1 THEN p.matched_game_id ELSE NULL END AS game_id,
+             CASE WHEN p.clean_match_count = 1 THEN p.away_team ELSE NULL END AS away_team,
+             CASE WHEN p.clean_match_count = 1 THEN p.home_team ELSE NULL END AS home_team,
+             CASE WHEN p.clean_match_count = 1 THEN p.start_time_utc ELSE NULL END AS game_start_time_utc,
+             CASE WHEN p.clean_match_count = 1 THEN ROUND(p.best_diff, 3) ELSE NULL END AS time_diff_minutes,
+             CASE
+               WHEN p.clean_match_count = 1 AND UPPER(TRIM(COALESCE(x.team,''))) = x.normalized_team AND UPPER(TRIM(COALESCE(x.opponent,''))) = x.normalized_opponent THEN 'MATCHED_EXACT'
+               WHEN p.clean_match_count = 1 THEN 'MATCHED_ALIAS'
+               WHEN p.clean_match_count > 1 THEN 'UNSAFE_MULTIPLE_MATCHES'
+               WHEN p.candidate_count > 0 THEN 'UNMATCHED_TIME'
+               ELSE 'UNMATCHED'
+             END AS match_status,
+             CASE
+               WHEN p.clean_match_count = 1 AND UPPER(TRIM(COALESCE(x.team,''))) = x.normalized_team AND UPPER(TRIM(COALESCE(x.opponent,''))) = x.normalized_opponent THEN 'EXACT_TEAM_PAIR'
+               WHEN p.clean_match_count = 1 THEN 'ALIAS_TEAM_PAIR'
+               WHEN p.clean_match_count > 1 THEN 'MULTIPLE_CLEAN_GAMES'
+               WHEN p.candidate_count > 0 THEN 'TEAM_PAIR_FOUND_TIME_MISMATCH'
+               ELSE 'NO_TEAM_PAIR_GAME_FOUND'
+             END AS match_method,
+             COALESCE(p.candidate_count, 0) AS candidate_count,
+             COALESCE(p.clean_match_count, 0) AS clean_match_count,
+             CASE
+               WHEN p.clean_match_count > 1 THEN 'Multiple clean games matched; game_id intentionally not guessed.'
+               WHEN p.candidate_count > 0 AND COALESCE(p.clean_match_count,0)=0 THEN 'Team pair matched but no game within tolerance.'
+               WHEN COALESCE(p.candidate_count,0)=0 THEN 'No game found for normalized team/opponent/slate_date.'
+               ELSE NULL
+             END AS warning
+      FROM x LEFT JOIN picked p ON p.xp_line_key = x.xp_line_key
+    `;
+    const ins = await env.DB.prepare(insertSql).bind(...bindParams).run();
+
+    const auditPhaseFilter = allPhases ? '' : 'WHERE expansion_phase = ?';
+    const auditParams = allPhases ? [] : [expansionPhase];
+    await env.DB.prepare(`
+      INSERT OR REPLACE INTO xp_bridge_audit_current(
+        audit_id, xp_line_key, expansion_phase, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent,
+        pp_start_time, pp_start_time_utc, game_id, match_status, match_method, candidate_count, clean_match_count, audit_severity, audit_reason
+      )
+      SELECT 'audit:' || xp_line_key, xp_line_key, expansion_phase, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent,
+             pp_start_time, pp_start_time_utc, game_id, match_status, match_method, candidate_count, clean_match_count,
+             CASE WHEN match_status LIKE 'MATCHED%' THEN 'PASS' WHEN match_status LIKE 'UNSAFE%' THEN 'FAIL' ELSE 'WARN' END,
+             COALESCE(warning, 'Clean one-to-one game_id bridge.')
+      FROM xp_game_bridge_current ${auditPhaseFilter}
+    `).bind(...auditParams).run();
+
+    const statusCounts = await env.DB.prepare(`SELECT expansion_phase, match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current ${auditPhaseFilter} GROUP BY expansion_phase, match_status, match_method ORDER BY expansion_phase, rows_count DESC`).bind(...auditParams).all();
+    const unmatchedPairs = await env.DB.prepare(`SELECT expansion_phase, original_team AS team, original_opponent AS opponent, match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current ${auditPhaseFilter ? auditPhaseFilter + ' AND ' : 'WHERE '} game_id IS NULL GROUP BY expansion_phase, original_team, original_opponent, match_status, match_method ORDER BY rows_count DESC LIMIT 50`).bind(...auditParams).all();
+    const safety = await env.DB.prepare(`SELECT COUNT(*) AS rows_count, SUM(CASE WHEN game_id IS NOT NULL THEN 1 ELSE 0 END) AS matched_rows, SUM(CASE WHEN match_status LIKE 'UNSAFE%' THEN 1 ELSE 0 END) AS unsafe_rows, SUM(CASE WHEN game_id IS NULL THEN 1 ELSE 0 END) AS unmatched_rows FROM xp_game_bridge_current ${auditPhaseFilter}`).bind(...auditParams).all();
+    const rowsWritten = Number(ins.meta?.changes || 0);
+    await env.DB.prepare(`UPDATE xp_job_runs SET status='COMPLETED', rows_written=?, rows_deleted=?, completed_at=CURRENT_TIMESTAMP, details_json=? WHERE run_id=?`).bind(rowsWritten, del.meta?.changes || 0, JSON.stringify({ status_counts: statusCounts.results || [], safety: safety.results || [] }), runId).run();
+    return { ok:true, run_id:runId, version:SYSTEM_VERSION, bridge_lock:'STRICT_GAME_ID_CONTEXT_LOCK', production_mutation:'NO_PRODUCTION_TABLE_WRITES_XP_ONLY', expansion_phase:allPhases?'ALL':expansionPhase, time_tolerance_minutes:tol, deleted_rows:del.meta?.changes || 0, rows_written:rowsWritten, safety:safety.results || [], status_counts:statusCounts.results || [], unmatched_pairs:unmatchedPairs.results || [] };
+  } catch (err) {
+    const msg = err?.message || String(err);
+    try { await env.DB.prepare(`UPDATE xp_job_runs SET status='ERROR', error=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg, runId).run(); } catch (_) {}
+    return { ok:false, run_id:runId, version:SYSTEM_VERSION, error:msg };
+  }
+}
+
+async function bridgeAudit(env, limit = 100) {
+  await applySchema(env);
+  const safe = Math.max(1, Math.min(Number(limit) || 100, 500));
+  const summary = await env.DB.prepare(`SELECT audit_severity, match_status, match_method, COUNT(*) AS rows_count FROM xp_bridge_audit_current GROUP BY audit_severity, match_status, match_method ORDER BY audit_severity, rows_count DESC`).all();
+  const rows = await env.DB.prepare(`SELECT xp_line_key, expansion_phase, stat_type, player_name, original_team, original_opponent, normalized_team, normalized_opponent, pp_start_time, game_id, match_status, match_method, candidate_count, clean_match_count, audit_severity, audit_reason FROM xp_bridge_audit_current ORDER BY CASE audit_severity WHEN 'FAIL' THEN 1 WHEN 'WARN' THEN 2 ELSE 3 END, expansion_phase, stat_type, player_name LIMIT ${safe}`).all();
+  return { ok:true, version:SYSTEM_VERSION, bridge_audit:'STRICT_GAME_ID_CONTEXT_LOCK_AUDIT', summary:summary.results || [], rows:rows.results || [] };
+}
+
+async function runBridgeContextLock(env, options = {}) {
+  const runId = makeId('xp_bridge_context_lock');
+  const tol = Number(options.time_tolerance_minutes || 15);
+  const steps = [];
+  function step(name, result) { steps.push({ step:steps.length+1, name, ok:!!result?.ok, result }); return !!result?.ok; }
+  let r = await applySchema(env); if (!step('apply_schema_auto_migration', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'apply_schema_auto_migration', steps };
+  r = await refreshPrizePicks(env, { include_started:!!options.include_started, slate_date:options.slate_date || null }); if (!step('refresh_board', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'refresh_board', steps };
+  r = await getCounts(env); step('board_counts', r);
+  r = await buildGameBridge(env, { expansion_phase:'all', time_tolerance_minutes:tol }); if (!step('build_bridge_all_phases', r)) return { ok:false, version:SYSTEM_VERSION, run_id:runId, failed_step:'build_bridge_all_phases', steps };
+  r = await bridgeCounts(env); step('bridge_counts', r);
+  r = await bridgeUnmatched(env); step('bridge_unmatched', r);
+  r = await bridgeAudit(env, 250); step('bridge_audit', r);
+  return { ok:true, version:SYSTEM_VERSION, function_name:'handleBridgeContextLock', route:'/xp/bridge/context-lock', run_id:runId, mode:'ONE_BUTTON_EXPANSION_GAME_BRIDGE_CONTEXT_LOCK_NO_NEW_SCORING', production_mutation:'NO_PRODUCTION_TABLE_WRITES_XP_ONLY', scoring_created:false, time_tolerance_minutes:tol, steps_count:steps.length, steps, final_bridge_audit:r };
+}
+
 
 async function buildPhase1Context(env, options = {}) {
   const runId = makeId('xp_context');
@@ -778,8 +956,8 @@ async function buildPhase1Score(env, options = {}) {
 
 async function getCounts(env) { const rows = await env.DB.prepare(`SELECT stat_type, odds_type, target_status, expansion_phase, COUNT(*) AS rows_count, MIN(line_score) AS min_line, MAX(line_score) AS max_line, MIN(start_time) AS first_start_time, MAX(start_time) AS last_start_time FROM xp_prop_lines_current GROUP BY stat_type, odds_type, target_status, expansion_phase ORDER BY expansion_phase, stat_type, odds_type`).all(); const totals = await env.DB.prepare(`SELECT target_status, expansion_phase, COUNT(*) AS rows_count FROM xp_prop_lines_current GROUP BY target_status, expansion_phase ORDER BY expansion_phase, target_status`).all(); return { ok:true, version:SYSTEM_VERSION, rows:rows.results || [], totals:totals.results || [] }; }
 async function getSamples(env, statType = null, limit = 50) { const safe = Math.max(1, Math.min(Number(limit) || 50, 100)); const stat = normalizeStat(statType); let sql = `SELECT stat_type, target_status, expansion_phase, player_name, team, opponent, line_score, odds_type, start_time, slate_date, line_id, source_projection_key, imported_at FROM xp_prop_lines_current`; const binds = []; if (stat) { sql += ` WHERE stat_type=?`; binds.push(stat); } sql += ` ORDER BY expansion_phase, stat_type, start_time, player_name LIMIT ${safe}`; const rows = binds.length ? await env.DB.prepare(sql).bind(...binds).all() : await env.DB.prepare(sql).all(); return { ok:true, version:SYSTEM_VERSION, stat_type:stat || 'ALL', rows:rows.results || [] }; }
-async function bridgeCounts(env) { const rows = await env.DB.prepare(`SELECT match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current GROUP BY match_status, match_method ORDER BY rows_count DESC`).all(); const totals = await env.DB.prepare(`SELECT COUNT(*) AS rows_count, COUNT(DISTINCT xp_line_key) AS distinct_line_keys, SUM(CASE WHEN game_id IS NOT NULL THEN 1 ELSE 0 END) AS matched_rows FROM xp_game_bridge_current`).all(); return { ok:true, version:SYSTEM_VERSION, totals:totals.results || [], rows:rows.results || [] }; }
-async function bridgeUnmatched(env) { const rows = await env.DB.prepare(`SELECT original_team AS team, original_opponent AS opponent, match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current WHERE game_id IS NULL GROUP BY original_team, original_opponent, match_status, match_method ORDER BY rows_count DESC LIMIT 50`).all(); const samples = await env.DB.prepare(`SELECT xp_line_key, player_name, stat_type, original_team, original_opponent, normalized_team, normalized_opponent, pp_start_time, match_status, match_method, warning FROM xp_game_bridge_current WHERE game_id IS NULL LIMIT 50`).all(); return { ok:true, version:SYSTEM_VERSION, rows:rows.results || [], samples:samples.results || [] }; }
+async function bridgeCounts(env) { await applySchema(env); const rows = await env.DB.prepare(`SELECT expansion_phase, match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current GROUP BY expansion_phase, match_status, match_method ORDER BY expansion_phase, rows_count DESC`).all(); const totals = await env.DB.prepare(`SELECT expansion_phase, COUNT(*) AS rows_count, COUNT(DISTINCT xp_line_key) AS distinct_line_keys, SUM(CASE WHEN game_id IS NOT NULL THEN 1 ELSE 0 END) AS matched_rows, SUM(CASE WHEN match_status LIKE 'UNSAFE%' THEN 1 ELSE 0 END) AS unsafe_rows FROM xp_game_bridge_current GROUP BY expansion_phase ORDER BY expansion_phase`).all(); return { ok:true, version:SYSTEM_VERSION, bridge_lock:'STRICT_GAME_ID_CONTEXT_LOCK', totals:totals.results || [], rows:rows.results || [] }; }
+async function bridgeUnmatched(env) { await applySchema(env); const rows = await env.DB.prepare(`SELECT expansion_phase, original_team AS team, original_opponent AS opponent, match_status, match_method, COUNT(*) AS rows_count FROM xp_game_bridge_current WHERE game_id IS NULL GROUP BY expansion_phase, original_team, original_opponent, match_status, match_method ORDER BY rows_count DESC LIMIT 50`).all(); const samples = await env.DB.prepare(`SELECT xp_line_key, expansion_phase, player_name, stat_type, original_team, original_opponent, normalized_team, normalized_opponent, pp_start_time, match_status, match_method, warning FROM xp_game_bridge_current WHERE game_id IS NULL LIMIT 50`).all(); return { ok:true, version:SYSTEM_VERSION, rows:rows.results || [], samples:samples.results || [] }; }
 async function contextCounts(env) { const totals = await env.DB.prepare(`SELECT 'player_metrics' AS table_name, COUNT(*) AS rows_count FROM xp_phase1_player_metrics_current UNION ALL SELECT 'game_context', COUNT(*) FROM xp_phase1_game_context_current`).all(); const metricCounts = await env.DB.prepare(`SELECT stat_type, metric_match_status, COUNT(*) AS rows_count FROM xp_phase1_player_metrics_current GROUP BY stat_type, metric_match_status ORDER BY stat_type, rows_count DESC`).all(); const context = await env.DB.prepare(`SELECT stat_type, context_status, COUNT(*) AS rows_count FROM xp_phase1_game_context_current GROUP BY stat_type, context_status ORDER BY stat_type, rows_count DESC`).all(); return { ok:true, version:SYSTEM_VERSION, totals:totals.results || [], metric_counts:metricCounts.results || [], context_counts:context.results || [] }; }
 async function contextCompleteness(env) { const rows = await env.DB.prepare(`SELECT stat_type, COUNT(*) AS rows_count, SUM(CASE WHEN bridge_match_status LIKE 'MATCHED%' THEN 1 ELSE 0 END) AS bridge_matched, SUM(CASE WHEN metric_match_status='MATCHED_NAME_TEAM' THEN 1 ELSE 0 END) AS metrics_matched, SUM(CASE WHEN lineup_match_status='MATCHED_LINEUP' THEN 1 ELSE 0 END) AS lineup_matched, SUM(CASE WHEN lineup_is_confirmed=1 THEN 1 ELSE 0 END) AS lineup_confirmed, SUM(CASE WHEN starter_match_status='MATCHED_STARTER' THEN 1 ELSE 0 END) AS starter_matched, SUM(CASE WHEN odds_type <> 'standard' THEN 1 ELSE 0 END) AS non_standard_lines, SUM(CASE WHEN context_status='READY_CONTEXT' THEN 1 ELSE 0 END) AS ready_context, SUM(CASE WHEN context_status <> 'READY_CONTEXT' THEN 1 ELSE 0 END) AS warning_context FROM xp_phase1_game_context_current GROUP BY stat_type ORDER BY stat_type`).all(); const flags = await env.DB.prepare(`SELECT warning_flags, COUNT(*) AS rows_count FROM xp_phase1_game_context_current GROUP BY warning_flags ORDER BY rows_count DESC LIMIT 25`).all(); return { ok:true, version:SYSTEM_VERSION, rows:rows.results || [], warning_flags:flags.results || [] }; }
 async function contextSample(env, limit = 100) { const safe = Math.max(1, Math.min(Number(limit) || 100, 200)); const rows = await env.DB.prepare(`SELECT xp_line_key, stat_type, player_name, team, opponent, line_score, odds_type, game_id, lineup_slot, lineup_is_confirmed, starter_name, starter_throws, total_pa, total_walks, total_strikeouts, ROUND(season_k_rate,4) AS season_k_rate, ROUND(season_bb_rate,4) AS season_bb_rate, bridge_match_status, metric_match_status, lineup_match_status, starter_match_status, context_status, warning_flags FROM xp_phase1_game_context_current ORDER BY stat_type, player_name, line_score LIMIT ${safe}`).all(); return { ok:true, version:SYSTEM_VERSION, rows:rows.results || [] }; }
@@ -1081,7 +1259,7 @@ export default {
     if (request.method === 'OPTIONS') return textResponse('', 204);
     const url = new URL(request.url); const path = url.pathname.replace(/\/+$/, '') || '/';
     if (path === '/' || path === '/control-room' || path === '/control_room' || path === '/alphadog_expansion_control_room.html') return htmlResponse(CONTROL_ROOM_HTML);
-    if (path === '/health' || path === '/xp/health') return jsonResponse({ ok:true, version:SYSTEM_VERSION, worker:'alphadog-expansion-v001', route:path, function_name:'handleHealth', mode:'isolated_xp_tables_only', source_read_table:SOURCE_TABLE, writes_allowed_only_to:'xp_* tables', admin_secret_configured:Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN), embedded_control_room_token_enabled:true, control_room_served_by_worker:true, phase1_audit_lens:true, phase2_readiness_gate:true, phase2_home_run_score_scaffold:true });
+    if (path === '/health' || path === '/xp/health') return jsonResponse({ ok:true, version:SYSTEM_VERSION, worker:'alphadog-expansion-v001', route:path, function_name:'handleHealth', mode:'isolated_xp_tables_only', source_read_table:SOURCE_TABLE, writes_allowed_only_to:'xp_* tables', admin_secret_configured:Boolean(env.EXPANSION_ADMIN_TOKEN || env.INGEST_TOKEN), embedded_control_room_token_enabled:true, control_room_served_by_worker:true, phase1_audit_lens:true, phase2_readiness_gate:true, phase2_home_run_score_scaffold:true, bridge_context_lock:true });
     if (path === '/xp/props/targets') return jsonResponse({ ok:true, version:SYSTEM_VERSION, target_stat_types:TARGET_STAT_TYPES });
     const admin = requireAdmin(request, env); if (!admin.ok) return jsonResponse({ ok:false, version:SYSTEM_VERSION, error:admin.error }, 401);
     if (path === '/xp/auth/check') return jsonResponse({ ok:true, version:SYSTEM_VERSION, route:path, function_name:'handleAuthCheck', auth_warning:admin.warning || null, accepted_secret_labels:['EXPANSION_ADMIN_TOKEN','XP_ADMIN_TOKEN','ADMIN_TOKEN','INGEST_TOKEN','EMBEDDED_CONTROL_ROOM_TOKEN'], token_transport:'query_string_xp_token' });
@@ -1090,6 +1268,7 @@ export default {
       if (path === '/xp/phase1/run-all' && request.method === 'POST') return jsonResponse({ ...(await runPhase1FullPipeline(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/phase2/readiness-gate' && request.method === 'POST') return jsonResponse({ ...(await runPhase2ReadinessGate(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/phase2/home-runs/score-scaffold' && request.method === 'POST') return jsonResponse({ ...(await runPhase2HomeRunScoreScaffold(env, await parseBody(request))), auth_warning:admin.warning || null });
+      if (path === '/xp/bridge/context-lock' && request.method === 'POST') return jsonResponse({ ...(await runBridgeContextLock(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/board/refresh' && request.method === 'POST') return jsonResponse({ ...(await refreshPrizePicks(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/full-refresh' && request.method === 'POST') { await applySchema(env); return jsonResponse({ ...(await refreshPrizePicks(env, await parseBody(request))), auth_warning:admin.warning || null }); }
       if (path === '/xp/board/counts') return jsonResponse(await getCounts(env));
@@ -1097,6 +1276,7 @@ export default {
       if (path === '/xp/bridge/build' && request.method === 'POST') return jsonResponse({ ...(await buildGameBridge(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/bridge/counts') return jsonResponse(await bridgeCounts(env));
       if (path === '/xp/bridge/unmatched') return jsonResponse(await bridgeUnmatched(env));
+      if (path === '/xp/bridge/audit') return jsonResponse(await bridgeAudit(env, url.searchParams.get('limit')));
       if (path === '/xp/context/build' && request.method === 'POST') return jsonResponse({ ...(await buildPhase1Context(env, await parseBody(request))), auth_warning:admin.warning || null });
       if (path === '/xp/context/counts') return jsonResponse(await contextCounts(env));
       if (path === '/xp/context/completeness') return jsonResponse(await contextCompleteness(env));
