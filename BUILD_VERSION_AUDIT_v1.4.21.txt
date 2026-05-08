@@ -1,0 +1,13 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.21 - Dispatch Alias Slate Fix
+ZIP: alphadog_v1.4.21_dispatch_alias_slate_fix.zip
+worker.js: v1.4.21 - Dispatch Alias Slate Fix
+control_room.html: v1.4.21 - Dispatch Alias Slate Fix
+README: README_v1.4.21.txt
+wrangler.jsonc: unchanged
+package.json: unchanged
+
+Surgical fixes only:
+- Odds API slate_resolution ReferenceError fixed.
+- GitHub dispatch secret alias resolver added and wired into health + PrizePicks board refresh.
+- Existing URL/path/worker structure preserved.

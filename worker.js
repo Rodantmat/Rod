@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.20 - Active Slate Odds Resolver";
+const SYSTEM_VERSION = "v1.4.21 - Dispatch Alias Slate Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1187,6 +1187,105 @@ function oddsApiBindingStatus(env = {}) {
   };
 }
 
+function readEnvCandidate(env = {}, names = []) {
+  const checked = [];
+  const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const accepted = new Set(names.map(normalizeName));
+
+  for (const name of names) {
+    checked.push(name);
+    const value = env && env[name];
+    if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
+    if (value && typeof value === "object") {
+      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+      if (nested.trim()) return { value: nested.trim(), source: name, checked };
+    }
+  }
+
+  try {
+    for (const name of Object.keys(env || {})) {
+      if (!accepted.has(normalizeName(name))) continue;
+      if (!checked.includes(name)) checked.push(name);
+      const value = env[name];
+      if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
+      if (value && typeof value === "object") {
+        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+        if (nested.trim()) return { value: nested.trim(), source: name, checked };
+      }
+    }
+  } catch (_) {}
+
+  return { value: "", source: null, checked };
+}
+
+function getGithubDispatchConfig(env = {}) {
+  const repo = readEnvCandidate(env, [
+    "GITHUB_REPO",
+    "GITHUB_REPOSITORY",
+    "GH_REPO",
+    "GH_REPOSITORY",
+    "GITHUB_DISPATCH_REPO",
+    "GITHUB_ACTIONS_REPO"
+  ]);
+  const token = readEnvCandidate(env, [
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_PAT",
+    "GH_PAT",
+    "GITHUB_DISPATCH_TOKEN",
+    "GITHUB_ACTIONS_TOKEN",
+    "GITHUB_API_TOKEN"
+  ]);
+  const workflow = readEnvCandidate(env, [
+    "GITHUB_WORKFLOW_FILE",
+    "GITHUB_WORKFLOW",
+    "GITHUB_ACTIONS_WORKFLOW",
+    "GITHUB_DISPATCH_WORKFLOW",
+    "GITHUB_WORKFLOW_NAME",
+    "WORKFLOW_FILE"
+  ]);
+  const ref = readEnvCandidate(env, [
+    "GITHUB_REF",
+    "GITHUB_BRANCH",
+    "GH_REF",
+    "GH_BRANCH",
+    "GITHUB_DISPATCH_REF"
+  ]);
+
+  return {
+    repo: repo.value,
+    token: token.value,
+    workflow: githubWorkflowFileName(workflow.value || "scrape.yml"),
+    ref: ref.value || "main",
+    repo_source: repo.source,
+    token_source: token.source,
+    workflow_source: workflow.source || "default:scrape.yml",
+    ref_source: ref.source || "default:main",
+    repo_checked: repo.checked,
+    token_checked: token.checked,
+    workflow_checked: workflow.checked,
+    ref_checked: ref.checked
+  };
+}
+
+function githubDispatchBindingStatus(env = {}) {
+  const cfg = getGithubDispatchConfig(env);
+  return {
+    repo_bound: !!cfg.repo,
+    token_bound: !!cfg.token,
+    workflow_file_bound: !!cfg.workflow,
+    ref_bound: !!cfg.ref,
+    repo_source: cfg.repo_source,
+    token_source: cfg.token_source,
+    workflow_source: cfg.workflow_source,
+    ref_source: cfg.ref_source,
+    repo_checked: cfg.repo_checked,
+    token_checked: cfg.token_checked,
+    workflow_checked: cfg.workflow_checked,
+    ref_checked: cfg.ref_checked
+  };
+}
+
 function health(env) {
   return {
     ok: true,
@@ -1198,9 +1297,10 @@ function health(env) {
     prompt_base_url_bound: !!env.PROMPT_BASE_URL,
     odds_api_key_bound: !!getOddsApiKey(env).key,
     odds_api_binding: oddsApiBindingStatus(env),
-    github_repo_bound: !!env.GITHUB_REPO,
-    github_token_bound: !!env.GITHUB_TOKEN,
-    github_workflow_file_bound: !!env.GITHUB_WORKFLOW_FILE,
+    github_repo_bound: githubDispatchBindingStatus(env).repo_bound,
+    github_token_bound: githubDispatchBindingStatus(env).token_bound,
+    github_workflow_file_bound: githubDispatchBindingStatus(env).workflow_file_bound,
+    github_dispatch_binding: githubDispatchBindingStatus(env),
     scheduled_handler_present: true,
     production_clock_present: true,
     jobs: Object.keys(JOBS),
@@ -2589,10 +2689,11 @@ function priorAdminStepResult(state, stepName) {
 }
 
 async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
-  const repo = String(env.GITHUB_REPO || '').trim();
-  const token = String(env.GITHUB_TOKEN || '').trim();
-  const workflow = githubWorkflowFileName(env.GITHUB_WORKFLOW_FILE || 'scrape.yml');
-  const ref = String(env.GITHUB_REF || env.GITHUB_BRANCH || 'main').trim() || 'main';
+  const githubCfg = getGithubDispatchConfig(env);
+  const repo = String(githubCfg.repo || '').trim();
+  const token = String(githubCfg.token || '').trim();
+  const workflow = githubWorkflowFileName(githubCfg.workflow || 'scrape.yml');
+  const ref = String(githubCfg.ref || 'main').trim() || 'main';
   const nowIso = new Date().toISOString();
   const current = await getPrizePicksMlbStatsFreshness(env);
   const prior = priorAdminStepResult(state, 'prizepicks_board') || {};
@@ -2628,7 +2729,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.20 caps this wait so stale board refresh cannot trap the full pipeline.'
+        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.21 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
       };
     }
     return {
@@ -2660,6 +2761,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       status:'missing_github_dispatch_secret',
       board_refresh_complete:false,
       missing,
+      github_dispatch_binding: githubDispatchBindingStatus(env),
       mlb_stats:current,
       note:'Control Room worker needs GitHub dispatch secrets to refresh PrizePicks from the full refresh pipeline.'
     };
@@ -2700,7 +2802,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     status:ok ? 'github_workflow_dispatched_waiting_for_board_update' : 'github_workflow_dispatch_failed',
     board_refresh_complete:false,
     requested_at:triggeredAt,
-    github:{ repo, workflow_file:workflow, ref, http_status:response.status, ok, response_preview:text.slice(0,700) || null },
+    github:{ repo, workflow_file:workflow, ref, http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env) },
     mlb_stats_before:current,
     next_check:'next minute cron tick',
     note:ok ? 'GitHub scrape.yml workflow dispatched. The admin refresh will keep retrying this step until mlb_stats updates, then continue into Phase 2C and scoring.' : 'GitHub workflow dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE, and ref.'
@@ -2775,7 +2877,7 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     complete: done,
     needs_continue: !done,
     result,
-    prizepicks_bridge: { skipped: false, mode: 'github_actions_workflow_dispatch', workflow_file: githubWorkflowFileName(env.GITHUB_WORKFLOW_FILE || 'scrape.yml'), repo_configured: !!env.GITHUB_REPO, token_configured: !!env.GITHUB_TOKEN },
+    prizepicks_bridge: { skipped: false, mode: 'github_actions_workflow_dispatch', workflow_file: getGithubDispatchConfig(env).workflow, repo_configured: !!getGithubDispatchConfig(env).repo, token_configured: !!getGithubDispatchConfig(env).token },
     sequence: steps,
     note: 'v1.3.59 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather/lineup, PrizePicks GitHub board refresh, Phase 2C context rebuild, odds windows, then scoring. Static is intentionally excluded.'
   };
@@ -12677,7 +12779,7 @@ async function runOddsApiMarketIntel(input, env) {
     slate_date:slateDate,
     requested_slate_date:requestedSlateDate,
     resolved_odds_slate_date:slateDate,
-    slate_resolution,
+    slate_resolution: slateResolution,
     window_name:windowName,
     run_id:runId,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
