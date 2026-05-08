@@ -1,0 +1,2 @@
+Version verified: v1.4.29 - Scoring Queue Non-Reentry Fix
+worker.js SYSTEM_VERSION updated. control_room.html version updated. Enqueue path is zero-work.

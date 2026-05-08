@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.28 - Schedule Cascade Zero Work Return";
+const SYSTEM_VERSION = "v1.4.29 - Scoring Queue Non-Reentry Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7425,7 +7425,7 @@ function scoringRequestIsBackendOwned(input) {
 
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await ensureRefreshOrchestratorTables(env);
-  // v1.4.28: Schedule buttons must do ZERO heavy work inside the browser request.
+  // v1.4.29: Schedule buttons still do ZERO heavy work inside the browser request.
   // No purge, no scoring lock mutation, no temp cleanup, no auto tick here.
   // Heavy cleanup/reaping belongs to minute-cron ticks and job preflight only.
   const enqueue_reaper = { ok:true, skipped:true, reason:'zero_work_enqueue_fast_return' };
@@ -7456,7 +7456,7 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await env.DB.batch(stmts);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'enqueue', status:'pending', message:`${selected.length} refresh job(s) enqueued`, payload_json:{ mode, selected_job_keys:selected.map(j => j.job_key), slate } });
   const tick = null;
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. This endpoint only enqueues and returns.', note:'v1.4.28 zero-work enqueue: Schedule Cascade only verifies tables, inserts queue rows, writes one event, and returns. No purge, no lock reaper, no scoring, no temp cleanup, and no auto tick runs inside the browser request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. This endpoint only enqueues and returns.', note:'v1.4.29 zero-work enqueue: Schedule Cascade only verifies tables, inserts queue rows, writes one event, and returns. No purge, no lock reaper, no scoring, no temp cleanup, and no auto tick runs inside the browser request.' };
 }
 
 function isOptionalRefreshDependency(row) {
@@ -7507,6 +7507,30 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     LIMIT 20
   `);
   const recovered = [];
+  const staleRunningRows = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, display_name, sequence_order, status, requested_slate_date, created_at, started_at, updated_at
+    FROM data_refresh_queue
+    WHERE status='running'
+      AND datetime(updated_at) <= datetime('now','-8 minutes')
+    ORDER BY datetime(updated_at) ASC
+    LIMIT 20
+  `);
+  for (const row of staleRunningRows) {
+    const reason = `stale_running_requeued:${input.reason || input.trigger || 'watchdog'}`;
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET status='pending',
+          run_after=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, ?),
+          output_json=COALESCE(output_json, ?)
+      WHERE request_id=?
+        AND status='running'
+        AND datetime(updated_at) <= datetime('now','-8 minutes')
+    `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'requeued_stale_running_row', reason, recovered_at:new Date().toISOString(), row }).slice(0,3000), row.request_id).run();
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_running_requeued', status:'pending', message:reason, payload_json:{ row, input } });
+    recovered.push(row);
+  }
   for (const row of staleRows) {
     const reason = `stale_pending_null_run_after_recovered:${input.reason || input.trigger || 'watchdog'}`;
     await env.DB.prepare(`
@@ -7670,7 +7694,15 @@ async function runRefreshOrchestratorTick(input, env) {
   const processed = [];
   let last = null;
   while ((Date.now() - started) < maxMs) {
-    const row = await env.DB.prepare(`SELECT * FROM data_refresh_queue WHERE status='running' OR (status='pending' AND run_after IS NOT NULL AND run_after <= CURRENT_TIMESTAMP) ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, sequence_order ASC, created_at ASC LIMIT 1`).first().catch(() => null);
+    const row = await env.DB.prepare(`
+      SELECT *
+      FROM data_refresh_queue
+      WHERE status='pending'
+        AND run_after IS NOT NULL
+        AND run_after <= CURRENT_TIMESTAMP
+      ORDER BY sequence_order ASC, created_at ASC
+      LIMIT 1
+    `).first().catch(() => null);
     if (!row) break;
     await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(row.request_id).run();
     await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'start', status:'running', message:row.display_name });
@@ -7721,7 +7753,7 @@ async function runRefreshOrchestratorTick(input, env) {
         break;
       }
       if (refreshResultIsPartial(result)) {
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'partial_continue', status:'running', message:'Will continue on next minute cron.', payload_json:wrapped });
         break;
       }
@@ -12740,7 +12772,7 @@ async function releaseStaleScoringLocks(env, reason = 'preflight') {
   const activeRuns = await safeDbFirst(env, `SELECT COUNT(*) AS rows_count FROM scoring_runs WHERE status='RUNNING' AND created_at >= datetime('now','-12 minutes')`);
   const activeQueueCount = Number(activeQueue?.rows_count || 0);
   const activeRunCount = Number(activeRuns?.rows_count || 0);
-  const staleRows = await safeDbRun(env, `DELETE FROM pipeline_locks WHERE lock_id='AUTO_SCORING_REFRESH_V1' AND (updated_at < datetime('now','-8 minutes') OR (? = 0 AND ? = 0))`, [activeQueueCount, activeRunCount]);
+  const staleRows = await safeDbRun(env, `DELETE FROM pipeline_locks WHERE lock_id='AUTO_SCORING_REFRESH_V1' AND (updated_at < datetime('now','-2 minutes') OR (? = 0 AND ? = 0))`, [activeQueueCount, activeRunCount]);
   return { active_queue:activeQueueCount, active_runs:activeRunCount, stale_lock_release:staleRows, reason };
 }
 async function volatileOverwritePreflight(env, slateDate, options = {}) {
@@ -14682,10 +14714,10 @@ async function runFullScoringRefreshV1(input, env) {
   const lockedBy = `${trigger}:${crypto.randomUUID()}`;
   const lockId = 'AUTO_SCORING_REFRESH_V1';
   const scoring_preflight = await volatileOverwritePreflight(env, requestedSlateDate, { scoring:true, releaseScoringLock:true, reason:'full_scoring_refresh_start' });
-  let lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+  let lock = await acquirePipelineLock(env, lockId, lockedBy, 2);
   if (!lock.acquired) {
     await releaseStaleScoringLocks(env, 'lock_busy_second_chance');
-    lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+    lock = await acquirePipelineLock(env, lockId, lockedBy, 2);
   }
   if (!lock.acquired) {
     return { ok: true, data_ok: false, partial: true, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Scoring lock is active. This is not a failed scoring run and must not be marked completed. The orchestrator keeps this row pending and retries next minute without burning retries.' };
