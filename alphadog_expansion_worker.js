@@ -1,4 +1,4 @@
-const SYSTEM_VERSION = 'v0.1.34 - Expansion Game Bridge Context Lock';
+const SYSTEM_VERSION = 'v0.1.35 - Alias Map Reset Fix';
 const EMBEDDED_EXPANSION_ADMIN_TOKEN = 'alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 const SOURCE_TABLE = 'prizepicks_current_market_context';
 
@@ -14,7 +14,7 @@ const CONTROL_ROOM_HTML = String.raw`<!doctype html>
 <style>
 :root{color-scheme:dark;--bg:#070b11;--panel:#050505;--line:#2a3340;--green:#59ff92;--muted:#aab0bb;--purple:#6d35d9;--gold:#c89119;--teal:#0d756e;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--green);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}main{width:100%;max-width:1060px;margin:0 auto;padding:16px 12px 30px}h1{color:#19ff82;margin:0;font-size:24px;line-height:1.12;letter-spacing:.7px;text-transform:uppercase;font-weight:900}h2{color:#f7f2ea;margin:0 0 10px;font-size:18px;letter-spacing:.7px;text-transform:uppercase}.version{color:#bff7cc;font-size:14px;line-height:1.3;margin-top:8px;font-weight:700}.top,.section{padding-bottom:14px;border-bottom:2px solid var(--line)}.section{padding:14px 0}.desc{margin:0 0 10px;color:var(--green);font-size:16px;line-height:1.35}.small{color:var(--muted);font-size:13px;line-height:1.35;margin:8px 0 0}.status{color:#f7f2ea;border:2px solid var(--line);border-radius:9px;background:#101010;padding:8px 10px;margin-top:10px;min-height:36px;font-size:13px;line-height:1.3}.button-grid,.sql-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px}button{border:0;border-radius:9px;padding:8px 7px;color:white;background:var(--purple);font-size:14px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:42px;cursor:pointer;font-weight:800;touch-action:manipulation;-webkit-tap-highlight-color:transparent}button.gold{background:var(--gold)}button.green{background:#188336}button.teal{background:var(--teal)}button.full{width:100%;margin-top:10px;letter-spacing:1.6px;text-transform:uppercase;min-height:44px}button:active{transform:translateY(1px)}select,textarea{width:100%;border:2px solid var(--line);border-radius:9px;background:#101010;color:var(--green);font-family:inherit;font-size:14px;outline:none}select{padding:10px;min-height:42px}textarea{min-height:118px;max-height:260px;padding:10px;line-height:1.32;resize:vertical}pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);color:var(--green);border:2px solid var(--line);border-radius:9px;padding:10px;min-height:185px;max-height:620px;overflow:auto;font-size:13.5px;line-height:1.3;margin:0}.sample-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.pill{border:2px solid var(--line);border-radius:9px;background:#111;color:var(--muted);padding:9px;font-size:12.5px;line-height:1.35}@media(min-width:760px){main{padding:18px 16px 34px}.button-grid{grid-template-columns:repeat(6,minmax(0,1fr))}.sample-row{grid-template-columns:1fr 180px}.sql-buttons{grid-template-columns:repeat(6,minmax(0,1fr))}}@media(max-width:390px){h1{font-size:22px}button{font-size:13px;min-height:40px}.button-grid,.sql-buttons{gap:7px}pre{font-size:13px}}
 </style></head><body><main>
-<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.34 - Expansion Game Bridge Context Lock</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
+<div class="top"><h1>AlphaDog Expansion Control Room</h1><div class="version">v0.1.35 - Alias Map Reset Fix</div><div class="small" id="originStatus">Starting UI...</div><div class="status" id="actionStatus">Ready.</div></div>
 <section class="section"><p class="desc">Isolated expansion room. Reads prepared production data, writes only xp_* tables. Production scoring and Main UI stay untouched.</p><div class="pill" id="bridgeStatus">Worker bridge loading...</div><div class="button-grid"><button type="button" data-xp-action="self-test">Button Self Test</button><button type="button" data-xp-action="health">Health</button><button type="button" data-xp-action="auth-check">Auth Check</button><button type="button" class="gold" data-xp-action="schema">Apply Schema</button><button type="button" data-xp-action="refresh-board">Refresh Board</button><button type="button" data-xp-action="board-counts">Board Counts</button><button type="button" data-xp-action="jobs">Jobs</button><button type="button" data-xp-action="logs">Logs</button></div></section>
 <section class="section"><h2>Phase 1 Pipeline</h2><p class="small">Use RUN PHASE 1 FULL PIPELINE for normal work. It auto-applies schema, refreshes board, builds bridge, builds context, builds score, and returns audit flags.</p><button type="button" class="full green" data-xp-action="phase1-run-all">RUN PHASE 1 FULL PIPELINE</button><div class="button-grid"><button type="button" class="full gold" data-xp-action="bridge-context-lock">RUN BRIDGE CONTEXT LOCK</button><button type="button" class="teal" data-xp-action="bridge-build">Build Bridge</button><button type="button" data-xp-action="bridge-counts">Bridge Counts</button><button type="button" data-xp-action="bridge-unmatched">Unmatched</button><button type="button" data-xp-action="bridge-audit">Bridge Audit</button><button type="button" class="teal" data-xp-action="context-build">Build Context</button><button type="button" data-xp-action="context-counts">Context Counts</button><button type="button" data-xp-action="context-completeness">Completeness</button><button type="button" class="green" data-xp-action="score-build">Build Score</button><button type="button" data-xp-action="score-counts">Score Counts</button><button type="button" class="gold" data-xp-action="score-audit">Score Audit</button><button type="button" data-xp-action="score-sample">Score Sample</button><button type="button" data-xp-action="context-sample">Context Sample</button></div></section>
 <section class="section"><h2>Phase 2 Gate</h2><p class="small">Readiness gate for Singles, Doubles, and Home Runs. Home Runs can run a basic internal score scaffold. Singles and Doubles stay blocked until native component metrics exist.</p><button type="button" class="full gold" data-xp-action="phase2-readiness">RUN PHASE 2 READINESS GATE</button><button type="button" class="full green" data-xp-action="phase2-hr-score">RUN PHASE 2 HOME RUN SCORE SCAFFOLD</button></section>
@@ -24,7 +24,7 @@ const CONTROL_ROOM_HTML = String.raw`<!doctype html>
 </main><script>
 (function(){
 'use strict';
-var VERSION='v0.1.34 - Expansion Game Bridge Context Lock';
+var VERSION='v0.1.35 - Alias Map Reset Fix';
 var HARD_CODED_WORKER_BASE='https://alphadog-expansion-v001.rodolfoaamattos.workers.dev';
 var EMBEDDED_TOKEN='alphadog-xp-v013-admin-2f7c9d41-6b30-4bc8-a2d9-28f41c0e5a73';
 var OUTPUT_CHAR_LIMIT=150000;
@@ -116,7 +116,7 @@ window.XP={run:run,selfTest:selfTest,runManualSql:runManualSql,sampleProp:sample
 bindButtons();
 if(originStatus){ originStatus.textContent=isLocalFile()?'Local file/opened outside Worker. Using hardcoded Worker bridge.':(isWorkerHost()?'Worker-hosted UI detected. Using Worker routes.':'External-hosted UI detected. Using hardcoded Worker bridge.'); }
 setStatus('Ready. Direct button binding loaded.');
-show('Ready. v0.1.34 game bridge context lock loaded. Buttons are directly bound plus delegated fallback.');
+show('Ready. v0.1.35 alias map reset fix loaded. Buttons are directly bound plus delegated fallback.');
 })();
 </script></body></html>`;
 
@@ -505,10 +505,27 @@ async function applySchema(env) {
   }
   const bridgeMigration = await trySchemaStatement(env, `ALTER TABLE xp_game_bridge_current ADD COLUMN expansion_phase INTEGER`, ['duplicate column name']);
   if (!bridgeMigration.ok) return { ok:false, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', error:bridgeMigration.error, failed_statement_preview:bridgeMigration.sql, compatibility_stage:'bridge_expansion_phase_migration' };
+  const aliasReset = await resetExpansionAliasTables(env);
+  if (!aliasReset.ok) return { ok:false, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', error:aliasReset.error, failed_statement_preview:aliasReset.failed_statement_preview, compatibility_stage:'alias_map_reset' };
   const aliasSeed = await seedExpansionAliases(env);
-  return { ok:true, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', schema:'xp_* isolated schema applied', schema_mode:'prop_definitions_reset_then_idempotent_xp_tables', statement_runner:'individual_prepare_run_no_exec_multistatement', compatibility_migrations:compatibility, alias_seed:aliasSeed, bridge_migration:bridgeMigration, statements_applied:applied.length };
+  return { ok:true, version:SYSTEM_VERSION, function_name:'handleApplySchema', route:'/xp/schema/apply', schema:'xp_* isolated schema applied', schema_mode:'prop_definitions_reset_then_idempotent_xp_tables', statement_runner:'individual_prepare_run_no_exec_multistatement', compatibility_migrations:compatibility, alias_reset:aliasReset, alias_seed:aliasSeed, bridge_migration:bridgeMigration, statements_applied:applied.length };
 }
 
+async function resetExpansionAliasTables(env) {
+  const statements = [
+    `DROP TABLE IF EXISTS xp_team_alias_map`,
+    `CREATE TABLE xp_team_alias_map (alias TEXT PRIMARY KEY, canonical_team TEXT NOT NULL, source TEXT DEFAULT 'EXPANSION_BUILT_IN', updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+    `DROP TABLE IF EXISTS xp_player_name_alias_map`,
+    `CREATE TABLE xp_player_name_alias_map (alias_name TEXT PRIMARY KEY, canonical_name TEXT NOT NULL, source TEXT DEFAULT 'EXPANSION_MANUAL_OR_DISCOVERED', updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`
+  ];
+  const applied = [];
+  for (const sql of statements) {
+    const res = await trySchemaStatement(env, sql, []);
+    if (!res.ok) return { ok:false, error:res.error, failed_statement_preview:res.sql, applied };
+    applied.push(res);
+  }
+  return { ok:true, mode:'drop_recreate_alias_maps_to_repair_legacy_shape', statements_applied:applied.length };
+}
 
 async function seedExpansionAliases(env) {
   const aliases = [

@@ -1,0 +1,10 @@
+Build: v0.1.35 - Alias Map Reset Fix
+Files expected:
+- alphadog_expansion_worker.js
+- alphadog_expansion_control_room.html
+- wrangler.expansion.jsonc
+- package.expansion.json
+- README_EXPANSION_v0.1.35.txt
+
+Version labels match v0.1.35.
+Scope: expansion only, xp_* writes only, no production scoring mutation, no Main UI mutation.
