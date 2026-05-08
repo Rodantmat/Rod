@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.25 - Volatile Overwrite Guard";
+const SYSTEM_VERSION = "v1.4.26 - Queue Fast Return Lock Reaper";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7425,6 +7425,10 @@ function scoringRequestIsBackendOwned(input) {
 
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await ensureRefreshOrchestratorTables(env);
+  // v1.4.26: Schedule buttons must never execute a long refresh inside the browser request.
+  // First clean stale locks/queue blockers, then enqueue fast. Minute cron owns execution.
+  const enqueue_reaper = await volatileOverwritePreflight(env, (input && input.slate_date) || null, { releaseScoringLock:true, reason:'enqueue_preflight_lock_reaper' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
+  await recoverStaleRefreshQueueRows(env, { trigger:'enqueue_preflight_stale_queue_reaper', reason:'before_new_enqueue' }).catch(() => null);
   const slate = resolveSlateDate(input || {});
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const requestedSet = new Set(requested);
@@ -7451,8 +7455,9 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   ));
   await env.DB.batch(stmts);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'enqueue', status:'pending', message:`${selected.length} refresh job(s) enqueued`, payload_json:{ mode, selected_job_keys:selected.map(j => j.job_key), slate } });
-  const tick = input?.auto_start === false ? null : await runRefreshOrchestratorTick({ ...(input || {}), job:'refresh_orchestrator_tick', trigger:'enqueue_auto_start', max_ms:22000 }, env);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time until the queue is complete.', note:'The database queue now controls refresh work. No new button/job is needed for future SQL-triggered refresh requests.' };
+  const autoStartRequested = input?.auto_start === true || input?.force_auto_start === true;
+  const tick = autoStartRequested ? await runRefreshOrchestratorTick({ ...(input || {}), job:'refresh_orchestrator_tick', trigger:'enqueue_auto_start_explicit', max_ms:12000 }, env).catch(e => ({ ok:false, data_ok:false, error:String(e?.message||e), status:'auto_start_error' })) : null;
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. Do not keep the browser request open for long refresh work.', note:'v1.4.26 fast-return enqueue: Schedule Cascade only writes queue rows and returns. Long refresh/scoring execution is backend-owned by minute cron to avoid iPhone/Safari Load failed timeouts.' };
 }
 
 function isOptionalRefreshDependency(row) {
@@ -7653,6 +7658,8 @@ async function compactRefreshQueueOutput(wrapped) {
 
 async function runRefreshOrchestratorTick(input, env) {
   await ensureRefreshOrchestratorTables(env);
+  const tick_reaper = await volatileOverwritePreflight(env, (input && input.slate_date) || null, { releaseScoringLock:true, reason:'tick_preflight_lock_reaper' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
+  await recoverStaleRefreshQueueRows(env, { trigger:'tick_preflight_stale_queue_reaper', reason:'before_tick' }).catch(() => null);
   const started = Date.now();
   const maxMs = Math.max(6000, Math.min(Number(input?.max_ms || 23000), 26000));
   const processed = [];
@@ -7731,7 +7738,7 @@ async function runRefreshOrchestratorTick(input, env) {
   }
   const status = await refreshOrchestratorStatus({ job:'refresh_orchestrator_status' }, env);
   const active = (status.active_summary || []).filter(r => ['pending','running'].includes(String(r.status || '').toLowerCase())).reduce((a,r)=>a+Number(r.rows_count||0),0);
-  return { ok:true, data_ok:last?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:processed.length ? 'advanced' : 'idle_no_due_refresh_queue', processed_count:processed.length, processed, last_result:last, active_remaining:active, elapsed_ms:Date.now()-started, queue_summary:status.active_summary, manual_ticks_required:false, note:active ? 'Refresh orchestrator has pending/running work. Minute cron will continue one safe unit at a time.' : 'Refresh orchestrator queue is idle/complete.' };
+  return { ok:true, data_ok:last?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:processed.length ? 'advanced' : 'idle_no_due_refresh_queue', processed_count:processed.length, processed, last_result:last, active_remaining:active, elapsed_ms:Date.now()-started, queue_summary:status.active_summary, tick_reaper, manual_ticks_required:false, note:active ? 'Refresh orchestrator has pending/running work. Minute cron will continue one safe unit at a time.' : 'Refresh orchestrator queue is idle/complete.' };
 }
 
 async function cancelRefreshOrchestratorQueue(input, env) {
@@ -14671,7 +14678,7 @@ async function runFullScoringRefreshV1(input, env) {
     lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
   }
   if (!lock.acquired) {
-    return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'LOCKED_SKIP_SCORING_ALREADY_RUNNING', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Another scoring refresh is already active. This skipped cleanly to avoid overlapping score/candidate-board writes.' };
+    return { ok: true, data_ok: true, partial: true, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Scoring lock is active. This is not a failed scoring run. The orchestrator will keep this row running and retry next minute; stale locks are reaped automatically.' };
   }
   try {
     const scoring = await runMlbScoringV1({ ...(input || {}), job: 'run_mlb_scoring_v1', slate_date: requestedSlateDate, slate_mode: slate.slate_mode, trigger }, env);

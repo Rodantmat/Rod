@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.26 - Queue Fast Return Lock Reaper
+ZIP: alphadog_v1.4.26_queue_fast_return_lock_reaper.zip
+worker.js: v1.4.26 - Queue Fast Return Lock Reaper
+control_room.html: v1.4.26 - Queue Fast Return Lock Reaper
+README: README_v1.4.26.txt
+
+Validation performed:
+- node --check worker.js passed.
+- Flat folder only.
+- Production scheduled backend only.
+- No Main UI files included.
+- No expansion worker files included.
+- Static/incremental base tables are not targeted by volatile purge helper.
