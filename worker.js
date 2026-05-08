@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.17 - Orchestrator Scoring Ownership Fix";
+const SYSTEM_VERSION = "v1.4.19 - Production Refresh Final Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1130,6 +1130,63 @@ function hydratePromptTemplate(prompt, slateDate) {
   return String(prompt || "").replaceAll("{{SLATE_DATE}}", slateDate);
 }
 
+
+function getOddsApiKey(env = {}) {
+  const candidates = [
+    "ODDS_API_KEY",
+    "THE_ODDS_API_KEY",
+    "ODDSAPI_KEY",
+    "ODDS_API_TOKEN",
+    "ODDS_API",
+    "THEODDSAPIKEY",
+    "THE_ODDS_API"
+  ];
+  const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const accepted = new Set(candidates.map(normalizeName));
+  const checked = [...candidates];
+
+  for (const name of candidates) {
+    const value = env && env[name];
+    if (typeof value === "string" && value.trim()) {
+      return { key: value.trim(), source: name, configured: true, checked, resolver: "direct_candidate" };
+    }
+    if (value && typeof value === "object") {
+      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+      if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "nested_candidate" };
+    }
+  }
+
+  try {
+    for (const name of Object.keys(env || {})) {
+      const normalized = normalizeName(name);
+      if (!accepted.has(normalized)) continue;
+      const value = env[name];
+      checked.push(name);
+      if (typeof value === "string" && value.trim()) {
+        return { key: value.trim(), source: name, configured: true, checked, resolver: "normalized_env_scan" };
+      }
+      if (value && typeof value === "object") {
+        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+        if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "normalized_nested_env_scan" };
+      }
+    }
+  } catch (_) {}
+
+  return { key: "", source: null, configured: false, checked, resolver: "not_found" };
+}
+
+function oddsApiBindingStatus(env = {}) {
+  const resolved = getOddsApiKey(env);
+  const rawPrimary = env && typeof env.ODDS_API_KEY === "string" ? env.ODDS_API_KEY.trim() : "";
+  return {
+    configured: !!resolved.key,
+    source: resolved.source,
+    primary_bound: !!rawPrimary,
+    candidate_names_checked: resolved.checked,
+    key_length: resolved.key ? resolved.key.length : 0
+  };
+}
+
 function health(env) {
   return {
     ok: true,
@@ -1139,7 +1196,8 @@ function health(env) {
     ingest_token_bound: !!env.INGEST_TOKEN,
     gemini_key_bound: !!env.GEMINI_API_KEY,
     prompt_base_url_bound: !!env.PROMPT_BASE_URL,
-    odds_api_key_bound: !!env.ODDS_API_KEY,
+    odds_api_key_bound: !!getOddsApiKey(env).key,
+    odds_api_binding: oddsApiBindingStatus(env),
     github_repo_bound: !!env.GITHUB_REPO,
     github_token_bound: !!env.GITHUB_TOKEN,
     github_workflow_file_bound: !!env.GITHUB_WORKFLOW_FILE,
@@ -2501,16 +2559,24 @@ function githubWorkflowFileName(value) {
 async function getPrizePicksMlbStatsFreshness(env) {
   try {
     const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mlb_stats' LIMIT 1").first();
-    if (!exists) return { table_exists:false, rows_count:0, latest_updated_at:null, latest_updated_ms:0 };
-    const row = await env.DB.prepare("SELECT COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated_at FROM mlb_stats").first();
+    if (!exists) return { table_exists:false, rows_count:0, future_rows:0, latest_updated_at:null, latest_updated_ms:0, latest_start_time:null };
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS rows_count,
+             SUM(CASE WHEN datetime(start_time) > datetime('now') THEN 1 ELSE 0 END) AS future_rows,
+             MAX(updated_at) AS latest_updated_at,
+             MAX(start_time) AS latest_start_time
+      FROM mlb_stats
+    `).first();
     return {
       table_exists:true,
       rows_count:Number(row?.rows_count || 0),
+      future_rows:Number(row?.future_rows || 0),
       latest_updated_at:row?.latest_updated_at || null,
-      latest_updated_ms:parseD1TimestampMaybe(row?.latest_updated_at)
+      latest_updated_ms:parseD1TimestampMaybe(row?.latest_updated_at),
+      latest_start_time:row?.latest_start_time || null
     };
   } catch (e) {
-    return { table_exists:false, rows_count:0, latest_updated_at:null, latest_updated_ms:0, error:String(e && e.message || e) };
+    return { table_exists:false, rows_count:0, future_rows:0, latest_updated_at:null, latest_updated_ms:0, latest_start_time:null, error:String(e && e.message || e) };
   }
 }
 
@@ -2533,7 +2599,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const requestedAt = prior.requested_at || prior.triggered_at || null;
   const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
 
-  if (requestedMs && current.rows_count > 0 && current.latest_updated_ms > requestedMs) {
+  if (requestedMs && current.rows_count > 0 && current.future_rows > 0 && current.latest_updated_ms > requestedMs) {
     return {
       ok:true,
       data_ok:true,
@@ -2550,7 +2616,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
 
   if (requestedMs) {
     const elapsedSeconds = Math.round((Date.now() - requestedMs) / 1000);
-    if (elapsedSeconds < 900) {
+    if (elapsedSeconds < 480) {
       return {
         ok:true,
         data_ok:false,
@@ -2562,9 +2628,23 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting for main.py to refresh mlb_stats before converting PrizePicks context.'
+        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.19 caps this wait so stale board refresh cannot trap the full pipeline.'
       };
     }
+    return {
+      ok:false,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:'trigger_prizepicks_github_board_refresh',
+      status:'github_board_update_timeout',
+      error:'github_workflow_dispatched_but_no_fresh_future_board_rows',
+      board_refresh_complete:false,
+      requested_at:requestedAt,
+      elapsed_seconds:elapsedSeconds,
+      mlb_stats:current,
+      next_check:'orchestrator retry or watchdog re-enqueue',
+      note:'GitHub workflow was dispatched but no fresh future PrizePicks board rows appeared before the timeout. This is treated as a real board-refresh failure, not an endless pending state.'
+    };
   }
 
   const missing = [];
@@ -7368,18 +7448,30 @@ async function productionRefreshWatchdog(env, input = {}) {
     SELECT COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated_at, MAX(slate_date) AS max_slate_date
     FROM score_candidate_board
   `).first().catch(() => ({ rows_count:0, latest_updated_at:null, max_slate_date:null }));
+  let recovery_enqueue = null;
+  if (due && active.length === 0 && Number(board?.future_rows || 0) === 0) {
+    recovery_enqueue = await enqueueRefreshOrchestratorRows({
+      job:'refresh_orchestrator_enqueue_cascade',
+      trigger:'production_refresh_watchdog_stale_board_recovery',
+      job_keys:['everyday_phase1'],
+      slate_mode:'AUTO',
+      auto_start:true,
+      max_attempts:3
+    }, env, 'cascade').catch(err => ({ ok:false, data_ok:false, error:String(err?.message || err) }));
+  }
   const result = {
     ok:true,
-    data_ok: active.length === 0 && Number(board?.future_rows || 0) > 0,
+    data_ok: (active.length === 0 && Number(board?.future_rows || 0) > 0) || !!recovery_enqueue?.data_ok,
     version:SYSTEM_VERSION,
     job:'production_refresh_watchdog',
-    status: due ? 'diagnostic_window_checked' : 'stale_recovery_checked',
+    status: recovery_enqueue ? 'stale_board_recovery_enqueued' : (due ? 'diagnostic_window_checked' : 'stale_recovery_checked'),
     pt,
     stale_recovery,
     active_queue:active,
     prizepicks_context:board,
     candidate_board:candidate,
-    note:'Watchdog is diagnostic/recovery only: it recovers stale null-run_after queue blockers and logs board freshness. It does not change scoring math, routes, URLs, or UI structure.'
+    recovery_enqueue,
+    note:'Watchdog is diagnostic/recovery only: it recovers stale null-run_after queue blockers, logs board freshness, and at the 11AM/11PM PT diagnostic windows can enqueue one safe cascade if the board has no future rows and no queue is active. It does not change scoring math, routes, URLs, or UI structure.'
   };
   await refreshOrchestratorEvent(env, { event_type:'production_refresh_watchdog', status:result.status, message:'Production refresh watchdog checked queue and board freshness.', payload_json:result });
   return result;
@@ -7408,19 +7500,27 @@ function isPrizePicksBoardWaitingResult(result) {
 async function prizePicksBoardFreshnessGate(env, row) {
   const anchor = row?.started_at || row?.updated_at || row?.created_at || null;
   const meta = await env.DB.prepare(`
-    SELECT COUNT(*) AS rows_count, MIN(updated_at) AS oldest_updated_at, MAX(updated_at) AS latest_updated_at
+    SELECT COUNT(*) AS rows_count,
+           SUM(CASE WHEN datetime(start_time) > datetime('now') THEN 1 ELSE 0 END) AS future_rows,
+           MIN(updated_at) AS oldest_updated_at,
+           MAX(updated_at) AS latest_updated_at,
+           MAX(start_time) AS latest_start_time
     FROM mlb_stats
     WHERE updated_at >= datetime(COALESCE(?, CURRENT_TIMESTAMP), '-2 minutes')
-  `).bind(anchor).first().catch(() => ({ rows_count:0, latest_updated_at:null, oldest_updated_at:null }));
-  const total = await env.DB.prepare(`SELECT COUNT(*) AS total_rows, MAX(updated_at) AS latest_any_updated_at FROM mlb_stats`).first().catch(() => ({ total_rows:0, latest_any_updated_at:null }));
+  `).bind(anchor).first().catch(() => ({ rows_count:0, future_rows:0, latest_updated_at:null, oldest_updated_at:null, latest_start_time:null }));
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS total_rows, SUM(CASE WHEN datetime(start_time) > datetime('now') THEN 1 ELSE 0 END) AS future_rows, MAX(updated_at) AS latest_any_updated_at, MAX(start_time) AS latest_start_time FROM mlb_stats`).first().catch(() => ({ total_rows:0, future_rows:0, latest_any_updated_at:null, latest_start_time:null }));
   return {
-    ok: Number(meta?.rows_count || 0) > 0,
+    ok: Number(meta?.rows_count || 0) > 0 && Number(meta?.future_rows || 0) > 0,
     anchor,
     fresh_rows_after_anchor: Number(meta?.rows_count || 0),
+    fresh_future_rows_after_anchor: Number(meta?.future_rows || 0),
     oldest_fresh_updated_at: meta?.oldest_updated_at || null,
     latest_fresh_updated_at: meta?.latest_updated_at || null,
+    latest_fresh_start_time: meta?.latest_start_time || null,
     total_rows: Number(total?.total_rows || 0),
-    latest_any_updated_at: total?.latest_any_updated_at || null
+    total_future_rows: Number(total?.future_rows || 0),
+    latest_any_updated_at: total?.latest_any_updated_at || null,
+    latest_any_start_time: total?.latest_start_time || null
   };
 }
 
@@ -7485,7 +7585,7 @@ async function runRefreshOrchestratorTick(input, env) {
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:result?.status || (result?.ok === false ? 'failed' : 'pass'), partial:refreshResultIsPartial(result) });
       if (result?.ok === false || result?.data_ok === false) {
         const attempts = Number(row.attempt_count || 0) + 1;
-        const terminal = attempts >= Number(row.max_attempts || 3);
+        const terminal = isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
         await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed':'retry', status:terminal?'failed':'pending', message:String(result?.error || result?.status || 'refresh_job_failed'), payload_json:wrapped });
         if (terminal && isOptionalRefreshDependency(row)) {
@@ -7507,7 +7607,7 @@ async function runRefreshOrchestratorTick(input, env) {
     } catch (err) {
       const error = String(err?.message || err);
       const attempts = Number(row.attempt_count || 0) + 1;
-      const terminal = attempts >= Number(row.max_attempts || 3);
+      const terminal = isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
       const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error };
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error });
@@ -9547,9 +9647,9 @@ function phase2cIsSupportedSingle(row) {
 }
 
 function phase2cChunkSize(input) {
-  const requested = Number(input?.chunk_size || input?.limit || 400);
-  if (!Number.isFinite(requested)) return 400;
-  return Math.max(100, Math.min(500, Math.floor(requested)));
+  const requested = Number(input?.chunk_size || input?.limit || 1000);
+  if (!Number.isFinite(requested)) return 1000;
+  return Math.max(250, Math.min(1500, Math.floor(requested)));
 }
 
 async function ensurePhase2cMarketContextTables(env) {
@@ -9583,6 +9683,8 @@ async function ensurePhase2cMarketContextTables(env) {
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_ctx_current ON prizepicks_current_market_context(is_current, slate_date, stat_type)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_ctx_line_id ON prizepicks_current_market_context(line_id)`).run();
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_pp_ctx_board_updated ON prizepicks_current_market_context(board_updated_at)`).run();
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_mlb_stats_updated_at ON mlb_stats(updated_at)`).run().catch(() => null);
+  await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_mlb_stats_line_id ON mlb_stats(line_id)`).run().catch(() => null);
 
   await env.DB.prepare(`
     CREATE TABLE IF NOT EXISTS phase2c_market_context_runs (
@@ -9623,6 +9725,26 @@ async function phase2cLatestBoardMeta(env) {
   };
 }
 
+async function cleanupPrizePicksBoardSourceHistory(env, latestUpdatedAt) {
+  if (!latestUpdatedAt) return { cleaned:false, reason:'missing_latest_updated_at' };
+  const before = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM mlb_stats`).first().catch(() => ({ rows_count:null }));
+  const res = await env.DB.prepare(`
+    DELETE FROM mlb_stats
+    WHERE updated_at < datetime(?, '-30 minutes')
+  `).bind(latestUpdatedAt).run().catch(err => ({ meta:{ changes:0 }, error:String(err?.message || err) }));
+  const after = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM mlb_stats`).first().catch(() => ({ rows_count:null }));
+  return {
+    cleaned:true,
+    table:'mlb_stats',
+    keep_rule:"updated_at >= latest_updated_at minus 30 minutes",
+    latest_updated_at:latestUpdatedAt,
+    deleted_rows:Number(res?.meta?.changes || 0),
+    before_rows:before?.rows_count == null ? null : Number(before.rows_count || 0),
+    after_rows:after?.rows_count == null ? null : Number(after.rows_count || 0),
+    error:res?.error || null
+  };
+}
+
 async function phase2cGetOrStartRun(env, slateDate, latestUpdatedAt, totalRows, chunkSize, forceNew) {
   if (!forceNew) {
     const existing = await env.DB.prepare(`
@@ -9647,11 +9769,7 @@ async function phase2cGetOrStartRun(env, slateDate, latestUpdatedAt, totalRows, 
     `).bind(slateDate, latestUpdatedAt).run().catch(() => null);
   }
   const runId = crypto.randomUUID();
-  await env.DB.prepare(`
-    UPDATE prizepicks_current_market_context
-    SET is_current=0, is_stale=1, status='SUPERSEDED', updated_at=CURRENT_TIMESTAMP
-    WHERE is_current=1
-  `).run();
+  await env.DB.prepare(`DELETE FROM prizepicks_current_market_context`).run();
   await env.DB.prepare(`
     INSERT INTO phase2c_market_context_runs (
       run_id, slate_date, latest_board_updated_at, board_window_rule, total_rows, processed_rows, remaining_rows,
@@ -9670,6 +9788,7 @@ async function scrapePhase2cMarketContext(input = {}, env) {
   const forceNew = Boolean(input.force_new || input.restart || input.reset_run);
   await ensurePhase2cMarketContextTables(env);
   const boardMeta = await phase2cLatestBoardMeta(env);
+  const raw_board_cleanup = await cleanupPrizePicksBoardSourceHistory(env, boardMeta.latestUpdatedAt).catch(err => ({ cleaned:false, error:String(err?.message || err) }));
   if (!boardMeta.latestUpdatedAt || boardMeta.totalRows <= 0) {
     return { ok: false, data_ok: false, job, version: SYSTEM_VERSION, phase: "Phase 2C-I Market Context Chunk Runner", status: "warn_empty_board", source_table: "mlb_stats", active_window_rule: "latest updated_at minus 10 minutes", slate_date: slateDate, rows_read: 0, rows_processed_this_chunk: 0, warnings: ["mlb_stats is empty or latest capture window returned zero rows"], note: "No scoring, no external odds, no Gemini, no cron." };
   }
@@ -9793,6 +9912,7 @@ async function scrapePhase2cMarketContext(input = {}, env) {
       latest_updated_at: boardMeta.newestInWindow,
       total_rows: boardMeta.totalRows
     },
+    raw_board_cleanup,
     chunk: {
       chunk_size: chunkSize,
       offset_started_at: offset,
@@ -9904,6 +10024,7 @@ async function checkPhase2cMarketContext(input = {}, env) {
       latest_updated_at: boardMeta.newestInWindow,
       total_rows: boardMeta.totalRows
     },
+    raw_board_cleanup,
     summary: summary || {},
     identity_counts: identityCounts.results || [],
     stat_type_counts: statCounts.results || [],
@@ -12223,7 +12344,19 @@ function stripApiKeyFromUrl(url) { try { const u = new URL(url); if (u.searchPar
 function ptFromISO(iso) { if (!iso) return { date:null, time:null, minutes:null, label:null }; const d = new Date(String(iso)); if (Number.isNaN(d.getTime())) return { date:null, time:null, minutes:null, label:null }; const parts = new Intl.DateTimeFormat('en-CA', { timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false }).formatToParts(d); const m = {}; for (const p of parts) m[p.type] = p.value; const minutes = Number(m.hour) * 60 + Number(m.minute); return { date:`${m.year}-${m.month}-${m.day}`, time:`${m.hour}:${m.minute}`, minutes, label:`${m.hour}:${m.minute} PT` }; }
 function oddsEventWindow(iso) { const pt = ptFromISO(iso); if (pt.minutes === null) return { bucket:'UNKNOWN', pt }; return { bucket: pt.minutes < ODDS_API_WINDOW_SPLIT_MINUTES ? 'MORNING' : 'EARLY_AFTERNOON', pt }; }
 function oddsEventEligibleForWindow(ev, windowName) { const now = Date.now(); const startMs = Date.parse(ev.commence_time || ''); if (!Number.isFinite(startMs)) return { eligible:false, status:'SKIPPED_BAD_START_TIME' }; if (startMs <= now) return { eligible:false, status:'SKIPPED_STARTED' }; if (startMs <= now + ODDS_API_START_BUFFER_MINUTES * 60 * 1000) return { eligible:false, status:'SKIPPED_TOO_CLOSE' }; const w = oddsEventWindow(ev.commence_time); if (String(windowName).toUpperCase() === 'MORNING') return { eligible:true, status:'ELIGIBLE', bucket:w.bucket, pt:w.pt }; if (w.bucket !== 'EARLY_AFTERNOON') return { eligible:false, status:'SKIPPED_OTHER_WINDOW', bucket:w.bucket, pt:w.pt }; return { eligible:true, status:'ELIGIBLE', bucket:w.bucket, pt:w.pt }; }
-async function oddsApiFetchJson(url) { const started = Date.now(); const res = await fetch(url.toString(), { method:'GET', headers:{ 'accept':'application/json' } }); const txt = await res.text(); let data; try { data = JSON.parse(txt || 'null'); } catch { data = { parse_error:true, response_preview:txt.slice(0,1000) }; } const usage = { requests_remaining:res.headers.get('x-requests-remaining'), requests_used:res.headers.get('x-requests-used'), requests_last:res.headers.get('x-requests-last') }; return { ok:res.ok, http_status:res.status, data, usage, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()) }; }
+async function oddsApiFetchJson(url) {
+  const started = Date.now();
+  try {
+    const res = await fetch(url.toString(), { method:'GET', headers:{ 'accept':'application/json' } });
+    const txt = await res.text();
+    let data;
+    try { data = JSON.parse(txt || 'null'); } catch { data = { parse_error:true, response_preview:txt.slice(0,1000) }; }
+    const usage = { requests_remaining:res.headers.get('x-requests-remaining'), requests_used:res.headers.get('x-requests-used'), requests_last:res.headers.get('x-requests-last') };
+    return { ok:res.ok, http_status:res.status, data, usage, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()) };
+  } catch (err) {
+    return { ok:false, http_status:0, data:{ network_error:String(err?.message || err) }, usage:{ requests_remaining:null, requests_used:null, requests_last:null }, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()) };
+  }
+}
 async function ensureOddsApiTables(env) {
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS odds_api_requests (request_id TEXT PRIMARY KEY, slate_date TEXT, window_name TEXT, request_type TEXT, event_id TEXT, endpoint TEXT, redacted_url TEXT, http_status INTEGER, ok INTEGER, regions TEXT, markets TEXT, bookmakers TEXT, x_requests_remaining TEXT, x_requests_used TEXT, x_requests_last TEXT, elapsed_ms INTEGER, payload_json TEXT, error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS odds_api_requests_temp (run_id TEXT, request_id TEXT PRIMARY KEY, slate_date TEXT, window_name TEXT, request_type TEXT, event_id TEXT, endpoint TEXT, redacted_url TEXT, http_status INTEGER, ok INTEGER, regions TEXT, markets TEXT, bookmakers TEXT, x_requests_remaining TEXT, x_requests_used TEXT, x_requests_last TEXT, elapsed_ms INTEGER, payload_json TEXT, error TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`).run();
@@ -12370,14 +12503,23 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
 }
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
-  if (!env.ODDS_API_KEY) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing ODDS_API_KEY secret' };
+  const oddsKeyInfo = getOddsApiKey(env);
+  if (!oddsKeyInfo.key) return {
+    ok:false,
+    data_ok:false,
+    version:SYSTEM_VERSION,
+    job:input.job || 'run_odds_api_market_intel',
+    error:'Missing ODDS_API_KEY secret',
+    odds_api_binding: oddsApiBindingStatus(env),
+    note:'Odds API key resolver checked all accepted binding names. Health and job execution now use the same resolver.'
+  };
   const slateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   const windowName = String(input.window_name || 'MORNING').toUpperCase();
   await ensureOddsApiTables(env);
   const runId = oddsRunId(slateDate, windowName);
   await cleanOddsApiTempRun(env, runId).catch(() => null);
   const cfg = oddsApiConfig(env);
-  const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
+  const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
   const gameResult = await oddsApiFetchJson(gameUrl);
   await saveOddsApiRequestToTable(env, 'odds_api_requests_temp', runId, { slateDate, windowName, requestType:'GAME_ODDS', endpoint:`/${ODDS_API_SPORT_KEY}/odds`, eventId:null, redactedUrl:gameResult.redacted_url, result:gameResult, regions:cfg.regions, markets:cfg.gameMarkets, bookmakers:cfg.bookmakers });
   const allEvents = Array.isArray(gameResult.data) ? gameResult.data : [];
@@ -12396,7 +12538,7 @@ async function runOddsApiMarketIntel(input, env) {
   const propRequestBreakdown = { hits_tb_bundle:0, hits_tb_bundle_ok:0, hits_tb_bundle_failed:0, rbi_expansion:0, rbi_expansion_ok:0, rbi_expansion_failed:0 };
   const eventResults = [];
   async function runPropGroup(ev, groupName, requestType, markets, bookmakers) {
-    const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, env.ODDS_API_KEY, { regions:cfg.regions, markets, oddsFormat:cfg.oddsFormat, bookmakers:String(bookmakers || '').trim() });
+    const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets, oddsFormat:cfg.oddsFormat, bookmakers:String(bookmakers || '').trim() });
     const propResult = await oddsApiFetchJson(propUrl);
     propRequests += 1;
     await saveOddsApiRequestToTable(env, 'odds_api_requests_temp', runId, { slateDate, windowName, requestType, endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets, bookmakers });
@@ -12439,6 +12581,7 @@ async function runOddsApiMarketIntel(input, env) {
     run_id:runId,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
+    odds_api_binding: oddsApiBindingStatus(env),
     game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
     selected_events:selected.length,
     skipped_counts:skippedCounts,

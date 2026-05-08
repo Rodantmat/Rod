@@ -1,0 +1,13 @@
+Build Version Audit
+
+ZIP: alphadog_v1.4.19_production_refresh_final_guard.zip
+worker.js: v1.4.19 - Production Refresh Final Guard
+control_room.html: v1.4.19 - Production Refresh Final Guard
+README: README_v1.4.19.txt
+wrangler.jsonc: unchanged worker name/path/cron structure
+
+Validation:
+- node --check worker.js passed locally.
+- Flat ZIP only.
+- No Main UI files included.
+- No expansion/xp files included.
