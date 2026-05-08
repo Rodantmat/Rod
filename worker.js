@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.33 - Volatile Audit Clamp Final";
+const SYSTEM_VERSION = "v1.4.34 - Candidate Publish Fallback Final";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -14813,7 +14813,7 @@ async function runFullScoringRefreshV1(input, env) {
     const scoringOk=!!(scoring?.ok && scoring?.data_ok);
     const candidateOk=!!(candidate_board?.ok && candidate_board?.data_ok);
     const failure_stage=!scoringOk?'scoring':(!candidateOk?'candidate_board':null);
-    const failure_error=String(scoring?.error||scoring?.status||candidate_board?.error||candidate_board?.status||export_board?.error||'');
+    const failure_error=String((!candidateOk && scoringOk ? (candidate_board?.error||candidate_board?.status||candidate_board?.note) : null)||scoring?.error||scoring?.status||candidate_board?.error||candidate_board?.status||export_board?.error||'');
     return { ok: true, data_ok: !!(scoringOk && candidateOk), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'queue_owned_scoring_no_pipeline_lock_volatile_overwrite_finalizer', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, queue_owned: queueOwned, scoring_ok: scoringOk, candidate_board_ok: candidateOk, failure_stage, failure_error: failure_error || null, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null, error: export_board.error || null, status: export_board.status || null } : candidateBoardSummary(export_board), lock_status: queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then inspect/export Candidate Board.', note: failure_stage ? `Full scoring refresh did not pass at ${failure_stage}: ${failure_error || 'no detailed error returned'}` : 'Full scoring refresh completed. Queue-owned scoring no longer uses AUTO_SCORING_REFRESH_V1 and cannot wait on its own stale lock.' };
   } catch (e) {
     return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', note:'v1.4.33 exposes the real scoring refresh exception and prevents queue-owned scoring from self-locking.' };
@@ -15016,13 +15016,40 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   const pickCtx=await loadPickabilityContext(env,slateDate);
   const staleBefore=(await env.DB.prepare(`SELECT slate_date, COUNT(*) AS rows_count FROM score_candidate_board WHERE COALESCE(slate_date,'')<>? GROUP BY slate_date ORDER BY slate_date DESC LIMIT 25`).bind(slateDate).all().catch(()=>({results:[]}))).results||[];
   const selectedBefore=await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).first().catch(()=>({rows_count:0}));
-  const res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
-  const rows=res.results||[];
+  let res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
+  let rows=res.results||[];
+  let candidateSource='active_score_board';
+  // v1.4.34 hard fallback: if the active read model is empty after a scoring run,
+  // rebuild the release board directly from the promoted score tables instead of
+  // returning an empty candidate board. This protects the Main UI from a blank board
+  // when a prior failed publish cleared active_score_board but score tables still exist.
+  if(!rows.length){
+    const fallbackSql = `
+      SELECT score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,created_at AS updated_at
+      FROM mlb_hits_scores
+      WHERE slate_date=? AND recommendation_status IN ('QUALIFIED','PLAYABLE','WATCHLIST','WEAK')
+      UNION ALL
+      SELECT score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,created_at AS updated_at
+      FROM mlb_total_bases_scores
+      WHERE slate_date=? AND recommendation_status IN ('QUALIFIED','PLAYABLE','WATCHLIST','WEAK')
+      UNION ALL
+      SELECT score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,created_at AS updated_at
+      FROM mlb_rbi_scores
+      WHERE slate_date=? AND recommendation_status IN ('QUALIFIED','PLAYABLE','WATCHLIST','WEAK')
+      ORDER BY final_score DESC, market_confidence DESC
+      LIMIT 1000`;
+    res=await env.DB.prepare(fallbackSql).bind(slateDate,slateDate,slateDate).all();
+    rows=res.results||[];
+    if(rows.length) candidateSource='promoted_score_tables_fallback';
+  }
   // v1.4.31: keep the existing live selected-slate board visible until the new publish succeeds.
   // Non-selected slates remain volatile and are purged; selected-slate rows are upserted in place.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
+  if(!rows.length){
+    return {ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,status:'NO_SCORE_ROWS_AVAILABLE_FOR_CANDIDATE_PUBLISH',candidate_source:candidateSource,active_rows_seen:0,candidates_written:0,summary:{QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0},pickability_summary:null,rollover_guard:{pass:true,active_slate:slateDate,policy:'NO_EMPTY_WINDOW_SELECTED_BOARD_PRESERVED'},slate_replace:{mode:'NO_SOURCE_ROWS_NO_SELECTED_SLATE_DELETE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight},error:'active_score_board_and_promoted_score_tables_empty',next_action:'Run Check MLB Scores and inspect scoring_runs details_json; candidate publish refused to blank selected slate because no score rows existed.',note:'v1.4.34 refuses empty candidate publish and reports the real source-row problem instead of silently returning no detailed error.'};
+  }
   const rollover_guard={ pass:true, active_slate:slateDate, policy:'VOLATILE_OVERWRITE_ONLY_SELECTED_ACTIVE_SLATE_RETAINED', non_selected_rows_deleted:true, previous_non_selected_rows:staleBefore };
-  const slate_replace={mode:'VOLATILE_SELECTED_SLATE_UPSERT_NO_EMPTY_WINDOW',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight};
+  const slate_replace={mode:'VOLATILE_SELECTED_SLATE_UPSERT_NO_EMPTY_WINDOW',active_slate:slateDate,candidate_source:candidateSource,source_rows_seen:rows.length,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight};
   const inserts=[];
   const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0};
   const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,prizepicks_pickable:0,sleeper_pickable:0,expired_or_started:pickCtx.expired_or_started,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings,rollover_policy:pickCtx.rollover_policy};
@@ -15322,9 +15349,16 @@ async function runMlbScoringV1(input,env){
   // v1.4.33/v1.4.33: safe publish. Do not delete the readable selected-slate board before replacement writes succeed.
   // Upsert new rows first, then remove rows from older run_ids for this slate after successful publish.
   await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
-  await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
-  for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
-    await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
+  // v1.4.34 safe publish: only remove the previous selected-slate active rows after
+  // the replacement active board actually wrote rows. A zero-row/failed publish must
+  // never blank the readable board.
+  if (activeStmts.length > 0 && active > 0) {
+    await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
+  }
+  if (scoreStmts.length > 0 && promoted > 0) {
+    for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
+      await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
+    }
   }
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`DELETE FROM scoring_audit_logs WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run().catch(()=>null);

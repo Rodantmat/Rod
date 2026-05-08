@@ -1,0 +1,7 @@
+Build Version Audit
+Version: v1.4.34 - Candidate Publish Fallback Final
+worker.js SYSTEM_VERSION: v1.4.34 - Candidate Publish Fallback Final
+control_room.html label: v1.4.34 - Candidate Publish Fallback Final
+README: README_v1.4.34.txt
+Build package: alphadog_v1.4.34_candidate_publish_fallback_final.zip
+Folder policy: flat files only
