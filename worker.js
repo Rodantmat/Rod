@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.22 - Candidate Board Idempotent Publish Fix";
+const SYSTEM_VERSION = "v1.4.23 - Goblin Demon Pickability Bridge";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2729,7 +2729,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.22 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
+        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.23 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
       };
     }
     return {
@@ -14681,6 +14681,8 @@ function pickabilityLineMatch(a,b){
 }
 function pickabilitySideFromPrizePicksOddsType(oddsType){
   const t=String(oddsType||'standard').toLowerCase();
+  // PrizePicks goblin/demon are More-only variants. They can unlock sportsbook OVER/MORE
+  // candidates for the exact player/stat/line, but they must never validate UNDER.
   if(t==='goblin'||t==='demon')return ['OVER'];
   return ['OVER','UNDER'];
 }
@@ -14690,10 +14692,22 @@ async function loadPickabilityContext(env, slateDate){
     const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prizepicks_current_market_context'").first();
     if(exists){
       ctx.source_tables.prizepicks_current_market_context=true;
-      const res=await env.DB.prepare(`SELECT projection_key,line_id,player_name,team,opponent,stat_type,line_score,odds_type,is_promo,start_time,slate_date,board_updated_at,source_confidence,identity_method,is_supported_single,status FROM prizepicks_current_market_context WHERE slate_date=? AND status='ACTIVE' AND COALESCE(is_current,1)=1`).bind(slateDate).all();
+      const res=await env.DB.prepare(`
+        SELECT projection_key,line_id,player_name,team,opponent,stat_type,line_score,odds_type,is_promo,start_time,slate_date,board_updated_at,source_confidence,identity_method,is_supported_single,status
+        FROM prizepicks_current_market_context
+        WHERE status='ACTIVE'
+          AND COALESCE(is_current,1)=1
+          AND COALESCE(is_stale,0)=0
+          AND (
+            slate_date=?
+            OR date(substr(COALESCE(start_time,''),1,10))=date(?)
+            OR datetime(start_time)>datetime('now')
+          )
+      `).bind(slateDate,slateDate).all();
       const raw=res.results||[];
       ctx.prizepicks_rows=raw.filter(r=>isBoardRowStillPickableByStartTime(r.start_time));
       ctx.expired_or_started.prizepicks=raw.length-ctx.prizepicks_rows.length;
+      ctx.prizepicks_context_policy='ACTIVE_FUTURE_ROWS_PLUS_SCORING_SLATE_DATE_BRIDGE';
     } else ctx.warnings.push('missing_prizepicks_current_market_context');
   }catch(e){ctx.warnings.push('prizepicks_context_load_failed:'+String(e&&e.message||e));}
   try{
@@ -14746,7 +14760,7 @@ function evaluateCandidatePickability(row, audit, ctx){
     if(row.opponent&&pp.opponent&&!pickabilityTeamMatch(row.opponent,pp.opponent))continue;
     const selectable=pickabilitySideFromPrizePicksOddsType(pp.odds_type);
     if(selectable.includes(direction)){
-      return { pickable:true, source:'prizepicks_current_market_context', board:'PrizePicks', matched_line_id:pp.line_id||pp.projection_key||null, matched_odds_type:pp.odds_type||null, selectable_sides:selectable, checked, flags:[], reason:'exact_prizepicks_board_side_available' };
+      return { pickable:true, source:'prizepicks_current_market_context', board:'PrizePicks', matched_line_id:pp.line_id||pp.projection_key||null, matched_odds_type:pp.odds_type||null, selectable_sides:selectable, checked, flags:[], reason:(String(pp.odds_type||'standard').toLowerCase()==='goblin'||String(pp.odds_type||'standard').toLowerCase()==='demon')?'exact_prizepicks_goblin_demon_more_side_available':'exact_prizepicks_board_side_available' };
     }
     failure_flags.push(`PICKABILITY_PRIZEPICKS_${String(pp.odds_type||'unknown').toUpperCase()}_${direction}_NOT_SELECTABLE`);
   }
@@ -14858,7 +14872,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.22 idempotently publishes score_candidate_board rows and replaces only the selected slate in score_candidate_board. Prior slate rows are allowed during MLB/PrizePicks rollover windows; release/export is filtered by selected slate, exact pickability, and start-time gate. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.23 keeps idempotent candidate-board publishing and fixes the PrizePicks pickability bridge: active future PrizePicks rows can validate the active scoring slate even when PrizePicks slate_date has rolled forward, and goblin/demon rows unlock OVER/MORE only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();

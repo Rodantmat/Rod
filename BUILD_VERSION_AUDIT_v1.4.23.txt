@@ -1,0 +1,20 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.23 - Goblin Demon Pickability Bridge
+ZIP: alphadog_v1.4.23_goblin_demon_pickability_bridge.zip
+worker.js: v1.4.23 - Goblin Demon Pickability Bridge
+control_room.html: v1.4.23 - Goblin Demon Pickability Bridge
+README: README_v1.4.23.txt
+wrangler.jsonc: unchanged
+package.json: unchanged
+
+Surgical fixes only:
+- Fixed PrizePicks pickability bridge for Hits/Total Bases.
+- Active future PrizePicks rows now validate the scoring slate even when PrizePicks slate_date has rolled forward to the next board date.
+- Goblin/demon PrizePicks rows now unlock OVER/MORE only for exact player/stat/line matches.
+- Goblin/demon rows never unlock UNDER.
+- RBI/Sleeper behavior unchanged.
+- Odds API, scoring math, Gemini, cron, static/incremental, and Main UI behavior unchanged.
+
+Validation:
+- worker.js passes node --check.
+- Version labels match worker.js, Control Room, README, audit, and ZIP name.
