@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.16 - Production Clock Watchdog Guard";
+const SYSTEM_VERSION = "v1.4.17 - Orchestrator Scoring Ownership Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7464,7 +7464,7 @@ async function runRefreshOrchestratorTick(input, env) {
       } else if (row.job_name === 'run_static_temp_refresh_auto') {
         result = await runStaticTempAutoLoop({ ...(body || {}), job:'run_static_temp_refresh_auto', trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_ms:22000, max_ticks:3 }, env);
       } else {
-        result = await executeTaskJob(row.job_name, { ...(body || {}), job:row.job_name, trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, slate, env);
+        result = await executeTaskJob(row.job_name, { ...(body || {}), job:row.job_name, trigger:input?.trigger || 'refresh_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true }, slate, env);
       }
       if ((result?.ok === false || result?.data_ok === false) && row.job_key === 'prizepicks_board' && isPrizePicksBoardWaitingResult(result)) {
         const freshnessGate = await prizePicksBoardFreshnessGate(env, row);

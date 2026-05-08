@@ -1,0 +1,7 @@
+BUILD VERSION AUDIT
+Version: v1.4.17 - Orchestrator Scoring Ownership Fix
+Source base: v1.4.16 - Production Clock Watchdog Guard
+Patch scope: worker.js only logic change, plus version labels/readme.
+Config preserved: wrangler.jsonc unchanged.
+Control Room preserved: no UI flow/route/path rewrite.
+Production only: no xp_* expansion changes.
