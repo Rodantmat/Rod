@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.24 - Pickability Loader Hardening";
+const SYSTEM_VERSION = "v1.4.25 - Volatile Overwrite Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -12678,15 +12678,72 @@ async function promoteOddsApiTempRun(env, runId, slateDate, windowName) {
   await env.DB.prepare(`UPDATE odds_api_run_certifications SET status='PROMOTED', promoted_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(runId).run();
   return { promoted:true, replaced_slate:slateDate, replaced_game_buckets:gameBucketList, replaced_prop_buckets:bucketList, temp_counts:tempCounts, idempotency:'UPSERT_ON_EVENTS_GAME_MARKETS_PLAYER_PROPS' };
 }
+
+async function safeDbRun(env, sql, binds = []) {
+  try {
+    if (!env || !env.DB) return { ok:false, skipped:true, error:'missing_db' };
+    const stmt = env.DB.prepare(sql);
+    const res = binds && binds.length ? await stmt.bind(...binds).run() : await stmt.run();
+    return { ok:true, changes:Number(res?.meta?.changes || 0), meta:res?.meta || null };
+  } catch (e) {
+    return { ok:false, error:String(e?.message || e), sql_preview:String(sql || '').slice(0,160) };
+  }
+}
+async function safeDbFirst(env, sql, binds = []) {
+  try {
+    if (!env || !env.DB) return null;
+    const stmt = env.DB.prepare(sql);
+    return binds && binds.length ? await stmt.bind(...binds).first() : await stmt.first();
+  } catch (_e) { return null; }
+}
+async function clearOddsApiTempTables(env) {
+  const out = {};
+  for (const t of ['odds_api_requests_temp','odds_api_events_temp','odds_api_game_markets_temp','odds_api_player_props_temp']) out[t] = await safeDbRun(env, `DELETE FROM ${t}`);
+  return out;
+}
+async function purgeOddsApiMainToSlate(env, slateDate) {
+  const out = {};
+  const slate = String(slateDate || '').trim();
+  if (!slate) return { skipped:true, reason:'missing_slate' };
+  for (const t of ['odds_api_requests','odds_api_events','odds_api_game_markets','odds_api_player_props','odds_api_run_certifications']) out[t] = await safeDbRun(env, `DELETE FROM ${t} WHERE COALESCE(slate_date,'') <> ?`, [slate]);
+  return out;
+}
+async function purgeScoringVolatileToSlate(env, slateDate) {
+  const out = {};
+  const slate = String(slateDate || '').trim();
+  if (!slate) return { skipped:true, reason:'missing_slate' };
+  out.mlb_scoring_scratchpad = await safeDbRun(env, `DELETE FROM mlb_scoring_scratchpad`);
+  for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores','active_score_board','score_candidate_board','scoring_runs']) out[t] = await safeDbRun(env, `DELETE FROM ${t} WHERE COALESCE(slate_date,'') <> ?`, [slate]);
+  out.data_refresh_queue_terminal_old = await safeDbRun(env, `DELETE FROM data_refresh_queue WHERE status NOT IN ('pending','running') AND COALESCE(updated_at,created_at,finished_at,started_at) < datetime('now','-2 days')`);
+  out.data_refresh_events_terminal_old = await safeDbRun(env, `DELETE FROM data_refresh_events WHERE created_at < datetime('now','-2 days')`);
+  return out;
+}
+async function releaseStaleScoringLocks(env, reason = 'preflight') {
+  const activeQueue = await safeDbFirst(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_queue WHERE job_key='scoring_refresh' AND status IN ('pending','running')`);
+  const activeRuns = await safeDbFirst(env, `SELECT COUNT(*) AS rows_count FROM scoring_runs WHERE status='RUNNING' AND created_at >= datetime('now','-12 minutes')`);
+  const activeQueueCount = Number(activeQueue?.rows_count || 0);
+  const activeRunCount = Number(activeRuns?.rows_count || 0);
+  const staleRows = await safeDbRun(env, `DELETE FROM pipeline_locks WHERE lock_id='AUTO_SCORING_REFRESH_V1' AND (updated_at < datetime('now','-8 minutes') OR (? = 0 AND ? = 0))`, [activeQueueCount, activeRunCount]);
+  return { active_queue:activeQueueCount, active_runs:activeRunCount, stale_lock_release:staleRows, reason };
+}
+async function volatileOverwritePreflight(env, slateDate, options = {}) {
+  const out = { slate_date:String(slateDate || ''), options };
+  if (options.oddsTemp) out.odds_temp_cleanup = await clearOddsApiTempTables(env);
+  if (options.oddsMain) out.odds_main_purge = await purgeOddsApiMainToSlate(env, slateDate);
+  if (options.scoring) out.scoring_volatile_purge = await purgeScoringVolatileToSlate(env, slateDate);
+  if (options.releaseScoringLock) out.scoring_lock_reaper = await releaseStaleScoringLocks(env, options.reason || 'preflight');
+  return out;
+}
+
 async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
-  const cert = await env.DB.prepare(`SELECT status FROM odds_api_run_certifications WHERE run_id=?`).bind(runId).first();
-  if (keepFailed && cert && String(cert.status || '').includes('FAILED')) return { cleaned:false, reason:'failed_temp_kept_for_debug' };
-  await env.DB.prepare(`DELETE FROM odds_api_requests_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`DELETE FROM odds_api_events_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`DELETE FROM odds_api_game_markets_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`DELETE FROM odds_api_player_props_temp WHERE run_id=?`).bind(runId).run();
-  await env.DB.prepare(`UPDATE odds_api_run_certifications SET cleaned_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(runId).run();
-  return { cleaned:true };
+  // v1.4.25: temp tables are staging only. Never retain failed temp rows in production.
+  const out = {};
+  out.odds_api_requests_temp = await safeDbRun(env, `DELETE FROM odds_api_requests_temp WHERE run_id=?`, [runId]);
+  out.odds_api_events_temp = await safeDbRun(env, `DELETE FROM odds_api_events_temp WHERE run_id=?`, [runId]);
+  out.odds_api_game_markets_temp = await safeDbRun(env, `DELETE FROM odds_api_game_markets_temp WHERE run_id=?`, [runId]);
+  out.odds_api_player_props_temp = await safeDbRun(env, `DELETE FROM odds_api_player_props_temp WHERE run_id=?`, [runId]);
+  await safeDbRun(env, `UPDATE odds_api_run_certifications SET cleaned_at=CURRENT_TIMESTAMP WHERE run_id=?`, [runId]);
+  return { cleaned:true, keep_failed_ignored:!!keepFailed, details:out };
 }
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
@@ -12706,6 +12763,7 @@ async function runOddsApiMarketIntel(input, env) {
   const slateDate = slateResolution.resolved_slate_date;
   const windowName = String(input.window_name || 'MORNING').toUpperCase();
   const runId = oddsRunId(slateDate, windowName);
+  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp' });
   await cleanOddsApiTempRun(env, runId).catch(() => null);
   const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
@@ -12763,13 +12821,15 @@ async function runOddsApiMarketIntel(input, env) {
   if (certification.ok) {
     try {
       promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
-      cleanup = await cleanOddsApiTempRun(env, runId, false);
+      const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
+      cleanup = await clearOddsApiTempTables(env);
+      cleanup.main_purge = mainPurge;
     } catch (err) {
       promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.50' };
-      cleanup = await cleanOddsApiTempRun(env, runId, true).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
+      cleanup = await clearOddsApiTempTables(env).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
     }
   } else {
-    cleanup = await cleanOddsApiTempRun(env, runId, true);
+    cleanup = await clearOddsApiTempTables(env);
   }
   return {
     ok:true,
@@ -12782,6 +12842,7 @@ async function runOddsApiMarketIntel(input, env) {
     slate_resolution: slateResolution,
     window_name:windowName,
     run_id:runId,
+    overwrite_preflight,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
     odds_api_binding: oddsApiBindingStatus(env),
@@ -14603,7 +14664,12 @@ async function runFullScoringRefreshV1(input, env) {
   const trigger = String(input?.trigger || 'manual_full_scoring_refresh');
   const lockedBy = `${trigger}:${crypto.randomUUID()}`;
   const lockId = 'AUTO_SCORING_REFRESH_V1';
-  const lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+  const scoring_preflight = await volatileOverwritePreflight(env, requestedSlateDate, { scoring:true, releaseScoringLock:true, reason:'full_scoring_refresh_start' });
+  let lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+  if (!lock.acquired) {
+    await releaseStaleScoringLocks(env, 'lock_busy_second_chance');
+    lock = await acquirePipelineLock(env, lockId, lockedBy, 3);
+  }
   if (!lock.acquired) {
     return { ok: true, data_ok: false, version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', status: 'LOCKED_SKIP_SCORING_ALREADY_RUNNING', requested_slate_date: requestedSlateDate, trigger, lock_status: lock, note: 'Another scoring refresh is already active. This skipped cleanly to avoid overlapping score/candidate-board writes.' };
   }
@@ -14632,7 +14698,7 @@ async function runFullScoringRefreshV1(input, env) {
     const failure_error=String(scoring?.error||candidate_board?.error||export_board?.error||'');
     return { ok: true, data_ok: !!(scoringOk && candidateOk), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'auto_score_then_candidate_board_stored_data_plus_rbi_gemini_over75_signal_compact_output', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, scoring_ok: scoringOk, candidate_board_ok: candidateOk, failure_stage, failure_error: failure_error || null, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null, error: export_board.error || null, status: export_board.status || null } : candidateBoardSummary(export_board), lock_status: 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then Build/Inspect/Export Candidate Board.', note: failure_stage ? `Full scoring refresh did not pass at ${failure_stage}: ${failure_error || 'no detailed error returned'}` : 'Full scoring refresh uses compact output only. Full row details remain in the DB/read models.' };
   } catch (e) {
-    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:'RELEASED', note:'v1.4.24 exposes the real scoring refresh exception instead of allowing the orchestrator to report generic refresh_job_failed.' };
+    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:'RELEASED', note:'v1.4.25 exposes the real scoring refresh exception instead of allowing the orchestrator to report generic refresh_job_failed.' };
   } finally {
     await releasePipelineLock(env, lockId, lockedBy);
   }
@@ -14708,7 +14774,7 @@ async function loadPickabilityContext(env, slateDate){
     const exists=await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prizepicks_current_market_context'").first();
     if(exists){
       ctx.source_tables.prizepicks_current_market_context=true;
-      // v1.4.24: do not depend on SQLite datetime parsing for ISO strings with offsets
+      // v1.4.25: do not depend on SQLite datetime parsing for ISO strings with offsets
       // and do not require PrizePicks slate_date to equal the scoring slate. PrizePicks
       // can roll slate_date to tomorrow while the game start_time is still today's
       // pickable slate. Load current active rows broadly, then apply pickability in JS.
@@ -14772,7 +14838,7 @@ function slateRolloverGuardSummary(activeSlate, rows){
   for(const r of rows||[]){const k=String(r.slate_date||'UNKNOWN'); bySlate[k]=(bySlate[k]||0)+Number(r.rows_count||0);}
   const nonSelected=Object.entries(bySlate).filter(([k])=>k!==String(activeSlate)).map(([slate_date,rows_count])=>({slate_date,rows_count}));
   const nonSelectedTotal=nonSelected.reduce((n,r)=>n+Number(r.rows_count||0),0);
-  return { pass:true, active_slate:activeSlate, non_selected_rows_total:nonSelectedTotal, non_selected_rows_by_slate:nonSelected, policy:'ROLLOVER_ROWS_ALLOWED_DB_CAN_HOLD_OLD_SLATES_RELEASE_IS_FILTERED_BY_ACTIVE_SLATE_PICKABILITY_AND_START_TIME', old_slate_is_not_stale_by_itself:true };
+  return { pass:true, active_slate:activeSlate, non_selected_rows_total:nonSelectedTotal, non_selected_rows_by_slate:nonSelected, policy:'ROLLOVER_ROWS_ALLOWED_DB_CAN_HOLD_OLD_SLATES_RELEASE_IS_FILTERED_BY_ACTIVE_SLATE_PICKABILITY_AND_START_TIME', old_slate_is_not_stale_by_itself:false };
 }
 function evaluateCandidatePickability(row, audit, ctx){
   const direction=String(row.line_direction||'').toUpperCase();
@@ -14788,12 +14854,19 @@ function evaluateCandidatePickability(row, audit, ctx){
   for(const pp of ctx.prizepicks_rows){
     if(scoreNormName(pp.player_name)!==playerKey)continue;
     if(pickabilityNormStat(pp.stat_type)!==ppStat)continue;
-    if(!pickabilityLineMatch(pp.line_score,line))continue;
     if(!pickabilityTeamMatch(row.team,pp.team))continue;
     if(row.opponent&&pp.opponent&&!pickabilityTeamMatch(row.opponent,pp.opponent))continue;
     const selectable=pickabilitySideFromPrizePicksOddsType(pp.odds_type);
+    const ppType=String(pp.odds_type||'standard').toLowerCase();
+    const exactLine=pickabilityLineMatch(pp.line_score,line);
+    // v1.4.25 bridge: sportsbook standard OVER can be released when the same
+    // player/stat exists on PrizePicks as a goblin/demon More-only line. This
+    // does not validate UNDER and it does not manufacture a line; it only proves
+    // the leg is pickable on the board.
+    const bridgeLine=(direction==='OVER' && (ppType==='goblin'||ppType==='demon') && Number.isFinite(Number(pp.line_score)) && Number.isFinite(line));
+    if(!(exactLine || bridgeLine))continue;
     if(selectable.includes(direction)){
-      return { pickable:true, source:'prizepicks_current_market_context', board:'PrizePicks', matched_line_id:pp.line_id||pp.projection_key||null, matched_odds_type:pp.odds_type||null, selectable_sides:selectable, checked, flags:[], reason:(String(pp.odds_type||'standard').toLowerCase()==='goblin'||String(pp.odds_type||'standard').toLowerCase()==='demon')?'exact_prizepicks_goblin_demon_more_side_available':'exact_prizepicks_board_side_available' };
+      return { pickable:true, source:'prizepicks_current_market_context', board:'PrizePicks', matched_line_id:pp.line_id||pp.projection_key||null, matched_odds_type:pp.odds_type||null, matched_line_score:Number(pp.line_score), candidate_line_score:line, line_bridge:exactLine?'exact':'goblin_demon_over_bridge', selectable_sides:selectable, checked, flags:[], reason:exactLine?((ppType==='goblin'||ppType==='demon')?'exact_prizepicks_goblin_demon_more_side_available':'exact_prizepicks_board_side_available'):'goblin_demon_prizepicks_over_bridge_available' };
     }
     failure_flags.push(`PICKABILITY_PRIZEPICKS_${String(pp.odds_type||'unknown').toUpperCase()}_${direction}_NOT_SELECTABLE`);
   }
@@ -14821,16 +14894,17 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_score_candidate_board_slate ON score_candidate_board (slate_date, candidate_status, final_score DESC)`).run();
   const scoringSlateGuard=await resolveScoringSlateDate(env,input||{});
   const slateDate=scoringSlateGuard.slate_date;
+  const volatile_preflight = await volatileOverwritePreflight(env, slateDate, { scoring:true, releaseScoringLock:false, reason:'candidate_board_rebuild_selected_slate' });
   const pickCtx=await loadPickabilityContext(env,slateDate);
   const staleBefore=(await env.DB.prepare(`SELECT slate_date, COUNT(*) AS rows_count FROM score_candidate_board WHERE COALESCE(slate_date,'')<>? GROUP BY slate_date ORDER BY slate_date DESC LIMIT 25`).bind(slateDate).all().catch(()=>({results:[]}))).results||[];
   const selectedBefore=await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).first().catch(()=>({rows_count:0}));
   const res=await env.DB.prepare(`SELECT * FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC, market_confidence DESC LIMIT 1000`).bind(slateDate).all();
   const rows=res.results||[];
-  // score_candidate_board can retain prior slate rows during MLB/PrizePicks rollover windows.
-  // Rebuild only the selected slate; release/export remains filtered by slate + pickability + start-time.
+  // v1.4.25: candidate board is volatile release data. Keep only the selected active slate.
+  await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run();
-  const rollover_guard=slateRolloverGuardSummary(slateDate,staleBefore);
-  const slate_replace={mode:'SELECTED_SLATE_REPLACE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_allowed_before:staleBefore};
+  const rollover_guard={ pass:true, active_slate:slateDate, policy:'VOLATILE_OVERWRITE_ONLY_SELECTED_ACTIVE_SLATE_RETAINED', non_selected_rows_deleted:true, previous_non_selected_rows:staleBefore };
+  const slate_replace={mode:'VOLATILE_SELECTED_SLATE_OVERWRITE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight};
   const inserts=[];
   const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0};
   const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,prizepicks_pickable:0,sleeper_pickable:0,expired_or_started:pickCtx.expired_or_started,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings,rollover_policy:pickCtx.rollover_policy};
@@ -14875,7 +14949,9 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     summary[status]=(summary[status]||0)+1;
     const riskNotes={caps,penalties,blocks,risks,book_count:bookCount,freshness_policy:audit.freshness_policy||'AUDIT_ONLY_NO_SCORE_EFFECT',odds_age_seconds:audit.odds_age_seconds??null,derived_modifier_total:audit.derived_modifier_total??null,base_score:audit.base_score??null,pickability_gate:{required:true,...pickability}};
     const displayRank=status==='DEFERRED_UNPICKABLE'?null:rank;
-    const key=[slateDate,r.prop_family,r.player_name,r.line_direction,r.line_number,r.line_type].map(x=>String(x??'').replace(/\|/g,'_')).join('|');
+    const releaseLineType = (pickability.pickable && pickability.board==='PrizePicks' && pickability.matched_odds_type) ? String(pickability.matched_odds_type).toLowerCase() : String(r.line_type || 'standard').toLowerCase();
+    const releaseLineNumber = (pickability.pickable && pickability.board==='PrizePicks' && Number.isFinite(Number(pickability.matched_line_score))) ? Number(pickability.matched_line_score) : Number(r.line_number);
+    const key=[slateDate,r.prop_family,r.player_name,r.line_direction,releaseLineNumber,releaseLineType].map(x=>String(x??'').replace(/\|/g,'_')).join('|');
     inserts.push(env.DB.prepare(`INSERT INTO score_candidate_board (candidate_key,score_id,run_id,sport,slate_date,player_name,normalized_player_name,team,opponent,prop_family,line_type,line_number,line_direction,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,candidate_status,candidate_rank,risk_notes,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
     ON CONFLICT(candidate_key) DO UPDATE SET
       score_id=excluded.score_id,
@@ -14900,12 +14976,12 @@ async function buildMlbScoreCandidateBoardV1(input, env){
       risk_notes=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.risk_notes ELSE score_candidate_board.risk_notes END,
       audit_payload=CASE WHEN excluded.final_score >= score_candidate_board.final_score THEN excluded.audit_payload ELSE score_candidate_board.audit_payload END,
       model_version=excluded.model_version,
-      updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,r.line_type,Number(r.line_number),r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
-    if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:r.line_number,line_type:r.line_type,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
+      updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,releaseLineType,releaseLineNumber,r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
+    if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:releaseLineNumber,line_type:releaseLineType,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_idempotent_publish_rollover_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.24 keeps idempotent candidate-board publishing and hardens the PrizePicks pickability loader: active current PrizePicks rows are loaded without SQLite datetime dependence, then JS start-time/slate filtering validates goblin/demon More-side availability. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_volatile_overwrite_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.25 keeps volatile candidate-board overwrite, clears stale rows, and bridges PrizePicks goblin/demon More-only rows to sportsbook OVER candidates only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
@@ -14948,7 +15024,7 @@ async function inspectMlbScoreCandidateBoardV1(input, env){
   const playable=(statusRows.find(r=>r.candidate_status==='PLAYABLE')||{}).rows_count||0;
   const qualified=(statusRows.find(r=>r.candidate_status==='QUALIFIED')||{}).rows_count||0;
   const release_health=total>0&&(playable+qualified)>0?'PASS_HAS_RELEASE_CANDIDATES':(total>0?'PASS_WATCHLIST_ONLY':'EMPTY');
-  return{ok:true,data_ok:total>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health,rollover_guard,summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:'Use score_candidate_board as the release/read model. Old slate rows may remain in DB during rollover; selected slate output is filtered.',note:'v1.3.50 inspect uses rollover-aware guard. Old slate rows are allowed in DB; release health is based on selected slate rows only.'};
+  return{ok:true,data_ok:total>0,version:SYSTEM_VERSION,job:input.job||'inspect_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_inspector_read_only_no_external_api_no_gemini',table_exists:true,candidates_seen:total,release_health,rollover_guard,summary_by_status:statusRows,distribution:summaryRows,prop_summary:propRows,risk_counts:riskCounts,top_candidates:top,next_action:'Use score_candidate_board as the release/read model. v1.4.25 keeps only the selected active slate for volatile release data.',note:'v1.4.25 inspect uses volatile overwrite policy. Old candidate-board slate rows should not remain in DB.'};
 }
 
 async function exportMlbScoreCandidateBoardV1(input, env){
@@ -14971,7 +15047,7 @@ async function exportMlbScoreCandidateBoardV1(input, env){
   const playable=compact.filter(r=>r.status==='PLAYABLE').length;
   const qualified=compact.filter(r=>r.status==='QUALIFIED').length;
   const watchlist=compact.filter(r=>r.status==='WATCHLIST').length;
-  return{ok:true,data_ok:compact.length>0,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_export_read_only_no_external_api_no_gemini',table_exists:true,candidates_exported:compact.length,rollover_guard,summary:{QUALIFIED:qualified,PLAYABLE:playable,WATCHLIST:watchlist},csv_header:headers,copy_paste_csv:csv.join('\n'),rows:compact,next_action:'Copy copy_paste_csv into a spreadsheet or use rows for UI rendering. Export is selected-slate only; old slate DB rows are rollover-allowed.',note:'v1.3.50 export is rollover-aware and only returns the selected active slate. Old slate rows in DB do not fail export. No external API or Gemini is called.'};
+  return{ok:true,data_ok:compact.length>0,version:SYSTEM_VERSION,job:input.job||'export_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:guard.requested_slate_date||slateDate,slate_guard:guard,mode:'candidate_board_export_read_only_no_external_api_no_gemini',table_exists:true,candidates_exported:compact.length,rollover_guard,summary:{QUALIFIED:qualified,PLAYABLE:playable,WATCHLIST:watchlist},csv_header:headers,copy_paste_csv:csv.join('\n'),rows:compact,next_action:'Copy copy_paste_csv into a spreadsheet or use rows for UI rendering. Export is selected-slate only; old volatile candidate-board rows are automatically purged.',note:'v1.4.25 export is selected active slate only. Old volatile candidate-board rows should not exist after rebuild. No external API or Gemini is called.'};
 }
 
 async function runMlbScoringV1(input,env){
@@ -14985,6 +15061,8 @@ async function runMlbScoringV1(input,env){
   slateDate=scoringSlateGuard.slate_date;
   runId=`score_v1|${slateDate}|${Date.now()}|${simpleHashText(String(Math.random()))}`;
   await ensureOddsApiTables(env); await ensureMlbScoringV1Tables(env);
+  const volatile_preflight = await volatileOverwritePreflight(env, slateDate, { scoring:true, releaseScoringLock:false, reason:'run_mlb_scoring_start' });
+  // v1.4.25: volatile scoring tables are selected active slate only; temp scratch is cleared before every run.
   // v1.3.95: browser/task retries must not keep killing the active scoring run.
   // Only stale/zero-progress runs are finalized; fresh RUNNING rows are returned as active instead of superseded.
   await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_RUNNING', error='Auto-finalized stale zero-progress RUNNING scoring run before new start', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='RUNNING' AND created_at < datetime('now','-6 minutes') AND COALESCE(rows_certified,0)=0 AND COALESCE(rows_promoted,0)=0`).bind(slateDate).run();

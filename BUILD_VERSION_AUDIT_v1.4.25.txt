@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+VERSION: v1.4.25 - Volatile Overwrite Guard
+ZIP: alphadog_v1.4.25_volatile_overwrite_guard.zip
+worker.js: v1.4.25 - Volatile Overwrite Guard
+control_room.html: v1.4.25 - Volatile Overwrite Guard
+README: README_v1.4.25.txt
+
+Validation performed:
+- node --check worker.js passed.
+- Flat folder only.
+- Production scheduled backend only.
+- No Main UI files included.
+- No expansion worker files included.
+- Static/incremental base tables are not targeted by volatile purge helper.
