@@ -1,10 +1,16 @@
-ZIP: alphadog_v1.4.16_production_watchdog_purge_guard.zip
-worker.js: v1.4.16 - Production Watchdog Purge Guard
-control_room.html: v1.4.16 - Production Watchdog Purge Guard
-README: README_v1.4.16.txt
-wrangler target: alphadog-phase3-starter-groups
-Flat folder: yes
-Main UI files included: no
-Expansion files included: no
-Scheduled backend/control-room only: yes
-No scoring math changes: yes
+AlphaDog / OXYGEN-COBALT
+v1.4.16 - Production Clock Watchdog Guard
+
+Files checked:
+- worker.js: v1.4.16 - Production Clock Watchdog Guard
+- control_room.html: v1.4.16 - Production Clock Watchdog Guard
+- wrangler.jsonc: unchanged production worker prop-ingestion-git
+- package.json: unchanged
+
+Surgical scope only:
+- No worker name change.
+- No URL/base path change.
+- No control-room route change.
+- No scoring math change.
+- No Main UI change.
+- No expansion/xp_* change.

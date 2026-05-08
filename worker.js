@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.16 - Production Watchdog Purge Guard";
+const SYSTEM_VERSION = "v1.4.16 - Production Clock Watchdog Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -129,7 +129,6 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_enqueue_selected: "DATA REFRESHING > Schedule Selected Only",
   refresh_orchestrator_enqueue_cascade: "DATA REFRESHING > Schedule Cascade",
   refresh_orchestrator_tick: "DATA REFRESHING > Run One Queue Tick",
-  production_watchdog_purge_guard: "DATA REFRESHING > Watchdog Purge Guard",
   refresh_orchestrator_status: "DATA REFRESHING > Orchestrator Status",
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
@@ -941,6 +940,14 @@ export default {
     //   0 8 * * 1  => schedules the weekly Monday 1:00 AM PT/PDT static-temp certification pipeline.
     ctx.waitUntil((async () => {
       const cron = String(event?.cron || '').trim();
+      try {
+        await refreshOrchestratorEvent(env, {
+          event_type: 'scheduled_handler_invoked',
+          status: 'started',
+          message: 'Cloudflare scheduled handler invoked.',
+          payload_json: { version: SYSTEM_VERSION, cron, db_now_utc: new Date().toISOString(), pt: getPTScheduleParts() }
+        });
+      } catch (_) {}
       let result;
       if (cron === '45 8 * * *') {
         const scheduled = await scheduleIncrementalTempRefreshOnce({ job: 'daily_incremental_temp_refresh_auto', trigger: 'scheduled_daily_cron', cron, daily_schedule: 'Daily 1:45 AM PT/PDT' }, env);
@@ -979,11 +986,10 @@ export default {
         // v1.3.59: the only active cron is the minute poller.
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
-        await refreshOrchestratorEvent(env, { event_type:'scheduled_heartbeat', status:'invoked', message:'scheduled() minute cron invoked.', payload_json:{ version:SYSTEM_VERSION, cron, pt:getPTScheduleParts(), secrets:{ odds_api_key_bound:!!env.ODDS_API_KEY, github_repo_bound:!!env.GITHUB_REPO, github_token_bound:!!env.GITHUB_TOKEN } } });
-        const watchdog = await runProductionWatchdogPurgeGuard({ cron, trigger:'scheduled_minute_tick', job:'production_watchdog_purge_guard' }, env);
+        const productionClockWatchdog = await productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' });
         const productionClock = await enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' });
         const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
-        if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue')) {
+        if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
           result = {
             ok: true,
             data_ok: !!orchestratorTick.data_ok && productionClock.data_ok !== false,
@@ -991,7 +997,7 @@ export default {
             job: 'production_refresh_clock_minute_scheduler',
             status: orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue' ? 'orchestrator_advanced' : 'production_clock_checked',
             cron,
-            watchdog,
+            production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
             orchestrator_tick: orchestratorTick,
             note: 'Minute cron checked the production schedule table and advanced the database-backed orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
@@ -1061,8 +1067,27 @@ export default {
       } else {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
       }
+      try {
+        await refreshOrchestratorEvent(env, {
+          event_type: 'scheduled_handler_completed',
+          status: result?.status || 'completed',
+          message: result?.job || 'scheduled_handler',
+          payload_json: result
+        });
+      } catch (_) {}
       console.log(JSON.stringify(result));
-    })());
+    })().catch(async (err) => {
+      const error = String(err?.message || err);
+      try {
+        await refreshOrchestratorEvent(env, {
+          event_type: 'scheduled_handler_error',
+          status: 'error',
+          message: error,
+          payload_json: { version: SYSTEM_VERSION, cron: String(event?.cron || ''), error, stack: String(err?.stack || '').slice(0, 1200) }
+        });
+      } catch (_) {}
+      console.log(JSON.stringify({ ok:false, data_ok:false, version:SYSTEM_VERSION, job:'scheduled_handler', status:'error', error }));
+    }));
   }
 };
 
@@ -1098,9 +1123,7 @@ function resolveSlateDate(input = {}) {
   if (mode === "TODAY") return { slate_date: pt.date, slate_mode: "TODAY", pt_date: pt.date, pt_time: pt.time };
   if (mode === "TOMORROW") return { slate_date: addDaysISO(pt.date, 1), slate_mode: "TOMORROW", pt_date: pt.date, pt_time: pt.time };
 
-  // Baseball slate rollover guard: after 9 PM Pacific, most MLB games are already started/finished.
-  // Prefer the next pickable slate, while downstream freshness checks still validate actual leg start_time/game time.
-  return { slate_date: pt.hour >= 21 ? addDaysISO(pt.date, 1) : pt.date, slate_mode: "AUTO", pt_date: pt.date, pt_time: pt.time, slate_rollover_rule: "AUTO_AFTER_21_PT_PREFERS_NEXT_PICKABLE_SLATE" };
+  return { slate_date: pt.hour >= 21 ? addDaysISO(pt.date, 1) : pt.date, slate_mode: "AUTO", pt_date: pt.date, pt_time: pt.time };
 }
 
 function hydratePromptTemplate(prompt, slateDate) {
@@ -1121,7 +1144,7 @@ function health(env) {
     github_token_bound: !!env.GITHUB_TOKEN,
     github_workflow_file_bound: !!env.GITHUB_WORKFLOW_FILE,
     scheduled_handler_present: true,
-    production_clock_enabled: true,
+    production_clock_present: true,
     jobs: Object.keys(JOBS),
     executable_jobs: executableJobNames(),
     time: new Date().toISOString()
@@ -1192,7 +1215,6 @@ function executableJobNames() {
     "refresh_orchestrator_enqueue_selected",
     "refresh_orchestrator_enqueue_cascade",
     "refresh_orchestrator_tick",
-    "production_watchdog_purge_guard",
     "refresh_orchestrator_status",
     "refresh_orchestrator_cancel_all",
     "refresh_orchestrator_schedule_status",
@@ -7086,9 +7108,7 @@ function productionRefreshSchedulePlans() {
 
 function productionPlanIsDue(plan, pt) {
   if (!plan || Number(plan.enabled) !== 1) return false;
-  const scheduledMinute = Number(plan.hour_pt) * 60 + Number(plan.minute_pt);
-  const currentMinute = Number(pt.hour) * 60 + Number(pt.minute);
-  if (currentMinute < scheduledMinute) return false;
+  if (Number(plan.hour_pt) !== Number(pt.hour) || Number(plan.minute_pt) !== Number(pt.minute)) return false;
   if (String(plan.schedule_kind || '').toLowerCase() === 'weekly') {
     return String(pt.weekday || '').slice(0,3).toLowerCase() === String(plan.byday || '').slice(0,3).toLowerCase();
   }
@@ -7126,12 +7146,13 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
 
 async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   await ensureProductionRefreshScheduleTables(env);
+  const stale_recovery = await recoverStaleRefreshQueueRows(env, { trigger: input?.trigger || 'production_clock_preflight', reason: 'pre_enqueue_due_plan_recovery' });
   const pt = getPTScheduleParts();
   const plans = await sampleRows(env, `SELECT * FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const duePlans = plans.filter(pl => productionPlanIsDue(pl, pt));
   const results = [];
   for (const plan of duePlans) results.push(await enqueueProductionPlan(env, plan, pt, input));
-  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue.' };
+  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, stale_recovery, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue.' };
 }
 
 async function productionRefreshClockStatus(input, env) {
@@ -7252,6 +7273,118 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time until the queue is complete.', note:'The database queue now controls refresh work. No new button/job is needed for future SQL-triggered refresh requests.' };
 }
 
+function isOptionalRefreshDependency(row) {
+  const key = String(row?.job_key || '').toLowerCase();
+  return key === 'odds_api_morning' || key === 'odds_api_afternoon';
+}
+
+async function releaseNextRefreshQueueRow(env, row, meta = {}) {
+  const next = await env.DB.prepare(`
+    SELECT request_id, job_key, display_name
+    FROM data_refresh_queue
+    WHERE chain_id=?
+      AND status='pending'
+      AND run_after IS NULL
+      AND sequence_order > ?
+    ORDER BY sequence_order ASC, created_at ASC
+    LIMIT 1
+  `).bind(row.chain_id, Number(row.sequence_order || 0)).first().catch(() => null);
+  if (!next) return { released:false, reason:'no_next_pending_row' };
+  await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET run_after=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?)
+    WHERE request_id=?
+  `).bind(String(meta.reason || 'released_after_optional_dependency'), next.request_id).run();
+  return { released:true, request_id:next.request_id, job_key:next.job_key, display_name:next.display_name, meta };
+}
+
+async function recoverStaleRefreshQueueRows(env, input = {}) {
+  await ensureRefreshOrchestratorTables(env);
+  const staleRows = await sampleRows(env, `
+    SELECT q.request_id, q.chain_id, q.job_key, q.display_name, q.sequence_order, q.status, q.requested_slate_date, q.created_at, q.updated_at
+    FROM data_refresh_queue q
+    WHERE q.status='pending'
+      AND q.run_after IS NULL
+      AND q.started_at IS NULL
+      AND q.finished_at IS NULL
+      AND datetime(q.created_at) <= datetime('now','-30 minutes')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM data_refresh_queue p
+        WHERE p.chain_id=q.chain_id
+          AND p.sequence_order < q.sequence_order
+          AND p.status IN ('pending','running')
+      )
+    ORDER BY datetime(q.created_at) ASC, q.sequence_order ASC
+    LIMIT 20
+  `);
+  const recovered = [];
+  for (const row of staleRows) {
+    const reason = `stale_pending_null_run_after_recovered:${input.reason || input.trigger || 'watchdog'}`;
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET status='failed',
+          finished_at=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, ?),
+          output_json=COALESCE(output_json, ?)
+      WHERE request_id=?
+        AND status='pending'
+        AND run_after IS NULL
+        AND started_at IS NULL
+        AND finished_at IS NULL
+    `).bind(reason, JSON.stringify({ ok:false, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'failed_stale_pending_row', reason, recovered_at:new Date().toISOString(), row }).slice(0,3000), row.request_id).run();
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_pending_recovered', status:'failed', message:reason, payload_json:{ row, input } });
+    recovered.push(row);
+  }
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status: recovered.length ? 'recovered_stale_rows' : 'no_stale_rows', recovered_count:recovered.length, recovered, trigger:input.trigger || null };
+}
+
+async function productionRefreshWatchdog(env, input = {}) {
+  await ensureProductionRefreshScheduleTables(env);
+  const pt = getPTScheduleParts();
+  const due = (pt.hour === 11 && pt.minute === 0) || (pt.hour === 23 && pt.minute === 0);
+  const stale_recovery = await recoverStaleRefreshQueueRows(env, { trigger:input.trigger || 'production_refresh_watchdog', reason: due ? 'scheduled_watchdog_window' : 'minute_preflight' });
+  if (!due && stale_recovery.recovered_count === 0) {
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'production_refresh_watchdog', status:'not_due', pt, stale_recovery };
+  }
+  const active = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, display_name, status, requested_slate_date, run_after, started_at, finished_at, updated_at, error
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running')
+    ORDER BY datetime(created_at) ASC, sequence_order ASC
+    LIMIT 20
+  `);
+  const board = await env.DB.prepare(`
+    SELECT COUNT(*) AS total_rows,
+           SUM(CASE WHEN datetime(start_time) > datetime('now') THEN 1 ELSE 0 END) AS future_rows,
+           MAX(updated_at) AS latest_updated_at,
+           MAX(start_time) AS latest_start_time
+    FROM prizepicks_current_market_context
+  `).first().catch(() => ({ total_rows:0, future_rows:0, latest_updated_at:null, latest_start_time:null }));
+  const candidate = await env.DB.prepare(`
+    SELECT COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated_at, MAX(slate_date) AS max_slate_date
+    FROM score_candidate_board
+  `).first().catch(() => ({ rows_count:0, latest_updated_at:null, max_slate_date:null }));
+  const result = {
+    ok:true,
+    data_ok: active.length === 0 && Number(board?.future_rows || 0) > 0,
+    version:SYSTEM_VERSION,
+    job:'production_refresh_watchdog',
+    status: due ? 'diagnostic_window_checked' : 'stale_recovery_checked',
+    pt,
+    stale_recovery,
+    active_queue:active,
+    prizepicks_context:board,
+    candidate_board:candidate,
+    note:'Watchdog is diagnostic/recovery only: it recovers stale null-run_after queue blockers and logs board freshness. It does not change scoring math, routes, URLs, or UI structure.'
+  };
+  await refreshOrchestratorEvent(env, { event_type:'production_refresh_watchdog', status:result.status, message:'Production refresh watchdog checked queue and board freshness.', payload_json:result });
+  return result;
+}
+
 async function markRefreshQueueCompleted(env, row, wrapped) {
   await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
   const next = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE chain_id=? AND status='pending' AND run_after IS NULL ORDER BY sequence_order ASC, created_at ASC LIMIT 1`).bind(row.chain_id).first().catch(() => null);
@@ -7311,170 +7444,6 @@ async function compactRefreshQueueOutput(wrapped) {
   };
 }
 
-
-function isOptionalRefreshDependencyJobKey(jobKey) {
-  const k = String(jobKey || '').toLowerCase();
-  return k === 'odds_api_morning' || k === 'odds_api_afternoon';
-}
-
-async function runProductionWatchdogPurgeGuard(input, env) {
-  await ensureRefreshOrchestratorTables(env);
-  const pt = getPTScheduleParts();
-  const actions = [];
-  const secretFlags = {
-    odds_api_key_bound: !!env.ODDS_API_KEY,
-    github_repo_bound: !!env.GITHUB_REPO,
-    github_token_bound: !!env.GITHUB_TOKEN,
-    github_workflow_file_bound: !!env.GITHUB_WORKFLOW_FILE,
-    gemini_key_bound: !!env.GEMINI_API_KEY,
-    ingest_token_bound: !!env.INGEST_TOKEN
-  };
-
-  await refreshOrchestratorEvent(env, {
-    event_type: 'watchdog_start',
-    status: 'running',
-    message: 'Production watchdog purge guard started.',
-    payload_json: { version: SYSTEM_VERSION, trigger: input?.trigger || null, pt, secret_flags: secretFlags }
-  });
-
-  const staleScoringRows = await sampleRows(env, `
-    SELECT q.request_id, q.chain_id, q.job_key, q.status, q.created_at, q.updated_at
-    FROM data_refresh_queue q
-    WHERE q.job_key='scoring_refresh'
-      AND q.status='pending'
-      AND q.run_after IS NULL
-      AND q.started_at IS NULL
-      AND q.finished_at IS NULL
-      AND EXISTS (
-        SELECT 1 FROM data_refresh_queue p
-        WHERE p.chain_id=q.chain_id
-          AND p.status='failed'
-          AND p.job_key IN ('odds_api_morning','odds_api_afternoon')
-      )
-      AND datetime(q.created_at) <= datetime('now','-5 minutes')
-    ORDER BY datetime(q.created_at) ASC
-    LIMIT 20
-  `);
-  for (const row of staleScoringRows) {
-    const output = {
-      ok: true,
-      data_ok: true,
-      version: SYSTEM_VERSION,
-      job: 'production_watchdog_purge_guard',
-      action: 'released_scoring_after_optional_odds_failure',
-      reason: 'Odds API is enrichment only. A failed odds job must not leave scoring_refresh pending with run_after NULL.',
-      secret_flags: secretFlags,
-      pt
-    };
-    await env.DB.prepare(`
-      UPDATE data_refresh_queue
-      SET run_after=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP,
-          error=NULL,
-          output_json=?
-      WHERE request_id=?
-    `).bind(JSON.stringify(output).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id: row.request_id, chain_id: row.chain_id, job_key: row.job_key, event_type:'watchdog_release_scoring', status:'pending', message:'Released scoring_refresh after optional Odds API failure.', payload_json: output });
-    actions.push({ action:'released_scoring_after_optional_odds_failure', request_id:row.request_id, chain_id:row.chain_id });
-  }
-
-  const staleNullPendingRows = await sampleRows(env, `
-    SELECT request_id, chain_id, job_key, status, created_at, updated_at
-    FROM data_refresh_queue
-    WHERE status='pending'
-      AND run_after IS NULL
-      AND started_at IS NULL
-      AND finished_at IS NULL
-      AND datetime(created_at) <= datetime('now','-30 minutes')
-    ORDER BY datetime(created_at) ASC
-    LIMIT 30
-  `);
-  for (const row of staleNullPendingRows) {
-    const output = {
-      ok: true,
-      data_ok: true,
-      version: SYSTEM_VERSION,
-      job: 'production_watchdog_purge_guard',
-      action: 'finalized_stale_pending_null_run_after',
-      reason: 'Pending queue row had run_after NULL and never started after safe threshold. Finalized so current schedule can advance.',
-      pt
-    };
-    await env.DB.prepare(`
-      UPDATE data_refresh_queue
-      SET status='skipped_stale',
-          finished_at=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP,
-          error='watchdog_skipped_stale_pending_null_run_after',
-          output_json=?
-      WHERE request_id=? AND status='pending' AND run_after IS NULL AND started_at IS NULL
-    `).bind(JSON.stringify(output).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id: row.request_id, chain_id: row.chain_id, job_key: row.job_key, event_type:'watchdog_stale_finalize', status:'skipped_stale', message:'Finalized stale pending NULL-run_after row.', payload_json: output });
-    actions.push({ action:'finalized_stale_pending_null_run_after', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key });
-  }
-
-  const staleRunningRows = await sampleRows(env, `
-    SELECT request_id, chain_id, job_key, status, started_at, updated_at
-    FROM data_refresh_queue
-    WHERE status='running'
-      AND datetime(updated_at) <= datetime('now','-45 minutes')
-    ORDER BY datetime(updated_at) ASC
-    LIMIT 20
-  `);
-  for (const row of staleRunningRows) {
-    const output = {
-      ok: true,
-      data_ok: true,
-      version: SYSTEM_VERSION,
-      job: 'production_watchdog_purge_guard',
-      action: 'finalized_stale_running_row',
-      reason: 'Running queue row stopped updating past watchdog threshold.',
-      pt
-    };
-    await env.DB.prepare(`
-      UPDATE data_refresh_queue
-      SET status='failed_stale_recovered',
-          finished_at=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP,
-          error='watchdog_failed_stale_running_row',
-          output_json=?
-      WHERE request_id=? AND status='running'
-    `).bind(JSON.stringify(output).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id: row.request_id, chain_id: row.chain_id, job_key: row.job_key, event_type:'watchdog_stale_running_finalize', status:'failed_stale_recovered', message:'Finalized stale running row.', payload_json: output });
-    actions.push({ action:'finalized_stale_running_row', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key });
-  }
-
-  const boardFreshness = await env.DB.prepare(`
-    SELECT
-      COUNT(*) AS total_rows,
-      SUM(CASE WHEN datetime(start_time) > datetime('now') THEN 1 ELSE 0 END) AS future_rows,
-      MIN(start_time) AS first_start_time,
-      MAX(start_time) AS last_start_time,
-      MAX(updated_at) AS newest_updated_at
-    FROM prizepicks_current_market_context
-  `).first().catch(() => null);
-  const candidateFreshness = await env.DB.prepare(`
-    SELECT COUNT(*) AS rows_count, MAX(updated_at) AS newest_updated_at, MAX(slate_date) AS max_slate_date
-    FROM score_candidate_board
-  `).first().catch(() => null);
-
-  const result = {
-    ok: true,
-    data_ok: true,
-    version: SYSTEM_VERSION,
-    job: input?.job || 'production_watchdog_purge_guard',
-    status: actions.length ? 'actions_applied' : 'clean_no_stale_queue_action',
-    pt,
-    secret_flags: secretFlags,
-    actions_count: actions.length,
-    actions,
-    prizepicks_freshness: boardFreshness,
-    candidate_board_freshness: candidateFreshness,
-    note: 'Watchdog only repairs orchestration state. It does not delete production data, change scoring math, or mutate xp_* tables.'
-  };
-  await refreshOrchestratorEvent(env, { event_type:'watchdog_complete', status:result.status, message:'Production watchdog purge guard completed.', payload_json: result });
-  return result;
-}
-
 async function runRefreshOrchestratorTick(input, env) {
   await ensureRefreshOrchestratorTables(env);
   const started = Date.now();
@@ -7515,17 +7484,16 @@ async function runRefreshOrchestratorTick(input, env) {
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:result?.status || (result?.ok === false ? 'failed' : 'pass'), partial:refreshResultIsPartial(result) });
       if (result?.ok === false || result?.data_ok === false) {
-        if (isOptionalRefreshDependencyJobKey(row.job_key)) {
-          const optionalWrapped = { ...wrapped, ok:true, data_ok:true, optional_dependency_failed:true, result:{ ...(result || {}), status:'optional_dependency_failed_continue', optional_dependency_failed:true, original_error:String(result?.error || result?.status || 'refresh_job_failed'), note:'Optional Odds API enrichment failed. The orchestrator continues to scoring_refresh with odds_missing/degraded context instead of blocking the candidate board.' } };
-          await markRefreshQueueCompleted(env, row, optionalWrapped);
-          await env.DB.prepare(`UPDATE data_refresh_queue SET error=?, output_json=? WHERE request_id=?`).bind(String(result?.error || result?.status || 'optional_dependency_failed'), JSON.stringify(await compactRefreshQueueOutput(optionalWrapped)).slice(0,3000), row.request_id).run();
-          await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'optional_dependency_failed_continue', status:'completed_with_warning', message:String(result?.error || result?.status || 'optional_dependency_failed'), payload_json:optionalWrapped });
-          break;
-        }
         const attempts = Number(row.attempt_count || 0) + 1;
         const terminal = attempts >= Number(row.max_attempts || 3);
         await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed':'retry', status:terminal?'failed':'pending', message:String(result?.error || result?.status || 'refresh_job_failed'), payload_json:wrapped });
+        if (terminal && isOptionalRefreshDependency(row)) {
+          const released = await releaseNextRefreshQueueRow(env, row, { reason: 'optional_dependency_failed_continue_cascade', failed_job_key: row.job_key, error: String(result?.error || result?.status || 'refresh_job_failed') });
+          if (released?.released) {
+            await refreshOrchestratorEvent(env, { request_id:released.request_id, chain_id:row.chain_id, job_key:released.job_key, event_type:'optional_dependency_released_next', status:'pending', message:'Optional dependency failed; next cascade job released.', payload_json:{ failed_job_key:row.job_key, released } });
+          }
+        }
         break;
       }
       if (refreshResultIsPartial(result)) {
@@ -7545,6 +7513,12 @@ async function runRefreshOrchestratorTick(input, env) {
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error });
       await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, error, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
       await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed_exception':'retry_exception', status:terminal?'failed':'pending', message:error, payload_json:wrapped });
+      if (terminal && isOptionalRefreshDependency(row)) {
+        const released = await releaseNextRefreshQueueRow(env, row, { reason: 'optional_dependency_exception_continue_cascade', failed_job_key: row.job_key, error });
+        if (released?.released) {
+          await refreshOrchestratorEvent(env, { request_id:released.request_id, chain_id:row.chain_id, job_key:released.job_key, event_type:'optional_dependency_released_next', status:'pending', message:'Optional dependency exception; next cascade job released.', payload_json:{ failed_job_key:row.job_key, released } });
+        }
+      }
       break;
     }
   }
@@ -9975,7 +9949,6 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_enqueue_selected") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'selected');
   if (jobName === "refresh_orchestrator_enqueue_cascade") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'cascade');
   if (jobName === "refresh_orchestrator_tick") return await runRefreshOrchestratorTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);
-  if (jobName === "production_watchdog_purge_guard") return await runProductionWatchdogPurgeGuard({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);
   if (jobName === "refresh_orchestrator_status") return await refreshOrchestratorStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
