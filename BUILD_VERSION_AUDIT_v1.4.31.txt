@@ -1,0 +1,7 @@
+BUILD VERSION AUDIT
+ZIP/version target: v1.4.31 - Scoring Lifecycle Finalizer
+worker.js SYSTEM_VERSION: v1.4.31 - Scoring Lifecycle Finalizer
+control_room.html visible version text: v1.4.31 - Scoring Lifecycle Finalizer
+README: README_v1.4.31.txt
+Flat folder: yes
+node --check worker.js: pass
