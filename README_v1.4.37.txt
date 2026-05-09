@@ -25,3 +25,6 @@ Test sequence:
 6. Click DATA REFRESHING > Run PrizePicks Board Only.
 7. Check the queue row: it must dispatch/wait, then complete only after mlb_stats updates after requested_at.
 8. Confirm mlb_stats has future rows, no stale rows, no duplicate line_id, and mlb_stats_temp has 0 rows after success.
+
+
+HOTFIX CHECK: wrangler.jsonc name is alphadog-phase3-starter-groups. Do not deploy to prop-ingestion-git.

@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "prop-ingestion-git",
+  "name": "alphadog-phase3-starter-groups",
   "main": "worker.js",
   "compatibility_date": "2026-04-24",
   "vars": {

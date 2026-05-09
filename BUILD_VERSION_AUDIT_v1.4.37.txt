@@ -15,3 +15,6 @@ No soft pass. Existing board rows do not satisfy PrizePicks Board refresh. GitHu
 GitHub board files included:
 main.py
 scrape.yml
+
+
+HOTFIX CHECK: wrangler.jsonc name is alphadog-phase3-starter-groups. Do not deploy to prop-ingestion-git.
