@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.37 - Strict PrizePicks Refresh Gate";
+const SYSTEM_VERSION = "v1.4.38 - GitHub Dispatch Resolver Finalizer";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1221,6 +1221,12 @@ function readEnvCandidate(env = {}, names = []) {
   return { value: "", source: null, checked };
 }
 
+function deriveGithubRepoFromPromptBaseUrl(env = {}) {
+  const raw = String((env && env.PROMPT_BASE_URL) || '').trim();
+  const match = raw.match(/^https:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\//i);
+  return match ? `${match[1]}/${match[2]}` : '';
+}
+
 function getGithubDispatchConfig(env = {}) {
   const repo = readEnvCandidate(env, [
     "GITHUB_REPO",
@@ -1228,7 +1234,9 @@ function getGithubDispatchConfig(env = {}) {
     "GH_REPO",
     "GH_REPOSITORY",
     "GITHUB_DISPATCH_REPO",
-    "GITHUB_ACTIONS_REPO"
+    "GITHUB_ACTIONS_REPO",
+    "THE_GITHUB_REPO",
+    "THE_GITHUB_REPOSITORY"
   ]);
   const token = readEnvCandidate(env, [
     "GITHUB_TOKEN",
@@ -1237,7 +1245,14 @@ function getGithubDispatchConfig(env = {}) {
     "GH_PAT",
     "GITHUB_DISPATCH_TOKEN",
     "GITHUB_ACTIONS_TOKEN",
-    "GITHUB_API_TOKEN"
+    "GITHUB_API_TOKEN",
+    "GITHUB_ACCESS_TOKEN",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GH_PERSONAL_ACCESS_TOKEN",
+    "THE_GITHUB_TOKEN",
+    "THE_GITHUB_PAT",
+    "THE_GITHUB_API_TOKEN",
+    "CF_GITHUB_TOKEN"
   ]);
   const workflow = readEnvCandidate(env, [
     "GITHUB_WORKFLOW_FILE",
@@ -1245,39 +1260,58 @@ function getGithubDispatchConfig(env = {}) {
     "GITHUB_ACTIONS_WORKFLOW",
     "GITHUB_DISPATCH_WORKFLOW",
     "GITHUB_WORKFLOW_NAME",
-    "WORKFLOW_FILE"
+    "WORKFLOW_FILE",
+    "GITHUB_SCRAPE_WORKFLOW",
+    "PRIZEPICKS_WORKFLOW_FILE",
+    "THE_GITHUB_WORKFLOW_FILE"
   ]);
   const ref = readEnvCandidate(env, [
     "GITHUB_REF",
     "GITHUB_BRANCH",
     "GH_REF",
     "GH_BRANCH",
-    "GITHUB_DISPATCH_REF"
+    "GITHUB_DISPATCH_REF",
+    "GITHUB_DISPATCH_BRANCH",
+    "THE_GITHUB_REF"
   ]);
-
+  const repoFallback = deriveGithubRepoFromPromptBaseUrl(env);
+  const resolvedRepo = repo.value || repoFallback;
+  const resolvedWorkflow = githubWorkflowFileName(workflow.value || "scrape.yml");
+  const resolvedRef = ref.value || "main";
+  const missing = [];
+  if (!resolvedRepo) missing.push('GITHUB_REPO');
+  if (!token.value) missing.push('GITHUB_TOKEN');
+  if (!resolvedWorkflow) missing.push('GITHUB_WORKFLOW_FILE');
   return {
-    repo: repo.value,
+    repo: resolvedRepo,
     token: token.value,
-    workflow: githubWorkflowFileName(workflow.value || "scrape.yml"),
-    ref: ref.value || "main",
-    repo_source: repo.source,
+    workflow: resolvedWorkflow,
+    ref: resolvedRef,
+    missing,
+    configured: missing.length === 0,
+    repo_source: repo.source || (repoFallback ? 'derived_from_PROMPT_BASE_URL' : null),
     token_source: token.source,
     workflow_source: workflow.source || "default:scrape.yml",
     ref_source: ref.source || "default:main",
     repo_checked: repo.checked,
     token_checked: token.checked,
     workflow_checked: workflow.checked,
-    ref_checked: ref.checked
+    ref_checked: ref.checked,
+    token_length: token.value ? token.value.length : 0,
+    resolver: 'shared_github_dispatch_resolver_v1_4_38'
   };
 }
 
 function githubDispatchBindingStatus(env = {}) {
   const cfg = getGithubDispatchConfig(env);
   return {
+    configured: !!cfg.configured,
     repo_bound: !!cfg.repo,
     token_bound: !!cfg.token,
     workflow_file_bound: !!cfg.workflow,
     ref_bound: !!cfg.ref,
+    missing: cfg.missing,
+    resolver: cfg.resolver,
     repo_source: cfg.repo_source,
     token_source: cfg.token_source,
     workflow_source: cfg.workflow_source,
@@ -1285,7 +1319,9 @@ function githubDispatchBindingStatus(env = {}) {
     repo_checked: cfg.repo_checked,
     token_checked: cfg.token_checked,
     workflow_checked: cfg.workflow_checked,
-    ref_checked: cfg.ref_checked
+    ref_checked: cfg.ref_checked,
+    token_length: cfg.token_length,
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. Missing dispatch config is a hard failed PrizePicks Board result, not a pending retry and never a soft pass.'
   };
 }
 
@@ -2751,10 +2787,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     };
   }
 
-  const missing = [];
-  if (!repo) missing.push('GITHUB_REPO');
-  if (!token) missing.push('GITHUB_TOKEN');
-  if (!workflow) missing.push('GITHUB_WORKFLOW_FILE');
+  const missing = Array.isArray(githubCfg.missing) ? githubCfg.missing : [];
   if (missing.length) {
     return {
       ok:false,
@@ -2765,12 +2798,26 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       error:'missing_github_dispatch_secret',
       board_refresh_complete:false,
       dispatch_skipped:true,
+      terminal_failure:true,
       missing,
+      github_dispatch_config: {
+        configured: githubCfg.configured,
+        repo_configured: !!repo,
+        token_configured: !!token,
+        workflow_configured: !!workflow,
+        ref_configured: !!ref,
+        repo_source: githubCfg.repo_source,
+        token_source: githubCfg.token_source,
+        workflow_source: githubCfg.workflow_source,
+        ref_source: githubCfg.ref_source,
+        token_length: githubCfg.token_length,
+        resolver: githubCfg.resolver
+      },
       github_dispatch_binding: githubDispatchBindingStatus(env),
       mlb_stats:current,
       blocks_downstream:true,
       next_step:'stop_pipeline_until_github_dispatch_config_is_available',
-      note:'PrizePicks Board is a required base job. Existing board rows are never accepted as a soft pass. GitHub dispatch must run and a fresh mlb_stats update must be confirmed before Phase 2C, Odds, or Scoring can continue.'
+      note:'PrizePicks Board is a required base job. Existing board rows are never accepted as a soft pass. Missing GitHub dispatch config finalizes this job as failed immediately and blocks downstream Phase 2C, Odds, and Scoring.'
     };
   }
   if (!/^[^/]+\/[^/]+$/.test(repo)) {
@@ -7906,6 +7953,20 @@ async function compactRefreshQueueOutput(wrapped) {
   };
 }
 
+function isRequiredBaseTerminalFailure(row, result) {
+  const jobKey = String(row?.job_key || '');
+  const status = String(result?.status || result?.result_status || '').toLowerCase();
+  const error = String(result?.error || result?.result_error || '').toLowerCase();
+  if (result?.terminal_failure === true || result?.blocks_downstream === true) return true;
+  if (jobKey === 'prizepicks_board') {
+    if (status.includes('missing_github_dispatch_secret_hard_fail')) return true;
+    if (error.includes('missing_github_dispatch_secret')) return true;
+    if (status.includes('invalid_github_repo_format')) return true;
+    if (status.includes('github_workflow_dispatch_failed')) return true;
+  }
+  return false;
+}
+
 async function runRefreshOrchestratorTick(input, env) {
   await ensureRefreshOrchestratorTables(env);
   const self_heal = await selfHealRefreshOrchestratorState(env, { trigger:input?.trigger || 'refresh_orchestrator_tick', reason:'tick_preflight_self_heal' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
@@ -7964,7 +8025,7 @@ async function runRefreshOrchestratorTick(input, env) {
       }
       if (result?.ok === false || result?.data_ok === false) {
         const attempts = Number(row.attempt_count || 0) + 1;
-        const terminal = isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
+        const terminal = isRequiredBaseTerminalFailure(row, result) || isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
         await env.DB.prepare(`UPDATE data_refresh_queue SET status=?, run_after=CASE WHEN ? THEN run_after ELSE datetime('now','+5 minutes') END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, attempt_count=COALESCE(attempt_count,0)+1, retry_count=COALESCE(retry_count,0)+1, error=?, output_json=? WHERE request_id=?`).bind(terminal ? 'failed' : 'pending', terminal ? 1 : 0, terminal ? 1 : 0, String(result?.error || result?.status || 'refresh_job_failed'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
         await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:terminal?'failed':'retry', status:terminal?'failed':'pending', message:String(result?.error || result?.status || 'refresh_job_failed'), payload_json:wrapped });
         if (terminal && isOptionalRefreshDependency(row)) {
@@ -7986,7 +8047,7 @@ async function runRefreshOrchestratorTick(input, env) {
     } catch (err) {
       const error = String(err?.message || err);
       const attempts = Number(row.attempt_count || 0) + 1;
-      const terminal = isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
+      const terminal = String(row?.job_key || '') === 'prizepicks_board' || isOptionalRefreshDependency(row) || attempts >= Number(row.max_attempts || 3);
       const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error };
       last = wrapped;
       processed.push({ job_key:row.job_key, routed_job:row.job_name, status:'failed_exception', error });

@@ -1,0 +1,20 @@
+BUILD VERSION AUDIT
+
+worker.js SYSTEM_VERSION:
+v1.4.38 - GitHub Dispatch Resolver Finalizer
+
+control_room.html visible tag:
+v1.4.38 - GitHub Dispatch Resolver Finalizer
+
+control_room.html debugConfig version:
+control_room_v1_4_38_github_dispatch_resolver_finalizer
+
+PrizePicks policy:
+No soft pass. Existing board rows do not satisfy PrizePicks Board refresh. GitHub dispatch + post-request mlb_stats update required.
+
+GitHub board files included:
+main.py
+scrape.yml
+
+
+HOTFIX CHECK: wrangler.jsonc name is alphadog-phase3-starter-groups. Do not deploy to prop-ingestion-git.
