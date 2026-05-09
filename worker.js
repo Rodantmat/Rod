@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.01 - Locked PrizePicks Wait Gate";
+const SYSTEM_VERSION = "v1.5.02 - PrizePicks Waiting Terminal Gate Fix";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7462,7 +7462,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   if (updates.length) await env.DB.batch(updates);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:selected.map(j=>j.job_key), slate } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected, slate } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.01 Locked PrizePicks Wait Gate: PrizePicks Board waiting stays locked/running across cron checks, hard-fails after 10 checks, and never releases half-pending work.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.02 PrizePicks Waiting Terminal Gate Fix: PrizePicks Board waiting stays locked/running across cron checks, hard-fails only after the real queue tick/check count reaches 10, and never releases half-pending work.' };
 }
 
 
@@ -7608,7 +7608,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.01 Locked PrizePicks Wait Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, keeps PrizePicks Board locked while waiting, hard-fails after 10 checks, and blocks downstream dependencies on required base failures.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.02 PrizePicks Waiting Terminal Gate Fix is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, keeps PrizePicks Board locked while waiting, hard-fails only after the real queue tick/check count reaches 10, and blocks downstream dependencies on required base failures.' };
 }
 
 
@@ -8189,10 +8189,16 @@ async function runRefreshOrchestratorTick(input, env) {
     }
 
     const wrapped = { ok:result?.ok !== false, data_ok:result?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, display_name:row.display_name, routed_job:row.job_name, result, elapsed_ms:Date.now()-started };
-    const attempts = Number(row.last_output_json ? 0 : 0) + 1;
+    const qStateForTerminal = await env.DB.prepare(`SELECT tick_count, attempt_count, retry_count, max_attempts FROM data_refresh_queue WHERE request_id=?`).bind(requestId).first().catch(() => null);
+    const terminalAttemptCount = Math.max(
+      Number(qStateForTerminal?.tick_count || 0),
+      Number(qStateForTerminal?.attempt_count || 0),
+      Number(qStateForTerminal?.retry_count || 0),
+      1
+    );
     const partial = singleLaneIsPartialOrWaiting(row, result);
     const failed = result?.ok === false || result?.data_ok === false;
-    const terminalFail = failed && singleLaneShouldTerminalFail(row, result, Number(row.max_attempts || 3));
+    const terminalFail = failed && singleLaneShouldTerminalFail(row, result, terminalAttemptCount);
 
     if (partial && !terminalFail) {
       if (String(row.job_key || '') === 'prizepicks_board' && singleLaneIsPartialOrWaiting(row, result)) {

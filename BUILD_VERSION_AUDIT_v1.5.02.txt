@@ -1,0 +1,11 @@
+AlphaDog Build Version Audit
+
+ZIP: alphadog_v1.5.02_prizepicks_waiting_terminal_gate_fix.zip
+worker.js SYSTEM_VERSION:
+v1.5.02 - PrizePicks Waiting Terminal Gate Fix
+control_room.html visible version:
+v1.5.02 - PrizePicks Waiting Terminal Gate Fix
+control_room debug version:
+control_room_v1_5_02_prizepicks_waiting_terminal_gate_fix
+wrangler target:
+alphadog-phase3-starter-groups
