@@ -1,22 +1,20 @@
 AlphaDog v1.4.36 - PrizePicks Dispatch Fallback Guard
 
-Purpose:
-- Fixes the 10pm/full-cascade block where PrizePicks Board Refresh could stop the queue with missing_github_dispatch_secret even when usable current PrizePicks board rows already exist.
-- The board refresh job now soft-passes and continues into Phase 2C when current future board rows are present.
-- If GitHub dispatch config is missing AND no current future board exists, it still fails loudly because the system has no board source to continue with.
+Files:
+- worker.js
+- control_room.html
+- wrangler.jsonc
+- package.json
 
-Preserved:
-- v1.4.34 candidate publish fallback final behavior.
-- v1.4.35 external-failure self-healing orchestrator behavior.
-- Queue-owned scoring remains independent from AUTO_SCORING_REFRESH_V1.
-- Volatile table overwrite/cleanup policy remains intact.
+Control Room adjustment:
+- Added Run PrizePicks Board Only button under DATA REFRESHING.
+- Button enqueues only job_key=prizepicks_board through refresh_orchestrator_enqueue_selected.
+- It does not enqueue prizepicks_context, odds jobs, scoring, or cascade jobs.
+- Control Room visible/internal version aligned with worker v1.4.36.
 
-Deploy target:
-- alphadog-phase3-starter-groups
-
-Test sequence:
-1. DEBUG > Health must show v1.4.36 - PrizePicks Dispatch Fallback Guard.
-2. DATA REFRESHING > Schedule Cascade.
-3. Wait for minute cron.
-4. Query data_refresh_queue by chain_id and verify PrizePicks Board Refresh either completes via GitHub dispatch or soft-passes with board_refresh_soft_pass_existing_current_board.
-5. Verify Phase 2C, Odds, and Scoring advance.
+Test:
+1. Deploy.
+2. Open Control Room.
+3. DEBUG > Health should show v1.4.36 - PrizePicks Dispatch Fallback Guard.
+4. Click DATA REFRESHING > Run PrizePicks Board Only.
+5. Verify the queue for the new chain has only prizepicks_board.

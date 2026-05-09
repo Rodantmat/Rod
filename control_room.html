@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.4.35 - External-Failure Self-Healing Orchestrator -->
+<!-- v1.4.36 - PrizePicks Dispatch Fallback Guard -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -48,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.4.35 - External-Failure Self-Healing Orchestrator</div>
+<div id="versionTag">v1.4.36 - PrizePicks Dispatch Fallback Guard</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -82,6 +82,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </div>
 <div class="refreshActions">
 <button class="warn" onclick="orchestratorSelectedOnly()">Schedule Selected Only</button>
+<button class="run" onclick="orchestratorPrizePicksBoardOnly()">Run PrizePicks Board Only</button>
 <button class="warn" onclick="orchestratorCascade()">Cascade From First Checked</button>
 <button class="check" onclick="runJobButton('DATA REFRESHING > Production Clock Status','refresh_orchestrator_schedule_status')">Production Clock Status</button>
 <button class="check" onclick="runJobButton('DATA REFRESHING > Orchestrator Status','refresh_orchestrator_status')">Orchestrator Status</button>
@@ -295,7 +296,7 @@ function clearMinePulse(){const el=document.getElementById("minePulse");if(el){e
 function loading(l,e){setStatus("RUNNING: "+l);if(l.indexOf("Board Queue Auto Mine Raw")>=0)setMinePulse("MINER PULSE\nStarting...\n"+(e||""));else clearMinePulse();setOutput(l,"Loading..."+(e?"\n"+e:""))}
 function tokenFingerprint(){return TOKEN?{loaded:true,length:TOKEN.length,starts_with:TOKEN.slice(0,2),ends_with:TOKEN.slice(-2)}:{loaded:false,length:0}}
 async function loadConfig(){try{loading("Reload Config");const r=await fetch(CONFIG_URL+"?t="+Date.now(),{cache:"no-store"}),t=await r.text(),m=t.match(/^\s*TOKEN\s*=\s*(.+?)\s*$/m);if(m&&m[1].trim()){TOKEN=m[1].trim().replace(/^["']|["']$/g,"");CONFIG_LOADED=true;setStatus("CONFIG LOADED");setOutput("Reload Config",{config_loaded:true,token_fingerprint:tokenFingerprint()})}else{TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:"TOKEN line not found"})}}catch(e){TOKEN="";CONFIG_LOADED=false;setOutput("Reload Config",{config_loaded:false,error:String(e)})}}
-function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_4_35_external_failure_self_healing_orchestrator",deferred_full_run_url:DEFER_FULL_RUN_URL})}
+function debugConfig(){setOutput("DEBUG > Config",{base:BASE,config_url:CONFIG_URL,slate_mode:SLATE_MODE,manual_date:MANUAL_DATE,resolved_slate:resolveSlateDate(),pt_now:ptParts(),token_set:Boolean(TOKEN),config_loaded:CONFIG_LOADED,token_fingerprint:tokenFingerprint(),version:"control_room_v1_4_36_prizepicks_dispatch_fallback_guard",deferred_full_run_url:DEFER_FULL_RUN_URL})}
 async function rawRequest(l,u,p){if(!CONFIG_LOADED||!TOKEN)await loadConfig();const h={"Content-Type":"application/json","x-ingest-token":TOKEN},o=p===null?{method:"GET",headers:h}:{method:"POST",headers:h,body:JSON.stringify(p)};try{const r=await fetch(u,o),txt=await r.text();let b;try{b=JSON.parse(txt)}catch(e){b=txt}return {http_status:r.status,body:b}}catch(e){return {ok:false,error:String(e),action:l}}}
 async function requestJSON(l,u,p){loading(l);const r=await rawRequest(l,u,p);setStatus("DONE: "+l+" / HTTP "+(r.http_status||"ERR"));setOutput(l,r);return r}
 function shouldRetry(r,j){const body=r&&r.body?r.body:null;const httpOk=!!(r&&r.http_status&&r.http_status<400);if(j==="refresh_orchestrator_cancel_all")return false;if(body&&body.ok===true){const st=String(body.status||"").toLowerCase();if(st.includes("cancel"))return false;if(j==="check_mlb_scoring_v1"&&(body.latest_run_completed===true||body.scoring_engine_ok===true||((body.latest_runs||[])[0]&&String((body.latest_runs||[])[0].status||"").toUpperCase()==="COMPLETED")))return false;if(j==="inspect_mlb_score_audit_v1")return false;if(j==="build_mlb_score_candidate_board_v1")return false;if(j==="run_mlb_scoring_v1")return false;}const raw=JSON.stringify(r||{});if(raw.includes("503")||raw.includes("UNAVAILABLE")||raw.includes("high demand")||raw.includes("Load failed")||(!httpOk&&raw.includes("cancelled")))return true;const ins=r&&r.body&&r.body.inserted;if(ins){const vals=Object.values(ins).map(Number);if(vals.length&&vals.every(v=>v===0)){if(j==="scrape_starters_group_1"||j==="scrape_starters_group_2"||j==="scrape_starters_group_3"||j==="scrape_starters_missing"||j==="scrape_lineups_mlb_api"||j==="scrape_lineups"||j==="board_queue_auto_mine"||j==="check_mlb_scoring_v1"||j==="run_mlb_scoring_v1"||j==="refresh_orchestrator_cancel_all")return false;return true}}return false}
@@ -308,6 +309,7 @@ async function requestJobWithRetry(l,j){if(j==="board_queue_auto_mine")return re
 async function requestAutoMineLoop(l,j){const d=resolveSlateDate();loading(l,"One short server batch only. Persistent backend cron continues every 2 minutes.\nSlate: "+d);const r=await rawRequest(l+" one_server_batch",JOB_URL,{job:j,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,limit:5,manual_spot_check:true});if(r&&r.body&&r.body.progress)setMinePulse(r.body);const body=r.body||{},isOk=r.http_status&&r.http_status<400&&body.ok!==false;setStatus((isOk?"DONE: ":"FAILED: ")+l);setOutput(l,{final:isOk?"one_server_batch_complete":"failed",slate_date:d,response:r,instructions:"Manual Auto Mine is intentionally one short backend batch on iPhone. Let the persistent scheduled miner continue every 2 minutes; check queue health later."})}function health(){requestJSON("DEBUG > Health",HEALTH_URL,null)}function dailyHealth(){requestJSON("DEBUG > Daily Health",DAILY_HEALTH_URL+"?slate_date="+encodeURIComponent(D()),null)}function testSQL(){requestJSON("DEBUG > SQL Test",SQL_URL,{sql:""})}async function scheduleFullRunOneShot(){const d=resolveSlateDate();loading("SCRAPE > FULL RUN","Scheduling one-shot backend Full Run. Safari does not need to stay open.\nSlate: "+d);const r=await rawRequest("SCRAPE > FULL RUN scheduled one-shot",DEFER_FULL_RUN_URL,{job:"run_full_pipeline",slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE});setStatus("SCHEDULED: SCRAPE > FULL RUN");setOutput("SCRAPE > FULL RUN",{final:"scheduled_background_one_shot",slate_date:d,response:r,instructions:"Full Run was scheduled to run in the backend in about 1 minute. Do not keep Safari open. Check Scheduler Log, Tasks, Health, or queue health in about 15 minutes.",temporary_test_mode:true})}function runJobButton(l,j){if(j==="run_full_pipeline")return scheduleFullRunOneShot();requestJobWithRetry(l,j)}
 function selectedRefreshKeys(){return Array.from(document.querySelectorAll('#refreshOrchestratorChecks input[data-refresh-key]:checked')).map(x=>x.getAttribute('data-refresh-key')).filter(Boolean)}
 async function runRefreshOrchestratorAction(label,job,mode){const keys=selectedRefreshKeys();if(!keys.length){setStatus('SELECT AT LEAST ONE DATA REFRESHER');setOutput(label,{ok:false,error:'No refreshers selected'});return}const d=resolveSlateDate();loading(label,'Scheduling '+mode+' refresh queue.\nSlate: '+d+'\nKeys: '+keys.join(', '));const r=await rawRequest(label,JOB_URL,{job:job,job_keys:keys,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,auto_start:true});setStatus('DONE: '+label+' / HTTP '+(r.http_status||'ERR'));setOutput(label,r)}
+async function orchestratorPrizePicksBoardOnly(){const d=resolveSlateDate();const keys=['prizepicks_board'];const label='DATA REFRESHING > PrizePicks Board Only';loading(label,'Scheduling PrizePicks board refresh ONLY.\nSlate: '+d+'\nKeys: '+keys.join(', ')+'\nNo context, odds, scoring, or cascade jobs will be enqueued by this button.');const r=await rawRequest(label,JOB_URL,{job:'refresh_orchestrator_enqueue_selected',job_keys:keys,slate_date:d,slate_mode:SLATE_MODE,manual_slate_date:MANUAL_DATE,auto_start:false});setStatus('DONE: '+label+' / HTTP '+(r.http_status||'ERR'));setOutput(label,r)}
 function orchestratorSelectedOnly(){return runRefreshOrchestratorAction('DATA REFRESHING > Schedule Selected Only','refresh_orchestrator_enqueue_selected','selected-only')}
 function orchestratorCascade(){return runRefreshOrchestratorAction('DATA REFRESHING > Schedule Cascade','refresh_orchestrator_enqueue_cascade','cascade')}
 function runSQLButton(l,s){requestJSON(l,SQL_URL,{sql:s})}function inspectLatestFactorResult(){requestJSON("CHECK > Board Factor Inspect",INSPECT_URL,{slate_date:D(),limit:3,raw_max_chars:20000})}function inspectLatestQueuePayload(){requestJSON("CHECK > Board Payload Inspect",PAYLOAD_INSPECT_URL,{slate_date:D(),limit:2,raw_max_chars:20000})}function runManualSQL(){requestJSON("MANUAL SQL > Output",SQL_URL,{sql:document.getElementById("sqlInput").value,max_rows:50,max_chars:900})}function copyOutput(){navigator.clipboard.writeText(document.getElementById("output").textContent);setStatus("COPIED OUTPUT")}
@@ -673,7 +675,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.4.35 - External-Failure Self-Healing Orchestrator",
+    version: "v1.4.36 - PrizePicks Dispatch Fallback Guard",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

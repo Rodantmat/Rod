@@ -1,6 +1,18 @@
-Build: v1.4.36 - PrizePicks Dispatch Fallback Guard
-worker.js SYSTEM_VERSION: v1.4.36 - PrizePicks Dispatch Fallback Guard
-README: README_v1.4.36.txt
-Control Room: unchanged from v1.4.35 except worker version displayed by health/runtime.
-Patch type: production scheduled backend / orchestrator guard.
-Primary fix: missing GitHub dispatch config no longer traps the full cascade when current future PrizePicks board rows are already available.
+BUILD VERSION AUDIT
+
+worker.js SYSTEM_VERSION:
+v1.4.36 - PrizePicks Dispatch Fallback Guard
+
+control_room.html visible tag:
+v1.4.36 - PrizePicks Dispatch Fallback Guard
+
+control_room.html debugConfig version:
+control_room_v1_4_36_prizepicks_dispatch_fallback_guard
+
+Control Room button added:
+Run PrizePicks Board Only
+
+Expected payload:
+job=refresh_orchestrator_enqueue_selected
+job_keys=["prizepicks_board"]
+auto_start=false
