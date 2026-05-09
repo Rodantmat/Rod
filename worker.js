@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.35 - External-Failure Self-Healing Orchestrator";
+const SYSTEM_VERSION = "v1.4.36 - PrizePicks Dispatch Fallback Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2756,17 +2756,35 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   if (!token) missing.push('GITHUB_TOKEN');
   if (!workflow) missing.push('GITHUB_WORKFLOW_FILE');
   if (missing.length) {
+    const currentBoardUsable = !!(current && current.table_exists && Number(current.rows_count || 0) > 0 && Number(current.future_rows || 0) > 0);
+    if (currentBoardUsable) {
+      return {
+        ok:true,
+        data_ok:true,
+        version:SYSTEM_VERSION,
+        job:'trigger_prizepicks_github_board_refresh',
+        status:'board_refresh_soft_pass_existing_current_board',
+        board_refresh_complete:true,
+        dispatch_skipped:true,
+        dispatch_config_warning:'missing_github_dispatch_secret',
+        missing,
+        github_dispatch_binding: githubDispatchBindingStatus(env),
+        mlb_stats:current,
+        next_step:'continue_to_phase2c_market_context',
+        note:'GitHub dispatch config is missing in this execution context, but current future PrizePicks board rows already exist. The orchestrator must not trap the cascade; it continues using the existing current board and records the binding warning.'
+      };
+    }
     return {
       ok:false,
       data_ok:false,
       version:SYSTEM_VERSION,
       job:'trigger_prizepicks_github_board_refresh',
-      status:'missing_github_dispatch_secret',
+      status:'missing_github_dispatch_secret_no_current_board_fallback',
       board_refresh_complete:false,
       missing,
       github_dispatch_binding: githubDispatchBindingStatus(env),
       mlb_stats:current,
-      note:'Control Room worker needs GitHub dispatch secrets to refresh PrizePicks from the full refresh pipeline.'
+      note:'GitHub dispatch config is missing and no usable current future PrizePicks board rows exist. This is a real configuration failure, not a scoring failure.'
     };
   }
   if (!/^[^/]+\/[^/]+$/.test(repo)) {
