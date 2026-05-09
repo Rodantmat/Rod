@@ -1,0 +1,11 @@
+AlphaDog Build Version Audit
+
+ZIP: alphadog_v1.5.01_locked_prizepicks_wait_gate.zip
+worker.js SYSTEM_VERSION:
+v1.5.01 - Locked PrizePicks Wait Gate
+control_room.html visible version:
+v1.5.01 - Locked PrizePicks Wait Gate
+control_room debug version:
+control_room_v1_5_01_locked_prizepicks_wait_gate
+wrangler target:
+alphadog-phase3-starter-groups

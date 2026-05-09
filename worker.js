@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.00 - Single Lane Independent Orchestrator";
+const SYSTEM_VERSION = "v1.5.01 - Locked PrizePicks Wait Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7455,14 +7455,14 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   for (const j of selected) {
     const requestId = crypto.randomUUID();
     const payload = JSON.stringify({ ...(input || {}), orchestrator_version:'v1.5_single_lane', orchestrator_mode:mode, slate_date:slate.slate_date, slate_mode:slate.slate_mode, request_id:requestId, chain_id:chainId }).slice(0,4000);
-    legacy.push(env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?)`).bind(requestId, chainId, j.job_key, j.display_name, j.job_name, j.group_name, Number(j.sequence_order || 0), mode === 'cascade' ? 1 : 0, slate.slate_date, slate.slate_mode, Number(input?.max_attempts || (j.job_key === 'prizepicks_board' ? 6 : 3)), payload));
+    legacy.push(env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?)`).bind(requestId, chainId, j.job_key, j.display_name, j.job_name, j.group_name, Number(j.sequence_order || 0), mode === 'cascade' ? 1 : 0, slate.slate_date, slate.slate_mode, Number(input?.max_attempts || (j.job_key === 'prizepicks_board' ? 10 : 3)), payload));
     updates.push(env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, blocked_flag=0, blocked_by_job_key=NULL, current_request_id=?, current_chain_id=?, current_slate_date=?, current_slate_mode=?, last_status='requested', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(requestId, chainId, slate.slate_date, slate.slate_mode, JSON.stringify(batch).slice(0,10000), j.job_key));
   }
   if (legacy.length) await env.DB.batch(legacy);
   if (updates.length) await env.DB.batch(updates);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:selected.map(j=>j.job_key), slate } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected, slate } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.00 Single Lane Independent Orchestrator: no concurrent jobs, database flags drive execution, required failed base jobs block dependent downstream jobs instead of soft-passing.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.01 Locked PrizePicks Wait Gate: PrizePicks Board waiting stays locked/running across cron checks, hard-fails after 10 checks, and never releases half-pending work.' };
 }
 
 
@@ -7608,7 +7608,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.00 Single Lane Independent Orchestrator is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, logs rich per-stage status, and blocks downstream dependencies on required base failures.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.01 Locked PrizePicks Wait Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, keeps PrizePicks Board locked while waiting, hard-fails after 10 checks, and blocks downstream dependencies on required base failures.' };
 }
 
 
@@ -8112,17 +8112,23 @@ async function runRefreshOrchestratorTick(input, env) {
   const started = Date.now();
   await ensureRefreshOrchestratorTables(env);
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
+  let activeLockedRow = null;
   if (Number(state?.lock_flag || 0) === 1) {
+    activeLockedRow = await env.DB.prepare(`SELECT * FROM data_orchestrator_jobs WHERE running_flag=1 ORDER BY updated_at DESC LIMIT 1`).first().catch(() => null);
     const seconds = state?.updated_at ? Math.round((Date.now() - parseD1TimestampMaybe(state.updated_at)) / 1000) : null;
-    if (seconds != null && seconds > 900) {
-      await releaseSingleLaneGlobalState(env, 'STALE_LOCK_RELEASED', { reason:'stale_global_lock_released', seconds_since_update:seconds, previous_state:state });
-      await singleLaneLog(env, { event_type:'stale_lock_released', status:'recovered', message:'Global orchestrator lock was stale and has been released.', payload_json:{ seconds_since_update:seconds, previous_state:state } });
-    } else {
-      return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job.' };
+    const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
+    if (!canContinueLockedPrizePicks) {
+      if (seconds != null && seconds > 900) {
+        await releaseSingleLaneGlobalState(env, 'STALE_LOCK_RELEASED', { reason:'stale_global_lock_released', seconds_since_update:seconds, previous_state:state });
+        await singleLaneLog(env, { event_type:'stale_lock_released', status:'recovered', message:'Global orchestrator lock was stale and has been released.', payload_json:{ seconds_since_update:seconds, previous_state:state } });
+        activeLockedRow = null;
+      } else {
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, active_job:activeLockedRow, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job.' };
+      }
     }
   }
 
-  const row = await env.DB.prepare(`
+  const row = activeLockedRow || await env.DB.prepare(`
     SELECT * FROM data_orchestrator_jobs
     WHERE enabled_flag=1
       AND run_requested_flag=1
@@ -8139,11 +8145,17 @@ async function runRefreshOrchestratorTick(input, env) {
 
   const requestId = row.current_request_id || crypto.randomUUID();
   const chainId = row.current_chain_id || `single_lane|${crypto.randomUUID()}`;
-  await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:'RUNNING', started_at:new Date().toISOString(), state_json:{ job_key:row.job_key, request_id:requestId, chain_id:chainId } });
-  await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running', last_started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
+  const continuingLockedJob = !!activeLockedRow;
+  await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:continuingLockedJob ? 'RUNNING_WAITING_CHECK' : 'RUNNING', started_at:continuingLockedJob ? null : new Date().toISOString(), state_json:{ job_key:row.job_key, request_id:requestId, chain_id:chainId, continuing_locked_job:continuingLockedJob } });
+  if (continuingLockedJob) {
+    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running_waiting_check', updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
+    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'wait_check', status:'running', message:`${row.display_name} wait check`, payload_json:{ row } });
+  } else {
+    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running', last_started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
+    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
+    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
+  }
   await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(requestId).run().catch(() => null);
-  await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
-  await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
 
   let result = null;
   try {
@@ -8165,6 +8177,17 @@ async function runRefreshOrchestratorTick(input, env) {
       result = await executeTaskJob(row.job_name, body, slate, env);
     }
 
+    if (String(row.job_key || '') === 'prizepicks_board' && singleLaneIsPartialOrWaiting(row, result)) {
+      const q = await env.DB.prepare(`SELECT tick_count, max_attempts FROM data_refresh_queue WHERE request_id=?`).bind(requestId).first().catch(() => null);
+      const cronCheckCount = Number(q?.tick_count || 1);
+      const maxChecks = Math.max(10, Number(q?.max_attempts || row.max_attempts || 10));
+      if (cronCheckCount >= maxChecks) {
+        result = { ...(result || {}), ok:false, data_ok:false, terminal_failure:true, blocks_downstream:true, status:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', error:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', board_refresh_complete:false, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, note:'PrizePicks Board did not publish a fresh certified board within the allowed cron checks. The stage is hard-failed, the lane is released, and dependent jobs are blocked.' };
+      } else {
+        result = { ...(result || {}), orchestrator_waiting:true, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, next_check:'next cron tick', note:'PrizePicks Board is still waiting for the GitHub scraper to publish a fresh board. The orchestrator lane remains locked; no downstream stage can start.' };
+      }
+    }
+
     const wrapped = { ok:result?.ok !== false, data_ok:result?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, display_name:row.display_name, routed_job:row.job_name, result, elapsed_ms:Date.now()-started };
     const attempts = Number(row.last_output_json ? 0 : 0) + 1;
     const partial = singleLaneIsPartialOrWaiting(row, result);
@@ -8172,6 +8195,14 @@ async function runRefreshOrchestratorTick(input, env) {
     const terminalFail = failed && singleLaneShouldTerminalFail(row, result, Number(row.max_attempts || 3));
 
     if (partial && !terminalFail) {
+      if (String(row.job_key || '') === 'prizepicks_board' && singleLaneIsPartialOrWaiting(row, result)) {
+        const statusText = String(result?.status || 'waiting_for_github_board_update');
+        await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, run_requested_flag=1, last_status='waiting_for_board_update', last_fail=0, last_error_code=?, last_error_message=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(statusText.slice(0,250), statusText.slice(0,1000), JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(statusText, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+        await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:'WAITING_PRIZEPICKS_BOARD', state_json:wrapped });
+        await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'waiting_locked', status:'running', message:statusText, payload_json:wrapped });
+        return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_waiting_locked', processed:[{ job_key:row.job_key, status:statusText, cron_check_count:result?.cron_check_count, max_cron_checks:result?.max_cron_checks }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board is still running/waiting. The global lane remains locked, the job flag stays active, and no downstream stage can start until success or the 10-check timeout.' };
+      }
       await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(String(result?.status || 'partial_continue'), JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
       await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(String(result?.status || 'partial_continue'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
       await releaseSingleLaneGlobalState(env, 'WAITING_NEXT_TICK', wrapped);
