@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+Version: v1.4.35 - External-Failure Self-Healing Orchestrator
+worker.js SYSTEM_VERSION: v1.4.35 - External-Failure Self-Healing Orchestrator
+control_room.html label: v1.4.35 - External-Failure Self-Healing Orchestrator
+README: README_v1.4.35.txt
+Build package: alphadog_v1.4.35_external_failure_self_healing_orchestrator.zip
+Flat folder: yes
+Subdirectories: no
+Long-running browser request avoided: yes
+Schedule enqueue fast-return preserved: yes
+Self-heal preflight added: yes
+Duplicate clock-chain cancellation added: yes
+Phase2C partial_continue stale requeue added: yes
+Orphan pending release added: yes
+Optional Odds API downstream release added: yes
+Odds API resolver unified diagnostics: yes

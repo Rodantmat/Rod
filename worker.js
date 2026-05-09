@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.4.34 - Candidate Publish Fallback Final";
+const SYSTEM_VERSION = "v1.4.35 - External-Failure Self-Healing Orchestrator";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1181,9 +1181,12 @@ function oddsApiBindingStatus(env = {}) {
   return {
     configured: !!resolved.key,
     source: resolved.source,
+    resolver: resolved.resolver || null,
     primary_bound: !!rawPrimary,
     candidate_names_checked: resolved.checked,
-    key_length: resolved.key ? resolved.key.length : 0
+    key_length: resolved.key ? resolved.key.length : 0,
+    fatal_when_missing: false,
+    rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs all use getOddsApiKey(env). Missing key is treated as a recoverable config/logic diagnostic and must not trap the queue.'
   };
 }
 
@@ -7329,12 +7332,13 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
 async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   await ensureProductionRefreshScheduleTables(env);
   const stale_recovery = await recoverStaleRefreshQueueRows(env, { trigger: input?.trigger || 'production_clock_preflight', reason: 'pre_enqueue_due_plan_recovery' });
+  const self_heal = await selfHealRefreshOrchestratorState(env, { trigger: input?.trigger || 'production_clock_preflight', reason: 'pre_enqueue_due_plan_self_heal' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
   const pt = getPTScheduleParts();
   const plans = await sampleRows(env, `SELECT * FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const duePlans = plans.filter(pl => productionPlanIsDue(pl, pt));
   const results = [];
   for (const plan of duePlans) results.push(await enqueueProductionPlan(env, plan, pt, input));
-  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, stale_recovery, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue.' };
+  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, stale_recovery, self_heal, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue. v1.4.35 runs self-heal before enqueue to prevent duplicate clock chains and stale partial rows from trapping the 10pm run.' };
 }
 
 async function productionRefreshClockStatus(input, env) {
@@ -7429,6 +7433,7 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   // v1.4.33: enqueue remains fast, but it may cancel stale scoring queue rows that are already dead.
   // This is a tiny metadata-only safety pass; no volatile table purge, scoring, mining, temp cleanup, or auto tick runs here.
   const enqueue_reaper = await hardFinalizeStaleScoringQueueRows(env, 'schedule_enqueue_preflight').catch(e => ({ ok:false, error:String(e?.message||e) }));
+  const enqueue_self_heal = await selfHealRefreshOrchestratorState(env, { trigger:input?.trigger || 'schedule_enqueue', reason:'schedule_enqueue_self_heal' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
   const slate = resolveSlateDate(input || {});
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const requestedSet = new Set(requested);
@@ -7456,7 +7461,7 @@ async function enqueueRefreshOrchestratorRows(input, env, mode) {
   await env.DB.batch(stmts);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'enqueue', status:'pending', message:`${selected.length} refresh job(s) enqueued`, payload_json:{ mode, selected_job_keys:selected.map(j => j.job_key), slate } });
   const tick = null;
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. This endpoint only enqueues and returns.', note:'v1.4.33 fast enqueue: Schedule Cascade verifies tables, cancels dead stale scoring rows only, inserts queue rows, writes one event, and returns. No volatile purge, scoring, temp cleanup, or auto tick runs inside the browser request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'cascade_enqueued' : 'selected_enqueued', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), auto_start_tick:tick, enqueue_reaper, enqueue_self_heal, manual_ticks_required:false, next_action:'Minute cron will continue one queued refresh job at a time. This endpoint only enqueues and returns.', note:'v1.4.35 self-healing fast enqueue: Schedule Cascade verifies tables, cancels dead stale scoring rows only, inserts queue rows, writes one event, and returns. No volatile purge, scoring, temp cleanup, or auto tick runs inside the browser request; self-heal only cancels dead blockers and duplicate schedule chains.' };
 }
 
 function isOptionalRefreshDependency(row) {
@@ -7555,6 +7560,165 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
 }
 
 
+
+async function selfHealRefreshOrchestratorState(env, input = {}) {
+  await ensureRefreshOrchestratorTables(env);
+  const reason = String(input.reason || input.trigger || 'self_heal_preflight');
+  const out = {
+    ok: true,
+    data_ok: true,
+    version: SYSTEM_VERSION,
+    job: 'refresh_orchestrator_self_heal',
+    reason,
+    duplicate_clock_chains_cancelled: 0,
+    stale_partial_rows_requeued: 0,
+    orphan_pending_rows_released: 0,
+    stale_non_scoring_running_requeued: 0,
+    optional_failures_released_next: 0,
+    external_only_failure_policy: ['cloudflare_unavailable','github_unavailable','odds_api_unavailable','gemini_unavailable'],
+    note: 'Auto-healing preflight treats queue stalls, duplicate scheduled chains, stale partial_continue rows, orphan pending rows, and optional odds failures as logic recoveries, not terminal pipeline failures.'
+  };
+
+  const activeClockRows = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, status, sequence_order, created_at, updated_at
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running')
+      AND chain_id LIKE 'clock|%'
+    ORDER BY datetime(created_at) ASC, sequence_order ASC
+    LIMIT 200
+  `).catch(() => []);
+  const groups = new Map();
+  for (const r of activeClockRows) {
+    const parts = String(r.chain_id || '').split('|');
+    const slotKey = parts.length >= 5 ? parts.slice(0, 5).join('|') : String(r.chain_id || '');
+    if (!groups.has(slotKey)) groups.set(slotKey, new Map());
+    const g = groups.get(slotKey);
+    if (!g.has(r.chain_id)) g.set(r.chain_id, { chain_id:r.chain_id, first_created_at:r.created_at, rows:[] });
+    g.get(r.chain_id).rows.push(r);
+  }
+  for (const [slotKey, chainMap] of groups.entries()) {
+    const chains = Array.from(chainMap.values()).sort((a,b) => String(a.first_created_at || '').localeCompare(String(b.first_created_at || '')) || String(a.chain_id).localeCompare(String(b.chain_id)));
+    if (chains.length <= 1) continue;
+    const keep = chains[0].chain_id;
+    for (const ch of chains.slice(1)) {
+      const res = await env.DB.prepare(`
+        UPDATE data_refresh_queue
+        SET status='cancelled',
+            finished_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP,
+            error=COALESCE(error, ?),
+            output_json=COALESCE(output_json, ?)
+        WHERE chain_id=?
+          AND status IN ('pending','running')
+      `).bind(
+        `auto_cancel_duplicate_clock_chain:${reason}`,
+        JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'duplicate_clock_chain_cancelled', slot_key:slotKey, kept_chain_id:keep, cancelled_chain_id:ch.chain_id, reason }).slice(0,3000),
+        ch.chain_id
+      ).run();
+      out.duplicate_clock_chains_cancelled += Number(res?.meta?.changes || 0);
+      await refreshOrchestratorEvent(env, { chain_id:ch.chain_id, event_type:'duplicate_clock_chain_cancelled', status:'cancelled', message:`Cancelled duplicate scheduled chain for ${slotKey}`, payload_json:{ slotKey, kept_chain_id:keep, cancelled_chain_id:ch.chain_id, reason } });
+    }
+  }
+
+  const stalePartialRows = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, display_name, status, run_after, started_at, updated_at, sequence_order, substr(COALESCE(output_json,''),1,1400) AS output_preview
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running')
+      AND COALESCE(output_json,'') LIKE '%partial_continue%'
+      AND datetime(updated_at) <= datetime('now','-2 minutes')
+      AND job_key NOT IN ('scoring_refresh')
+    ORDER BY datetime(updated_at) ASC
+    LIMIT 30
+  `).catch(() => []);
+  for (const row of stalePartialRows) {
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET status='pending',
+          run_after=CURRENT_TIMESTAMP,
+          started_at=NULL,
+          updated_at=CURRENT_TIMESTAMP,
+          error=NULL,
+          output_json=COALESCE(output_json, ?)
+      WHERE request_id=?
+        AND status IN ('pending','running')
+    `).bind(JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'stale_partial_continue_requeued', reason, row }).slice(0,3000), row.request_id).run();
+    out.stale_partial_rows_requeued++;
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_partial_continue_requeued', status:'pending', message:'Stale partial_continue row requeued for next tick.', payload_json:{ row, reason } });
+  }
+
+  const staleRunning = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, display_name, status, started_at, updated_at, sequence_order
+    FROM data_refresh_queue
+    WHERE status='running'
+      AND job_key NOT IN ('scoring_refresh')
+      AND datetime(updated_at) <= datetime('now','-5 minutes')
+    ORDER BY datetime(updated_at) ASC
+    LIMIT 20
+  `).catch(() => []);
+  for (const row of staleRunning) {
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET status='pending',
+          run_after=CURRENT_TIMESTAMP,
+          started_at=NULL,
+          updated_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, ?),
+          output_json=COALESCE(output_json, ?)
+      WHERE request_id=?
+        AND status='running'
+    `).bind(`auto_requeue_stale_non_scoring_running:${reason}`, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'stale_non_scoring_running_requeued', reason, row }).slice(0,3000), row.request_id).run();
+    out.stale_non_scoring_running_requeued++;
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_non_scoring_running_requeued', status:'pending', message:'Stale non-scoring running row requeued.', payload_json:{ row, reason } });
+  }
+
+  const orphanPendingRows = await sampleRows(env, `
+    SELECT q.request_id, q.chain_id, q.job_key, q.display_name, q.sequence_order, q.status, q.created_at, q.updated_at
+    FROM data_refresh_queue q
+    WHERE q.status='pending'
+      AND q.run_after IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM data_refresh_queue p
+        WHERE p.chain_id=q.chain_id
+          AND p.sequence_order < q.sequence_order
+          AND p.status IN ('pending','running')
+      )
+    ORDER BY datetime(q.created_at) ASC, q.sequence_order ASC
+    LIMIT 20
+  `).catch(() => []);
+  for (const row of orphanPendingRows) {
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET run_after=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP,
+          error=NULL
+      WHERE request_id=?
+        AND status='pending'
+        AND run_after IS NULL
+    `).bind(row.request_id).run();
+    out.orphan_pending_rows_released++;
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'orphan_pending_released', status:'pending', message:'Pending row had no active predecessor and was released automatically.', payload_json:{ row, reason } });
+  }
+
+  const optionalFailures = await sampleRows(env, `
+    SELECT *
+    FROM data_refresh_queue
+    WHERE status='failed'
+      AND job_key IN ('odds_api_morning','odds_api_afternoon')
+      AND finished_at >= datetime('now','-30 minutes')
+    ORDER BY datetime(finished_at) DESC
+    LIMIT 10
+  `).catch(() => []);
+  for (const row of optionalFailures) {
+    const released = await releaseNextRefreshQueueRow(env, row, { reason:'self_heal_optional_external_or_config_failure_continue_cascade', failed_job_key:row.job_key, error:row.error || null });
+    if (released?.released) {
+      out.optional_failures_released_next++;
+      await refreshOrchestratorEvent(env, { request_id:released.request_id, chain_id:row.chain_id, job_key:released.job_key, event_type:'self_heal_optional_failure_released_next', status:'pending', message:'Optional Odds API failure released downstream scoring automatically.', payload_json:{ failed_job_key:row.job_key, released, reason } });
+    }
+  }
+
+  return out;
+}
+
 async function hardFinalizeStaleScoringQueueRows(env, reason = 'preflight') {
   await ensureRefreshOrchestratorTables(env);
   const out = { ok:true, reason, cancelled_queue_rows:0, released_locks:0, finalized_runs:0, inspected_active:[] };
@@ -7608,7 +7772,8 @@ async function productionRefreshWatchdog(env, input = {}) {
   const pt = getPTScheduleParts();
   const due = (pt.hour === 11 && pt.minute === 0) || (pt.hour === 23 && pt.minute === 0);
   const stale_recovery = await recoverStaleRefreshQueueRows(env, { trigger:input.trigger || 'production_refresh_watchdog', reason: due ? 'scheduled_watchdog_window' : 'minute_preflight' });
-  if (!due && stale_recovery.recovered_count === 0) {
+  const self_heal = await selfHealRefreshOrchestratorState(env, { trigger:input.trigger || 'production_refresh_watchdog', reason: due ? 'scheduled_watchdog_window_self_heal' : 'minute_preflight_self_heal' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+  if (!due && stale_recovery.recovered_count === 0 && !(self_heal && (self_heal.duplicate_clock_chains_cancelled || self_heal.stale_partial_rows_requeued || self_heal.orphan_pending_rows_released || self_heal.stale_non_scoring_running_requeued))) {
     return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'production_refresh_watchdog', status:'not_due', pt, stale_recovery };
   }
   const active = await sampleRows(env, `
@@ -7651,6 +7816,7 @@ async function productionRefreshWatchdog(env, input = {}) {
     status: recovery_enqueue ? 'stale_board_recovery_enqueued' : (due ? 'diagnostic_window_checked' : 'stale_recovery_checked'),
     pt,
     stale_recovery,
+    self_heal,
     active_queue:active,
     prizepicks_context:board,
     candidate_board:candidate,
@@ -7738,6 +7904,7 @@ async function compactRefreshQueueOutput(wrapped) {
 
 async function runRefreshOrchestratorTick(input, env) {
   await ensureRefreshOrchestratorTables(env);
+  const self_heal = await selfHealRefreshOrchestratorState(env, { trigger:input?.trigger || 'refresh_orchestrator_tick', reason:'tick_preflight_self_heal' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
   const tick_reaper = await volatileOverwritePreflight(env, (input && input.slate_date) || null, { releaseScoringLock:true, reason:'tick_preflight_lock_reaper' }).catch(e => ({ ok:false, error:String(e?.message||e) }));
   const scoring_queue_reaper = await hardFinalizeStaleScoringQueueRows(env, 'tick_preflight').catch(e => ({ ok:false, error:String(e?.message||e) }));
   await recoverStaleRefreshQueueRows(env, { trigger:'tick_preflight_stale_queue_reaper', reason:'before_tick' }).catch(() => null);
@@ -7832,7 +7999,7 @@ async function runRefreshOrchestratorTick(input, env) {
   }
   const status = await refreshOrchestratorStatus({ job:'refresh_orchestrator_status' }, env);
   const active = (status.active_summary || []).filter(r => ['pending','running'].includes(String(r.status || '').toLowerCase())).reduce((a,r)=>a+Number(r.rows_count||0),0);
-  return { ok:true, data_ok:last?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:processed.length ? 'advanced' : 'idle_no_due_refresh_queue', processed_count:processed.length, processed, last_result:last, active_remaining:active, elapsed_ms:Date.now()-started, queue_summary:status.active_summary, tick_reaper, scoring_queue_reaper, manual_ticks_required:false, note:active ? 'Refresh orchestrator has pending/running work. Minute cron will continue one safe unit at a time.' : 'Refresh orchestrator queue is idle/complete.' };
+  return { ok:true, data_ok:last?.data_ok !== false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:processed.length ? 'advanced' : 'idle_no_due_refresh_queue', processed_count:processed.length, processed, last_result:last, active_remaining:active, elapsed_ms:Date.now()-started, queue_summary:status.active_summary, self_heal, tick_reaper, scoring_queue_reaper, manual_ticks_required:false, note:active ? 'Refresh orchestrator has pending/running work. Minute cron will continue one safe unit at a time.' : 'Refresh orchestrator queue is idle/complete.' };
 }
 
 async function cancelRefreshOrchestratorQueue(input, env) {
@@ -12856,13 +13023,13 @@ async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
   const oddsKeyInfo = getOddsApiKey(env);
   if (!oddsKeyInfo.key) return {
-    ok:false,
+    ok:true,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:input.job || 'run_odds_api_market_intel',
     error:'Missing ODDS_API_KEY secret',
     odds_api_binding: oddsApiBindingStatus(env),
-    note:'Odds API key resolver checked all accepted binding names. Health and job execution now use the same resolver.'
+    note:'Odds API key resolver checked all accepted binding names. Health and job execution use getOddsApiKey(env). This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
   };
   const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   await ensureOddsApiTables(env);
