@@ -1,0 +1,17 @@
+BUILD VERSION AUDIT
+
+worker.js SYSTEM_VERSION:
+v1.4.37 - Strict PrizePicks Refresh Gate
+
+control_room.html visible tag:
+v1.4.37 - Strict PrizePicks Refresh Gate
+
+control_room.html debugConfig version:
+control_room_v1_4_37_strict_prizepicks_refresh_gate
+
+PrizePicks policy:
+No soft pass. Existing board rows do not satisfy PrizePicks Board refresh. GitHub dispatch + post-request mlb_stats update required.
+
+GitHub board files included:
+main.py
+scrape.yml
