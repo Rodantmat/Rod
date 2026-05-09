@@ -1,0 +1,11 @@
+AlphaDog Build Version Audit
+
+ZIP: alphadog_v1.5.00_single_lane_independent_orchestrator.zip
+worker.js SYSTEM_VERSION:
+v1.5.00 - Single Lane Independent Orchestrator
+control_room.html visible version:
+v1.5.00 - Single Lane Independent Orchestrator
+control_room debug version:
+control_room_v1_5_00_single_lane_independent_orchestrator
+wrangler target:
+alphadog-phase3-starter-groups
