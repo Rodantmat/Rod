@@ -1,0 +1,6 @@
+Build version audit
+worker.js: v1.5.04 - PrizePicks Audit Completion Gate
+control_room.html: v1.5.04 - PrizePicks Audit Completion Gate
+README: README_v1.5.04.txt
+main.py: audit accepts GITHUB_DISPATCH_ID
+scrape.yml: workflow_dispatch accepts dispatch_id input
