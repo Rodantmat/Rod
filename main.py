@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.05.6 - PrizePicks Cron Handshake Gate"
+SCRIPT_VERSION = "v1.5.05.7 - PrizePicks Scraper Progress Ledger"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -103,7 +103,120 @@ def worker_status_callback(status, rows_fetched=None, rows_temp=None, rows_main=
         print(f"⚠️ Worker status callback failed for {status}: {e}")
 
 
+
+def ensure_progress_table(cf_url, headers):
+    d1_query(
+        cf_url,
+        headers,
+        """
+        CREATE TABLE IF NOT EXISTS prizepicks_scraper_runs (
+          run_id TEXT PRIMARY KEY,
+          dispatch_id TEXT,
+          github_run_id TEXT,
+          github_run_attempt TEXT,
+          github_event_name TEXT,
+          status TEXT,
+          step TEXT,
+          progress_message TEXT,
+          started_at TEXT,
+          finished_at TEXT,
+          rows_fetched INTEGER,
+          rows_temp INTEGER,
+          rows_main INTEGER,
+          error_message TEXT,
+          source TEXT,
+          script_version TEXT,
+          payload_json TEXT,
+          heartbeat_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """,
+        "Create prizepicks_scraper_runs"
+    )
+    for column_sql in [
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN dispatch_id TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_run_id TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_run_attempt TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_event_name TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN step TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN progress_message TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN payload_json TEXT",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN heartbeat_at TEXT DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE prizepicks_scraper_runs ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        try:
+            d1_query(cf_url, headers, column_sql + ";", "Migrate prizepicks_scraper_runs")
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+
+def write_progress(cf_url, headers, status, step=None, progress_message=None, rows_fetched=None, rows_temp=None, rows_main=None, error_message=None, extra_json=None):
+    try:
+        import json
+        ensure_progress_table(cf_url, headers)
+        lower_status = str(status or "").lower()
+        finished_at = utc_now() if lower_status in ("completed", "success", "failed", "error") else None
+        payload_json = json.dumps({
+            "run_id": RUN_ID,
+            "dispatch_id": RUN_ID,
+            "github_run_id": GITHUB_RUN_ID,
+            "github_run_attempt": GITHUB_RUN_ATTEMPT,
+            "github_event_name": GITHUB_EVENT_NAME,
+            "status": status,
+            "step": step or status,
+            "progress_message": progress_message,
+            "rows_fetched": rows_fetched,
+            "rows_temp": rows_temp,
+            "rows_main": rows_main,
+            "error_message": error_message,
+            "script_version": SCRIPT_VERSION,
+            "extra": extra_json or {},
+            "written_at": utc_now(),
+        })[:6000]
+        d1_query(
+            cf_url,
+            headers,
+            f"""
+            INSERT INTO prizepicks_scraper_runs
+              (run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, payload_json, heartbeat_at, updated_at)
+            VALUES
+              ({sql_text(RUN_ID)}, {sql_text(RUN_ID)}, {sql_text(GITHUB_RUN_ID)}, {sql_text(GITHUB_RUN_ATTEMPT)}, {sql_text(GITHUB_EVENT_NAME)},
+               {sql_text(status)}, {sql_text(step or status)}, {sql_text(progress_message)}, {sql_text(RUN_STARTED_AT)}, {sql_text(finished_at)},
+               {sql_number(rows_fetched)}, {sql_number(rows_temp)}, {sql_number(rows_main)}, {sql_text(error_message)},
+               'github_actions_prizepicks_main_py', {sql_text(SCRIPT_VERSION)}, {sql_text(payload_json)}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(run_id) DO UPDATE SET
+              dispatch_id=excluded.dispatch_id,
+              github_run_id=COALESCE(excluded.github_run_id, prizepicks_scraper_runs.github_run_id),
+              github_run_attempt=COALESCE(excluded.github_run_attempt, prizepicks_scraper_runs.github_run_attempt),
+              github_event_name=COALESCE(excluded.github_event_name, prizepicks_scraper_runs.github_event_name),
+              status=excluded.status,
+              step=excluded.step,
+              progress_message=excluded.progress_message,
+              finished_at=COALESCE(excluded.finished_at, prizepicks_scraper_runs.finished_at),
+              rows_fetched=COALESCE(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched),
+              rows_temp=COALESCE(excluded.rows_temp, prizepicks_scraper_runs.rows_temp),
+              rows_main=COALESCE(excluded.rows_main, prizepicks_scraper_runs.rows_main),
+              error_message=excluded.error_message,
+              source=excluded.source,
+              script_version=excluded.script_version,
+              payload_json=excluded.payload_json,
+              heartbeat_at=CURRENT_TIMESTAMP,
+              updated_at=CURRENT_TIMESTAMP;
+            """,
+            f"Write scraper progress {status}/{step or status}"
+        )
+    except Exception as progress_error:
+        print(f"⚠️ Progress write failed: {progress_error}")
+    worker_status_callback(status, rows_fetched=rows_fetched, rows_temp=rows_temp, rows_main=rows_main, error_message=error_message, extra={"step": step or status, "progress_message": progress_message, **(extra_json or {})})
+
 def ensure_audit_table(cf_url, headers):
+    try:
+        ensure_progress_table(cf_url, headers)
+    except Exception as e:
+        print(f"⚠️ Progress table ensure failed inside audit ensure: {e}")
     d1_query(
         cf_url,
         headers,
@@ -149,7 +262,7 @@ def write_audit(cf_url, headers, status, rows_fetched=None, rows_temp=None, rows
             INSERT OR REPLACE INTO mlb_stats_refresh_audit
               (run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, updated_at)
             VALUES
-              ({sql_text(RUN_ID)}, {sql_text(status)}, {sql_text(RUN_STARTED_AT)}, {sql_text(utc_now())},
+              ({sql_text(RUN_ID)}, {sql_text(status)}, {sql_text(RUN_STARTED_AT)}, {sql_text(utc_now() if str(status).lower() in ('completed','success','failed','error') else None)},
                {sql_number(rows_fetched)}, {sql_number(rows_temp)}, {sql_number(rows_main)},
                {sql_text(error_message)}, 'github_actions_prizepicks_main_py', {sql_text(SCRIPT_VERSION)}, {sql_text(utc_now())});
             """,
@@ -169,9 +282,10 @@ def start():
     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{ACC_ID}/d1/database/{DB_ID}/query"
     headers = {"Authorization": f"Bearer {TOKEN}"}
     write_audit(cf_url, headers, "started", rows_fetched=0, rows_temp=0, rows_main=0)
+    write_progress(cf_url, headers, "running", step="started", progress_message="main.py started and connected to D1.", rows_fetched=0, rows_temp=0, rows_main=0)
 
     print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID} event={GITHUB_EVENT_NAME} github_run_id={GITHUB_RUN_ID}")
-    worker_status_callback("fetching", rows_fetched=0, rows_temp=0, rows_main=0)
+    write_progress(cf_url, headers, "running", step="fetching_prizepicks_api", progress_message="Fetching PrizePicks MLB projections through configured proxy.", rows_fetched=0, rows_temp=0, rows_main=0)
     url = "https://partner-api.prizepicks.com/projections?league_id=2&per_page=5000"
 
     try:
@@ -179,6 +293,7 @@ def start():
         res.raise_for_status()
         data = res.json()
     except Exception as e:
+        write_progress(cf_url, headers, "failed", step="connection_failed", progress_message="PrizePicks API connection failed before rows were fetched.", error_message=f"connection_failed: {e}")
         write_audit(cf_url, headers, "failed", error_message=f"connection_failed: {e}")
         print(f"❌ Connection Failed: {e}")
         raise SystemExit(1)
@@ -227,13 +342,16 @@ def start():
         )
 
     if not rows:
+        write_progress(cf_url, headers, "failed", step="no_mlb_lines_found", progress_message="PrizePicks API returned no MLB projection rows.", rows_fetched=0, error_message="no_mlb_lines_found")
         write_audit(cf_url, headers, "failed", rows_fetched=0, error_message="no_mlb_lines_found")
         print("⚠️ No MLB lines found.")
         raise SystemExit(1)
 
     try:
         write_audit(cf_url, headers, "fetched", rows_fetched=len(rows), rows_temp=0, rows_main=0)
+        write_progress(cf_url, headers, "running", step="fetched", progress_message=f"Fetched {len(rows)} PrizePicks MLB projection rows.", rows_fetched=len(rows), rows_temp=0, rows_main=0)
         print("🧱 Preparing temp table...")
+        write_progress(cf_url, headers, "running", step="preparing_temp_table", progress_message="Creating mlb_stats_temp if needed.", rows_fetched=len(rows), rows_temp=0, rows_main=0)
         d1_query(
             cf_url,
             headers,
@@ -242,6 +360,7 @@ def start():
         )
 
         print("🧹 Wiping temp table for fresh start...")
+        write_progress(cf_url, headers, "running", step="clearing_temp_table", progress_message="Clearing mlb_stats_temp before staging fresh rows.", rows_fetched=len(rows), rows_temp=0, rows_main=0)
         d1_query(cf_url, headers, "DELETE FROM mlb_stats_temp;", "Clear mlb_stats_temp")
 
         print(f"📦 Syncing {len(rows)} lines with Team Names into temp...")
@@ -250,9 +369,12 @@ def start():
             chunk = rows[i:i + chunk_size]
             sql = f"INSERT INTO mlb_stats_temp (line_id, player_name, team, opponent, stat_type, line_score, odds_type, is_promo, start_time) VALUES {', '.join(chunk)};"
             d1_query(cf_url, headers, sql, f"Insert temp chunk {i//chunk_size + 1}")
+            staged_so_far = min(i + chunk_size, len(rows))
+            write_progress(cf_url, headers, "running", step="staging_temp_rows", progress_message=f"Staged temp chunk {i//chunk_size + 1}; {staged_so_far}/{len(rows)} rows staged.", rows_fetched=len(rows), rows_temp=staged_so_far, rows_main=0)
             print(f"✅ Temp chunk {i//chunk_size + 1} complete.")
 
         write_audit(cf_url, headers, "staged", rows_fetched=len(rows), rows_temp=len(rows), rows_main=0)
+        write_progress(cf_url, headers, "running", step="certifying_temp_table", progress_message="All rows staged; certifying temp table before main promotion.", rows_fetched=len(rows), rows_temp=len(rows), rows_main=0)
         print("🧪 Certifying temp table...")
         cert = d1_first_row(
             cf_url,
@@ -301,6 +423,7 @@ def start():
             raise RuntimeError(f"Temp certification failed: stale_or_started_rows={stale_or_started_rows}")
 
         write_audit(cf_url, headers, "certified", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=0)
+        write_progress(cf_url, headers, "running", step="temp_certified", progress_message="Temp certification passed; replacing mlb_stats main table.", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=0)
         print("🧹 Certification passed. Replacing main table...")
         d1_query(cf_url, headers, "DELETE FROM mlb_stats;", "Clear mlb_stats")
         d1_query(
@@ -316,6 +439,7 @@ def start():
             "Promote mlb_stats_temp to mlb_stats"
         )
 
+        write_progress(cf_url, headers, "running", step="promoted_main_table", progress_message="Temp rows promoted into mlb_stats; verifying main table.", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=temp_rows)
         print("🧪 Verifying main table after promote...")
         verify = d1_first_row(
             cf_url,
@@ -342,6 +466,7 @@ def start():
 
         print("🧽 Cleaning temp table after successful promote...")
         d1_query(cf_url, headers, "DELETE FROM mlb_stats_temp;", "Final clean mlb_stats_temp")
+        write_progress(cf_url, headers, "completed", step="completed", progress_message=f"PrizePicks board refresh complete. Main table now has {main_rows} fresh rows.", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=main_rows)
         write_audit(cf_url, headers, "completed", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=main_rows)
         print(f"✅ PrizePicks board refresh complete. Main table now has {main_rows} fresh rows.")
 
@@ -350,6 +475,7 @@ def start():
             d1_query(cf_url, headers, "DELETE FROM mlb_stats_temp;", "Failure clean mlb_stats_temp")
         except Exception as clean_error:
             print(f"⚠️ Failure temp cleanup also failed: {clean_error}")
+        write_progress(cf_url, headers, "failed", step="sync_failed", progress_message="PrizePicks sync failed; temp table cleanup attempted and main table may remain unchanged depending on failure point.", rows_fetched=len(rows), error_message=str(e))
         write_audit(cf_url, headers, "failed", rows_fetched=len(rows), error_message=str(e))
         print(f"❌ Sync Failed: {e}")
         print("⚠️ Main table was not replaced unless temp certification had already passed.")

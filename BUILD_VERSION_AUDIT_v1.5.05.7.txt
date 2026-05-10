@@ -1,0 +1,12 @@
+VERSION AUDIT
+ZIP filename target: alphadog_v1.5.05.7_prizepicks_scraper_progress_ledger.zip
+worker.js: v1.5.05.7 - PrizePicks Scraper Progress Ledger
+control_room.html: v1.5.05.7 - PrizePicks Scraper Progress Ledger
+main.py: v1.5.05.7 - PrizePicks Scraper Progress Ledger
+README: README_v1.5.05.7.txt
+Build audit: BUILD_VERSION_AUDIT_v1.5.05.7.txt
+
+Validation performed:
+- python3 -m py_compile main.py: PASS
+- node --check worker.js: PASS
+- Flat-folder package: PASS

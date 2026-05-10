@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.6 - PrizePicks Cron Handshake Gate";
+const SYSTEM_VERSION = "v1.5.05.7 - PrizePicks Scraper Progress Ledger";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2794,6 +2794,128 @@ async function getPrizePicksRefreshAudit(env, requestedAt = null, dispatchId = n
   }
 }
 
+
+async function ensurePrizePicksScraperProgressTable(env) {
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS prizepicks_scraper_runs (
+    run_id TEXT PRIMARY KEY,
+    dispatch_id TEXT,
+    github_run_id TEXT,
+    github_run_attempt TEXT,
+    github_event_name TEXT,
+    status TEXT,
+    step TEXT,
+    progress_message TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    rows_fetched INTEGER,
+    rows_temp INTEGER,
+    rows_main INTEGER,
+    error_message TEXT,
+    source TEXT,
+    script_version TEXT,
+    payload_json TEXT,
+    heartbeat_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  for (const sql of [
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN dispatch_id TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_run_id TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_run_attempt TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN github_event_name TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN step TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN progress_message TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN payload_json TEXT`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN heartbeat_at TEXT DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE prizepicks_scraper_runs ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP`
+  ]) await env.DB.prepare(sql).run().catch(() => null);
+}
+
+async function upsertPrizePicksScraperProgress(env, payload = {}) {
+  await ensurePrizePicksScraperProgressTable(env);
+  const runId = String(payload.run_id || payload.dispatch_id || payload.request_id || payload.github_run_id || crypto.randomUUID()).slice(0,160);
+  const dispatchId = String(payload.dispatch_id || payload.request_id || runId || '').slice(0,160);
+  const status = String(payload.status || 'unknown').slice(0,80);
+  const step = String(payload.step || status || 'unknown').slice(0,120);
+  const message = payload.progress_message == null ? null : String(payload.progress_message).slice(0,1000);
+  const now = new Date().toISOString();
+  const startedAt = String(payload.started_at || payload.run_started_at || now).slice(0,80);
+  const lower = status.toLowerCase();
+  const finishedAt = String(payload.finished_at || (['completed','success','failed','error'].includes(lower) ? now : '') || '').slice(0,80) || null;
+  const n = (v) => Number.isFinite(Number(v)) ? Number(v) : null;
+  const errorMessage = payload.error_message == null ? null : String(payload.error_message).slice(0,1200);
+  const scriptVersion = payload.script_version == null ? null : String(payload.script_version).slice(0,250);
+  const githubRunId = payload.github_run_id == null ? null : String(payload.github_run_id).slice(0,120);
+  const githubRunAttempt = payload.github_run_attempt == null ? null : String(payload.github_run_attempt).slice(0,50);
+  const githubEventName = payload.github_event_name == null ? null : String(payload.github_event_name).slice(0,80);
+  const source = payload.source == null ? 'worker_status_callback' : String(payload.source).slice(0,160);
+  let payloadJson = null;
+  try { payloadJson = JSON.stringify({ ...payload, received_at: now }).slice(0,6000); } catch (_) { payloadJson = null; }
+  await env.DB.prepare(`
+    INSERT INTO prizepicks_scraper_runs
+      (run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, payload_json, heartbeat_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(run_id) DO UPDATE SET
+      dispatch_id=COALESCE(excluded.dispatch_id, prizepicks_scraper_runs.dispatch_id),
+      github_run_id=COALESCE(excluded.github_run_id, prizepicks_scraper_runs.github_run_id),
+      github_run_attempt=COALESCE(excluded.github_run_attempt, prizepicks_scraper_runs.github_run_attempt),
+      github_event_name=COALESCE(excluded.github_event_name, prizepicks_scraper_runs.github_event_name),
+      status=excluded.status,
+      step=excluded.step,
+      progress_message=COALESCE(excluded.progress_message, prizepicks_scraper_runs.progress_message),
+      started_at=COALESCE(excluded.started_at, prizepicks_scraper_runs.started_at),
+      finished_at=COALESCE(excluded.finished_at, prizepicks_scraper_runs.finished_at),
+      rows_fetched=COALESCE(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched),
+      rows_temp=COALESCE(excluded.rows_temp, prizepicks_scraper_runs.rows_temp),
+      rows_main=COALESCE(excluded.rows_main, prizepicks_scraper_runs.rows_main),
+      error_message=excluded.error_message,
+      source=COALESCE(excluded.source, prizepicks_scraper_runs.source),
+      script_version=COALESCE(excluded.script_version, prizepicks_scraper_runs.script_version),
+      payload_json=COALESCE(excluded.payload_json, prizepicks_scraper_runs.payload_json),
+      heartbeat_at=CURRENT_TIMESTAMP,
+      updated_at=CURRENT_TIMESTAMP
+  `).bind(runId, dispatchId, githubRunId, githubRunAttempt, githubEventName, status, step, message, startedAt, finishedAt, n(payload.rows_fetched), n(payload.rows_temp), n(payload.rows_main), errorMessage, source, scriptVersion, payloadJson).run();
+  return { run_id:runId, dispatch_id:dispatchId, status, step };
+}
+
+async function getPrizePicksScraperProgress(env, requestedAt = null, dispatchId = null) {
+  const wanted = String(dispatchId || '').trim();
+  const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
+  try {
+    const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='prizepicks_scraper_runs' LIMIT 1").first();
+    if (!exists) return { table_exists:false, dispatch_id:wanted || null, matched_dispatch:null, latest_after_request:null, recent:[] };
+    let matched = null;
+    if (wanted) {
+      matched = await env.DB.prepare(`
+        SELECT run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, heartbeat_at, created_at, updated_at
+        FROM prizepicks_scraper_runs
+        WHERE run_id=? OR dispatch_id=?
+        ORDER BY datetime(updated_at) DESC
+        LIMIT 1
+      `).bind(wanted, wanted).first().catch(() => null);
+    }
+    const rows = await sampleRows(env, `
+      SELECT run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, heartbeat_at, created_at, updated_at
+      FROM prizepicks_scraper_runs
+      ORDER BY datetime(updated_at) DESC
+      LIMIT 10
+    `).catch(() => []);
+    let latestAfter = null;
+    if (requestedMs) {
+      for (const r of rows) {
+        const stamp = r.heartbeat_at || r.updated_at || r.created_at || r.started_at || '';
+        const ts = String(stamp).includes('T') ? String(stamp) : String(stamp).replace(' ', 'T') + 'Z';
+        const rowMs = Date.parse(ts);
+        if (Number.isFinite(rowMs) && rowMs > requestedMs) { latestAfter = r; break; }
+      }
+    }
+    return { table_exists:true, requested_at:requestedAt || null, dispatch_id:wanted || null, matched_dispatch:matched || null, latest_after_request:latestAfter, recent:rows.slice(0,5), rule:'Main.py writes scraper progress here while running. Completed/failed still mirrors into mlb_stats_refresh_audit for final certification.' };
+  } catch (e) {
+    return { table_exists:false, dispatch_id:wanted || null, matched_dispatch:null, latest_after_request:null, recent:[], error:String(e && e.message || e) };
+  }
+}
+
 async function getGithubPrizePicksWorkflowRunStatus(env, requestedAt = null, dispatchId = null, priorGithub = null) {
   const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
   const wantedDispatchId = String(dispatchId || '').trim();
@@ -2883,10 +3005,19 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
   const dispatchId = String(prior.dispatch_id || prior.run_id || input?.queue_request_id || input?.request_id || input?.chain_id || '').trim();
   const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
+  const scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
   const priorGithub = prior.github || prior.github_dispatch || prior.github_dispatch_config || null;
   const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithub) : null;
 
   if (requestedMs) {
+    const progressRow = scraper_progress?.matched_dispatch || scraper_progress?.latest_after_request || null;
+    const progressStatus = String(progressRow?.status || '').toLowerCase();
+    if (progressRow && (progressStatus === 'completed' || progressStatus === 'success') && Number(progressRow.rows_main || 0) > 0) {
+      return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'trigger_prizepicks_github_board_refresh', status:'board_refresh_certified_by_scraper_progress', board_refresh_complete:true, requested_at:requestedAt, dispatch_id:dispatchId || null, detected_at:nowIso, audit, scraper_progress, github_run, mlb_stats:current, certification_rule:'prizepicks_scraper_runs_completed_progress', note:'Main.py reported completed progress with promoted main rows. The progress ledger mirrors into mlb_stats_refresh_audit and is accepted as the live board handshake.' };
+    }
+    if (progressRow && (progressStatus === 'failed' || progressStatus === 'error')) {
+      return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:'trigger_prizepicks_github_board_refresh', status:'github_scraper_failed_by_progress_ledger', error:String(progressRow.error_message || 'github_scraper_failed_by_progress_ledger'), board_refresh_complete:false, requested_at:requestedAt, dispatch_id:dispatchId || null, detected_at:nowIso, audit, scraper_progress, github_run, mlb_stats:current, terminal_failure:true, blocks_downstream:true, certification_rule:'prizepicks_scraper_runs_failed_progress', note:'Main.py reported terminal failure in the progress ledger. The orchestrator fails this stage from scraper progress instead of guessing.' };
+    }
     const a = audit?.matched_dispatch || null;
     const fallbackAudit = audit?.latest_after_request || null;
     const fallbackStatus = String(fallbackAudit?.status || '').toLowerCase();
@@ -2905,6 +3036,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        scraper_progress,
         github_run,
         certified_audit_row:fallbackAudit,
         mlb_stats:current,
@@ -2926,6 +3058,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        scraper_progress,
         github_run,
         mlb_stats:current,
         certification_rule:'matched_dispatch_audit_row_only',
@@ -2945,6 +3078,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        scraper_progress,
         github_run,
         mlb_stats:current,
         terminal_failure:true,
@@ -2973,6 +3107,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         audit,
+        scraper_progress,
         github_run,
         terminal_failure:true,
         blocks_downstream:true,
@@ -2994,6 +3129,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         audit,
+        scraper_progress,
         github_run,
         terminal_failure:true,
         blocks_downstream:true,
@@ -3016,6 +3152,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         runtime_profile:runtimeProfile,
         mlb_stats:current,
         audit,
+        scraper_progress,
         github_run,
         next_check:'next minute cron tick',
         note: ghRun ? 'GitHub workflow run is visible after dispatch; waiting for mlb_stats_refresh_audit to publish a completed/failed row. PrizePicks timeout is dynamic from recent successful board/audit runtimes plus 20%.' : 'GitHub dispatch was accepted and is inside the dynamic PrizePicks board timeout. The stage waits for workflow visibility/audit instead of using a fixed guess. mlb_stats freshness alone cannot certify this stage.'
@@ -3035,6 +3172,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       runtime_profile:runtimeProfile,
       mlb_stats:current,
       audit,
+      scraper_progress,
       github_run,
       next_check:'inspect GitHub Actions run visibility and confirm scrape.yml/main.py were committed to the configured repository',
       note: ghRun ? 'GitHub workflow was observed but no completed/failed mlb_stats_refresh_audit row appeared before the real-time timeout. This is treated as a real board-refresh failure.' : 'GitHub dispatch returned accepted, but the Worker could not observe a workflow_dispatch run after the request. This usually means the workflow file/ref/repo target is not the file being deployed, the Actions workflow did not start, or GitHub token/workflow permissions need inspection.'
@@ -3091,6 +3229,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   }
 
   const outboundDispatchId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || crypto.randomUUID()).slice(0,120);
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow', progress_message:'Worker accepted PrizePicks board request and is dispatching scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION });
   const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   const response = await fetch(url, {
     method:'POST',
@@ -3105,6 +3244,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const text = await response.text().catch(() => '');
   const ok = response.status === 204;
   const triggeredAt = nowIso;
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:ok ? 'dispatched' : 'dispatch_failed', step:ok ? 'github_dispatch_accepted' : 'github_dispatch_failed', progress_message:ok ? 'GitHub workflow dispatch returned HTTP 204; waiting for main.py progress callback/audit.' : `GitHub workflow dispatch failed with HTTP ${response.status}.`, started_at:triggeredAt, finished_at:ok ? null : triggeredAt, error_message:ok ? null : text.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
   return {
     ok,
     data_ok:false,
@@ -7654,6 +7794,7 @@ async function acquireScheduledMinuteCronLock(env, cron = '') {
 }
 
 async function ensurePrizePicksRefreshAuditTable(env) {
+  await ensurePrizePicksScraperProgressTable(env).catch(() => null);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS mlb_stats_refresh_audit (
     run_id TEXT PRIMARY KEY,
     status TEXT,
@@ -7692,6 +7833,7 @@ async function handlePrizePicksScraperStatus(request, env) {
   const errorMessage = body.error_message == null ? null : String(body.error_message).slice(0,1200);
   const scriptVersion = body.script_version == null ? null : String(body.script_version).slice(0,250);
   await ensurePrizePicksRefreshAuditTable(env);
+  await upsertPrizePicksScraperProgress(env, { ...body, run_id:runId, dispatch_id:String(body.dispatch_id || body.request_id || runId || '').slice(0,160), status, started_at:startedAt, finished_at:finishedAt, rows_fetched:rowsFetched, rows_temp:rowsTemp, rows_main:rowsMain, error_message:errorMessage, script_version:scriptVersion, source:'worker_status_callback' });
   await env.DB.prepare(`
     INSERT INTO mlb_stats_refresh_audit
       (run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, updated_at)
@@ -8460,7 +8602,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.6 PrizePicks Cron Handshake Gate: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.7 PrizePicks Scraper Progress Ledger: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
 }
 
 
@@ -8608,7 +8750,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.6 PrizePicks Cron Handshake Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.7 PrizePicks Scraper Progress Ledger is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
 }
 
 
@@ -9323,7 +9465,7 @@ async function ensureIncrementalTempUniqueIndexes(env) {
   // Temp tables are created with CREATE TABLE AS SELECT, so SQLite does not carry over
   // the live-table primary keys. Without these unique indexes, INSERT OR REPLACE
   // behaves like plain INSERT and duplicate temp rows can survive audit.
-  // v1.5.05.6: this function is also a schema-healing boundary. Every caller that
+  // v1.5.05.7: this function is also a schema-healing boundary. Every caller that
   // audits, promotes, cleans, or counts temp data can call it safely even after a
   // previous cleanup/failure dropped one temp table in an older build.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run().catch(() => null);
@@ -9477,7 +9619,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
   const latestGameDate = base.logs?.max_game_date || null;
   const metricLatestDate = base.metrics?.max_last_game_date || null;
 
-  // v1.5.05.6: MULTI-DAY TRUE DELTA CATCHUP GATE.
+  // v1.5.05.7: MULTI-DAY TRUE DELTA CATCHUP GATE.
   // Daily incremental must never fall back into a 700+ player full-safe rebuild just because
   // metric coverage is imperfect. The base is usable for true delta when the live game-log
   // base exists and derived metrics are broadly populated. Missing/stale derived players are
@@ -9492,7 +9634,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:null,
       end_date:null,
       overlap_days:0,
-      selector_gate:'v1.5.05.6',
+      selector_gate:'v1.5.05.7',
       full_rebuild_allowed: !!forceFull,
       full_rebuild_blocked_by_default: !forceFull,
       base_requirements:{ live_game_logs_min:9000, metrics_min:700, latest_game_date_required:true, live_splits_not_required_for_delta_selector:true },
@@ -9514,7 +9656,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:startDate,
       end_date:endDate,
       overlap_days:overlapDays,
-      selector_gate:'v1.5.05.6',
+      selector_gate:'v1.5.05.7',
       selected_source:'schedule_final_games_boxscore_delta_only',
       blocked_full_player_rebuild:true,
       note:'Live game-log base already covers the available finalized-game window. Temp tables should be clean and no daily incremental request should be created.'
@@ -9527,7 +9669,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
     start_date:startDate,
     end_date:endDate,
     overlap_days:overlapDays,
-    selector_gate:'v1.5.05.6',
+    selector_gate:'v1.5.05.7',
     selected_source:'schedule_final_games_boxscore_delta_only',
     blocked_full_player_rebuild:true,
     note:'Daily incremental runs only finalized games strictly after the live max game date. It does not select all players_current or rebuild the full incremental base.'
@@ -9547,7 +9689,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
   if (modeInfo.mode !== 'delta') return { converted:false, reason:'delta_not_available', mode_info:modeInfo };
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const tempBefore = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.6_accidental_full_incremental_run_converted_to_true_delta' });
+  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.7_accidental_full_incremental_run_converted_to_true_delta' });
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   const payload = {
     ok:true,
@@ -9563,7 +9705,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
     temp_before:tempBefore,
     reset,
     live_tables_touched:false,
-    reason:'Daily incremental was about to process the whole player universe. v1.5.05.6 preserved live base and converted the active temp run to finalized-game true delta.'
+    reason:'Daily incremental was about to process the whole player universe. v1.5.05.7 preserved live base and converted the active temp run to finalized-game true delta.'
   };
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(payload).slice(0,5000), row.request_id).run();
   return { converted:true, step:'stage_delta_logs', payload };
@@ -9988,7 +10130,7 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
     remaining_games:remainingGames,
     complete:remainingGames === 0,
     temp_log_rows:Number(tempCount?.rows_count || 0),
-    note:'v1.5.05.6 no-delta terminal success gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
+    note:'v1.5.05.7 no-delta terminal success gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
   };
 }
 
@@ -10123,11 +10265,11 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 
   const fullToDelta = await convertAccidentalFullIncrementalRunToDelta(env, row, input || {});
   if (fullToDelta?.converted) {
-    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.6_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
+    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.7_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
     return { changed:true, step:'stage_delta_logs', reason:'converted_accidental_full_incremental_to_true_delta', decisions, conversion:fullToDelta.payload };
   }
 
-  // v1.5.05.6: multi-day true-delta catchup gate.
+  // v1.5.05.7: multi-day true-delta catchup gate.
   // Never advance from stage_delta_logs merely because temp has non-zero rows or because
   // auto_continue/cron is active. That was the bad one-day stepping bug. Delta staging
   // may advance only when every finalized game in the missing-date window has terminal
@@ -10174,7 +10316,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
         duplicate_log_rows: duplicateLogs.length,
         duplicate_split_rows: duplicateSplits.length,
         live_tables_touched:false,
-        note:'v1.5.05.6 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
+        note:'v1.5.05.7 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
       };
       await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(output), requestId).run();
       return { changed:true, step:'stage_delta_logs', output, reason:'multi_day_delta_window_not_complete_keep_staging' };
@@ -10451,7 +10593,7 @@ async function runIncrementalTempAutoLoop(input, env) {
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
     next_action: noDeltaTerminal ? 'No incremental action needed. Live base is already current for available finalized games.' : (last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.')),
-    note: 'One-click/cron auto-runner for incremental data. v1.5.05.6 keeps true-delta as the certified default, treats no-delta-needed as terminal success, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
+    note: 'One-click/cron auto-runner for incremental data. v1.5.05.7 keeps true-delta as the certified default, treats no-delta-needed as terminal success, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
   };
 }
 async function checkIncrementalTempData(input, env) {
