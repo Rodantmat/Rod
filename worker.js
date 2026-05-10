@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.6 - Orchestrator Zombie Cleanup Gate";
+const SYSTEM_VERSION = "v1.5.04.7 - Incremental Continue Lock Release Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7643,6 +7643,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     duplicate_active_queue_rows_cancelled:0,
     zombie_running_job_flags_cleared:0,
     stale_active_enqueue_locks_released:0,
+    incremental_continue_locks_released:0,
     job_flags_reconciled:0
   };
 
@@ -7690,6 +7691,30 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   }
 
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
+  if (Number(state?.lock_flag || 0) === 1 && String(state?.running_job_key || '') === 'incremental_daily') {
+    const lockedRequestId = String(state?.running_request_id || '');
+    const lockedQueue = lockedRequestId ? await env.DB.prepare(`SELECT request_id, chain_id, job_key, status, error, updated_at, substr(COALESCE(output_json,''),1,1400) AS output_preview FROM data_refresh_queue WHERE request_id=? LIMIT 1`).bind(lockedRequestId).first().catch(() => null) : null;
+    const qStatus = String(lockedQueue?.status || '').toLowerCase();
+    const qText = `${String(lockedQueue?.error || '')} ${String(lockedQueue?.output_preview || '')}`.toLowerCase();
+    const isIncrementalContinuePending = lockedQueue && qStatus === 'pending' && (qText.includes('auto_continue_scheduled') || qText.includes('partial_continue') || qText.includes('continue'));
+    if (isIncrementalContinuePending) {
+      await releaseSingleLaneGlobalState(env, 'WAITING_NEXT_INCREMENTAL_TICK_RECOVERED', { reason:'incremental_auto_continue_pending_queue_released_locked_state', previous_state:state, queue:lockedQueue });
+      const res = await env.DB.prepare(`
+        UPDATE data_orchestrator_jobs
+        SET running_flag=0,
+            run_requested_flag=1,
+            last_status='requeued_after_incremental_auto_continue_lock_release',
+            last_fail=0,
+            last_error_code=NULL,
+            last_error_message=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE job_key='incremental_daily'
+          AND running_flag=1
+      `).run().catch(() => null);
+      out.incremental_continue_locks_released += Math.max(1, Number(res?.meta?.changes || 0));
+      await singleLaneLog(env, { request_id:lockedRequestId, chain_id:lockedQueue?.chain_id || state?.running_chain_id || null, job_key:'incremental_daily', event_type:'incremental_continue_lock_released', status:'recovered', message:'Incremental auto-continue queue was pending, so the stale global running lock was released immediately.', payload_json:{ reason, previous_state:state, queue:lockedQueue } });
+    }
+  }
   if (Number(state?.lock_flag || 0) === 0) {
     const zombies = await sampleRows(env, `SELECT job_key, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE running_flag=1 LIMIT 50`).catch(() => []);
     for (const z of zombies) {
@@ -7720,7 +7745,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     }
   }
 
-  if (out.duplicate_active_queue_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.job_flags_reconciled) {
+  if (out.duplicate_active_queue_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.job_flags_reconciled) {
     await singleLaneLog(env, { event_type:'single_lane_state_cleanup', status:'recovered', message:'Single-lane queue/job state cleanup repaired inconsistent rows.', payload_json:out });
   }
   return out;
@@ -7855,7 +7880,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.6 Orchestrator Zombie Cleanup Gate: duplicate selected-job enqueue is blocked, stale lock release reconciles job/queue flags, and partial auto-continue rows cannot leave zombie-running state.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.7 Incremental Continue Lock Release Gate: duplicate selected-job enqueue is blocked, stale lock release reconciles job/queue flags, and partial auto-continue rows cannot leave zombie-running state.' };
 }
 
 
@@ -8001,7 +8026,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.6 Orchestrator Zombie Cleanup Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.7 Incremental Continue Lock Release Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, releases incremental auto-continue locks before requeue writes, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, and keeps only PrizePicks waiting stages locked across ticks.' };
 }
 
 
@@ -8564,7 +8589,7 @@ async function runRefreshOrchestratorTick(input, env) {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key };
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runIncrementalTempAutoLoop({ ...body, max_players:20, max_ms:22000, max_ticks:3, force_due:true, force_schedule:true }, env);
+      result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true }, env);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
@@ -8614,11 +8639,17 @@ async function runRefreshOrchestratorTick(input, env) {
         await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'waiting_locked', status:'running', message:statusText, payload_json:wrapped });
         return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_waiting_locked', processed:[{ job_key:row.job_key, status:statusText, cron_check_count:result?.cron_check_count, max_cron_checks:result?.max_cron_checks }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board is still running/waiting. The global lane remains locked, the job flag stays active, and no downstream stage can start until success or the 10-check timeout.' };
       }
-      await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(String(result?.status || 'partial_continue'), JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
-      await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(String(result?.status || 'partial_continue'), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
-      await releaseSingleLaneGlobalState(env, 'WAITING_NEXT_TICK', wrapped);
-      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'partial_continue', status:'pending', message:String(result?.status || 'partial_continue'), payload_json:wrapped });
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_partial_continue', processed:[{ job_key:row.job_key, status:String(result?.status || 'partial_continue') }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'Job released the global lock and remains requested for the next cron tick. No other job starts until this independent stage completes or fails.' };
+      const partialStatus = String(result?.status || 'partial_continue');
+      await releaseSingleLaneGlobalState(env, row.job_key === 'incremental_daily' ? 'WAITING_NEXT_INCREMENTAL_TICK' : 'WAITING_NEXT_TICK', wrapped);
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key),
+        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(partialStatus, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
+      ]).catch(async () => {
+        await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key).run().catch(() => null);
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(partialStatus, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+      });
+      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:row.job_key === 'incremental_daily' ? 'incremental_partial_released_first' : 'partial_continue', status:'pending', message:partialStatus, payload_json:wrapped });
+      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:row.job_key === 'incremental_daily' ? 'single_lane_incremental_partial_released' : 'single_lane_partial_continue', processed:[{ job_key:row.job_key, status:partialStatus }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'Partial/auto-continue job released the global lock before queue requeue writes. The same independent stage remains requested for the next cron tick; no downstream stage starts until it completes or fails.' };
     }
 
     if (failed) {
