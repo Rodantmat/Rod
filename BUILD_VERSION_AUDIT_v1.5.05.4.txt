@@ -1,0 +1,11 @@
+Version audit: v1.5.05.4 - Lock Hygiene Catchup Stabilizer
+
+- worker.js SYSTEM_VERSION: v1.5.05.4 - Lock Hygiene Catchup Stabilizer
+- control_room.html visible version: v1.5.05.4 - Lock Hygiene Catchup Stabilizer
+- README: README_v1.5.05.4.txt
+- ZIP filename: alphadog_v1.5.05.4_lock_hygiene_catchup_stabilizer.zip
+- Folder style: flat files only, no subdirectories.
+- Patch scope: production scheduled backend incremental_daily true-delta selector/state machine, temp-table lifecycle, and single-lane enqueue-lock hygiene only.
+- Main UI untouched.
+- Expansion worker untouched.
+- POTD untouched.

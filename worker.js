@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.3 - Multi-Day True Delta Catchup Gate";
+const SYSTEM_VERSION = "v1.5.05.4 - Lock Hygiene Catchup Stabilizer";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7994,6 +7994,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     duplicate_active_queue_rows_cancelled:0,
     zombie_running_job_flags_cleared:0,
     stale_active_enqueue_locks_released:0,
+    released_enqueue_locks_purged:0,
     stale_orphan_pending_rows_cancelled:0,
     incremental_continue_locks_released:0,
     stale_incremental_heartbeat_recovered:0,
@@ -8002,6 +8003,14 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   };
 
   await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active' AND datetime(updated_at) <= datetime('now','-4 hours')`).run().then(r => { out.stale_active_enqueue_locks_released += Number(r?.meta?.changes || 0); }).catch(() => null);
+  await env.DB.prepare(`
+    DELETE FROM data_orchestrator_enqueue_locks
+    WHERE status='released'
+      AND (
+        datetime(updated_at) <= datetime('now','-2 hours')
+        OR request_id IN (SELECT request_id FROM data_refresh_queue WHERE status IN ('completed','failed','cancelled','blocked'))
+      )
+  `).run().then(r => { out.released_enqueue_locks_purged += Number(r?.meta?.changes || 0); }).catch(() => null);
 
   const activeRows = await sampleRows(env, `
     SELECT request_id, chain_id, job_key, requested_slate_date, status, run_after, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,800) AS output_preview
@@ -8178,7 +8187,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     }
   }
 
-  if (out.duplicate_active_queue_rows_cancelled || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.stale_incremental_heartbeat_recovered || out.job_flags_reconciled) {
+  if (out.duplicate_active_queue_rows_cancelled || out.released_enqueue_locks_purged || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.stale_incremental_heartbeat_recovered || out.job_flags_reconciled) {
     await singleLaneLog(env, { event_type:'single_lane_state_cleanup', status:'recovered', message:'Single-lane queue/job state cleanup repaired inconsistent rows.', payload_json:out });
   }
   return out;
@@ -8203,14 +8212,39 @@ async function acquireSingleLaneEnqueueLocks(env, selected, slate, mode, chainId
       blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'active_queue_row_exists', active_queue:existingActive });
       continue;
     }
-    const ins = await env.DB.prepare(`INSERT OR IGNORE INTO data_orchestrator_enqueue_locks (lock_key, request_id, chain_id, job_key, slate_date, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(lockKey, requestId, chainId, j.job_key, slate.slate_date, mode).run().catch(() => null);
-    if (Number(ins?.meta?.changes || 0) === 0 && input?.force !== true) {
-      const existingLock = await env.DB.prepare(`SELECT * FROM data_orchestrator_enqueue_locks WHERE lock_key=?`).bind(lockKey).first().catch(() => null);
-      blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'active_enqueue_lock_exists', existing_lock:existingLock });
+
+    const existingLock = await env.DB.prepare(`SELECT * FROM data_orchestrator_enqueue_locks WHERE lock_key=? LIMIT 1`).bind(lockKey).first().catch(() => null);
+    if (existingLock && String(existingLock.status || '').toLowerCase() === 'active' && input?.force !== true) {
+      const activeForLock = existingLock.request_id ? await env.DB.prepare(`SELECT request_id, status, started_at, finished_at, updated_at FROM data_refresh_queue WHERE request_id=? LIMIT 1`).bind(existingLock.request_id).first().catch(() => null) : null;
+      const lockQueueStatus = String(activeForLock?.status || '').toLowerCase();
+      if (['pending','running'].includes(lockQueueStatus)) {
+        blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'active_enqueue_lock_exists', existing_lock:existingLock, active_queue:activeForLock });
+        continue;
+      }
+      await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE lock_key=? AND status='active'`).bind(lockKey).run().catch(() => null);
+    }
+
+    if (existingLock) {
+      const res = await env.DB.prepare(`
+        UPDATE data_orchestrator_enqueue_locks
+        SET request_id=?, chain_id=?, job_key=?, slate_date=?, mode=?, status='active', updated_at=CURRENT_TIMESTAMP
+        WHERE lock_key=?
+          AND (status<>'active' OR ?=1)
+      `).bind(requestId, chainId, j.job_key, slate.slate_date, mode, lockKey, input?.force === true ? 1 : 0).run().catch(() => null);
+      if (Number(res?.meta?.changes || 0) === 0) {
+        const still = await env.DB.prepare(`SELECT * FROM data_orchestrator_enqueue_locks WHERE lock_key=? LIMIT 1`).bind(lockKey).first().catch(() => null);
+        blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'enqueue_lock_not_reclaimable', existing_lock:still });
+        continue;
+      }
+      acquired.push({ job:j, request_id:requestId, lock_key:lockKey, reclaimed_released_lock:true });
       continue;
     }
-    if (Number(ins?.meta?.changes || 0) === 0 && input?.force === true) {
-      await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET request_id=?, chain_id=?, status='active', updated_at=CURRENT_TIMESTAMP WHERE lock_key=?`).bind(requestId, chainId, lockKey).run().catch(() => null);
+
+    const ins = await env.DB.prepare(`INSERT INTO data_orchestrator_enqueue_locks (lock_key, request_id, chain_id, job_key, slate_date, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(lockKey, requestId, chainId, j.job_key, slate.slate_date, mode).run().catch(() => null);
+    if (Number(ins?.meta?.changes || 0) === 0) {
+      const lockAfterInsertRace = await env.DB.prepare(`SELECT * FROM data_orchestrator_enqueue_locks WHERE lock_key=? LIMIT 1`).bind(lockKey).first().catch(() => null);
+      blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'enqueue_lock_insert_race_blocked', existing_lock:lockAfterInsertRace });
+      continue;
     }
     acquired.push({ job:j, request_id:requestId, lock_key:lockKey });
   }
@@ -8313,7 +8347,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.3 Multi-Day True Delta Catchup Gate: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.4 Lock Hygiene Catchup Stabilizer: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
 }
 
 
@@ -8461,7 +8495,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.3 Multi-Day True Delta Catchup Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.4 Lock Hygiene Catchup Stabilizer is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
 }
 
 
@@ -9144,6 +9178,11 @@ async function ensureIncrementalTempUniqueIndexes(env) {
   // Temp tables are created with CREATE TABLE AS SELECT, so SQLite does not carry over
   // the live-table primary keys. Without these unique indexes, INSERT OR REPLACE
   // behaves like plain INSERT and duplicate temp rows can survive audit.
+  // v1.5.05.4: this function is also a schema-healing boundary. Every caller that
+  // audits, promotes, cleans, or counts temp data can call it safely even after a
+  // previous cleanup/failure dropped one temp table in an older build.
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run().catch(() => null);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run().catch(() => null);
   await env.DB.prepare(`
     DELETE FROM player_game_logs_temp
     WHERE rowid NOT IN (
@@ -9184,14 +9223,14 @@ async function resetIncrementalTempTables(env, options = {}) {
   await ensureIncrementalBaseTables(env);
   const resetLogs = options.logs !== false;
   const resetSplits = options.splits !== false;
-  const meta = { reset_logs: resetLogs, reset_splits: resetSplits, method: 'DROP_IF_EXISTS_CREATE_IF_NOT_EXISTS_EMPTY_TEMP_TABLES_WITH_UNIQUE_GUARDS' };
+  const meta = { reset_logs: resetLogs, reset_splits: resetSplits, method: 'CREATE_IF_MISSING_THEN_DELETE_EMPTY_TEMP_TABLES_WITH_UNIQUE_GUARDS_NO_DROP_WINDOW' };
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run();
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run();
   if (resetLogs) {
-    await env.DB.prepare(`DROP TABLE IF EXISTS player_game_logs_temp`).run();
-    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run();
+    await env.DB.prepare(`DELETE FROM player_game_logs_temp`).run();
   }
   if (resetSplits) {
-    await env.DB.prepare(`DROP TABLE IF EXISTS ref_player_splits_temp`).run();
-    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ref_player_splits_temp AS SELECT * FROM ref_player_splits WHERE 1=0`).run();
+    await env.DB.prepare(`DELETE FROM ref_player_splits_temp`).run();
   }
   await ensureIncrementalTempUniqueIndexes(env);
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS incremental_temp_refresh_runs (request_id TEXT PRIMARY KEY, status TEXT NOT NULL, run_after TEXT, current_step TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT, finished_at TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, output_json TEXT, error TEXT)`).run();
@@ -9293,7 +9332,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
   const latestGameDate = base.logs?.max_game_date || null;
   const metricLatestDate = base.metrics?.max_last_game_date || null;
 
-  // v1.5.05.3: MULTI-DAY TRUE DELTA CATCHUP GATE.
+  // v1.5.05.4: MULTI-DAY TRUE DELTA CATCHUP GATE.
   // Daily incremental must never fall back into a 700+ player full-safe rebuild just because
   // metric coverage is imperfect. The base is usable for true delta when the live game-log
   // base exists and derived metrics are broadly populated. Missing/stale derived players are
@@ -9308,7 +9347,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:null,
       end_date:null,
       overlap_days:0,
-      selector_gate:'v1.5.05.3',
+      selector_gate:'v1.5.05.4',
       full_rebuild_allowed: !!forceFull,
       full_rebuild_blocked_by_default: !forceFull,
       base_requirements:{ live_game_logs_min:9000, metrics_min:700, latest_game_date_required:true, live_splits_not_required_for_delta_selector:true },
@@ -9330,7 +9369,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:startDate,
       end_date:endDate,
       overlap_days:overlapDays,
-      selector_gate:'v1.5.05.3',
+      selector_gate:'v1.5.05.4',
       selected_source:'schedule_final_games_boxscore_delta_only',
       blocked_full_player_rebuild:true,
       note:'Live game-log base already covers the available finalized-game window. Temp tables should be clean and no daily incremental request should be created.'
@@ -9343,7 +9382,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
     start_date:startDate,
     end_date:endDate,
     overlap_days:overlapDays,
-    selector_gate:'v1.5.05.3',
+    selector_gate:'v1.5.05.4',
     selected_source:'schedule_final_games_boxscore_delta_only',
     blocked_full_player_rebuild:true,
     note:'Daily incremental runs only finalized games strictly after the live max game date. It does not select all players_current or rebuild the full incremental base.'
@@ -9363,7 +9402,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
   if (modeInfo.mode !== 'delta') return { converted:false, reason:'delta_not_available', mode_info:modeInfo };
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const tempBefore = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.3_accidental_full_incremental_run_converted_to_true_delta' });
+  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.4_accidental_full_incremental_run_converted_to_true_delta' });
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   const payload = {
     ok:true,
@@ -9379,7 +9418,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
     temp_before:tempBefore,
     reset,
     live_tables_touched:false,
-    reason:'Daily incremental was about to process the whole player universe. v1.5.05.3 preserved live base and converted the active temp run to finalized-game true delta.'
+    reason:'Daily incremental was about to process the whole player universe. v1.5.05.4 preserved live base and converted the active temp run to finalized-game true delta.'
   };
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(payload).slice(0,5000), row.request_id).run();
   return { converted:true, step:'stage_delta_logs', payload };
@@ -9777,7 +9816,7 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
     remaining_games:remainingGames,
     complete:remainingGames === 0,
     temp_log_rows:Number(tempCount?.rows_count || 0),
-    note:'v1.5.05.3 multi-day catchup gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
+    note:'v1.5.05.4 lock-hygiene catchup stabilizer: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
   };
 }
 
@@ -9909,11 +9948,11 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 
   const fullToDelta = await convertAccidentalFullIncrementalRunToDelta(env, row, input || {});
   if (fullToDelta?.converted) {
-    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.3_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
+    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.4_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
     return { changed:true, step:'stage_delta_logs', reason:'converted_accidental_full_incremental_to_true_delta', decisions, conversion:fullToDelta.payload };
   }
 
-  // v1.5.05.3: multi-day true-delta catchup gate.
+  // v1.5.05.4: multi-day true-delta catchup gate.
   // Never advance from stage_delta_logs merely because temp has non-zero rows or because
   // auto_continue/cron is active. That was the bad one-day stepping bug. Delta staging
   // may advance only when every finalized game in the missing-date window has terminal
@@ -9960,7 +9999,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
         duplicate_log_rows: duplicateLogs.length,
         duplicate_split_rows: duplicateSplits.length,
         live_tables_touched:false,
-        note:'v1.5.05.3 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
+        note:'v1.5.05.4 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
       };
       await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(output), requestId).run();
       return { changed:true, step:'stage_delta_logs', output, reason:'multi_day_delta_window_not_complete_keep_staging' };
@@ -10404,7 +10443,7 @@ async function cleanIncrementalTempTables(input, env) {
   const before=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
   const reset = await resetIncrementalTempTables(env);
   const after=[await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  return { ok:true, data_ok:true, job:input.job || 'clean_incremental_temp_tables', version:SYSTEM_VERSION, status:'temp_reset_cleaned', before_counts:before, after_counts:after, reset, stale_finalizer, live_tables_touched:false, note:'Incremental temp tables were cleaned by DROP + CREATE empty tables to avoid D1 timeout from large DELETE operations.' };
+  return { ok:true, data_ok:true, job:input.job || 'clean_incremental_temp_tables', version:SYSTEM_VERSION, status:'temp_reset_cleaned', before_counts:before, after_counts:after, reset, stale_finalizer, live_tables_touched:false, note:'Incremental temp tables were cleaned by create-if-missing plus DELETE, avoiding a no-table window during certification/status checks.' };
 }
 
 
