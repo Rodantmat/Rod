@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.9 - Stale Cleanser Runtime Sharpener";
+const SYSTEM_VERSION = "v1.5.05.0 - Incremental Heartbeat Recovery Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7701,7 +7701,7 @@ async function getRefreshJobRuntimeProfile(env, jobKey, opts = {}) {
   };
 
   const queueRows = await sampleRows(env, `
-    SELECT request_id, job_key, started_at, finished_at, updated_at, created_at, last_processed_at, output_json
+    SELECT request_id, job_key, started_at, finished_at, updated_at, created_at, output_json
     FROM data_refresh_queue
     WHERE job_key=?
       AND status='completed'
@@ -7778,6 +7778,209 @@ async function refreshRowExceededDynamicTimeout(env, row, opts = {}) {
   return { exceeded, profile, runtime_seconds:runtimeSeconds, inactive_seconds:inactiveSeconds, progress_grace_seconds:progressGraceSeconds };
 }
 
+
+function safeJsonParseObject(text) {
+  try {
+    const v = JSON.parse(String(text || '{}'));
+    return v && typeof v === 'object' ? v : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function extractIncrementalProgressFromOutput(outputJson) {
+  const parsed = safeJsonParseObject(outputJson);
+  const step = parsed.step_result || parsed.last_tick || parsed.result || parsed;
+  const progressDone = Number(step.progress_done ?? parsed.progress_done ?? parsed?.latest_temp_refresh?.progress_done ?? 0);
+  const remainingPlayers = Number(step.remaining_players_after ?? parsed.remaining_players_after ?? parsed?.latest_temp_refresh?.remaining_players_after ?? 0);
+  const selectedPlayersTotal = Number(step.selected_players_total ?? parsed.selected_players_total ?? 0);
+  const needsContinue = step.needs_continue === true || parsed.needs_continue === true || parsed.refresh_complete === false || step.refresh_complete === false || String(step.status || parsed.status || '').toLowerCase().includes('partial');
+  const refreshComplete = step.refresh_complete === true || parsed.refresh_complete === true;
+  return {
+    progress_done: Number.isFinite(progressDone) ? progressDone : null,
+    remaining_players_after: Number.isFinite(remainingPlayers) ? remainingPlayers : null,
+    selected_players_total: Number.isFinite(selectedPlayersTotal) ? selectedPlayersTotal : null,
+    needs_continue: !!needsContinue,
+    refresh_complete: !!refreshComplete,
+    status: String(step.status || parsed.status || '') || null,
+    current_step: parsed.current_step || step.current_step || null
+  };
+}
+
+async function getIncrementalHeartbeatTimeoutProfile(env) {
+  const profile = await getRefreshJobRuntimeProfile(env, 'incremental_daily', { sample_limit:10, min_samples:3 }).catch(() => null);
+  // Incremental can run for hours, but the child run must heartbeat frequently.
+  // Use a heartbeat window, not total runtime. Never let the heartbeat window fall below 20m.
+  const fallback = 1200;
+  let dynamic = fallback;
+  if (profile && Number(profile.avg_success_seconds || 0) > 0) {
+    dynamic = Math.round(Math.max(1200, Math.min(3600, Number(profile.avg_success_seconds) * 0.35)));
+  }
+  return {
+    source: profile?.source || 'incremental_child_heartbeat_fallback',
+    timeout_seconds: dynamic,
+    timeout_minutes: Math.round((dynamic / 60) * 10) / 10,
+    minimum_seconds: 1200,
+    cap_seconds: 3600,
+    parent_runtime_profile: profile || null,
+    rule: 'incremental_daily stale recovery uses incremental_temp_refresh_runs.updated_at heartbeat, not total orchestrator runtime'
+  };
+}
+
+async function latestActiveIncrementalTempRun(env) {
+  await ensureIncrementalTempTables(env).catch(() => null);
+  return await env.DB.prepare(`
+    SELECT request_id, status, current_step, run_after, created_at, started_at, finished_at, updated_at, error, output_json
+    FROM incremental_temp_refresh_runs
+    WHERE status IN ('pending','running')
+       OR (finished_at IS NULL AND LOWER(COALESCE(status,'')) IN ('partial_continue','auto_continue_scheduled','stale_recovered_needs_continue'))
+    ORDER BY datetime(COALESCE(updated_at, started_at, created_at)) DESC
+    LIMIT 1
+  `).first().catch(() => null);
+}
+
+async function recoverStaleIncrementalDailyHeartbeat(env, state, input = {}) {
+  const reason = String(input.reason || input.trigger || 'tick_preflight');
+  const out = { recovered:false, action:'none', reason };
+  if (!state || Number(state.lock_flag || 0) !== 1 || String(state.running_job_key || '') !== 'incremental_daily') return out;
+
+  const oldRequestId = String(state.running_request_id || '');
+  if (!oldRequestId) return { ...out, action:'skip_no_running_request_id' };
+
+  const queue = await env.DB.prepare(`
+    SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after,
+           requested_slate_date, slate_mode, max_attempts, created_at, started_at, finished_at, updated_at, error, input_json, output_json
+    FROM data_refresh_queue
+    WHERE request_id=?
+    LIMIT 1
+  `).bind(oldRequestId).first().catch(() => null);
+  if (!queue || String(queue.job_key || '') !== 'incremental_daily') return { ...out, action:'skip_no_matching_incremental_queue', queue };
+  if (!['running','pending'].includes(String(queue.status || '').toLowerCase()) || queue.finished_at) return { ...out, action:'skip_queue_not_active', queue_status:queue.status };
+
+  const tempRun = await latestActiveIncrementalTempRun(env);
+  if (!tempRun) return { ...out, action:'skip_no_active_incremental_temp_run', queue };
+  const progress = extractIncrementalProgressFromOutput(tempRun.output_json);
+
+  // If the child actually completed after the parent got stuck, reconcile to completed instead of requeueing.
+  if (String(tempRun.status || '').toLowerCase() === 'completed' || progress.refresh_complete === true || tempRun.finished_at) {
+    const payload = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'incremental_stale_parent_completion_reconcile', status:'completed_reconciled_from_child', reason, old_request_id:oldRequestId, queue, temp_run:{ ...tempRun, output_json:undefined }, progress };
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND status IN ('pending','running')`).bind(JSON.stringify(payload).slice(0,5000), oldRequestId),
+      env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, last_status='completed_reconciled_from_incremental_child', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(JSON.stringify(payload).slice(0,10000))
+    ]).catch(async () => {
+      await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND status IN ('pending','running')`).bind(JSON.stringify(payload).slice(0,5000), oldRequestId).run().catch(() => null);
+      await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, last_status='completed_reconciled_from_incremental_child', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(JSON.stringify(payload).slice(0,10000)).run().catch(() => null);
+    });
+    await releaseSingleLaneGlobalState(env, 'INCREMENTAL_CHILD_COMPLETED_RECONCILED', payload);
+    await releaseSingleLaneEnqueueLock(env, oldRequestId, { reason:'incremental_child_completed_reconciled' }).catch(() => null);
+    await singleLaneLog(env, { request_id:oldRequestId, chain_id:queue.chain_id, job_key:'incremental_daily', job_index:10, event_type:'incremental_child_completed_reconciled', status:'completed', message:'Stuck incremental parent was reconciled because the underlying child temp run had completed.', payload_json:payload });
+    return { recovered:true, action:'completed_reconciled_from_child', old_request_id:oldRequestId, temp_request_id:tempRun.request_id, progress };
+  }
+
+  const heartbeat = await getIncrementalHeartbeatTimeoutProfile(env);
+  const heartbeatAge = rowUpdatedAgeSeconds(tempRun);
+  const parentAge = rowUpdatedAgeSeconds(state);
+  const queueAge = rowUpdatedAgeSeconds(queue);
+  const isStale = heartbeatAge != null && heartbeatAge > Number(heartbeat.timeout_seconds || 1200);
+  const qText = `${String(queue.error || '')} ${String(queue.output_json || '')}`.toLowerCase();
+  const continuationMarker = qText.includes('auto_continue_scheduled') || qText.includes('partial_continue') || qText.includes('continue') || progress.needs_continue === true;
+  const diagnostic = { old_request_id:oldRequestId, queue_status:queue.status, queue_error:queue.error || null, continuation_marker:continuationMarker, parent_seconds_since_update:parentAge, queue_seconds_since_update:queueAge, child_seconds_since_update:heartbeatAge, heartbeat_timeout:heartbeat, temp_run:{ request_id:tempRun.request_id, status:tempRun.status, current_step:tempRun.current_step, started_at:tempRun.started_at, updated_at:tempRun.updated_at, finished_at:tempRun.finished_at, error:tempRun.error || null }, progress };
+  if (!isStale) return { ...out, action:'skip_child_heartbeat_fresh', diagnostic };
+
+  const existingNewer = await env.DB.prepare(`
+    SELECT request_id, status, created_at, updated_at
+    FROM data_refresh_queue
+    WHERE job_key='incremental_daily'
+      AND request_id<>?
+      AND status IN ('pending','running')
+      AND datetime(created_at) >= datetime(COALESCE(?, '1970-01-01'))
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `).bind(oldRequestId, queue.created_at || '1970-01-01').first().catch(() => null);
+
+  const recoveryAlreadyLogged = await env.DB.prepare(`
+    SELECT log_id FROM data_orchestrator_logs
+    WHERE request_id=?
+      AND event_type='stale_incremental_daily_heartbeat_recovered'
+    LIMIT 1
+  `).bind(oldRequestId).first().catch(() => null);
+
+  let newRequestId = existingNewer?.request_id || null;
+  const newChainId = queue.chain_id || state.running_chain_id || `incremental_recovery|${crypto.randomUUID()}`;
+  const recoveryPayload = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:'stale_incremental_daily_heartbeat_recovery',
+    status: existingNewer ? 'existing_continuation_found' : 'stale_recovered_continuation_requeued',
+    reason,
+    recovered_at:new Date().toISOString(),
+    old_request_id:oldRequestId,
+    new_request_id:newRequestId,
+    chain_id:newChainId,
+    queue_before:{ request_id:queue.request_id, status:queue.status, error:queue.error || null, started_at:queue.started_at, updated_at:queue.updated_at, tick_count:queue.tick_count || null },
+    temp_request_id:tempRun.request_id,
+    temp_status_before:tempRun.status,
+    temp_updated_at:tempRun.updated_at,
+    child_seconds_since_update:heartbeatAge,
+    heartbeat_timeout:heartbeat,
+    progress,
+    staged_temp_data_preserved:true,
+    recovery_decision:'close_old_queue_release_global_requeue_clean_continuation'
+  };
+
+  if (!existingNewer) {
+    newRequestId = crypto.randomUUID();
+    recoveryPayload.new_request_id = newRequestId;
+    const inputJson = safeJsonParseObject(queue.input_json);
+    const newInput = { ...inputJson, stale_recovery:true, recovery_parent_request_id:oldRequestId, incremental_temp_request_id:tempRun.request_id, trigger:'stale_incremental_daily_heartbeat_recovery' };
+    await env.DB.prepare(`
+      INSERT INTO data_refresh_queue
+        (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json, output_json, error)
+      VALUES (?, ?, 'incremental_daily', ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, NULL)
+    `).bind(
+      newRequestId,
+      newChainId,
+      queue.display_name || '01 Incremental Daily Delta',
+      queue.job_name || 'run_incremental_temp_refresh_auto',
+      queue.group_name || '01 Foundation',
+      Number(queue.sequence_order || 10),
+      Number(queue.cascade || 0),
+      queue.requested_slate_date || null,
+      queue.slate_mode || null,
+      Number(queue.max_attempts || 3),
+      JSON.stringify(newInput).slice(0,4000),
+      JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'stale_incremental_daily_heartbeat_recovery', status:'continuation_request_created', old_request_id:oldRequestId, temp_request_id:tempRun.request_id }).slice(0,3000)
+    ).run();
+  }
+
+  // Preserve the temp data and make the existing child run due again. Do not promote, certify, wipe, or restart from zero.
+  const oldTempOutput = safeJsonParseObject(tempRun.output_json);
+  const tempPayload = { ...oldTempOutput, stale_recovery:{ ...(oldTempOutput.stale_recovery || {}), recovered_at:new Date().toISOString(), old_queue_request_id:oldRequestId, continuation_queue_request_id:newRequestId, child_seconds_since_update:heartbeatAge, heartbeat_timeout_seconds:heartbeat.timeout_seconds, staged_temp_data_preserved:true, progress } };
+
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='pending', run_after=CURRENT_TIMESTAMP, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND finished_at IS NULL`).bind(JSON.stringify(tempPayload).slice(0,5000), tempRun.request_id),
+    env.DB.prepare(`UPDATE data_refresh_queue SET status='stale_recovered', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=? AND status IN ('pending','running')`).bind('stale_incremental_daily_recovered_auto_continue_scheduled', JSON.stringify(recoveryPayload).slice(0,5000), oldRequestId),
+    env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, current_request_id=?, current_chain_id=?, current_slate_date=COALESCE(?, current_slate_date), current_slate_mode=COALESCE(?, current_slate_mode), last_status='continuation_requested_after_stale_incremental_recovery', last_fail=0, last_error_code='stale_incremental_daily_requeued', last_error_message='Stale incremental_daily runner recovered; continuation requeued from existing temp state', last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(newRequestId, newChainId, queue.requested_slate_date || null, queue.slate_mode || null, JSON.stringify(recoveryPayload).slice(0,10000))
+  ]).catch(async () => {
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='pending', run_after=CURRENT_TIMESTAMP, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND finished_at IS NULL`).bind(JSON.stringify(tempPayload).slice(0,5000), tempRun.request_id).run().catch(() => null);
+    await env.DB.prepare(`UPDATE data_refresh_queue SET status='stale_recovered', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=? AND status IN ('pending','running')`).bind('stale_incremental_daily_recovered_auto_continue_scheduled', JSON.stringify(recoveryPayload).slice(0,5000), oldRequestId).run().catch(() => null);
+    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, current_request_id=?, current_chain_id=?, current_slate_date=COALESCE(?, current_slate_date), current_slate_mode=COALESCE(?, current_slate_mode), last_status='continuation_requested_after_stale_incremental_recovery', last_fail=0, last_error_code='stale_incremental_daily_requeued', last_error_message='Stale incremental_daily runner recovered; continuation requeued from existing temp state', last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(newRequestId, newChainId, queue.requested_slate_date || null, queue.slate_mode || null, JSON.stringify(recoveryPayload).slice(0,10000)).run().catch(() => null);
+  });
+
+  await releaseSingleLaneGlobalState(env, 'STALE_INCREMENTAL_DAILY_RECOVERED_RELEASED', recoveryPayload);
+  await releaseSingleLaneEnqueueLock(env, oldRequestId, { reason:'stale_incremental_daily_heartbeat_recovered', new_request_id:newRequestId }).catch(() => null);
+  const lockKey = `incremental_daily|${String(queue.requested_slate_date || '')}|${Number(queue.cascade || 0) ? 'cascade' : 'selected'}`;
+  await env.DB.prepare(`INSERT OR REPLACE INTO data_orchestrator_enqueue_locks (lock_key, request_id, chain_id, job_key, slate_date, mode, status, created_at, updated_at) VALUES (?, ?, ?, 'incremental_daily', ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(lockKey, newRequestId, newChainId, queue.requested_slate_date || null, Number(queue.cascade || 0) ? 'cascade' : 'selected').run().catch(() => null);
+
+  if (!recoveryAlreadyLogged) {
+    await singleLaneLog(env, { request_id:oldRequestId, chain_id:queue.chain_id, job_key:'incremental_daily', job_index:10, event_type:'stale_incremental_daily_heartbeat_recovered', status:'requeued_continuation', fail:0, error_code:'stale_incremental_daily_heartbeat_timeout', message:'Stale incremental_daily child heartbeat detected; GLOBAL lock released, old queue closed, staged temp data preserved, clean continuation requeued.', payload_json:recoveryPayload });
+  }
+  await refreshOrchestratorEvent(env, { request_id:oldRequestId, chain_id:queue.chain_id, job_key:'incremental_daily', event_type:'stale_incremental_daily_heartbeat_recovered', status:'requeued_continuation', message:'Stale incremental_daily heartbeat recovered and continuation requeued.', payload_json:recoveryPayload }).catch(() => null);
+
+  return { recovered:true, action:'stale_recovered_continuation_requeued', old_request_id:oldRequestId, new_request_id:newRequestId, temp_request_id:tempRun.request_id, diagnostic:recoveryPayload };
+}
+
 async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   const reason = String(input.reason || input.trigger || 'orchestrator_preflight_cleanup');
   const out = {
@@ -7793,6 +7996,8 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     stale_active_enqueue_locks_released:0,
     stale_orphan_pending_rows_cancelled:0,
     incremental_continue_locks_released:0,
+    stale_incremental_heartbeat_recovered:0,
+    stale_incremental_heartbeat_recovery:null,
     job_flags_reconciled:0
   };
 
@@ -7912,7 +8117,14 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   }
 
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
-  if (Number(state?.lock_flag || 0) === 1 && String(state?.running_job_key || '') === 'incremental_daily') {
+  const incrementalHeartbeatRecovery = await recoverStaleIncrementalDailyHeartbeat(env, state, { reason }).catch(e => ({ recovered:false, action:'error', error:String(e?.message || e) }));
+  if (incrementalHeartbeatRecovery?.recovered) {
+    out.stale_incremental_heartbeat_recovered = 1;
+    out.stale_incremental_heartbeat_recovery = incrementalHeartbeatRecovery;
+  } else if (incrementalHeartbeatRecovery && incrementalHeartbeatRecovery.action && incrementalHeartbeatRecovery.action !== 'none') {
+    out.stale_incremental_heartbeat_recovery = incrementalHeartbeatRecovery;
+  }
+  if (Number(state?.lock_flag || 0) === 1 && String(state?.running_job_key || '') === 'incremental_daily' && !incrementalHeartbeatRecovery?.recovered) {
     const lockedRequestId = String(state?.running_request_id || '');
     const lockedQueue = lockedRequestId ? await env.DB.prepare(`SELECT request_id, chain_id, job_key, status, error, updated_at, substr(COALESCE(output_json,''),1,1400) AS output_preview FROM data_refresh_queue WHERE request_id=? LIMIT 1`).bind(lockedRequestId).first().catch(() => null) : null;
     const qStatus = String(lockedQueue?.status || '').toLowerCase();
@@ -7966,7 +8178,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     }
   }
 
-  if (out.duplicate_active_queue_rows_cancelled || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.job_flags_reconciled) {
+  if (out.duplicate_active_queue_rows_cancelled || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.stale_incremental_heartbeat_recovered || out.job_flags_reconciled) {
     await singleLaneLog(env, { event_type:'single_lane_state_cleanup', status:'recovered', message:'Single-lane queue/job state cleanup repaired inconsistent rows.', payload_json:out });
   }
   return out;
@@ -8101,7 +8313,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.9 Stale Cleanser Runtime Sharpener: duplicate selected-job enqueue is blocked, stale lock release uses recent successful runtime + 20%, and partial auto-continue rows cannot leave zombie-running state.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.0 Incremental Heartbeat Recovery Gate: stale incremental recovery uses the child incremental_temp_refresh_runs heartbeat, closes stale queue rows, preserves staged temp progress, and requeues a clean continuation request.' };
 }
 
 
@@ -8249,7 +8461,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.04.9 Stale Cleanser Runtime Sharpener is active. Cron reads data_orchestrator_jobs/state, uses average recent successful runtime + 20% for job-specific timeout decisions, releases incremental auto-continue locks before requeue writes, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, and keeps only PrizePicks waiting stages locked across ticks.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.0 Incremental Heartbeat Recovery Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat for incremental_daily recovery, preserves temp progress, and requeues clean continuations instead of leaving stale locks.' };
 }
 
 
@@ -8797,15 +9009,21 @@ async function runRefreshOrchestratorTick(input, env) {
 
   const requestId = row.current_request_id || crypto.randomUUID();
   const chainId = row.current_chain_id || `single_lane|${crypto.randomUUID()}`;
+  const queueBeforeStart = await env.DB.prepare(`SELECT request_id, status, started_at, updated_at, tick_count, output_json FROM data_refresh_queue WHERE request_id=? LIMIT 1`).bind(requestId).first().catch(() => null);
   const continuingLockedJob = !!activeLockedRow;
   await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:continuingLockedJob ? 'RUNNING_WAITING_CHECK' : 'RUNNING', started_at:continuingLockedJob ? null : new Date().toISOString(), state_json:{ job_key:row.job_key, request_id:requestId, chain_id:chainId, continuing_locked_job:continuingLockedJob } });
   if (continuingLockedJob) {
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running_waiting_check', updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
     await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'wait_check', status:'running', message:`${row.display_name} wait check`, payload_json:{ row } });
   } else {
-    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running', last_started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
-    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
-    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
+    const isIncrementalResumeTick = String(row.job_key || '') === 'incremental_daily' && !!queueBeforeStart?.started_at;
+    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running', last_started_at=COALESCE(last_started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
+    if (!isIncrementalResumeTick) {
+      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
+      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_start', status:'running', message:`${row.display_name} started`, payload_json:{ row } });
+    } else {
+      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'incremental_resume_tick', status:'running', message:`${row.display_name} resumed existing continuation`, payload_json:{ row, queue_before_start:queueBeforeStart } });
+    }
   }
   await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(requestId).run().catch(() => null);
 
@@ -8868,10 +9086,10 @@ async function runRefreshOrchestratorTick(input, env) {
       await releaseSingleLaneGlobalState(env, row.job_key === 'incremental_daily' ? 'WAITING_NEXT_INCREMENTAL_TICK' : 'WAITING_NEXT_TICK', wrapped);
       await env.DB.batch([
         env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key),
-        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
+        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
       ]).catch(async () => {
         await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key).run().catch(() => null);
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
       });
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:row.job_key === 'incremental_daily' ? 'incremental_partial_released_first' : 'partial_continue', status:'pending', message:partialStatus, payload_json:wrapped });
       return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:row.job_key === 'incremental_daily' ? 'single_lane_incremental_partial_released' : 'single_lane_partial_continue', processed:[{ job_key:row.job_key, status:partialStatus }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'Partial/auto-continue job released the global lock before queue requeue writes. The same independent stage remains requested for the next cron tick; no downstream stage starts until it completes or fails.' };

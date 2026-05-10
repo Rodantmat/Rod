@@ -1,0 +1,12 @@
+Version audit: v1.5.05.0 - Incremental Heartbeat Recovery Gate
+
+Checked artifacts:
+- worker.js SYSTEM_VERSION: v1.5.05.0 - Incremental Heartbeat Recovery Gate
+- control_room.html versionTag: v1.5.05.0 - Incremental Heartbeat Recovery Gate
+- README: README_v1.5.05.0.txt
+- ZIP filename: alphadog_v1.5.05.0_incremental_heartbeat_recovery_gate.zip
+
+Validation performed:
+- node --check worker.js passed.
+- Flat-folder artifact only.
+- No data_orchestrator_queue reference added. Queue table remains data_refresh_queue.
