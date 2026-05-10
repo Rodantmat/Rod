@@ -1,0 +1,13 @@
+Version audit: v1.5.04.8 - Dynamic Runtime Timeout Gate
+
+Checks
+- worker.js SYSTEM_VERSION: v1.5.04.8 - Dynamic Runtime Timeout Gate
+- control_room.html versionTag: v1.5.04.8 - Dynamic Runtime Timeout Gate
+- README: README_v1.5.04.8.txt
+- ZIP filename: alphadog_v1.5.04.8_dynamic_runtime_timeout_gate.zip
+
+Patch validation
+- node --check worker.js: PASS
+- Flat-folder ZIP: PASS
+- No scheduled/main worker split changes: PASS
+- No Main UI changes: PASS

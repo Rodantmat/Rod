@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.7 - Incremental Continue Lock Release Gate";
+const SYSTEM_VERSION = "v1.5.04.8 - Dynamic Runtime Timeout Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7632,6 +7632,89 @@ async function releaseSingleLaneEnqueueLock(env, requestId, meta = {}) {
   return { released:Number(res?.meta?.changes || 0) > 0, changes:Number(res?.meta?.changes || 0) };
 }
 
+
+function refreshRuntimeFallbackSeconds(jobKey) {
+  const key = String(jobKey || '');
+  const map = {
+    static_weekly: 5400,
+    incremental_daily: 14400,
+    everyday_phase1: 3600,
+    weather_roof: 1800,
+    lineup_context: 1800,
+    prizepicks_board: 900,
+    prizepicks_context: 3600,
+    odds_api_morning: 2700,
+    odds_api_afternoon: 2700,
+    scoring_refresh: 5400
+  };
+  return map[key] || 3600;
+}
+
+function refreshRuntimeFloorSeconds(jobKey) {
+  const key = String(jobKey || '');
+  if (key === 'prizepicks_board') return 600;
+  if (key === 'incremental_daily') return 1800;
+  if (key === 'scoring_refresh') return 1800;
+  return 600;
+}
+
+function refreshRuntimeCapSeconds(jobKey) {
+  const key = String(jobKey || '');
+  if (key === 'incremental_daily') return 21600;
+  if (key === 'static_weekly') return 10800;
+  if (key === 'scoring_refresh') return 10800;
+  if (key === 'prizepicks_board') return 1800;
+  return 7200;
+}
+
+async function getRefreshJobRuntimeProfile(env, jobKey, opts = {}) {
+  const key = String(jobKey || 'unknown');
+  const sampleLimit = Math.max(3, Math.min(10, Number(opts.sample_limit || 10)));
+  const minSamples = Math.max(1, Math.min(sampleLimit, Number(opts.min_samples || 3)));
+  const floorSeconds = refreshRuntimeFloorSeconds(key);
+  const capSeconds = refreshRuntimeCapSeconds(key);
+  const fallbackSeconds = Math.max(floorSeconds, Math.min(capSeconds, refreshRuntimeFallbackSeconds(key)));
+  const rows = await sampleRows(env, `
+    SELECT request_id, job_key, started_at, finished_at,
+           CAST((strftime('%s', finished_at) - strftime('%s', started_at)) AS INTEGER) AS duration_seconds
+    FROM data_refresh_queue
+    WHERE job_key=?
+      AND status='completed'
+      AND started_at IS NOT NULL
+      AND finished_at IS NOT NULL
+      AND (strftime('%s', finished_at) - strftime('%s', started_at)) > 1
+    ORDER BY datetime(finished_at) DESC
+    LIMIT ?
+  `, [key, sampleLimit]).catch(() => []);
+  const durations = rows.map(r => Number(r.duration_seconds || 0)).filter(n => Number.isFinite(n) && n > 1);
+  if (durations.length < minSamples) {
+    return { job_key:key, source:'fallback_insufficient_success_samples', sample_count:durations.length, sample_limit:sampleLimit, min_samples:minSamples, avg_success_seconds:null, timeout_seconds:fallbackSeconds, timeout_minutes:Math.round((fallbackSeconds/60)*10)/10, floor_seconds:floorSeconds, cap_seconds:capSeconds, multiplier:1.20, durations_seconds:durations };
+  }
+  const avg = durations.reduce((a,b)=>a+b,0) / durations.length;
+  const timeoutSeconds = Math.max(floorSeconds, Math.min(capSeconds, Math.ceil(avg * 1.20)));
+  return { job_key:key, source:'avg_last_successful_runs_plus_20_percent', sample_count:durations.length, sample_limit:sampleLimit, min_samples:minSamples, avg_success_seconds:Math.round(avg), timeout_seconds:timeoutSeconds, timeout_minutes:Math.round((timeoutSeconds/60)*10)/10, floor_seconds:floorSeconds, cap_seconds:capSeconds, multiplier:1.20, durations_seconds:durations };
+}
+
+function runningRowRuntimeSeconds(row) {
+  const startMs = parseD1TimestampMaybe(row?.started_at || row?.last_started_at || row?.created_at || row?.updated_at);
+  return startMs ? Math.max(0, Math.round((Date.now() - startMs) / 1000)) : null;
+}
+
+function rowUpdatedAgeSeconds(row) {
+  const updMs = parseD1TimestampMaybe(row?.updated_at);
+  return updMs ? Math.max(0, Math.round((Date.now() - updMs) / 1000)) : null;
+}
+
+async function refreshRowExceededDynamicTimeout(env, row, opts = {}) {
+  const jobKey = String(row?.job_key || opts.job_key || 'unknown');
+  const profile = await getRefreshJobRuntimeProfile(env, jobKey, opts).catch(() => ({ job_key:jobKey, source:'fallback_profile_error', timeout_seconds:refreshRuntimeFallbackSeconds(jobKey), timeout_minutes:Math.round(refreshRuntimeFallbackSeconds(jobKey)/6)/10 }));
+  const runtimeSeconds = runningRowRuntimeSeconds(row);
+  const inactiveSeconds = rowUpdatedAgeSeconds(row);
+  const progressGraceSeconds = Math.max(300, Math.min(900, Math.round(Number(profile.timeout_seconds || 3600) * 0.25)));
+  const exceeded = runtimeSeconds != null && runtimeSeconds > Number(profile.timeout_seconds || refreshRuntimeFallbackSeconds(jobKey)) && (inactiveSeconds == null || inactiveSeconds > progressGraceSeconds);
+  return { exceeded, profile, runtime_seconds:runtimeSeconds, inactive_seconds:inactiveSeconds, progress_grace_seconds:progressGraceSeconds };
+}
+
 async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   const reason = String(input.reason || input.trigger || 'orchestrator_preflight_cleanup');
   const out = {
@@ -7640,6 +7723,8 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     version:SYSTEM_VERSION,
     job:'single_lane_state_cleanup',
     reason,
+    dynamic_timeout_checks:[],
+    dynamic_timeout_skipped_active_locks:0,
     duplicate_active_queue_rows_cancelled:0,
     zombie_running_job_flags_cleared:0,
     stale_active_enqueue_locks_released:0,
@@ -7880,7 +7965,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.7 Incremental Continue Lock Release Gate: duplicate selected-job enqueue is blocked, stale lock release reconciles job/queue flags, and partial auto-continue rows cannot leave zombie-running state.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.8 Dynamic Runtime Timeout Gate: duplicate selected-job enqueue is blocked, stale lock release uses recent successful runtime + 20%, and partial auto-continue rows cannot leave zombie-running state.' };
 }
 
 
@@ -8026,7 +8111,9 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.7 Incremental Continue Lock Release Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, releases incremental auto-continue locks before requeue writes, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, and keeps only PrizePicks waiting stages locked across ticks.' };
+  const runtime_profiles = [];
+  for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.04.8 Dynamic Runtime Timeout Gate is active. Cron reads data_orchestrator_jobs/state, uses average recent successful runtime + 20% for job-specific timeout decisions, releases incremental auto-continue locks before requeue writes, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, and keeps only PrizePicks waiting stages locked across ticks.' };
 }
 
 
@@ -8127,13 +8214,14 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     SELECT request_id, chain_id, job_key, display_name, sequence_order, status, requested_slate_date, created_at, started_at, updated_at
     FROM data_refresh_queue
     WHERE status='running'
-      AND datetime(updated_at) <= datetime('now','-8 minutes')
     ORDER BY datetime(updated_at) ASC
     LIMIT 20
   `);
   for (const row of staleRunningRows) {
+    const timeoutCheck = await refreshRowExceededDynamicTimeout(env, row, { sample_limit:10, min_samples:3 }).catch(() => ({ exceeded:false }));
+    if (!timeoutCheck.exceeded) continue;
     const isScoring = String(row.job_key || '') === 'scoring_refresh';
-    const reason = `${isScoring ? 'stale_running_cancelled' : 'stale_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
+    const reason = `${isScoring ? 'dynamic_timeout_running_cancelled' : 'dynamic_timeout_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
     await env.DB.prepare(`
       UPDATE data_refresh_queue
       SET status=?,
@@ -8144,9 +8232,8 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
           output_json=COALESCE(output_json, ?)
       WHERE request_id=?
         AND status='running'
-        AND datetime(updated_at) <= datetime('now','-8 minutes')
-    `).bind(isScoring ? 'cancelled' : 'pending', isScoring ? 1 : 0, isScoring ? 1 : 0, reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:isScoring?'cancelled_stale_running_scoring_row':'requeued_stale_running_row', reason, recovered_at:new Date().toISOString(), row }).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'stale_running_scoring_cancelled':'stale_running_requeued', status:isScoring?'cancelled':'pending', message:reason, payload_json:{ row, input } });
+    `).bind(isScoring ? 'cancelled' : 'pending', isScoring ? 1 : 0, isScoring ? 1 : 0, reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:isScoring?'cancelled_dynamic_timeout_scoring_row':'requeued_dynamic_timeout_running_row', reason, recovered_at:new Date().toISOString(), row, timeout_check:timeoutCheck }).slice(0,3000), row.request_id).run();
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'dynamic_timeout_scoring_cancelled':'dynamic_timeout_running_requeued', status:isScoring?'cancelled':'pending', message:reason, payload_json:{ row, input, timeout_check:timeoutCheck } });
     recovered.push(row);
   }
   for (const row of staleRows) {
@@ -8258,15 +8345,16 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
   }
 
   const staleRunning = await sampleRows(env, `
-    SELECT request_id, chain_id, job_key, display_name, status, started_at, updated_at, sequence_order
+    SELECT request_id, chain_id, job_key, display_name, status, started_at, updated_at, created_at, sequence_order
     FROM data_refresh_queue
     WHERE status='running'
       AND job_key NOT IN ('scoring_refresh')
-      AND datetime(updated_at) <= datetime('now','-5 minutes')
     ORDER BY datetime(updated_at) ASC
     LIMIT 20
   `).catch(() => []);
   for (const row of staleRunning) {
+    const timeoutCheck = await refreshRowExceededDynamicTimeout(env, row, { sample_limit:10, min_samples:3 }).catch(() => ({ exceeded:false }));
+    if (!timeoutCheck.exceeded) continue;
     await env.DB.prepare(`
       UPDATE data_refresh_queue
       SET status='pending',
@@ -8277,9 +8365,9 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
           output_json=COALESCE(output_json, ?)
       WHERE request_id=?
         AND status='running'
-    `).bind(`auto_requeue_stale_non_scoring_running:${reason}`, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'stale_non_scoring_running_requeued', reason, row }).slice(0,3000), row.request_id).run();
+    `).bind(`auto_requeue_dynamic_timeout_non_scoring_running:${reason}`, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'dynamic_timeout_non_scoring_running_requeued', reason, row, timeout_check:timeoutCheck }).slice(0,3000), row.request_id).run();
     out.stale_non_scoring_running_requeued++;
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_non_scoring_running_requeued', status:'pending', message:'Stale non-scoring running row requeued.', payload_json:{ row, reason } });
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'dynamic_timeout_non_scoring_running_requeued', status:'pending', message:'Non-scoring running row exceeded its job-specific successful-runtime timeout and has been requeued.', payload_json:{ row, reason, timeout_check:timeoutCheck } });
   }
 
   const orphanPendingRows = await sampleRows(env, `
@@ -8538,19 +8626,20 @@ async function runRefreshOrchestratorTick(input, env) {
     const seconds = state?.updated_at ? Math.round((Date.now() - parseD1TimestampMaybe(state.updated_at)) / 1000) : null;
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
     if (!canContinueLockedPrizePicks) {
-      if (seconds != null && seconds > 900) {
-        await releaseSingleLaneGlobalState(env, 'STALE_LOCK_RELEASED', { reason:'stale_global_lock_released', seconds_since_update:seconds, previous_state:state });
-        const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
-        const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
+      const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
+      const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
+      const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
+      const timeoutCheck = await refreshRowExceededDynamicTimeout(env, { ...(activeQueue || {}), job_key:staleJobKey || activeQueue?.job_key || activeLockedRow?.job_key, started_at:activeQueue?.started_at || activeLockedRow?.last_started_at || state?.started_at, updated_at:state?.updated_at || activeQueue?.updated_at }).catch(() => null);
+      if (timeoutCheck?.exceeded) {
+        await releaseSingleLaneGlobalState(env, 'DYNAMIC_TIMEOUT_LOCK_RELEASED', { reason:'dynamic_runtime_timeout_global_lock_released', seconds_since_update:seconds, timeout_check:timeoutCheck, previous_state:state });
         if (staleJobKey) {
-          const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
-          await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=CASE WHEN ? THEN 1 ELSE 0 END, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(activeQueue ? 1 : 0, activeQueue ? 'requeued_after_stale_lock_release' : 'stale_lock_job_cleared', staleJobKey).run().catch(() => null);
-          if (staleRequestId) await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, started_at=NULL, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error, ?) WHERE request_id=? AND status='running'`).bind('stale_global_lock_released_requeued', staleRequestId).run().catch(() => null);
+          await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=CASE WHEN ? THEN 1 ELSE 0 END, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(activeQueue ? 1 : 0, activeQueue ? 'requeued_after_dynamic_timeout_lock_release' : 'dynamic_timeout_lock_job_cleared', staleJobKey).run().catch(() => null);
+          if (staleRequestId) await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, started_at=NULL, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error, ?) WHERE request_id=? AND status='running'`).bind('dynamic_runtime_timeout_lock_released_requeued', staleRequestId).run().catch(() => null);
         }
-        await singleLaneLog(env, { request_id:staleRequestId, job_key:staleJobKey, event_type:'stale_lock_released', status:'recovered', message:'Global orchestrator lock was stale and has been released; matching job/queue flags were reconciled.', payload_json:{ seconds_since_update:seconds, previous_state:state, active_locked_row:activeLockedRow } });
+        await singleLaneLog(env, { request_id:staleRequestId, job_key:staleJobKey, event_type:'dynamic_timeout_lock_released', status:'recovered', message:'Global orchestrator lock exceeded the job-specific successful-runtime timeout and was released.', payload_json:{ seconds_since_update:seconds, timeout_check:timeoutCheck, previous_state:state, active_locked_row:activeLockedRow } });
         activeLockedRow = null;
       } else {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, cleanup, active_job:activeLockedRow, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, cleanup, active_job:activeLockedRow, dynamic_timeout:timeoutCheck, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job. Timeout is job-specific: average of recent successful runs plus 20%, with floors/caps.' };
       }
     }
   }
