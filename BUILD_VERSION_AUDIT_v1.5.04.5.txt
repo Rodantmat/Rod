@@ -1,0 +1,7 @@
+ZIP: alphadog_v1.5.04.5_dispatch_observation_hard_gate.zip
+worker.js: v1.5.04.5 - Dispatch Observation Hard Gate
+control_room.html: control_room_v1_5_04_5_dispatch_observation_hard_gate
+main.py: v1.5.04.5 - Dispatch Observation Hard Gate
+README: README_v1.5.04.5.txt
+Patch source: user-provided 2.zip / v1.5.04.4 Public GitHub Visibility Fallback
+Validation: flat ZIP, matching version labels, dispatch observation hard gate inserted.
