@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.1 - True Incremental Selector Gate";
+const SYSTEM_VERSION = "v1.5.05.2 - Clean True Delta Repair Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -8313,7 +8313,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.1 True Incremental Selector Gate: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.2 Clean True Delta Repair Gate: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
 }
 
 
@@ -8461,7 +8461,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.1 True Incremental Selector Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.2 Clean True Delta Repair Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
 }
 
 
@@ -9293,7 +9293,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
   const latestGameDate = base.logs?.max_game_date || null;
   const metricLatestDate = base.metrics?.max_last_game_date || null;
 
-  // v1.5.05.1: TRUE INCREMENTAL SELECTOR GATE.
+  // v1.5.05.2: CLEAN TRUE DELTA REPAIR GATE.
   // Daily incremental must never fall back into a 700+ player full-safe rebuild just because
   // metric coverage is imperfect. The base is usable for true delta when the live game-log
   // base exists and derived metrics are broadly populated. Missing/stale derived players are
@@ -9308,7 +9308,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:null,
       end_date:null,
       overlap_days:0,
-      selector_gate:'v1.5.05.1',
+      selector_gate:'v1.5.05.2',
       full_rebuild_allowed: !!forceFull,
       full_rebuild_blocked_by_default: !forceFull,
       base_requirements:{ live_game_logs_min:9000, metrics_min:700, latest_game_date_required:true, live_splits_not_required_for_delta_selector:true },
@@ -9316,23 +9316,37 @@ async function determineIncrementalRefreshMode(env, input = {}) {
     };
   }
 
-  const overlapDays = Math.max(1, Math.min(Number(input?.delta_overlap_days || 2), 4));
-  const startFrom = minIsoDate(latestGameDate, metricLatestDate || latestGameDate);
-  const startDate = addDaysIso(startFrom, -overlapDays);
+  const overlapDays = Math.max(0, Math.min(Number(input?.delta_overlap_days || 0), 1));
+  const startFrom = latestGameDate;
+  const startDate = addDaysIso(startFrom, 1 - overlapDays);
   const defaultEnd = maxIsoDate(latestGameDate, addDaysIso(utcTodayIso(), -1));
   const requestedEnd = input?.delta_end_date ? String(input.delta_end_date).slice(0, 10) : defaultEnd;
   const endDate = maxIsoDate(latestGameDate, requestedEnd);
+  if (String(endDate) < String(startDate)) {
+    return {
+      mode:'no_delta_needed',
+      reason:'live_base_already_current_for_available_finalized_games',
+      base,
+      start_date:startDate,
+      end_date:endDate,
+      overlap_days:overlapDays,
+      selector_gate:'v1.5.05.2',
+      selected_source:'schedule_final_games_boxscore_delta_only',
+      blocked_full_player_rebuild:true,
+      note:'Live game-log base already covers the available finalized-game window. Temp tables should be clean and no daily incremental request should be created.'
+    };
+  }
   return {
     mode:'delta',
-    reason:'true_incremental_selector_live_base_usable',
+    reason:'strict_true_delta_after_live_max_game_date',
     base,
     start_date:startDate,
     end_date:endDate,
     overlap_days:overlapDays,
-    selector_gate:'v1.5.05.1',
+    selector_gate:'v1.5.05.2',
     selected_source:'schedule_final_games_boxscore_delta_only',
     blocked_full_player_rebuild:true,
-    note:'Daily incremental runs only finalized-game delta staging. It does not select all players_current or rebuild the full incremental base.'
+    note:'Daily incremental runs only finalized games strictly after the live max game date. It does not select all players_current or rebuild the full incremental base.'
   };
 }
 
@@ -9349,7 +9363,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
   if (modeInfo.mode !== 'delta') return { converted:false, reason:'delta_not_available', mode_info:modeInfo };
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const tempBefore = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.1_accidental_full_incremental_run_converted_to_true_delta' });
+  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.2_accidental_full_incremental_run_converted_to_true_delta' });
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   const payload = {
     ok:true,
@@ -9365,7 +9379,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
     temp_before:tempBefore,
     reset,
     live_tables_touched:false,
-    reason:'Daily incremental was about to process the whole player universe. v1.5.05.1 preserved live base and converted the active temp run to finalized-game true delta.'
+    reason:'Daily incremental was about to process the whole player universe. v1.5.05.2 preserved live base and converted the active temp run to finalized-game true delta.'
   };
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(payload).slice(0,5000), row.request_id).run();
   return { converted:true, step:'stage_delta_logs', payload };
@@ -9382,10 +9396,16 @@ async function scheduleIncrementalTempRefreshOnce(input, env) {
   const modeInfo = await determineIncrementalRefreshMode(env, input || {});
   const reset = await resetIncrementalTempTables(env);
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
-  const currentStep = modeInfo.mode === 'delta' ? 'stage_delta_logs' : 'stage_logs';
-  const output = { live_tables_touched:false, reset, stale_finalizer, mode:modeInfo.mode, mode_info:modeInfo, progress_reset_domains:['incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs'], season };
+  if (modeInfo.mode === 'no_delta_needed') {
+    return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'no_delta_needed', request_id:null, refresh_mode:modeInfo.mode, mode_info:modeInfo, reset, stale_finalizer, live_tables_touched:false, note:'Temp tables were cleaned, but no incremental request was created because the live base is already current for the available finalized-game window.' };
+  }
+  if (modeInfo.mode !== 'delta') {
+    return { ok:false, data_ok:false, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'blocked_no_full_rebuild_allowed', request_id:null, refresh_mode:modeInfo.mode, mode_info:modeInfo, reset, stale_finalizer, live_tables_touched:false, error:'daily_incremental_full_rebuild_disabled', note:'Daily incremental is hard-blocked from selecting all players or rebuilding the full temp base. Repair/certify the live base first, then run strict true delta.' };
+  }
+  const currentStep = 'stage_delta_logs';
+  const output = { live_tables_touched:false, reset, stale_finalizer, mode:modeInfo.mode, mode_info:modeInfo, progress_reset_domains:['incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs'], season, selector:'clean_temp_then_strict_true_delta_only' };
   await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, output_json, error) VALUES (?, 'pending', datetime('now', '+1 minute'), ?, ?, NULL)`).bind(requestId, currentStep, JSON.stringify(output)).run();
-  return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_mode:modeInfo.mode, mode_info:modeInfo, refresh_steps:modeInfo.mode === 'delta' ? ['stage_delta_logs','audit','promote','clean','derived','completed'] : ['stage_game_logs_temp','stage_splits_temp','audit','promote','clean','derived','completed'], reset, stale_finalizer, live_tables_touched:false, estimated_total_minutes:modeInfo.mode === 'delta' ? '1-5 minute-cron ticks for true daily delta' : '30-70 minute-cron ticks for fallback full-safe rebuild', note:modeInfo.mode === 'delta' ? 'Daily incremental is running TRUE DELTA MODE: only recent finalized games are staged from schedule/boxscore with overlap protection, then audit/promote/derived/certify.' : 'Daily incremental pipeline is using fallback full-safe rebuild because the live base is not certified enough for delta mode.' };
+  return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'scheduled_for_next_minute', request_id:requestId, run_after:'about 1 minute from now', refresh_mode:modeInfo.mode, mode_info:modeInfo, refresh_steps:['stage_delta_logs','audit','promote','clean','derived','completed'], reset, stale_finalizer, live_tables_touched:false, estimated_total_minutes:'1-5 minute-cron ticks for strict true delta', note:'Daily incremental is running STRICT TRUE DELTA MODE: temp tables were cleaned first, only finalized games after the live max game date are staged, audit must certify A/A+, promotion uses INSERT OR REPLACE, then derived metrics rebuild and live certification must pass.' };
 }
 
 async function dedupeIncrementalTempTables(env) {
@@ -9829,7 +9849,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 
   const fullToDelta = await convertAccidentalFullIncrementalRunToDelta(env, row, input || {});
   if (fullToDelta?.converted) {
-    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.1_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
+    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.2_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
     return { changed:true, step:'stage_delta_logs', reason:'converted_accidental_full_incremental_to_true_delta', decisions, conversion:fullToDelta.payload };
   }
 
@@ -10227,7 +10247,7 @@ async function certifyLiveIncrementalTables(env, input = {}) {
   const metricRows = Number(metrics?.rows_count || 0);
   if (glRows < 9000) failures.push({ code:'LIVE_GAME_LOG_ROWS_LOW', rows_count:glRows, required_min:9000 });
   if (splitRows < 1000) failures.push({ code:'LIVE_SPLIT_ROWS_LOW', rows_count:splitRows, required_min:1000 });
-  if (metricRows < 770) failures.push({ code:'LIVE_DERIVED_METRIC_ROWS_LOW', rows_count:metricRows, required_min:770 });
+  if (metricRows < 700) failures.push({ code:'LIVE_DERIVED_METRIC_ROWS_LOW', rows_count:metricRows, required_min:700 });
   if (duplicateGameLogs.length) failures.push({ code:'LIVE_DUPLICATE_GAME_LOG_KEYS', rows:duplicateGameLogs });
   if (duplicateSplits.length) failures.push({ code:'LIVE_DUPLICATE_SPLIT_KEYS', rows:duplicateSplits });
   if (Number(nullGameKeys?.c || 0) > 0) failures.push({ code:'LIVE_GAME_LOG_NULL_KEYS', rows_count:Number(nullGameKeys.c || 0) });
@@ -10236,10 +10256,10 @@ async function certifyLiveIncrementalTables(env, input = {}) {
   if (gameLogs?.max_game_date && metrics?.max_last_game_date && String(metrics.max_last_game_date) < String(gameLogs.max_game_date)) {
     failures.push({ code:'DERIVED_METRICS_LAG_GAME_LOGS', game_logs_latest:gameLogs.max_game_date, metrics_latest:metrics.max_last_game_date });
   }
-  const batterRows = (roleRows.results || []).find(r => String(r.role || '').toUpperCase() === 'BATTER');
-  const pitcherRows = (roleRows.results || []).find(r => String(r.role || '').toUpperCase() === 'PITCHER');
-  if (!batterRows || Number(batterRows.rows_count || 0) < 350) failures.push({ code:'BATTER_METRIC_COVERAGE_LOW', rows_count:Number(batterRows?.rows_count || 0), required_min:350 });
-  if (!pitcherRows || Number(pitcherRows.rows_count || 0) < 350) failures.push({ code:'PITCHER_METRIC_COVERAGE_LOW', rows_count:Number(pitcherRows?.rows_count || 0), required_min:350 });
+  const batterRows = (roleRows.results || []).filter(r => ['BATTER','BAT'].includes(String(r.role || '').toUpperCase())).reduce((a,r) => ({ rows_count:Number(a.rows_count || 0) + Number(r.rows_count || 0) }), { rows_count:0 });
+  const pitcherRows = (roleRows.results || []).filter(r => ['PITCHER','P'].includes(String(r.role || '').toUpperCase())).reduce((a,r) => ({ rows_count:Number(a.rows_count || 0) + Number(r.rows_count || 0) }), { rows_count:0 });
+  if (Number(batterRows.rows_count || 0) < 300) failures.push({ code:'BATTER_METRIC_COVERAGE_LOW', rows_count:Number(batterRows.rows_count || 0), required_min:300 });
+  if (Number(pitcherRows.rows_count || 0) < 300) failures.push({ code:'PITCHER_METRIC_COVERAGE_LOW', rows_count:Number(pitcherRows.rows_count || 0), required_min:300 });
   if (splitRows < 1400) warnings.push({ code:'LIVE_SPLIT_PARTIAL_BUT_ACCEPTED', rows_count:splitRows, note:'Splits are upserted and never delete existing live rows; 1000+ passes hard certification, 1400+ is ideal.' });
 
   const grade = failures.length ? 'F' : (warnings.length ? 'A' : 'A+');

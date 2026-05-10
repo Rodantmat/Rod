@@ -1,0 +1,7 @@
+Version audit: v1.5.05.2 - Clean True Delta Repair Gate
+
+- worker.js SYSTEM_VERSION: v1.5.05.2 - Clean True Delta Repair Gate
+- control_room.html visible version: v1.5.05.2 - Clean True Delta Repair Gate
+- README: README_v1.5.05.2.txt
+- ZIP filename: alphadog_v1.5.05.2_clean_true_delta_repair_gate.zip
+- Flat-folder package: yes
