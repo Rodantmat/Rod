@@ -4,6 +4,11 @@ on:
 
   - cron: '0 12,15,18,21,0,6 * * *' # Runs at 5am, 8am, 11am, 2pm, 5pm, and 11pm California Time
   workflow_dispatch: # This adds the manual "Run Now" button for testing
+    inputs:
+      dispatch_id:
+        description: 'AlphaDog orchestrator dispatch/request id'
+        required: false
+        type: string
 
 jobs:
   run-task:
@@ -22,4 +27,5 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          GITHUB_DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
         run: python main.py
