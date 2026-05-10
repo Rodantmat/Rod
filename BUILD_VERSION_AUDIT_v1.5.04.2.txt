@@ -1,0 +1,6 @@
+ZIP filename: alphadog_v1.5.04.2_real_time_audit_wait_gate.zip
+Worker version: v1.5.04.2 - Real-Time Audit Wait Gate
+Control Room version: v1.5.04.2 - Real-Time Audit Wait Gate
+README version: v1.5.04.2 - Real-Time Audit Wait Gate
+Scope: MAIN PRODUCTION ONLY
+Flat folder: yes

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.1 - Strict Audit-Only PrizePicks Gate";
+const SYSTEM_VERSION = "v1.5.04.2 - Real-Time Audit Wait Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2801,6 +2801,30 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
 
   if (requestedMs) {
     const a = audit?.matched_dispatch || null;
+    const fallbackAudit = audit?.latest_after_request || null;
+    const fallbackStatus = String(fallbackAudit?.status || '').toLowerCase();
+    const fallbackRowsMain = Number(fallbackAudit?.rows_main || 0);
+    const fallbackRowsFetched = Number(fallbackAudit?.rows_fetched || 0);
+    const fallbackAuditUsable = !a && fallbackAudit && (fallbackStatus === 'completed' || fallbackStatus === 'success') && (fallbackRowsMain > 0 || fallbackRowsFetched > 0);
+    if (fallbackAuditUsable) {
+      return {
+        ok:true,
+        data_ok:true,
+        version:SYSTEM_VERSION,
+        job:'trigger_prizepicks_github_board_refresh',
+        status:'board_refresh_certified_by_post_dispatch_audit',
+        board_refresh_complete:true,
+        requested_at:requestedAt,
+        dispatch_id:dispatchId || null,
+        detected_at:nowIso,
+        audit,
+        certified_audit_row:fallbackAudit,
+        mlb_stats:current,
+        certification_rule:'post_dispatch_audit_row_when_dispatch_input_not_echoed',
+        warning:'No audit row matched the Worker dispatch_id, but a real mlb_stats_refresh_audit completion row appeared after the Worker request. This is still audit-based certification, not mlb_stats freshness.',
+        note:'PrizePicks GitHub workflow completed after this request and wrote a real audit row. Completion is certified by mlb_stats_refresh_audit; mlb_stats freshness alone cannot certify this stage.'
+      };
+    }
     const status = String(a?.status || '').toLowerCase();
     if (a && (status === 'completed' || status === 'success') && Number(a.rows_main || 0) > 0) {
       return {
@@ -2843,7 +2867,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
 
   if (requestedMs) {
     const elapsedSeconds = Math.round((Date.now() - requestedMs) / 1000);
-    if (elapsedSeconds < 480) {
+    if (elapsedSeconds < 660) {
       return {
         ok:true,
         data_ok:false,
@@ -2872,7 +2896,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       mlb_stats:current,
       audit,
       next_check:'orchestrator retry or watchdog re-enqueue',
-      note:'GitHub workflow was dispatched but no completed/failed mlb_stats_refresh_audit row appeared for the matching dispatch_id before the timeout. This is treated as a real board-refresh failure, not an endless pending state.'
+      note:'GitHub workflow was dispatched but no completed/failed mlb_stats_refresh_audit row appeared for the matching dispatch_id before the real-time timeout. This is treated as a real board-refresh failure, not an endless pending state.'
     };
   }
 
@@ -7707,7 +7731,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.1 Strict Audit-Only PrizePicks Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails with scraper audit errors or after the real 10-check timeout.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.2 Real-Time Audit Wait Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
 }
 
 
@@ -8280,10 +8304,13 @@ async function runRefreshOrchestratorTick(input, env) {
       const q = await env.DB.prepare(`SELECT tick_count, max_attempts FROM data_refresh_queue WHERE request_id=?`).bind(requestId).first().catch(() => null);
       const cronCheckCount = Number(q?.tick_count || 1);
       const maxChecks = Math.max(10, Number(q?.max_attempts || row.max_attempts || 10));
-      if (cronCheckCount >= maxChecks) {
-        result = { ...(result || {}), ok:false, data_ok:false, terminal_failure:true, blocks_downstream:true, status:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', error:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', board_refresh_complete:false, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, note:'PrizePicks Board did not publish a matching scraper audit result within the allowed cron checks. The stage is hard-failed, the lane is released, and dependent jobs are blocked.' };
+      const requestedAtForTimeout = result?.requested_at || result?.triggered_at || null;
+      const elapsedForTimeout = requestedAtForTimeout ? Math.round((Date.now() - Date.parse(requestedAtForTimeout)) / 1000) : Number(result?.elapsed_seconds || 0);
+      const minElapsedSeconds = 600;
+      if (cronCheckCount >= maxChecks && elapsedForTimeout >= minElapsedSeconds) {
+        result = { ...(result || {}), ok:false, data_ok:false, terminal_failure:true, blocks_downstream:true, status:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', error:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', board_refresh_complete:false, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, elapsed_seconds:elapsedForTimeout, min_elapsed_seconds:minElapsedSeconds, note:'PrizePicks Board did not publish a matching or post-dispatch scraper audit result within the real-time wait window. The stage is hard-failed, the lane is released, and dependent jobs are blocked.' };
       } else {
-        result = { ...(result || {}), orchestrator_waiting:true, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, next_check:'next cron tick', note:'PrizePicks Board is still waiting for the GitHub scraper to publish a fresh board. The orchestrator lane remains locked; no downstream stage can start.' };
+        result = { ...(result || {}), orchestrator_waiting:true, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, elapsed_seconds:elapsedForTimeout || result?.elapsed_seconds, min_elapsed_seconds:minElapsedSeconds, next_check:'next cron tick', note:'PrizePicks Board is still waiting for the GitHub scraper to publish a real audit row. Duplicate cron/status ticks do not shorten the real-time wait gate; the orchestrator lane remains locked.' };
       }
     }
 

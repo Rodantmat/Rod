@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.04.1 - Strict Audit-Only PrizePicks Gate"
+SCRIPT_VERSION = "v1.5.04.2 - Real-Time Audit Wait Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -11,7 +11,7 @@ TOKEN = os.getenv("CF_API_TOKEN")
 ACC_ID = os.getenv("CF_ACCOUNT_ID")
 DB_ID = os.getenv("CF_DATABASE_ID")
 PROXY = os.getenv("PROXY_URL")
-RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("GITHUB_RUN_ID") or str(uuid.uuid4())
+RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("ALPHADOG_DISPATCH_ID") or os.getenv("DISPATCH_ID") or os.getenv("GITHUB_RUN_ID") or str(uuid.uuid4())
 RUN_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 REQUIRED_ENV = {
