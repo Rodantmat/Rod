@@ -1,0 +1,6 @@
+Build: v1.5.05.9 - PrizePicks Repository Dispatch Bridge
+worker.js SYSTEM_VERSION: v1.5.05.9 - PrizePicks Repository Dispatch Bridge
+main.py SCRIPT_VERSION: v1.5.05.9 - PrizePicks Repository Dispatch Bridge
+scrape.yml: repository_dispatch + workflow_dispatch + */15 safety cron
+README: README_v1.5.05.9.txt
+Flat ZIP only. No subfolders.
