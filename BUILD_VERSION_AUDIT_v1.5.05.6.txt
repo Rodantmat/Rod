@@ -1,0 +1,8 @@
+Version audit: v1.5.05.6 - PrizePicks Cron Handshake Gate
+
+- worker.js SYSTEM_VERSION: v1.5.05.6 - PrizePicks Cron Handshake Gate
+- control_room.html visible version: v1.5.05.6 - PrizePicks Cron Handshake Gate
+- README: README_v1.5.05.6.txt
+- ZIP filename: alphadog_v1.5.05.6_prizepicks_cron_handshake_gate.zip
+- main.py SCRIPT_VERSION: v1.5.05.6 - PrizePicks Cron Handshake Gate
+- scrape.yml schedule: safety fallback offset at minute 7; Worker remains primary dispatcher

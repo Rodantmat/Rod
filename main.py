@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.04.6 - Orchestrator Zombie Cleanup Gate"
+SCRIPT_VERSION = "v1.5.05.6 - PrizePicks Cron Handshake Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -11,7 +11,12 @@ TOKEN = os.getenv("CF_API_TOKEN")
 ACC_ID = os.getenv("CF_ACCOUNT_ID")
 DB_ID = os.getenv("CF_DATABASE_ID")
 PROXY = os.getenv("PROXY_URL")
-RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("ALPHADOG_DISPATCH_ID") or os.getenv("DISPATCH_ID") or os.getenv("GITHUB_RUN_ID") or str(uuid.uuid4())
+WORKER_STATUS_URL = (os.getenv("ALPHADOG_WORKER_STATUS_URL") or os.getenv("ALPHADOG_WORKER_URL") or "").rstrip("/")
+WORKER_INGEST_TOKEN = os.getenv("INGEST_TOKEN") or os.getenv("ALPHADOG_INGEST_TOKEN") or ""
+GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME") or "unknown"
+GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID") or ""
+GITHUB_RUN_ATTEMPT = os.getenv("GITHUB_RUN_ATTEMPT") or ""
+RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("ALPHADOG_DISPATCH_ID") or os.getenv("DISPATCH_ID") or GITHUB_RUN_ID or str(uuid.uuid4())
 RUN_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 REQUIRED_ENV = {
@@ -62,6 +67,40 @@ def d1_first_row(cf_url, headers, sql, label):
     result = (body.get("result") or [{}])[0]
     rows = result.get("results") or []
     return rows[0] if rows else {}
+
+
+def worker_status_callback(status, rows_fetched=None, rows_temp=None, rows_main=None, error_message=None, extra=None):
+    if not WORKER_STATUS_URL:
+        return
+    endpoint = WORKER_STATUS_URL
+    if not endpoint.endswith("/prizepicks/scraper/status"):
+        endpoint = endpoint + "/prizepicks/scraper/status"
+    payload = {
+        "run_id": RUN_ID,
+        "dispatch_id": RUN_ID,
+        "status": status,
+        "started_at": RUN_STARTED_AT,
+        "finished_at": utc_now() if status in ("completed", "success", "failed", "error") else None,
+        "rows_fetched": rows_fetched,
+        "rows_temp": rows_temp,
+        "rows_main": rows_main,
+        "error_message": error_message,
+        "source": "github_actions_prizepicks_main_py",
+        "script_version": SCRIPT_VERSION,
+        "github_event_name": GITHUB_EVENT_NAME,
+        "github_run_id": GITHUB_RUN_ID,
+        "github_run_attempt": GITHUB_RUN_ATTEMPT,
+    }
+    if extra:
+        payload.update(extra)
+    headers = {"content-type": "application/json"}
+    if WORKER_INGEST_TOKEN:
+        headers["x-ingest-token"] = WORKER_INGEST_TOKEN
+    try:
+        res = requests.post(endpoint, headers=headers, json=payload, timeout=20)
+        print(f"📡 Worker status callback {status}: HTTP {res.status_code}")
+    except Exception as e:
+        print(f"⚠️ Worker status callback failed for {status}: {e}")
 
 
 def ensure_audit_table(cf_url, headers):
@@ -118,6 +157,7 @@ def write_audit(cf_url, headers, status, rows_fetched=None, rows_temp=None, rows
         )
     except Exception as audit_error:
         print(f"⚠️ Audit write failed: {audit_error}")
+    worker_status_callback(status, rows_fetched=rows_fetched, rows_temp=rows_temp, rows_main=rows_main, error_message=error_message)
 
 
 def start():
@@ -130,7 +170,8 @@ def start():
     headers = {"Authorization": f"Bearer {TOKEN}"}
     write_audit(cf_url, headers, "started", rows_fetched=0, rows_temp=0, rows_main=0)
 
-    print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID}")
+    print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID} event={GITHUB_EVENT_NAME} github_run_id={GITHUB_RUN_ID}")
+    worker_status_callback("fetching", rows_fetched=0, rows_temp=0, rows_main=0)
     url = "https://partner-api.prizepicks.com/projections?league_id=2&per_page=5000"
 
     try:
@@ -191,6 +232,7 @@ def start():
         raise SystemExit(1)
 
     try:
+        write_audit(cf_url, headers, "fetched", rows_fetched=len(rows), rows_temp=0, rows_main=0)
         print("🧱 Preparing temp table...")
         d1_query(
             cf_url,
@@ -210,6 +252,7 @@ def start():
             d1_query(cf_url, headers, sql, f"Insert temp chunk {i//chunk_size + 1}")
             print(f"✅ Temp chunk {i//chunk_size + 1} complete.")
 
+        write_audit(cf_url, headers, "staged", rows_fetched=len(rows), rows_temp=len(rows), rows_main=0)
         print("🧪 Certifying temp table...")
         cert = d1_first_row(
             cf_url,
@@ -257,6 +300,7 @@ def start():
         if stale_or_started_rows:
             raise RuntimeError(f"Temp certification failed: stale_or_started_rows={stale_or_started_rows}")
 
+        write_audit(cf_url, headers, "certified", rows_fetched=len(rows), rows_temp=temp_rows, rows_main=0)
         print("🧹 Certification passed. Replacing main table...")
         d1_query(cf_url, headers, "DELETE FROM mlb_stats;", "Clear mlb_stats")
         d1_query(
