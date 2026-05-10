@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.7 - PrizePicks Scraper Progress Ledger";
+const SYSTEM_VERSION = "v1.5.05.8 - PrizePicks Ledger Installer Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -126,6 +126,7 @@ const JOB_DISPLAY_LABELS = {
   run_incremental_temp_refresh_tick: "INCREMENTAL TEMP > Run One Refresh Tick",
   run_incremental_temp_refresh_auto: "INCREMENTAL TEMP > Start/Continue Auto Refresh",
   refresh_orchestrator_init: "DATA REFRESHING > Init Tables",
+  refresh_orchestrator_install_prizepicks_ledger: "DATA REFRESHING > Install PrizePicks Ledger",
   refresh_orchestrator_enqueue_selected: "DATA REFRESHING > Schedule Selected Only",
   refresh_orchestrator_enqueue_cascade: "DATA REFRESHING > Schedule Cascade",
   refresh_orchestrator_tick: "DATA REFRESHING > Run One Queue Tick",
@@ -910,6 +911,7 @@ export default {
       if (url.pathname === "/health") { const h = health(env); await logSystemEvent(env, { trigger_source: "control_room_debug", action_label: "DEBUG > Health", job_name: "health", status: "success", http_status: 200, output_preview: h }); return json(h); }
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/prizepicks/scraper/status" && request.method === "POST") return withCors(await handlePrizePicksScraperStatus(request, env));
+      if (url.pathname === "/prizepicks/scraper/install" && (request.method === "GET" || request.method === "POST")) return withCors(await handlePrizePicksScraperInstall(request, env));
       if (url.pathname === "/debug/sql" && request.method === "POST") return await handleDebugSQL(request, env);
       if (url.pathname === "/deferred/full-run" && request.method === "POST") return withCors(await handleDeferredFullRunRequest(request, env));
       if (url.pathname === "/board/factor-results/inspect") return withCors(await handleBoardFactorResultInspect(request, env));
@@ -3004,6 +3006,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const requestedAt = prior.requested_at || prior.triggered_at || null;
   const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
   const dispatchId = String(prior.dispatch_id || prior.run_id || input?.queue_request_id || input?.request_id || input?.chain_id || '').trim();
+  await ensurePrizePicksScraperProgressTable(env).catch(() => null);
   const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
   const scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
   const priorGithub = prior.github || prior.github_dispatch || prior.github_dispatch_config || null;
@@ -7818,6 +7821,46 @@ async function ensurePrizePicksRefreshAuditTable(env) {
   }
 }
 
+
+async function installPrizePicksScraperLedger(input, env) {
+  if (input && input.require_auth_request && input.request && !isAuthorized(input.request, env)) return { ok:false, error:'Unauthorized' };
+  await ensurePrizePicksScraperProgressTable(env);
+  const schema = await sampleRows(env, `PRAGMA table_info(prizepicks_scraper_runs)`).catch(() => []);
+  const latest = await sampleRows(env, `
+    SELECT run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, heartbeat_at, created_at, updated_at
+    FROM prizepicks_scraper_runs
+    ORDER BY datetime(updated_at) DESC
+    LIMIT 10
+  `).catch(() => []);
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM prizepicks_scraper_runs`).first().catch(() => ({ rows_count:null }));
+  await refreshOrchestratorEvent(env, {
+    request_id: input?.request_id || null,
+    job_key:'prizepicks_board',
+    event_type:'prizepicks_scraper_ledger_installed',
+    status:'ready',
+    message:'PrizePicks scraper progress ledger installed/verified by Worker route.',
+    payload_json:{ schema_columns:schema.map(r => r.name), rows_count:countRow?.rows_count ?? null, version:SYSTEM_VERSION }
+  }).catch(() => null);
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'refresh_orchestrator_install_prizepicks_ledger',
+    status:'ready',
+    table:'prizepicks_scraper_runs',
+    rows_count:countRow?.rows_count ?? null,
+    schema_columns:schema.map(r => r.name),
+    latest,
+    note:'Ledger table exists now. Manual SQL can safely SELECT from prizepicks_scraper_runs after this installer runs. No production scoring tables were changed.'
+  };
+}
+
+async function handlePrizePicksScraperInstall(request, env) {
+  if (!isAuthorized(request, env)) return unauthorized();
+  const result = await installPrizePicksScraperLedger({ job:'prizepicks_scraper_install', request }, env);
+  return json(result);
+}
+
 async function handlePrizePicksScraperStatus(request, env) {
   if (!isAuthorized(request, env)) return unauthorized();
   let body = {};
@@ -8602,7 +8645,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.7 PrizePicks Scraper Progress Ledger: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.8 PrizePicks Scraper Progress Ledger: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
 }
 
 
@@ -8750,12 +8793,13 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.7 PrizePicks Scraper Progress Ledger is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.8 PrizePicks Scraper Progress Ledger is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
 }
 
 
 async function refreshOrchestratorInit(input, env) {
   await ensureRefreshOrchestratorTables(env);
+  await ensurePrizePicksScraperProgressTable(env);
   const status = await refreshOrchestratorStatus({ ...(input || {}), job:'refresh_orchestrator_status' }, env);
   return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_init', status:'ready', tables:['data_refresh_catalog','data_refresh_queue','data_refresh_events'], catalog_count:status.catalog_count, catalog:status.catalog, note:'Orchestrator tables were created/verified and catalog was seeded. No refresh job was scheduled.' };
 }
@@ -9465,7 +9509,7 @@ async function ensureIncrementalTempUniqueIndexes(env) {
   // Temp tables are created with CREATE TABLE AS SELECT, so SQLite does not carry over
   // the live-table primary keys. Without these unique indexes, INSERT OR REPLACE
   // behaves like plain INSERT and duplicate temp rows can survive audit.
-  // v1.5.05.7: this function is also a schema-healing boundary. Every caller that
+  // v1.5.05.8: this function is also a schema-healing boundary. Every caller that
   // audits, promotes, cleans, or counts temp data can call it safely even after a
   // previous cleanup/failure dropped one temp table in an older build.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run().catch(() => null);
@@ -9619,7 +9663,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
   const latestGameDate = base.logs?.max_game_date || null;
   const metricLatestDate = base.metrics?.max_last_game_date || null;
 
-  // v1.5.05.7: MULTI-DAY TRUE DELTA CATCHUP GATE.
+  // v1.5.05.8: MULTI-DAY TRUE DELTA CATCHUP GATE.
   // Daily incremental must never fall back into a 700+ player full-safe rebuild just because
   // metric coverage is imperfect. The base is usable for true delta when the live game-log
   // base exists and derived metrics are broadly populated. Missing/stale derived players are
@@ -9634,7 +9678,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:null,
       end_date:null,
       overlap_days:0,
-      selector_gate:'v1.5.05.7',
+      selector_gate:'v1.5.05.8',
       full_rebuild_allowed: !!forceFull,
       full_rebuild_blocked_by_default: !forceFull,
       base_requirements:{ live_game_logs_min:9000, metrics_min:700, latest_game_date_required:true, live_splits_not_required_for_delta_selector:true },
@@ -9656,7 +9700,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:startDate,
       end_date:endDate,
       overlap_days:overlapDays,
-      selector_gate:'v1.5.05.7',
+      selector_gate:'v1.5.05.8',
       selected_source:'schedule_final_games_boxscore_delta_only',
       blocked_full_player_rebuild:true,
       note:'Live game-log base already covers the available finalized-game window. Temp tables should be clean and no daily incremental request should be created.'
@@ -9669,7 +9713,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
     start_date:startDate,
     end_date:endDate,
     overlap_days:overlapDays,
-    selector_gate:'v1.5.05.7',
+    selector_gate:'v1.5.05.8',
     selected_source:'schedule_final_games_boxscore_delta_only',
     blocked_full_player_rebuild:true,
     note:'Daily incremental runs only finalized games strictly after the live max game date. It does not select all players_current or rebuild the full incremental base.'
@@ -9689,7 +9733,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
   if (modeInfo.mode !== 'delta') return { converted:false, reason:'delta_not_available', mode_info:modeInfo };
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const tempBefore = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.7_accidental_full_incremental_run_converted_to_true_delta' });
+  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.8_accidental_full_incremental_run_converted_to_true_delta' });
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   const payload = {
     ok:true,
@@ -9705,7 +9749,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
     temp_before:tempBefore,
     reset,
     live_tables_touched:false,
-    reason:'Daily incremental was about to process the whole player universe. v1.5.05.7 preserved live base and converted the active temp run to finalized-game true delta.'
+    reason:'Daily incremental was about to process the whole player universe. v1.5.05.8 preserved live base and converted the active temp run to finalized-game true delta.'
   };
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(payload).slice(0,5000), row.request_id).run();
   return { converted:true, step:'stage_delta_logs', payload };
@@ -10130,7 +10174,7 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
     remaining_games:remainingGames,
     complete:remainingGames === 0,
     temp_log_rows:Number(tempCount?.rows_count || 0),
-    note:'v1.5.05.7 no-delta terminal success gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
+    note:'v1.5.05.8 no-delta terminal success gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
   };
 }
 
@@ -10265,11 +10309,11 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 
   const fullToDelta = await convertAccidentalFullIncrementalRunToDelta(env, row, input || {});
   if (fullToDelta?.converted) {
-    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.7_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
+    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.8_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
     return { changed:true, step:'stage_delta_logs', reason:'converted_accidental_full_incremental_to_true_delta', decisions, conversion:fullToDelta.payload };
   }
 
-  // v1.5.05.7: multi-day true-delta catchup gate.
+  // v1.5.05.8: multi-day true-delta catchup gate.
   // Never advance from stage_delta_logs merely because temp has non-zero rows or because
   // auto_continue/cron is active. That was the bad one-day stepping bug. Delta staging
   // may advance only when every finalized game in the missing-date window has terminal
@@ -10316,7 +10360,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
         duplicate_log_rows: duplicateLogs.length,
         duplicate_split_rows: duplicateSplits.length,
         live_tables_touched:false,
-        note:'v1.5.05.7 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
+        note:'v1.5.05.8 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
       };
       await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(output), requestId).run();
       return { changed:true, step:'stage_delta_logs', output, reason:'multi_day_delta_window_not_complete_keep_staging' };
@@ -10593,7 +10637,7 @@ async function runIncrementalTempAutoLoop(input, env) {
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
     next_action: noDeltaTerminal ? 'No incremental action needed. Live base is already current for available finalized games.' : (last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.')),
-    note: 'One-click/cron auto-runner for incremental data. v1.5.05.7 keeps true-delta as the certified default, treats no-delta-needed as terminal success, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
+    note: 'One-click/cron auto-runner for incremental data. v1.5.05.8 keeps true-delta as the certified default, treats no-delta-needed as terminal success, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
   };
 }
 async function checkIncrementalTempData(input, env) {
@@ -12213,6 +12257,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   }
 
   if (jobName === "refresh_orchestrator_init") return await refreshOrchestratorInit({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_install_prizepicks_ledger") return await installPrizePicksScraperLedger({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_enqueue_selected") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'selected');
   if (jobName === "refresh_orchestrator_enqueue_cascade") return await enqueueRefreshOrchestratorRows({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env, 'cascade');
   if (jobName === "refresh_orchestrator_tick") return await runRefreshOrchestratorTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);

@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.05.7 - PrizePicks Scraper Progress Ledger"
+SCRIPT_VERSION = "v1.5.05.8 - PrizePicks Ledger Installer Guard"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

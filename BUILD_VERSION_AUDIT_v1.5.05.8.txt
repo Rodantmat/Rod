@@ -1,0 +1,8 @@
+Build Version Audit
+ZIP filename target: alphadog_v1.5.05.8_prizepicks_ledger_installer_guard.zip
+worker.js: v1.5.05.8 - PrizePicks Ledger Installer Guard
+control_room.html: v1.5.05.8 - PrizePicks Ledger Installer Guard
+main.py: v1.5.05.8 - PrizePicks Ledger Installer Guard
+README: README_v1.5.05.8.txt
+Build audit: BUILD_VERSION_AUDIT_v1.5.05.8.txt
+Flat folder: yes
