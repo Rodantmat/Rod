@@ -1,0 +1,11 @@
+Version audit: v1.5.05.3 - Multi-Day True Delta Catchup Gate
+
+- worker.js SYSTEM_VERSION: v1.5.05.3 - Multi-Day True Delta Catchup Gate
+- control_room.html visible version: v1.5.05.3 - Multi-Day True Delta Catchup Gate
+- README: README_v1.5.05.3.txt
+- ZIP filename: alphadog_v1.5.05.3_multi_day_true_delta_catchup_gate.zip
+- Folder style: flat files only, no subdirectories.
+- Patch scope: production scheduled backend incremental_daily true-delta selector/state machine only.
+- Main UI untouched.
+- Expansion worker untouched.
+- POTD untouched.
