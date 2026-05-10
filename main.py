@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.04.5 - Dispatch Observation Hard Gate"
+SCRIPT_VERSION = "v1.5.04.6 - Orchestrator Zombie Cleanup Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

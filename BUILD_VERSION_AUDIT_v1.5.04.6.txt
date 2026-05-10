@@ -1,0 +1,7 @@
+ZIP: alphadog_v1.5.04.6_orchestrator_zombie_cleanup_gate.zip
+worker.js: v1.5.04.6 - Orchestrator Zombie Cleanup Gate
+control_room.html: control_room_v1_5_04_6_orchestrator_zombie_cleanup_gate
+main.py: v1.5.04.6 - Orchestrator Zombie Cleanup Gate
+README: README_v1.5.04.6.txt
+Patch source: user-provided 1.zip / v1.5.04.5 Dispatch Observation Hard Gate
+Flat-folder delivery: yes

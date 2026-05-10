@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.5 - Dispatch Observation Hard Gate";
+const SYSTEM_VERSION = "v1.5.04.6 - Orchestrator Zombie Cleanup Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7587,6 +7587,17 @@ async function ensureRefreshOrchestratorTables(env) {
   // v1.3.90: split normal cron progress ticks from true failure/retry attempts.
   await env.DB.prepare(`ALTER TABLE data_refresh_queue ADD COLUMN tick_count INTEGER DEFAULT 0`).run().catch(() => null);
   await env.DB.prepare(`ALTER TABLE data_refresh_queue ADD COLUMN retry_count INTEGER DEFAULT 0`).run().catch(() => null);
+  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS data_orchestrator_enqueue_locks (
+    lock_key TEXT PRIMARY KEY,
+    request_id TEXT,
+    chain_id TEXT,
+    job_key TEXT,
+    slate_date TEXT,
+    mode TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`).run().catch(() => null);
 }
 
 function refreshOrchestratorCatalogRows() {
@@ -7612,6 +7623,140 @@ async function singleLaneLog(env, entry = {}) {
     entry.event_type || 'event', entry.status || null, entry.fail ? 1 : 0, entry.error_code || null, String(entry.message || '').slice(0,1000),
     JSON.stringify(entry.payload_json || {}).slice(0,10000)
   ).run().catch(() => null);
+}
+
+async function releaseSingleLaneEnqueueLock(env, requestId, meta = {}) {
+  if (!requestId) return { released:false, reason:'missing_request_id' };
+  const res = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='active'`).bind(requestId).run().catch(() => null);
+  await singleLaneLog(env, { request_id:requestId, event_type:'enqueue_lock_released', status:'released', message:'Single-lane enqueue lock released.', payload_json:{ request_id:requestId, meta, changes:Number(res?.meta?.changes || 0) } });
+  return { released:Number(res?.meta?.changes || 0) > 0, changes:Number(res?.meta?.changes || 0) };
+}
+
+async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
+  const reason = String(input.reason || input.trigger || 'orchestrator_preflight_cleanup');
+  const out = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:'single_lane_state_cleanup',
+    reason,
+    duplicate_active_queue_rows_cancelled:0,
+    zombie_running_job_flags_cleared:0,
+    stale_active_enqueue_locks_released:0,
+    job_flags_reconciled:0
+  };
+
+  await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active' AND datetime(updated_at) <= datetime('now','-4 hours')`).run().then(r => { out.stale_active_enqueue_locks_released += Number(r?.meta?.changes || 0); }).catch(() => null);
+
+  const activeRows = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, requested_slate_date, status, run_after, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,800) AS output_preview
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running')
+    ORDER BY job_key ASC, requested_slate_date ASC, datetime(created_at) ASC
+    LIMIT 300
+  `).catch(() => []);
+  const byJobSlate = new Map();
+  for (const r of activeRows) {
+    const k = `${String(r.job_key || '')}|${String(r.requested_slate_date || '')}`;
+    if (!byJobSlate.has(k)) byJobSlate.set(k, []);
+    byJobSlate.get(k).push(r);
+  }
+  for (const rows of byJobSlate.values()) {
+    if (rows.length <= 1) continue;
+    const job = await env.DB.prepare(`SELECT current_request_id FROM data_orchestrator_jobs WHERE job_key=?`).bind(rows[0].job_key).first().catch(() => null);
+    const currentId = String(job?.current_request_id || '');
+    let keep = rows.find(r => String(r.request_id || '') === currentId) || rows.find(r => String(r.output_preview || '').includes('auto_continue_scheduled')) || rows.find(r => String(r.status || '') === 'running') || rows[0];
+    for (const r of rows) {
+      if (String(r.request_id) === String(keep.request_id)) continue;
+      const res = await env.DB.prepare(`
+        UPDATE data_refresh_queue
+        SET status='cancelled',
+            finished_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP,
+            error=COALESCE(error, ?),
+            output_json=COALESCE(output_json, ?)
+        WHERE request_id=?
+          AND status IN ('pending','running')
+      `).bind(
+        `duplicate_active_queue_row_cancelled:${reason}`,
+        JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'single_lane_state_cleanup', status:'duplicate_active_queue_row_cancelled', reason, kept_request_id:keep.request_id, cancelled_request_id:r.request_id, job_key:r.job_key, requested_slate_date:r.requested_slate_date }).slice(0,3000),
+        r.request_id
+      ).run().catch(() => null);
+      const changes = Number(res?.meta?.changes || 0);
+      out.duplicate_active_queue_rows_cancelled += changes;
+      if (changes) await releaseSingleLaneEnqueueLock(env, r.request_id, { reason:'duplicate_active_queue_row_cancelled', kept_request_id:keep.request_id });
+      if (changes) await singleLaneLog(env, { request_id:r.request_id, chain_id:r.chain_id, job_key:r.job_key, event_type:'duplicate_active_queue_row_cancelled', status:'cancelled', message:'Duplicate active single-lane queue row cancelled.', payload_json:{ reason, kept_request_id:keep.request_id, cancelled:r } });
+    }
+  }
+
+  const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
+  if (Number(state?.lock_flag || 0) === 0) {
+    const zombies = await sampleRows(env, `SELECT job_key, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE running_flag=1 LIMIT 50`).catch(() => []);
+    for (const z of zombies) {
+      const active = await env.DB.prepare(`SELECT request_id, status FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(z.current_request_id || '').first().catch(() => null);
+      const res = await env.DB.prepare(`
+        UPDATE data_orchestrator_jobs
+        SET running_flag=0,
+            run_requested_flag=CASE WHEN ? THEN 1 ELSE 0 END,
+            last_status=?,
+            last_fail=0,
+            last_error_code=NULL,
+            last_error_message=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE job_key=? AND running_flag=1
+      `).bind(active ? 1 : 0, active ? 'requeued_after_stale_lock_release' : 'zombie_running_flag_cleared', z.job_key).run().catch(() => null);
+      const changes = Number(res?.meta?.changes || 0);
+      out.zombie_running_job_flags_cleared += changes;
+      if (changes) await singleLaneLog(env, { request_id:z.current_request_id, chain_id:z.current_chain_id, job_key:z.job_key, event_type:'zombie_running_flag_cleared', status:active ? 'requeued' : 'cleared', message:'Job running flag was inconsistent with released global lock and was repaired.', payload_json:{ reason, job:z, active_queue:active } });
+    }
+  }
+
+  const requestedJobs = await sampleRows(env, `SELECT job_key, current_request_id FROM data_orchestrator_jobs WHERE run_requested_flag=1 LIMIT 50`).catch(() => []);
+  for (const j of requestedJobs) {
+    const active = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(j.current_request_id || '').first().catch(() => null);
+    if (!active) {
+      const res = await env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=0, running_flag=0, last_status=CASE WHEN last_status='running' THEN 'orphan_requested_flag_cleared' ELSE last_status END, updated_at=CURRENT_TIMESTAMP WHERE job_key=? AND run_requested_flag=1`).bind(j.job_key).run().catch(() => null);
+      out.job_flags_reconciled += Number(res?.meta?.changes || 0);
+    }
+  }
+
+  if (out.duplicate_active_queue_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.job_flags_reconciled) {
+    await singleLaneLog(env, { event_type:'single_lane_state_cleanup', status:'recovered', message:'Single-lane queue/job state cleanup repaired inconsistent rows.', payload_json:out });
+  }
+  return out;
+}
+
+async function acquireSingleLaneEnqueueLocks(env, selected, slate, mode, chainId, input = {}) {
+  const acquired = [];
+  const blocked = [];
+  for (const j of selected) {
+    const lockKey = `${String(j.job_key || '')}|${String(slate.slate_date || '')}|${String(mode || 'selected')}`;
+    const requestId = crypto.randomUUID();
+    const existingActive = await env.DB.prepare(`
+      SELECT q.request_id, q.chain_id, q.job_key, q.status, q.updated_at
+      FROM data_refresh_queue q
+      WHERE q.job_key=?
+        AND q.requested_slate_date=?
+        AND q.status IN ('pending','running')
+      ORDER BY datetime(q.created_at) ASC
+      LIMIT 1
+    `).bind(j.job_key, slate.slate_date).first().catch(() => null);
+    if (existingActive && input?.force !== true) {
+      blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'active_queue_row_exists', active_queue:existingActive });
+      continue;
+    }
+    const ins = await env.DB.prepare(`INSERT OR IGNORE INTO data_orchestrator_enqueue_locks (lock_key, request_id, chain_id, job_key, slate_date, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).bind(lockKey, requestId, chainId, j.job_key, slate.slate_date, mode).run().catch(() => null);
+    if (Number(ins?.meta?.changes || 0) === 0 && input?.force !== true) {
+      const existingLock = await env.DB.prepare(`SELECT * FROM data_orchestrator_enqueue_locks WHERE lock_key=?`).bind(lockKey).first().catch(() => null);
+      blocked.push({ job_key:j.job_key, lock_key:lockKey, reason:'active_enqueue_lock_exists', existing_lock:existingLock });
+      continue;
+    }
+    if (Number(ins?.meta?.changes || 0) === 0 && input?.force === true) {
+      await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET request_id=?, chain_id=?, status='active', updated_at=CURRENT_TIMESTAMP WHERE lock_key=?`).bind(requestId, chainId, lockKey).run().catch(() => null);
+    }
+    acquired.push({ job:j, request_id:requestId, lock_key:lockKey });
+  }
+  return { acquired, blocked };
 }
 
 function singleLaneBlockedDependents(failedJobKey) {
@@ -7681,27 +7826,36 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   }
   if (!selected.length) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'no_jobs_selected', requested_job_keys:requested };
 
+  const cleanup = await cleanupSingleLaneStateInconsistencies(env, { reason:'enqueue_preflight', trigger:input?.trigger || input?.job || mode });
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
   const running = await env.DB.prepare(`SELECT job_key, job_index, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE running_flag=1 LIMIT 1`).first().catch(() => null);
-  if ((Number(state?.lock_flag || 0) === 1 || running) && input?.force !== true) {
-    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'already_active_single_lane_orchestrator', existing_active:running || state, requested_job_keys:requested, note:'Single-lane orchestrator has one active job. No concurrent tasks are allowed.' };
+  const requestedAlready = await env.DB.prepare(`SELECT job_key, job_index, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0 LIMIT 1`).first().catch(() => null);
+  if ((Number(state?.lock_flag || 0) === 1 || running || requestedAlready) && input?.force !== true) {
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'already_active_single_lane_orchestrator', existing_active:running || requestedAlready || state, cleanup, requested_job_keys:requested, note:'Single-lane orchestrator has one active/requested job. No duplicate or concurrent tasks are allowed.' };
   }
 
   const chainId = crypto.randomUUID();
   const batch = { trigger: input?.trigger || input?.job || 'manual', mode, chain_id: chainId, requested_at: new Date().toISOString(), slate_date:slate.slate_date, slate_mode:slate.slate_mode };
+  const lockResult = await acquireSingleLaneEnqueueLocks(env, selected, slate, mode, chainId, input);
+  if (!lockResult.acquired.length || lockResult.blocked.length) {
+    for (const item of lockResult.acquired) await releaseSingleLaneEnqueueLock(env, item.request_id, { reason:'enqueue_aborted_due_to_blocked_peer', blocked:lockResult.blocked });
+    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:'duplicate_or_active_single_lane_request_blocked', mode, cleanup, requested_job_keys:requested, blocked:lockResult.blocked, note:'A matching active queue row or enqueue lock already exists. The duplicate request was not inserted.' };
+  }
   const legacy = [];
   const updates = [];
-  for (const j of selected) {
-    const requestId = crypto.randomUUID();
-    const payload = JSON.stringify({ ...(input || {}), orchestrator_version:'v1.5_single_lane', orchestrator_mode:mode, slate_date:slate.slate_date, slate_mode:slate.slate_mode, request_id:requestId, chain_id:chainId }).slice(0,4000);
+  for (const item of lockResult.acquired) {
+    const j = item.job;
+    const requestId = item.request_id;
+    const payload = JSON.stringify({ ...(input || {}), orchestrator_version:'v1.5_single_lane', orchestrator_mode:mode, slate_date:slate.slate_date, slate_mode:slate.slate_mode, request_id:requestId, chain_id:chainId, enqueue_lock_key:item.lock_key }).slice(0,4000);
     legacy.push(env.DB.prepare(`INSERT INTO data_refresh_queue (request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, slate_mode, max_attempts, input_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?)`).bind(requestId, chainId, j.job_key, j.display_name, j.job_name, j.group_name, Number(j.sequence_order || 0), mode === 'cascade' ? 1 : 0, slate.slate_date, slate.slate_mode, Number(input?.max_attempts || (j.job_key === 'prizepicks_board' ? 10 : 3)), payload));
-    updates.push(env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, blocked_flag=0, blocked_by_job_key=NULL, current_request_id=?, current_chain_id=?, current_slate_date=?, current_slate_mode=?, last_status='requested', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(requestId, chainId, slate.slate_date, slate.slate_mode, JSON.stringify(batch).slice(0,10000), j.job_key));
+    updates.push(env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, blocked_flag=0, blocked_by_job_key=NULL, current_request_id=?, current_chain_id=?, current_slate_date=?, current_slate_mode=?, last_status='requested', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(requestId, chainId, slate.slate_date, slate.slate_mode, JSON.stringify({ ...batch, enqueue_lock_key:item.lock_key, cleanup }).slice(0,10000), j.job_key));
   }
   if (legacy.length) await env.DB.batch(legacy);
   if (updates.length) await env.DB.batch(updates);
-  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:selected.map(j=>j.job_key), slate } });
-  await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected, slate } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.5 Dispatch Observation Hard Gate: PrizePicks Board is audit-only and now also reports whether the GitHub workflow run was actually observed after dispatch.' };
+  const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
+  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
+  await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.6 Orchestrator Zombie Cleanup Gate: duplicate selected-job enqueue is blocked, stale lock release reconciles job/queue flags, and partial auto-continue rows cannot leave zombie-running state.' };
 }
 
 
@@ -7847,7 +8001,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.5 Dispatch Observation Hard Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.6 Orchestrator Zombie Cleanup Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
 }
 
 
@@ -7890,8 +8044,9 @@ function scoringRequestIsBackendOwned(input) {
 
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   const enqueue_reaper = await hardFinalizeStaleScoringQueueRows(env, 'schedule_enqueue_preflight').catch(e => ({ ok:false, error:String(e?.message||e) }));
+  const enqueue_self_heal = await cleanupSingleLaneStateInconsistencies(env, { reason:'schedule_enqueue_preflight', trigger:input?.trigger || input?.job || mode }).catch(e => ({ ok:false, error:String(e?.message||e) }));
   const requested = await requestSingleLaneJobs(env, input, mode);
-  return { ...requested, enqueue_reaper, enqueue_self_heal: { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', reason:'v1.5_single_lane_preflight', note:'No cascade repair was needed. Single-lane job flags own execution state.' } };
+  return { ...requested, enqueue_reaper, enqueue_self_heal };
 }
 
 
@@ -8350,6 +8505,7 @@ function isRequiredBaseTerminalFailure(row, result) {
 async function runRefreshOrchestratorTick(input, env) {
   const started = Date.now();
   await ensureRefreshOrchestratorTables(env);
+  const cleanup = await cleanupSingleLaneStateInconsistencies(env, { reason:'tick_preflight', trigger:input?.trigger || input?.job || 'refresh_orchestrator_tick' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
   let activeLockedRow = null;
   if (Number(state?.lock_flag || 0) === 1) {
@@ -8359,10 +8515,17 @@ async function runRefreshOrchestratorTick(input, env) {
     if (!canContinueLockedPrizePicks) {
       if (seconds != null && seconds > 900) {
         await releaseSingleLaneGlobalState(env, 'STALE_LOCK_RELEASED', { reason:'stale_global_lock_released', seconds_since_update:seconds, previous_state:state });
-        await singleLaneLog(env, { event_type:'stale_lock_released', status:'recovered', message:'Global orchestrator lock was stale and has been released.', payload_json:{ seconds_since_update:seconds, previous_state:state } });
+        const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
+        const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
+        if (staleJobKey) {
+          const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
+          await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=CASE WHEN ? THEN 1 ELSE 0 END, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(activeQueue ? 1 : 0, activeQueue ? 'requeued_after_stale_lock_release' : 'stale_lock_job_cleared', staleJobKey).run().catch(() => null);
+          if (staleRequestId) await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, started_at=NULL, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error, ?) WHERE request_id=? AND status='running'`).bind('stale_global_lock_released_requeued', staleRequestId).run().catch(() => null);
+        }
+        await singleLaneLog(env, { request_id:staleRequestId, job_key:staleJobKey, event_type:'stale_lock_released', status:'recovered', message:'Global orchestrator lock was stale and has been released; matching job/queue flags were reconciled.', payload_json:{ seconds_since_update:seconds, previous_state:state, active_locked_row:activeLockedRow } });
         activeLockedRow = null;
       } else {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, active_job:activeLockedRow, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_busy', state, cleanup, active_job:activeLockedRow, manual_ticks_required:false, note:'Another job is active. Single-lane orchestrator will not start a second job.' };
       }
     }
   }
@@ -8379,7 +8542,7 @@ async function runRefreshOrchestratorTick(input, env) {
   if (!row) {
     const jobs = await sampleRows(env, `SELECT job_key, job_index, display_name, run_requested_flag, running_flag, blocked_flag, blocked_by_job_key, last_status, last_fail, last_error_code, last_started_at, last_finished_at, updated_at FROM data_orchestrator_jobs ORDER BY job_index ASC`);
     const legacyActive = await sampleRows(env, `SELECT request_id, chain_id, job_key, status, error, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`);
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', cleanup, jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
   }
 
   const requestId = row.current_request_id || crypto.randomUUID();
@@ -8467,6 +8630,7 @@ async function runRefreshOrchestratorTick(input, env) {
         await env.DB.prepare(`UPDATE data_orchestrator_jobs SET blocked_flag=1, blocked_by_job_key=?, run_requested_flag=0, running_flag=0, last_status='blocked', last_fail=1, last_error_code='blocked_by_required_stage', last_error_message=?, updated_at=CURRENT_TIMESTAMP WHERE job_key IN (${blocked.map(()=>'?').join(',')})`).bind(row.job_key, `Blocked because ${row.job_key} failed`, ...blocked).run();
         await env.DB.prepare(`UPDATE data_refresh_queue SET status='blocked', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE chain_id=? AND job_key IN (${blocked.map(()=>'?').join(',')}) AND status IN ('pending','running')`).bind(`blocked_by_${row.job_key}`, chainId, ...blocked).run().catch(() => null);
       }
+      await releaseSingleLaneEnqueueLock(env, requestId, { status:'failed', job_key:row.job_key, error:err });
       await releaseSingleLaneGlobalState(env, 'FAILED_RELEASED', wrapped);
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked } });
       await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked } });
@@ -8475,6 +8639,7 @@ async function runRefreshOrchestratorTick(input, env) {
 
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
     await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+    await releaseSingleLaneEnqueueLock(env, requestId, { status:'completed', job_key:row.job_key });
     await releaseSingleLaneGlobalState(env, 'IDLE', wrapped);
     await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:wrapped });
     await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
@@ -8485,6 +8650,7 @@ async function runRefreshOrchestratorTick(input, env) {
     const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, routed_job:row.job_name, status:'failed_exception', error, elapsed_ms:Date.now()-started };
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, last_status='failed_exception', last_fail=1, last_error_code=?, last_error_message=?, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(error.slice(0,250), error.slice(0,1000), Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
     await env.DB.prepare(`UPDATE data_refresh_queue SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(error, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+    await releaseSingleLaneEnqueueLock(env, requestId, { status:'failed_exception', job_key:row.job_key, error });
     const blocked = singleLaneBlockedDependents(row.job_key);
     if (blocked.length) await env.DB.prepare(`UPDATE data_orchestrator_jobs SET blocked_flag=1, blocked_by_job_key=?, run_requested_flag=0, running_flag=0, last_status='blocked', last_fail=1, last_error_code='blocked_by_required_exception', last_error_message=?, updated_at=CURRENT_TIMESTAMP WHERE job_key IN (${blocked.map(()=>'?').join(',')})`).bind(row.job_key, `Blocked because ${row.job_key} threw exception`, ...blocked).run();
     await releaseSingleLaneGlobalState(env, 'FAILED_EXCEPTION_RELEASED', wrapped);
