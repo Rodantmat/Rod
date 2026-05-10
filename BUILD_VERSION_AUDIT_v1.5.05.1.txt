@@ -1,0 +1,17 @@
+Build Version Audit
+Version: v1.5.05.1 - True Incremental Selector Gate
+
+worker.js SYSTEM_VERSION: v1.5.05.1 - True Incremental Selector Gate
+control_room.html visible version: v1.5.05.1 - True Incremental Selector Gate
+README: README_v1.5.05.1.txt
+
+Validation performed:
+- node --check worker.js passed.
+- Version labels aligned in worker.js and control_room.html.
+- Flat ZIP structure preserved.
+
+Patch scope:
+- True incremental selector gate only.
+- No production scoring math changes.
+- No Main UI changes.
+- No expansion worker changes.
