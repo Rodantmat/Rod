@@ -1,0 +1,12 @@
+Version audit: v1.5.04.9 - Stale Cleanser Runtime Sharpener
+
+Files checked:
+- worker.js SYSTEM_VERSION: v1.5.04.9 - Stale Cleanser Runtime Sharpener
+- control_room.html versionTag: v1.5.04.9 - Stale Cleanser Runtime Sharpener
+- README: README_v1.5.04.9.txt
+- ZIP filename: alphadog_v1.5.04.9_stale_cleanser_runtime_sharpener.zip
+
+Patch target:
+- Scheduled backend / Control Room only.
+- No Main UI scoring board changes.
+- No production scoring math changes.
