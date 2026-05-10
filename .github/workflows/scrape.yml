@@ -28,4 +28,6 @@ jobs:
           CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
           GITHUB_DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
+          ALPHADOG_DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
+          DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
         run: python main.py
