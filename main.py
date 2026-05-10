@@ -1,6 +1,8 @@
 import os
 import sys
 import uuid
+
+SCRIPT_VERSION = "v1.5.04.1 - Strict Audit-Only PrizePicks Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -9,7 +11,7 @@ TOKEN = os.getenv("CF_API_TOKEN")
 ACC_ID = os.getenv("CF_ACCOUNT_ID")
 DB_ID = os.getenv("CF_DATABASE_ID")
 PROXY = os.getenv("PROXY_URL")
-RUN_ID = os.getenv("GITHUB_RUN_ID") or str(uuid.uuid4())
+RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("GITHUB_RUN_ID") or str(uuid.uuid4())
 RUN_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 REQUIRED_ENV = {
@@ -77,12 +79,25 @@ def ensure_audit_table(cf_url, headers):
           rows_main INTEGER,
           error_message TEXT,
           source TEXT,
+          script_version TEXT,
           created_at TEXT DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         """,
         "Create mlb_stats_refresh_audit"
     )
+    # Existing D1 tables are not changed by CREATE TABLE IF NOT EXISTS.
+    # Keep this migration additive so old audit tables gain the columns the Worker reads.
+    for column_sql in [
+        "ALTER TABLE mlb_stats_refresh_audit ADD COLUMN script_version TEXT",
+        "ALTER TABLE mlb_stats_refresh_audit ADD COLUMN created_at TEXT DEFAULT CURRENT_TIMESTAMP",
+        "ALTER TABLE mlb_stats_refresh_audit ADD COLUMN updated_at TEXT DEFAULT CURRENT_TIMESTAMP",
+    ]:
+        try:
+            d1_query(cf_url, headers, column_sql + ";", "Migrate mlb_stats_refresh_audit")
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 def write_audit(cf_url, headers, status, rows_fetched=None, rows_temp=None, rows_main=None, error_message=None):
@@ -93,11 +108,11 @@ def write_audit(cf_url, headers, status, rows_fetched=None, rows_temp=None, rows
             headers,
             f"""
             INSERT OR REPLACE INTO mlb_stats_refresh_audit
-              (run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, updated_at)
+              (run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, updated_at)
             VALUES
               ({sql_text(RUN_ID)}, {sql_text(status)}, {sql_text(RUN_STARTED_AT)}, {sql_text(utc_now())},
                {sql_number(rows_fetched)}, {sql_number(rows_temp)}, {sql_number(rows_main)},
-               {sql_text(error_message)}, 'github_actions_prizepicks_main_py', {sql_text(utc_now())});
+               {sql_text(error_message)}, 'github_actions_prizepicks_main_py', {sql_text(SCRIPT_VERSION)}, {sql_text(utc_now())});
             """,
             f"Write audit {status}"
         )
@@ -115,7 +130,7 @@ def start():
     headers = {"Authorization": f"Bearer {TOKEN}"}
     write_audit(cf_url, headers, "started", rows_fetched=0, rows_temp=0, rows_main=0)
 
-    print("🛰️ Connecting via Proxy...")
+    print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID}")
     url = "https://partner-api.prizepicks.com/projections?league_id=2&per_page=5000"
 
     try:

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04 - PrizePicks Audit Completion Gate";
+const SYSTEM_VERSION = "v1.5.04.1 - Strict Audit-Only PrizePicks Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2719,35 +2719,61 @@ async function getPrizePicksMlbStatsFreshness(env) {
   }
 }
 
-async function getPrizePicksRefreshAudit(env, requestedAt = null) {
+async function getPrizePicksRefreshAudit(env, requestedAt = null, dispatchId = null) {
   const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
+  const wantedRunId = String(dispatchId || '').trim();
   try {
     const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mlb_stats_refresh_audit' LIMIT 1").first();
-    if (!exists) return { table_exists:false, latest:null, latest_after_request:null, recent:[] };
+    if (!exists) return { table_exists:false, dispatch_id:wantedRunId || null, latest:null, matched_dispatch:null, latest_after_request:null, recent:[] };
+
+    const cols = await sampleRows(env, "PRAGMA table_info(mlb_stats_refresh_audit)").catch(() => []);
+    const colSet = new Set(cols.map(c => String(c.name || '').toLowerCase()));
+    const has = (name) => colSet.has(String(name).toLowerCase());
+    const selectCols = [
+      'run_id', 'status', 'started_at', 'finished_at', 'rows_fetched', 'rows_temp', 'rows_main', 'error_message', 'source', 'updated_at', 'created_at'
+    ].filter(has);
+    if (!selectCols.length) return { table_exists:true, schema_columns:[...colSet], dispatch_id:wantedRunId || null, latest:null, matched_dispatch:null, latest_after_request:null, recent:[], error:'mlb_stats_refresh_audit_has_no_supported_columns' };
+    const orderFields = ['finished_at','started_at','created_at','updated_at'].filter(has);
+    const orderExpr = orderFields.length > 1 ? `COALESCE(${orderFields.join(', ')})` : (orderFields[0] || selectCols[0]);
+
+    let matched = null;
+    if (wantedRunId && has('run_id')) {
+      matched = await env.DB.prepare(`SELECT ${selectCols.join(', ')} FROM mlb_stats_refresh_audit WHERE run_id=? ORDER BY datetime(${orderExpr}) DESC LIMIT 1`).bind(wantedRunId).first().catch(() => null);
+    }
+
     const rows = await sampleRows(env, `
-      SELECT run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, updated_at
+      SELECT ${selectCols.join(', ')}
       FROM mlb_stats_refresh_audit
-      ORDER BY datetime(COALESCE(started_at, created_at, updated_at)) DESC
+      ORDER BY datetime(${orderExpr}) DESC
       LIMIT 15
     `).catch(() => []);
+
     let latestAfter = null;
-    for (const r of rows) {
-      const startMs = Date.parse(String(r.started_at || r.created_at || r.updated_at || '').replace(' ', 'T'));
-      if (requestedMs && Number.isFinite(startMs) && startMs > requestedMs) {
-        latestAfter = r;
-        break;
+    if (requestedMs) {
+      for (const r of rows) {
+        const stamp = r.finished_at || r.started_at || r.created_at || r.updated_at || '';
+        const ts = String(stamp).includes('T') ? String(stamp) : String(stamp).replace(' ', 'T') + 'Z';
+        const rowMs = Date.parse(ts);
+        if (Number.isFinite(rowMs) && rowMs > requestedMs) {
+          latestAfter = r;
+          break;
+        }
       }
     }
+
     return {
       table_exists:true,
       requested_at:requestedAt || null,
+      dispatch_id:wantedRunId || null,
+      schema_columns:[...colSet],
+      matched_dispatch:matched || null,
       latest:rows[0] || null,
       latest_after_request:latestAfter,
       recent:rows.slice(0,5),
-      rule:'PrizePicks board completion is certified from mlb_stats_refresh_audit after dispatch, not from mlb_stats freshness alone.'
+      rule:'PrizePicks board completion is certified from the mlb_stats_refresh_audit row matching the Worker dispatch_id. mlb_stats rows or generic updated_at freshness cannot certify this stage.'
     };
   } catch (e) {
-    return { table_exists:false, latest:null, latest_after_request:null, recent:[], error:String(e && e.message || e) };
+    return { table_exists:false, dispatch_id:wantedRunId || null, latest:null, matched_dispatch:null, latest_after_request:null, recent:[], error:String(e && e.message || e) };
   }
 }
 
@@ -2770,12 +2796,13 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const prior = priorAdminStepResult(state, 'prizepicks_board') || {};
   const requestedAt = prior.requested_at || prior.triggered_at || null;
   const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
-  const audit = await getPrizePicksRefreshAudit(env, requestedAt);
+  const dispatchId = String(prior.dispatch_id || prior.run_id || input?.queue_request_id || input?.request_id || input?.chain_id || '').trim();
+  const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
 
-  if (requestedMs && audit?.latest_after_request) {
-    const a = audit.latest_after_request;
-    const status = String(a.status || '').toLowerCase();
-    if (status === 'completed' && Number(a.rows_main || 0) > 0) {
+  if (requestedMs) {
+    const a = audit?.matched_dispatch || null;
+    const status = String(a?.status || '').toLowerCase();
+    if (a && (status === 'completed' || status === 'success') && Number(a.rows_main || 0) > 0) {
       return {
         ok:true,
         data_ok:true,
@@ -2784,13 +2811,15 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         status:'board_refresh_certified_by_audit',
         board_refresh_complete:true,
         requested_at:requestedAt,
+        dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
         mlb_stats:current,
-        note:'PrizePicks GitHub workflow completed after this dispatch. Completion is certified by mlb_stats_refresh_audit, not by stale mlb_stats timestamp guessing.'
+        certification_rule:'matched_dispatch_audit_row_only',
+        note:'PrizePicks GitHub workflow completed for the matching dispatch_id. Completion is certified by mlb_stats_refresh_audit, not by stale mlb_stats rows or generic freshness checks.'
       };
     }
-    if (status === 'failed') {
+    if (a && (status === 'failed' || status === 'error')) {
       return {
         ok:false,
         data_ok:false,
@@ -2800,30 +2829,16 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         error:String(a.error_message || 'github_scraper_failed_after_dispatch'),
         board_refresh_complete:false,
         requested_at:requestedAt,
+        dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
         mlb_stats:current,
         terminal_failure:true,
         blocks_downstream:true,
-        note:'PrizePicks GitHub scraper ran after dispatch but failed before certified promotion. The orchestrator fails this stage with the scraper audit error instead of waiting on mlb_stats.'
+        certification_rule:'matched_dispatch_audit_row_only',
+        note:'PrizePicks GitHub scraper returned a failed audit row for the matching dispatch_id. The orchestrator fails this stage with the scraper audit error instead of guessing from mlb_stats.'
       };
     }
-  }
-
-  if (requestedMs && current.rows_count > 0 && current.future_rows > 0 && current.latest_updated_ms > requestedMs) {
-    return {
-      ok:true,
-      data_ok:true,
-      version:SYSTEM_VERSION,
-      job:'trigger_prizepicks_github_board_refresh',
-      status:'board_refresh_detected',
-      board_refresh_complete:true,
-      requested_at:requestedAt,
-      detected_at:nowIso,
-      mlb_stats:current,
-      audit,
-      note:'PrizePicks GitHub workflow appears complete because mlb_stats updated after the workflow dispatch request.'
-    };
   }
 
   if (requestedMs) {
@@ -2841,7 +2856,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         mlb_stats:current,
         audit,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting briefly for main.py to refresh mlb_stats before converting PrizePicks context. v1.4.23 keeps the capped wait so stale board refresh cannot trap the full pipeline.'
+        note:'GitHub workflow was already dispatched; waiting for mlb_stats_refresh_audit to publish a completed/failed row for the matching dispatch_id. mlb_stats freshness alone cannot certify this stage.'
       };
     }
     return {
@@ -2849,15 +2864,15 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       data_ok:false,
       version:SYSTEM_VERSION,
       job:'trigger_prizepicks_github_board_refresh',
-      status:'github_board_update_timeout',
-      error:'github_workflow_dispatched_but_no_fresh_future_board_rows',
+      status:'github_audit_result_timeout',
+      error:'github_workflow_dispatched_but_no_matching_audit_row',
       board_refresh_complete:false,
       requested_at:requestedAt,
       elapsed_seconds:elapsedSeconds,
       mlb_stats:current,
       audit,
       next_check:'orchestrator retry or watchdog re-enqueue',
-      note:'GitHub workflow was dispatched but no fresh future PrizePicks board rows appeared before the timeout. This is treated as a real board-refresh failure, not an endless pending state.'
+      note:'GitHub workflow was dispatched but no completed/failed mlb_stats_refresh_audit row appeared for the matching dispatch_id before the timeout. This is treated as a real board-refresh failure, not an endless pending state.'
     };
   }
 
@@ -2910,6 +2925,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     };
   }
 
+  const outboundDispatchId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || crypto.randomUUID()).slice(0,120);
   const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   const response = await fetch(url, {
     method:'POST',
@@ -2919,7 +2935,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       'X-GitHub-Api-Version':'2022-11-28',
       'User-Agent':'AlphaDog-Control-Room-Worker'
     },
-    body:JSON.stringify({ ref, inputs:{ dispatch_id:String(input?.queue_request_id || input?.request_id || input?.chain_id || crypto.randomUUID()).slice(0,120) } })
+    body:JSON.stringify({ ref, inputs:{ dispatch_id:outboundDispatchId } })
   });
   const text = await response.text().catch(() => '');
   const ok = response.status === 204;
@@ -2932,11 +2948,12 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     status:ok ? 'github_workflow_dispatched_waiting_for_board_update' : 'github_workflow_dispatch_failed',
     board_refresh_complete:false,
     requested_at:triggeredAt,
-    github:{ repo, workflow_file:workflow, ref, http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env) },
+    dispatch_id:outboundDispatchId,
+    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env) },
     mlb_stats_before:current,
     audit,
     next_check:'next minute cron tick',
-    note:ok ? 'GitHub scrape.yml workflow dispatched. The admin refresh will keep retrying this step until mlb_stats updates, then continue into Phase 2C and scoring.' : 'GitHub workflow dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE, and ref.'
+    note:ok ? 'GitHub scrape.yml workflow dispatched. The orchestrator will keep retrying this step until mlb_stats_refresh_audit contains a completed/failed row for this dispatch_id; mlb_stats freshness alone cannot certify this stage.' : 'GitHub workflow dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE, and ref.'
   };
 }
 
@@ -7544,7 +7561,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   if (updates.length) await env.DB.batch(updates);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:selected.map(j=>j.job_key), slate } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected, slate } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04 PrizePicks Audit Completion Gate: PrizePicks Board waiting/dispatched states cannot terminal-fail before the real 10-check timeout; missing GitHub config still fails immediately.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.1 Strict Audit-Only PrizePicks Gate: PrizePicks Board waiting/dispatched states cannot terminal-fail before the real 10-check timeout; missing GitHub config still fails immediately.' };
 }
 
 
@@ -7690,7 +7707,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04 PrizePicks Audit Completion Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails with scraper audit errors or after the real 10-check timeout.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.1 Strict Audit-Only PrizePicks Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails with scraper audit errors or after the real 10-check timeout.' };
 }
 
 
@@ -8252,7 +8269,7 @@ async function runRefreshOrchestratorTick(input, env) {
       try {
         const priorWrapped = JSON.parse(row.last_output_json || '{}');
         const priorResult = priorWrapped?.result || priorWrapped;
-        if (priorResult?.requested_at || priorResult?.triggered_at || priorResult?.status) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
+        if (priorResult?.requested_at || priorResult?.triggered_at || priorResult?.status || priorResult?.dispatch_id) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else {
@@ -8264,7 +8281,7 @@ async function runRefreshOrchestratorTick(input, env) {
       const cronCheckCount = Number(q?.tick_count || 1);
       const maxChecks = Math.max(10, Number(q?.max_attempts || row.max_attempts || 10));
       if (cronCheckCount >= maxChecks) {
-        result = { ...(result || {}), ok:false, data_ok:false, terminal_failure:true, blocks_downstream:true, status:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', error:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', board_refresh_complete:false, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, note:'PrizePicks Board did not publish a fresh certified board within the allowed cron checks. The stage is hard-failed, the lane is released, and dependent jobs are blocked.' };
+        result = { ...(result || {}), ok:false, data_ok:false, terminal_failure:true, blocks_downstream:true, status:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', error:'PRIZEPICKS_BOARD_REFRESH_TIMEOUT', board_refresh_complete:false, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, note:'PrizePicks Board did not publish a matching scraper audit result within the allowed cron checks. The stage is hard-failed, the lane is released, and dependent jobs are blocked.' };
       } else {
         result = { ...(result || {}), orchestrator_waiting:true, cron_check_count:cronCheckCount, max_cron_checks:maxChecks, next_check:'next cron tick', note:'PrizePicks Board is still waiting for the GitHub scraper to publish a fresh board. The orchestrator lane remains locked; no downstream stage can start.' };
       }

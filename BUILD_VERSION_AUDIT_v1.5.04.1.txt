@@ -1,0 +1,8 @@
+Build version audit
+worker.js: v1.5.04.1 - Strict Audit-Only PrizePicks Gate
+control_room.html: v1.5.04.1 - Strict Audit-Only PrizePicks Gate
+README: README_v1.5.04.1.txt
+main.py: SCRIPT_VERSION v1.5.04.1 - Strict Audit-Only PrizePicks Gate; audit writes matching GITHUB_DISPATCH_ID as run_id
+scrape.yml: workflow_dispatch accepts dispatch_id input and passes it to main.py as GITHUB_DISPATCH_ID
+wrangler.jsonc: alphadog-phase3-starter-groups / worker.js / prop-engine-db / minute cron
+package.json: unchanged production package
