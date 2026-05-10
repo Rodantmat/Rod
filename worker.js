@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.4 - Lock Hygiene Catchup Stabilizer";
+const SYSTEM_VERSION = "v1.5.05.5 - No-Delta Terminal Success Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -8260,6 +8260,7 @@ function singleLaneBlockedDependents(failedJobKey) {
 }
 
 function singleLaneIsPartialOrWaiting(row, result) {
+  if (isIncrementalNoDeltaTerminalSuccess(result) || isIncrementalNoDeltaTerminalSuccess(result?.last_tick) || isIncrementalNoDeltaTerminalSuccess(result?.result)) return false;
   const st = String(result?.status || result?.result_status || '').toLowerCase();
   if (refreshResultIsPartial(result)) return true;
   if (String(row?.job_key || '') === 'prizepicks_board' && (st.includes('waiting') || st.includes('dispatched'))) return true;
@@ -8347,7 +8348,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.4 Lock Hygiene Catchup Stabilizer: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.05.5 No-Delta Terminal Success Gate: true incremental selector blocks accidental full-player rebuilds, converts active full-safe daily runs to finalized-game delta when the live base is usable, and still preserves heartbeat recovery.' };
 }
 
 
@@ -8495,7 +8496,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.4 Lock Hygiene Catchup Stabilizer is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.05.5 No-Delta Terminal Success Gate is active. Cron reads data_orchestrator_jobs/state, uses recent successful runtimes where available, checks incremental_temp_refresh_runs.updated_at as the true heartbeat, preserves temp progress, and blocks accidental all-player daily incremental rebuilds with a true-delta selector.' };
 }
 
 
@@ -8914,7 +8915,39 @@ async function markRefreshQueueCompleted(env, row, wrapped) {
   if (next) await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(next.request_id).run();
 }
 
+function incrementalNoDeltaTerminalSuccessPayload(input, requestId, modeInfo, extra = {}) {
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'run_incremental_temp_refresh_tick',
+    request_id:requestId || null,
+    status:'completed_no_delta_needed',
+    result_status:'completed',
+    refresh_complete:true,
+    partial:false,
+    auto_continue_active:false,
+    manual_ticks_required:false,
+    no_delta_terminal_success:true,
+    live_tables_touched:false,
+    mode_info:modeInfo || null,
+    reason:'live_base_already_current_for_available_finalized_games',
+    note:'No finalized-game delta is available because the live incremental base already covers the available finalized-game window. This is a terminal successful no-op, not a failure, not a partial continuation, and not a waiting state.',
+    ...extra
+  };
+}
+
+function isIncrementalNoDeltaTerminalSuccess(result) {
+  const status = String(result?.status || result?.result_status || result?.last_tick?.status || result?.result?.status || '').toLowerCase();
+  const reason = String(result?.reason || result?.last_tick?.reason || result?.result?.reason || '').toLowerCase();
+  return result?.no_delta_terminal_success === true
+    || status === 'completed_no_delta_needed'
+    || status === 'no_delta_needed_completed'
+    || (status === 'no_delta_needed' && reason === 'live_base_already_current_for_available_finalized_games');
+}
+
 function refreshResultIsPartial(result) {
+  if (isIncrementalNoDeltaTerminalSuccess(result) || isIncrementalNoDeltaTerminalSuccess(result?.last_tick) || isIncrementalNoDeltaTerminalSuccess(result?.result)) return false;
   const status = String(result?.status || result?.last_tick?.status || '').toLowerCase();
   if (result?.auto_continue_active) return true;
   if (result?.refresh_complete === false) return true;
@@ -9178,7 +9211,7 @@ async function ensureIncrementalTempUniqueIndexes(env) {
   // Temp tables are created with CREATE TABLE AS SELECT, so SQLite does not carry over
   // the live-table primary keys. Without these unique indexes, INSERT OR REPLACE
   // behaves like plain INSERT and duplicate temp rows can survive audit.
-  // v1.5.05.4: this function is also a schema-healing boundary. Every caller that
+  // v1.5.05.5: this function is also a schema-healing boundary. Every caller that
   // audits, promotes, cleans, or counts temp data can call it safely even after a
   // previous cleanup/failure dropped one temp table in an older build.
   await env.DB.prepare(`CREATE TABLE IF NOT EXISTS player_game_logs_temp AS SELECT * FROM player_game_logs WHERE 1=0`).run().catch(() => null);
@@ -9332,7 +9365,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
   const latestGameDate = base.logs?.max_game_date || null;
   const metricLatestDate = base.metrics?.max_last_game_date || null;
 
-  // v1.5.05.4: MULTI-DAY TRUE DELTA CATCHUP GATE.
+  // v1.5.05.5: MULTI-DAY TRUE DELTA CATCHUP GATE.
   // Daily incremental must never fall back into a 700+ player full-safe rebuild just because
   // metric coverage is imperfect. The base is usable for true delta when the live game-log
   // base exists and derived metrics are broadly populated. Missing/stale derived players are
@@ -9347,7 +9380,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:null,
       end_date:null,
       overlap_days:0,
-      selector_gate:'v1.5.05.4',
+      selector_gate:'v1.5.05.5',
       full_rebuild_allowed: !!forceFull,
       full_rebuild_blocked_by_default: !forceFull,
       base_requirements:{ live_game_logs_min:9000, metrics_min:700, latest_game_date_required:true, live_splits_not_required_for_delta_selector:true },
@@ -9369,7 +9402,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
       start_date:startDate,
       end_date:endDate,
       overlap_days:overlapDays,
-      selector_gate:'v1.5.05.4',
+      selector_gate:'v1.5.05.5',
       selected_source:'schedule_final_games_boxscore_delta_only',
       blocked_full_player_rebuild:true,
       note:'Live game-log base already covers the available finalized-game window. Temp tables should be clean and no daily incremental request should be created.'
@@ -9382,7 +9415,7 @@ async function determineIncrementalRefreshMode(env, input = {}) {
     start_date:startDate,
     end_date:endDate,
     overlap_days:overlapDays,
-    selector_gate:'v1.5.05.4',
+    selector_gate:'v1.5.05.5',
     selected_source:'schedule_final_games_boxscore_delta_only',
     blocked_full_player_rebuild:true,
     note:'Daily incremental runs only finalized games strictly after the live max game date. It does not select all players_current or rebuild the full incremental base.'
@@ -9402,7 +9435,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
   if (modeInfo.mode !== 'delta') return { converted:false, reason:'delta_not_available', mode_info:modeInfo };
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const tempBefore = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp')];
-  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.4_accidental_full_incremental_run_converted_to_true_delta' });
+  const reset = await resetIncrementalTempTables(env, { reason:'v1.5.05.5_accidental_full_incremental_run_converted_to_true_delta' });
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   const payload = {
     ok:true,
@@ -9418,7 +9451,7 @@ async function convertAccidentalFullIncrementalRunToDelta(env, row, input = {}) 
     temp_before:tempBefore,
     reset,
     live_tables_touched:false,
-    reason:'Daily incremental was about to process the whole player universe. v1.5.05.4 preserved live base and converted the active temp run to finalized-game true delta.'
+    reason:'Daily incremental was about to process the whole player universe. v1.5.05.5 preserved live base and converted the active temp run to finalized-game true delta.'
   };
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(payload).slice(0,5000), row.request_id).run();
   return { converted:true, step:'stage_delta_logs', payload };
@@ -9436,7 +9469,16 @@ async function scheduleIncrementalTempRefreshOnce(input, env) {
   const reset = await resetIncrementalTempTables(env);
   await env.DB.prepare(`DELETE FROM static_scrape_progress WHERE scrape_domain IN ('incremental_temp_game_logs','incremental_temp_splits','incremental_delta_game_logs') AND season=?`).bind(season).run().catch(() => null);
   if (modeInfo.mode === 'no_delta_needed') {
-    return { ok:true, data_ok:true, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'no_delta_needed', request_id:null, refresh_mode:modeInfo.mode, mode_info:modeInfo, reset, stale_finalizer, live_tables_touched:false, note:'Temp tables were cleaned, but no incremental request was created because the live base is already current for the available finalized-game window.' };
+    const noopPayload = incrementalNoDeltaTerminalSuccessPayload(input, requestId, modeInfo, {
+      job:input.job || 'schedule_incremental_temp_refresh_once',
+      status:'completed_no_delta_needed',
+      refresh_mode:modeInfo.mode,
+      reset,
+      stale_finalizer,
+      note:'Temp tables were cleaned and the incremental request was terminally completed as a successful no-op because the live base is already current for the available finalized-game window.'
+    });
+    await env.DB.prepare(`INSERT INTO incremental_temp_refresh_runs (request_id, status, run_after, current_step, started_at, finished_at, updated_at, output_json, error) VALUES (?, 'completed', NULL, 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, NULL)`).bind(requestId, JSON.stringify(noopPayload).slice(0,5000)).run().catch(() => null);
+    return noopPayload;
   }
   if (modeInfo.mode !== 'delta') {
     return { ok:false, data_ok:false, job:input.job || 'schedule_incremental_temp_refresh_once', version:SYSTEM_VERSION, status:'blocked_no_full_rebuild_allowed', request_id:null, refresh_mode:modeInfo.mode, mode_info:modeInfo, reset, stale_finalizer, live_tables_touched:false, error:'daily_incremental_full_rebuild_disabled', note:'Daily incremental is hard-blocked from selecting all players or rebuilding the full temp base. Repair/certify the live base first, then run strict true delta.' };
@@ -9556,6 +9598,9 @@ function compactIncrementalStepResult(result) {
     progress_done: result.progress_done ?? null,
     remaining_players_after: result.remaining_players_after ?? null,
     needs_continue: !!result.needs_continue,
+    refresh_complete: result.refresh_complete ?? null,
+    no_delta_terminal_success: !!result.no_delta_terminal_success,
+    reason: result.reason || null,
     stage_finalizer: result.stage_finalizer || null,
     duplicate_guard_counts: result.duplicate_guard ? {
       before_counts: result.duplicate_guard.before_counts || null,
@@ -9765,6 +9810,21 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
   await ensureIncrementalTempTables(env);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const modeInfo = await determineIncrementalRefreshMode(env, input || {});
+  if (modeInfo.mode === 'no_delta_needed') {
+    return {
+      ok:true,
+      data_ok:true,
+      season,
+      mode_info:modeInfo,
+      final_games_total:0,
+      done_count:0,
+      remaining_games:0,
+      complete:true,
+      no_delta_terminal_success:true,
+      reason:'live_base_already_current_for_available_finalized_games',
+      note:'No finalized-game delta is available; the live base is already current.'
+    };
+  }
   if (modeInfo.mode !== 'delta' || !modeInfo.start_date || !modeInfo.end_date) {
     return {
       ok:false,
@@ -9816,7 +9876,7 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
     remaining_games:remainingGames,
     complete:remainingGames === 0,
     temp_log_rows:Number(tempCount?.rows_count || 0),
-    note:'v1.5.05.4 lock-hygiene catchup stabilizer: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
+    note:'v1.5.05.5 no-delta terminal success gate: stage_delta_logs may advance only after every finalized game in the missing-date window has a terminal progress row.'
   };
 }
 
@@ -9826,6 +9886,9 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
   const modeInfo = await determineIncrementalRefreshMode(env, input || {});
   const startDate = modeInfo.start_date;
   const endDate = modeInfo.end_date;
+  if (modeInfo.mode === 'no_delta_needed') {
+    return incrementalNoDeltaTerminalSuccessPayload(input, null, modeInfo, { job:input.job || 'run_incremental_temp_refresh_tick' });
+  }
   if (modeInfo.mode !== 'delta' || !startDate || !endDate) {
     return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'delta_mode_not_available', mode_info:modeInfo, live_tables_touched:false, note:'True delta requires a certified live base. Use fallback full-safe rebuild if this blocks.' };
   }
@@ -9948,11 +10011,11 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 
   const fullToDelta = await convertAccidentalFullIncrementalRunToDelta(env, row, input || {});
   if (fullToDelta?.converted) {
-    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.4_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
+    decisions.push({ from:step, to:'stage_delta_logs', reason:'v1.5.05.5_accidental_full_rebuild_selector_blocked', conversion:fullToDelta.payload });
     return { changed:true, step:'stage_delta_logs', reason:'converted_accidental_full_incremental_to_true_delta', decisions, conversion:fullToDelta.payload };
   }
 
-  // v1.5.05.4: multi-day true-delta catchup gate.
+  // v1.5.05.5: multi-day true-delta catchup gate.
   // Never advance from stage_delta_logs merely because temp has non-zero rows or because
   // auto_continue/cron is active. That was the bad one-day stepping bug. Delta staging
   // may advance only when every finalized game in the missing-date window has terminal
@@ -9999,7 +10062,7 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
         duplicate_log_rows: duplicateLogs.length,
         duplicate_split_rows: duplicateSplits.length,
         live_tables_touched:false,
-        note:'v1.5.05.4 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
+        note:'v1.5.05.5 blocked premature audit. The true-delta stage must continue until all missing finalized game dates are staged.'
       };
       await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET current_step='stage_delta_logs', status='running', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(output), requestId).run();
       return { changed:true, step:'stage_delta_logs', output, reason:'multi_day_delta_window_not_complete_keep_staging' };
@@ -10176,6 +10239,21 @@ async function runIncrementalTempScheduledTick(input, env) {
     else if (step === 'clean') result = await cleanIncrementalTempTables({ ...input, job:'clean_incremental_temp_tables' }, env);
     else if (step === 'derived') result = await buildIncrementalBaseDerivedMetrics({ ...input, job:'incremental_base_derived_metrics' }, env);
     else result = { ok:true, data_ok:true, status:'already_completed' };
+    if (isIncrementalNoDeltaTerminalSuccess(result)) {
+      const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
+      const wrapped = incrementalNoDeltaTerminalSuccessPayload(input, requestId, result.mode_info || null, {
+        job:input.job || 'run_incremental_temp_refresh_tick',
+        processed_step:step,
+        next_step:'completed',
+        counts,
+        step_result:compactIncrementalStepResult(result),
+        hard_reconcile: hardReconcile || null,
+        stale_finalizer,
+        note:'Daily incremental completed as a certified no-op: the live base already covers all available finalized games, so no temp staging, promotion, continuation, or manual tick is required.'
+      });
+      await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='completed', current_step='completed', run_after=NULL, finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(wrapped).slice(0,5000), requestId).run();
+      return wrapped;
+    }
     if (!result?.ok || result?.data_ok === false) {
       const failed = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'pipeline_blocked', step_result:result, live_tables_touched:false };
       await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=? WHERE request_id=?`).bind(String(result?.error || result?.status || 'step_failed'), JSON.stringify(failed), requestId).run();
@@ -10240,12 +10318,13 @@ async function runIncrementalTempAutoLoop(input, env) {
   const counts = [await staticTableCount(env,'player_game_logs_temp'), await staticTableCount(env,'ref_player_splits_temp'), await staticTableCount(env,'player_game_logs'), await staticTableCount(env,'ref_player_splits'), await staticTableCount(env,'incremental_player_metrics')];
   const active = latest && ['pending','running'].includes(String(latest.status || '').toLowerCase());
   const latestFailed = latest && String(latest.status || '').toLowerCase() === 'failed';
+  const noDeltaTerminal = isIncrementalNoDeltaTerminalSuccess(last) || isIncrementalNoDeltaTerminalSuccess(scheduledIncremental) || (latest && String(latest.status || '').toLowerCase() === 'completed' && String(latest.current_step || '').toLowerCase() === 'completed' && String(latest.output_preview || '').includes('no_delta_terminal_success'));
   const idleNoActive = last?.status === 'idle_no_due_temp_refresh' && !active;
-  const hardBlocked = latestFailed && idleNoActive;
-  const status = hardBlocked ? 'blocked_no_active_incremental_request' : (last?.status === 'idle_no_due_temp_refresh' ? 'idle_no_due_temp_refresh' : (last?.refresh_complete ? 'completed' : 'auto_continue_scheduled'));
+  const hardBlocked = !noDeltaTerminal && latestFailed && idleNoActive;
+  const status = noDeltaTerminal ? 'completed' : (hardBlocked ? 'blocked_no_active_incremental_request' : (last?.status === 'idle_no_due_temp_refresh' ? 'idle_no_due_temp_refresh' : (last?.refresh_complete ? 'completed' : 'auto_continue_scheduled')));
   return {
     ok: !hardBlocked,
-    data_ok: !hardBlocked && last?.data_ok !== false,
+    data_ok: noDeltaTerminal ? true : (!hardBlocked && last?.data_ok !== false),
     version: SYSTEM_VERSION,
     job: input.job || 'run_incremental_temp_refresh_auto',
     status,
@@ -10255,11 +10334,12 @@ async function runIncrementalTempAutoLoop(input, env) {
     latest_temp_refresh: latest,
     counts,
     last_tick: compactIncrementalStepResult(last),
-    auto_continue_active: !!active,
+    no_delta_terminal_success: noDeltaTerminal,
+    auto_continue_active: noDeltaTerminal ? false : !!active,
     manual_ticks_required: false,
     live_tables_touched: ticks.some(t => !!t?.live_tables_touched),
-    next_action: last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.'),
-    note: 'One-click/cron auto-runner for incremental data. v1.3.89 production guard keeps true-delta as the certified default, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
+    next_action: noDeltaTerminal ? 'No incremental action needed. Live base is already current for available finalized games.' : (last?.refresh_complete ? 'Run CHECK > Incremental All and confirm last_game_date advanced.' : (hardBlocked ? 'Schedule a fresh incremental request; no active due request exists.' : 'Do not manually tick. Minute cron/orchestrator will continue the active incremental request until completed.')),
+    note: 'One-click/cron auto-runner for incremental data. v1.5.05.5 keeps true-delta as the certified default, treats no-delta-needed as terminal success, rescues valid stale delta tails instead of killing them, compacts status output, and keeps cron/orchestrator self-sufficient through audit → promote → clean → derived → live certification.'
   };
 }
 async function checkIncrementalTempData(input, env) {
