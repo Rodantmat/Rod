@@ -1,0 +1,6 @@
+ZIP: alphadog_v1.5.04.3_github_run_visibility_gate.zip
+worker.js: v1.5.04.3 - GitHub Run Visibility Gate
+control_room.html: control_room_v1_5_04_3_github_run_visibility_gate
+main.py: v1.5.04.3 - GitHub Run Visibility Gate
+README: README_v1.5.04.3.txt
+Scope: MAIN PRODUCTION ONLY

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.04.2 - Real-Time Audit Wait Gate";
+const SYSTEM_VERSION = "v1.5.04.3 - GitHub Run Visibility Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2777,6 +2777,73 @@ async function getPrizePicksRefreshAudit(env, requestedAt = null, dispatchId = n
   }
 }
 
+async function getGithubPrizePicksWorkflowRunStatus(env, requestedAt = null, dispatchId = null) {
+  const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
+  const wantedDispatchId = String(dispatchId || '').trim();
+  try {
+    const cfg = getGithubDispatchConfig(env);
+    const repo = String(cfg.repo || '').trim();
+    const token = String(cfg.token || '').trim();
+    const workflow = githubWorkflowFileName(cfg.workflow || 'scrape.yml');
+    const ref = String(cfg.ref || 'main').trim() || 'main';
+    if (!repo || !token || !workflow) {
+      return { configured:false, observed:false, reason:'missing_github_config', binding:githubDispatchBindingStatus(env) };
+    }
+    const sinceIso = requestedMs ? new Date(Math.max(0, requestedMs - 120000)).toISOString() : null;
+    const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(ref)}&per_page=15`;
+    const response = await fetch(url, {
+      method:'GET',
+      headers:{
+        'Accept':'application/vnd.github+json',
+        'Authorization':`Bearer ${token}`,
+        'X-GitHub-Api-Version':'2022-11-28',
+        'User-Agent':'AlphaDog-Production-Worker'
+      }
+    });
+    const text = await response.text().catch(() => '');
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (_) { body = null; }
+    if (!response.ok) {
+      return { configured:true, observed:false, http_status:response.status, error:'github_workflow_runs_lookup_failed', response_preview:String(text || '').slice(0,1000), binding:githubDispatchBindingStatus(env) };
+    }
+    const runsRaw = Array.isArray(body?.workflow_runs) ? body.workflow_runs : [];
+    const compactRuns = runsRaw.slice(0,8).map(r => ({
+      id:r.id == null ? null : String(r.id),
+      name:r.name || null,
+      event:r.event || null,
+      status:r.status || null,
+      conclusion:r.conclusion || null,
+      created_at:r.created_at || null,
+      updated_at:r.updated_at || null,
+      run_number:r.run_number == null ? null : Number(r.run_number),
+      html_url:r.html_url || null,
+      head_branch:r.head_branch || null
+    }));
+    let candidate = null;
+    for (const r of compactRuns) {
+      const createdMs = r.created_at ? Date.parse(String(r.created_at)) : 0;
+      if (requestedMs && Number.isFinite(createdMs) && createdMs >= requestedMs - 120000) {
+        if (!candidate || createdMs > Date.parse(String(candidate.created_at || ''))) candidate = r;
+      }
+    }
+    return {
+      configured:true,
+      observed:!!candidate,
+      requested_at:requestedAt || null,
+      dispatch_id:wantedDispatchId || null,
+      workflow_file:workflow,
+      repo,
+      ref,
+      since:sinceIso,
+      candidate_run:candidate,
+      recent_runs:compactRuns,
+      rule:'This is diagnostic visibility only. PrizePicks board success still requires mlb_stats_refresh_audit; GitHub run visibility cannot certify the board by itself.'
+    };
+  } catch (e) {
+    return { configured:false, observed:false, error:String(e && e.message || e), requested_at:requestedAt || null, dispatch_id:wantedDispatchId || null };
+  }
+}
+
 function priorAdminStepResult(state, stepName) {
   const list = Array.isArray(state?.step_results) ? state.step_results : [];
   for (let i = list.length - 1; i >= 0; i--) {
@@ -2798,6 +2865,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
   const dispatchId = String(prior.dispatch_id || prior.run_id || input?.queue_request_id || input?.request_id || input?.chain_id || '').trim();
   const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
+  const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId) : null;
 
   if (requestedMs) {
     const a = audit?.matched_dispatch || null;
@@ -2818,6 +2886,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        github_run,
         certified_audit_row:fallbackAudit,
         mlb_stats:current,
         certification_rule:'post_dispatch_audit_row_when_dispatch_input_not_echoed',
@@ -2838,6 +2907,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        github_run,
         mlb_stats:current,
         certification_rule:'matched_dispatch_audit_row_only',
         note:'PrizePicks GitHub workflow completed for the matching dispatch_id. Completion is certified by mlb_stats_refresh_audit, not by stale mlb_stats rows or generic freshness checks.'
@@ -2856,6 +2926,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         dispatch_id:dispatchId || null,
         detected_at:nowIso,
         audit,
+        github_run,
         mlb_stats:current,
         terminal_failure:true,
         blocks_downstream:true,
@@ -2867,6 +2938,47 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
 
   if (requestedMs) {
     const elapsedSeconds = Math.round((Date.now() - requestedMs) / 1000);
+    const ghRun = github_run?.candidate_run || null;
+    const ghStatus = String(ghRun?.status || '').toLowerCase();
+    const ghConclusion = String(ghRun?.conclusion || '').toLowerCase();
+    if (ghRun && ghStatus === 'completed' && ghConclusion && ghConclusion !== 'success') {
+      return {
+        ok:false,
+        data_ok:false,
+        version:SYSTEM_VERSION,
+        job:'trigger_prizepicks_github_board_refresh',
+        status:'github_workflow_failed_before_audit',
+        error:`github_workflow_conclusion_${ghConclusion}`,
+        board_refresh_complete:false,
+        requested_at:requestedAt,
+        elapsed_seconds:elapsedSeconds,
+        mlb_stats:current,
+        audit,
+        github_run,
+        terminal_failure:true,
+        blocks_downstream:true,
+        note:'GitHub workflow run was observed after dispatch but finished unsuccessfully before publishing a usable mlb_stats_refresh_audit completion row. This is a real scraper/workflow failure, not a stale-board soft pass.'
+      };
+    }
+    if (ghRun && ghStatus === 'completed' && ghConclusion === 'success' && elapsedSeconds >= 120) {
+      return {
+        ok:false,
+        data_ok:false,
+        version:SYSTEM_VERSION,
+        job:'trigger_prizepicks_github_board_refresh',
+        status:'github_workflow_completed_without_audit',
+        error:'github_workflow_completed_without_mlb_stats_refresh_audit_row',
+        board_refresh_complete:false,
+        requested_at:requestedAt,
+        elapsed_seconds:elapsedSeconds,
+        mlb_stats:current,
+        audit,
+        github_run,
+        terminal_failure:true,
+        blocks_downstream:true,
+        note:'GitHub workflow completed successfully, but no post-dispatch mlb_stats_refresh_audit row was written. main.py/scrape.yml in the GitHub repo is likely not the audit-enabled version or audit write failed before D1 persisted it.'
+      };
+    }
     if (elapsedSeconds < 660) {
       return {
         ok:true,
@@ -2879,8 +2991,9 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         elapsed_seconds:elapsedSeconds,
         mlb_stats:current,
         audit,
+        github_run,
         next_check:'next minute cron tick',
-        note:'GitHub workflow was already dispatched; waiting for mlb_stats_refresh_audit to publish a completed/failed row for the matching dispatch_id. mlb_stats freshness alone cannot certify this stage.'
+        note: ghRun ? 'GitHub workflow run is visible after dispatch; waiting for mlb_stats_refresh_audit to publish a completed/failed row. mlb_stats freshness alone cannot certify this stage.' : 'GitHub dispatch was accepted, but no workflow run is visible yet. Waiting before hard failure. mlb_stats freshness alone cannot certify this stage.'
       };
     }
     return {
@@ -2888,15 +3001,16 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       data_ok:false,
       version:SYSTEM_VERSION,
       job:'trigger_prizepicks_github_board_refresh',
-      status:'github_audit_result_timeout',
-      error:'github_workflow_dispatched_but_no_matching_audit_row',
+      status: ghRun ? 'github_audit_result_timeout' : 'github_workflow_dispatch_not_observed',
+      error: ghRun ? 'github_workflow_dispatched_but_no_matching_audit_row' : 'github_dispatch_accepted_but_no_workflow_run_observed',
       board_refresh_complete:false,
       requested_at:requestedAt,
       elapsed_seconds:elapsedSeconds,
       mlb_stats:current,
       audit,
-      next_check:'orchestrator retry or watchdog re-enqueue',
-      note:'GitHub workflow was dispatched but no completed/failed mlb_stats_refresh_audit row appeared for the matching dispatch_id before the real-time timeout. This is treated as a real board-refresh failure, not an endless pending state.'
+      github_run,
+      next_check:'inspect GitHub Actions run visibility and confirm scrape.yml/main.py were committed to the configured repository',
+      note: ghRun ? 'GitHub workflow was observed but no completed/failed mlb_stats_refresh_audit row appeared before the real-time timeout. This is treated as a real board-refresh failure.' : 'GitHub dispatch returned accepted, but the Worker could not observe a workflow_dispatch run after the request. This usually means the workflow file/ref/repo target is not the file being deployed, the Actions workflow did not start, or GitHub token/workflow permissions need inspection.'
     };
   }
 
@@ -7585,7 +7699,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   if (updates.length) await env.DB.batch(updates);
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:selected.map(j=>j.job_key), slate } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${selected.length} independent job(s) requested`, payload_json:{ mode, selected, slate } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.1 Strict Audit-Only PrizePicks Gate: PrizePicks Board waiting/dispatched states cannot terminal-fail before the real 10-check timeout; missing GitHub config still fails immediately.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:selected.length, enqueued:selected.map(j => ({ job_key:j.job_key, display_name:j.display_name, job_name:j.job_name, sequence_order:j.sequence_order })), manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.04.3 GitHub Run Visibility Gate: PrizePicks Board is audit-only and now also reports whether the GitHub workflow run was actually observed after dispatch.' };
 }
 
 
@@ -7731,7 +7845,7 @@ async function refreshOrchestratorStatus(input, env) {
   const queue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, job_name, group_name, sequence_order, cascade, status, run_after, requested_slate_date, COALESCE(tick_count,0) AS tick_count, COALESCE(attempt_count,0) AS attempt_count, COALESCE(retry_count,0) AS retry_count, max_attempts, created_at, started_at, finished_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue ORDER BY CASE WHEN status IN ('pending','running') THEN 0 ELSE 1 END, datetime(created_at) DESC, sequence_order ASC LIMIT 40`);
   const active = await sampleRows(env, `SELECT status, COUNT(*) AS rows_count FROM data_refresh_queue GROUP BY status ORDER BY status`);
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.2 Real-Time Audit Wait Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, recent_queue:queue, recent_logs:logs, note:'v1.5.04.3 GitHub Run Visibility Gate is active. Cron reads data_orchestrator_jobs/state, runs one independent stage per tick, certifies PrizePicks Board from mlb_stats_refresh_audit after dispatch, keeps the lane locked while waiting, and hard-fails only after a real-time wait window, not duplicate tick count alone.' };
 }
 
 
