@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.3 - PrizePicks Idempotent Dispatch Latch";
+const SYSTEM_VERSION = "v1.5.06.2 - GitHub Workflow Dispatch Truth Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1353,7 +1353,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_3_idempotent_dispatch_latch'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_2_workflow_dispatch_truth_gate'
   };
 }
 
@@ -1380,7 +1380,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.3 uses workflow_dispatch as the primary GitHub trigger and latches each PrizePicks request_id so repeated cron ticks poll instead of redispatching.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.2 uses workflow_dispatch as the primary GitHub trigger because fine-grained tokens with Actions write can trigger workflows without repository Contents write.'
   };
 }
 
@@ -2908,9 +2908,9 @@ async function upsertPrizePicksScraperProgress(env, payload = {}) {
       progress_message=COALESCE(excluded.progress_message, prizepicks_scraper_runs.progress_message),
       started_at=COALESCE(excluded.started_at, prizepicks_scraper_runs.started_at),
       finished_at=COALESCE(excluded.finished_at, prizepicks_scraper_runs.finished_at),
-      rows_fetched=CASE WHEN excluded.rows_fetched IS NULL THEN prizepicks_scraper_runs.rows_fetched WHEN prizepicks_scraper_runs.rows_fetched IS NULL THEN excluded.rows_fetched ELSE MAX(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched) END,
-      rows_temp=CASE WHEN excluded.rows_temp IS NULL THEN prizepicks_scraper_runs.rows_temp WHEN prizepicks_scraper_runs.rows_temp IS NULL THEN excluded.rows_temp ELSE MAX(excluded.rows_temp, prizepicks_scraper_runs.rows_temp) END,
-      rows_main=CASE WHEN excluded.rows_main IS NULL THEN prizepicks_scraper_runs.rows_main WHEN prizepicks_scraper_runs.rows_main IS NULL THEN excluded.rows_main ELSE MAX(excluded.rows_main, prizepicks_scraper_runs.rows_main) END,
+      rows_fetched=COALESCE(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched),
+      rows_temp=COALESCE(excluded.rows_temp, prizepicks_scraper_runs.rows_temp),
+      rows_main=COALESCE(excluded.rows_main, prizepicks_scraper_runs.rows_main),
       error_message=excluded.error_message,
       source=COALESCE(excluded.source, prizepicks_scraper_runs.source),
       script_version=COALESCE(excluded.script_version, prizepicks_scraper_runs.script_version),
@@ -3046,19 +3046,12 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const currentRequestId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || '').trim();
   const priorDispatchId = String(prior.dispatch_id || prior.run_id || prior.request_id || '').trim();
   const priorMatchesCurrentRequest = !!currentRequestId && !!priorDispatchId && priorDispatchId === currentRequestId;
-  let requestedAt = priorMatchesCurrentRequest ? (prior.requested_at || prior.triggered_at || null) : null;
-  let requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
+  const requestedAt = priorMatchesCurrentRequest ? (prior.requested_at || prior.triggered_at || null) : null;
+  const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
   const dispatchId = String((priorMatchesCurrentRequest ? priorDispatchId : '') || currentRequestId || priorDispatchId || '').trim();
   await ensurePrizePicksScraperProgressTable(env).catch(() => null);
-  let audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
-  let scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
-  const progressLatchRow = scraper_progress?.matched_dispatch || null;
-  if (!requestedAt && progressLatchRow) {
-    requestedAt = progressLatchRow.started_at || progressLatchRow.created_at || progressLatchRow.updated_at || nowIso;
-    requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
-    audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
-    scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
-  }
+  const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
+  const scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
   const priorGithub = priorMatchesCurrentRequest ? (prior.github || prior.github_dispatch || prior.github_dispatch_config || null) : null;
   const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithub) : null;
 
@@ -8709,7 +8702,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.3 PrizePicks Idempotent Dispatch Latch: each PrizePicks board queue row owns one workflow_dispatch request; repeated minute cron ticks poll ledger/audit only and cannot redispatch the same request_id.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.0 PrizePicks Dispatch Authority Gate: each PrizePicks board queue row owns its own workflow_dispatch request, while the true incremental selector, no-delta terminal success gate, heartbeat recovery, and progress ledger remain preserved.' };
 }
 
 
