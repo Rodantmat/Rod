@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+
+Expected version: v1.5.06.5 - Function Capsule Secret Gate
+
+Files updated:
+- worker.js: SYSTEM_VERSION updated. Function capsule hydration added. GitHub/Odds secret alias coverage expanded.
+- control_room.html: version tag updated.
+- main.py: SCRIPT_VERSION updated.
+- README_v1.5.06.5.txt: created.
+- BUILD_VERSION_AUDIT_v1.5.06.5.txt: created.
+
+Compatibility:
+- Flat ZIP structure preserved.
+- wrangler.jsonc preserved.
+- scrape.yml preserved.
+- package.json preserved.

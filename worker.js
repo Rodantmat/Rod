@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.4 - Schedule Cascade Scope Gate";
+const SYSTEM_VERSION = "v1.5.06.5 - Function Capsule Secret Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1271,16 +1271,35 @@ function getGithubDispatchConfig(env = {}) {
     "GH_TOKEN",
     "GITHUB_PAT",
     "GH_PAT",
+    "GH_ACCESS_TOKEN",
+    "GH_PERSONAL_ACCESS_TOKEN",
+    "GH_FINE_GRAINED_TOKEN",
+    "GH_FINE_GRAINED_PAT",
     "GITHUB_FINE_GRAINED_TOKEN",
     "GITHUB_FINE_GRAINED_PAT",
     "ALPHADOG_GITHUB_TOKEN",
     "ALPHADOG_GITHUB_PAT",
     "GITHUB_DISPATCH_TOKEN",
+    "GITHUB_DISPATCH_PAT",
+    "GITHUB_WORKFLOW_TOKEN",
+    "GITHUB_WORKFLOW_PAT",
     "GITHUB_ACTIONS_TOKEN",
+    "GITHUB_ACTIONS_PAT",
     "GITHUB_API_TOKEN",
     "GITHUB_ACCESS_TOKEN",
     "GITHUB_PERSONAL_ACCESS_TOKEN",
+    "GITHUB_PAT_TOKEN",
+    "GITHUB_TOKEN_PAT",
+    "GITHUB_SECRET_TOKEN",
+    "GITHUB_DISPATCH_SECRET",
     "GH_PERSONAL_ACCESS_TOKEN",
+    "PRIZEPICKS_GITHUB_TOKEN",
+    "PRIZEPICKS_GITHUB_PAT",
+    "ALPHADOG_PRIZEPICKS_GITHUB_TOKEN",
+    "CAPSULE_GITHUB_TOKEN",
+    "CAPSULE_GITHUB_PAT",
+    "ROD_GITHUB_TOKEN",
+    "ROD_GITHUB_PAT",
     "THE_GITHUB_TOKEN",
     "THE_GITHUB_PAT",
     "THE_GITHUB_API_TOKEN",
@@ -1353,7 +1372,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_4_schedule_cascade_scope_gate'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_5_function_capsule_secret_gate'
   };
 }
 
@@ -1380,8 +1399,54 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.4 keeps workflow_dispatch as the primary GitHub trigger, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.5 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
+}
+
+
+function functionCapsuleSecretStatus(env = {}, candidates = []) {
+  const probe = readEnvCandidate(env, candidates || []);
+  return {
+    configured: !!probe.value,
+    source: probe.source || null,
+    checked: probe.checked || [],
+    length: probe.value ? String(probe.value).length : 0
+  };
+}
+
+function buildFunctionCapsule(jobName, env = {}, input = {}) {
+  const job = String(jobName || input?.job || input?.queue_job_key || '').trim();
+  const github = githubDispatchBindingStatus(env);
+  const odds = oddsApiBindingStatus(env);
+  const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
+  const dbBound = !!env.DB;
+  const common = {
+    capsule_version: 'function_capsule_v1_5_06_5',
+    job,
+    db_bound: dbBound,
+    worker_url_bound: !!workerUrl,
+    worker_url_source: env.ALPHADOG_WORKER_URL ? 'ALPHADOG_WORKER_URL' : (env.WORKER_URL ? 'WORKER_URL' : (env.CONTROL_WORKER_URL ? 'CONTROL_WORKER_URL' : (env.PUBLIC_WORKER_URL ? 'PUBLIC_WORKER_URL' : 'default'))),
+    prompt_base_url_bound: !!String(env.PROMPT_BASE_URL || '').trim(),
+    queue_request_id: input?.queue_request_id || input?.request_id || null,
+    queue_chain_id: input?.queue_chain_id || input?.chain_id || null,
+    queue_job_key: input?.queue_job_key || input?.orchestrator_job_key || null,
+    rule: 'Each function hydrates its own capsule from env/DB at execution time. Call path cannot be the source of secrets or required access.'
+  };
+  if (job === 'trigger_prizepicks_github_board_refresh' || String(input?.queue_job_key || '') === 'prizepicks_board') {
+    return { ...common, github_dispatch: github, required: ['DB','GITHUB_DISPATCH_CONFIG','WORKER_URL','scrape.yml workflow_dispatch'] };
+  }
+  if (job === 'run_odds_api_morning' || job === 'run_odds_api_afternoon' || String(input?.queue_job_key || '').startsWith('odds_api_')) {
+    return { ...common, odds_api: odds, required: ['DB','ODDS_API_KEY'] };
+  }
+  if (job === 'run_full_scoring_refresh_v1' || String(input?.queue_job_key || '') === 'scoring_refresh') {
+    return { ...common, required: ['DB','current board/context tables','odds tables when available'] };
+  }
+  return { ...common, required: ['DB'] };
+}
+
+function withFunctionCapsule(jobName, body = {}, env = {}) {
+  const capsule = buildFunctionCapsule(jobName, env, body || {});
+  return { ...(body || {}), function_capsule: capsule, capsule_job: String(jobName || body?.job || '') };
 }
 
 function health(env) {
@@ -3259,6 +3324,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
         resolver: githubCfg.resolver
       },
       github_dispatch_binding: githubDispatchBindingStatus(env),
+      function_capsule: input?.function_capsule || buildFunctionCapsule('trigger_prizepicks_github_board_refresh', env, input),
       mlb_stats:current,
       audit,
       blocks_downstream:true,
@@ -3321,7 +3387,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     board_refresh_complete:false,
     requested_at:triggeredAt,
     dispatch_id:outboundDispatchId,
-    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, dispatch_event_type:'workflow_dispatch', http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env), payload:workflowPayload.inputs, endpoint:'actions/workflows/:workflow_id/dispatches' },
+    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, dispatch_event_type:'workflow_dispatch', http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env), function_capsule: input?.function_capsule || buildFunctionCapsule('trigger_prizepicks_github_board_refresh', env, input), payload:workflowPayload.inputs, endpoint:'actions/workflows/:workflow_id/dispatches' },
     mlb_stats_before:current,
     audit,
     next_check:'next minute cron tick',
@@ -8673,7 +8739,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    // v1.5.06.4: schedule-backed cascade is scope-locked to the plan's explicit job list.
+    // v1.5.06.5: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
     // It must never expand from the first selected job to all later enabled catalog rows.
     // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
     selected = [];
@@ -8721,7 +8787,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.4 Schedule Cascade Scope Gate: schedule-backed cascades enqueue only the plan-selected jobs; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.5 Function Capsule Secret Gate: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
@@ -9471,7 +9537,7 @@ async function runRefreshOrchestratorTick(input, env) {
   let result = null;
   try {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
-    const body = { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key };
+    const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
       result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true }, env);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
@@ -12333,6 +12399,7 @@ async function checkPhase2cMarketContext(input = {}, env) {
 }
 
 async function executeTaskJob(jobName, body, slate, env) {
+  body = withFunctionCapsule(jobName, body || {}, env);
   if (jobName === "board_sifter_preview") {
     return await runBoardSifterPreview({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   }

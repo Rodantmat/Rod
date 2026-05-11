@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.06.4 - Schedule Cascade Scope Gate"
+SCRIPT_VERSION = "v1.5.06.5 - Function Capsule Secret Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
