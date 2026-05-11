@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.05.8 - PrizePicks Ledger Installer Guard"
+SCRIPT_VERSION = "v1.5.06.0 - PrizePicks Dispatch Authority Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -14,9 +14,13 @@ PROXY = os.getenv("PROXY_URL")
 WORKER_STATUS_URL = (os.getenv("ALPHADOG_WORKER_STATUS_URL") or os.getenv("ALPHADOG_WORKER_URL") or "").rstrip("/")
 WORKER_INGEST_TOKEN = os.getenv("INGEST_TOKEN") or os.getenv("ALPHADOG_INGEST_TOKEN") or ""
 GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME") or "unknown"
+GITHUB_EVENT_ACTION = os.getenv("GITHUB_EVENT_ACTION") or ""
+ALPHADOG_REQUEST_ID = os.getenv("ALPHADOG_REQUEST_ID") or ""
+ALPHADOG_CHAIN_ID = os.getenv("ALPHADOG_CHAIN_ID") or ""
+ALPHADOG_SLATE_DATE = os.getenv("ALPHADOG_SLATE_DATE") or ""
 GITHUB_RUN_ID = os.getenv("GITHUB_RUN_ID") or ""
 GITHUB_RUN_ATTEMPT = os.getenv("GITHUB_RUN_ATTEMPT") or ""
-RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("ALPHADOG_DISPATCH_ID") or os.getenv("DISPATCH_ID") or GITHUB_RUN_ID or str(uuid.uuid4())
+RUN_ID = os.getenv("GITHUB_DISPATCH_ID") or os.getenv("ALPHADOG_DISPATCH_ID") or os.getenv("DISPATCH_ID") or ALPHADOG_REQUEST_ID or GITHUB_RUN_ID or str(uuid.uuid4())
 RUN_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 REQUIRED_ENV = {
@@ -88,6 +92,10 @@ def worker_status_callback(status, rows_fetched=None, rows_temp=None, rows_main=
         "source": "github_actions_prizepicks_main_py",
         "script_version": SCRIPT_VERSION,
         "github_event_name": GITHUB_EVENT_NAME,
+        "github_event_action": GITHUB_EVENT_ACTION,
+        "request_id": ALPHADOG_REQUEST_ID or RUN_ID,
+        "chain_id": ALPHADOG_CHAIN_ID,
+        "slate_date": ALPHADOG_SLATE_DATE,
         "github_run_id": GITHUB_RUN_ID,
         "github_run_attempt": GITHUB_RUN_ATTEMPT,
     }
@@ -165,6 +173,10 @@ def write_progress(cf_url, headers, status, step=None, progress_message=None, ro
             "github_run_id": GITHUB_RUN_ID,
             "github_run_attempt": GITHUB_RUN_ATTEMPT,
             "github_event_name": GITHUB_EVENT_NAME,
+            "github_event_action": GITHUB_EVENT_ACTION,
+            "request_id": ALPHADOG_REQUEST_ID or RUN_ID,
+            "chain_id": ALPHADOG_CHAIN_ID,
+            "slate_date": ALPHADOG_SLATE_DATE,
             "status": status,
             "step": step or status,
             "progress_message": progress_message,
@@ -284,7 +296,7 @@ def start():
     write_audit(cf_url, headers, "started", rows_fetched=0, rows_temp=0, rows_main=0)
     write_progress(cf_url, headers, "running", step="started", progress_message="main.py started and connected to D1.", rows_fetched=0, rows_temp=0, rows_main=0)
 
-    print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID} event={GITHUB_EVENT_NAME} github_run_id={GITHUB_RUN_ID}")
+    print(f"🛰️ Connecting via Proxy... {SCRIPT_VERSION} run_id={RUN_ID} event={GITHUB_EVENT_NAME}/{GITHUB_EVENT_ACTION} github_run_id={GITHUB_RUN_ID} chain_id={ALPHADOG_CHAIN_ID} slate_date={ALPHADOG_SLATE_DATE}")
     write_progress(cf_url, headers, "running", step="fetching_prizepicks_api", progress_message="Fetching PrizePicks MLB projections through configured proxy.", rows_fetched=0, rows_temp=0, rows_main=0)
     url = "https://partner-api.prizepicks.com/projections?league_id=2&per_page=5000"
 

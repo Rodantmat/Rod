@@ -1,0 +1,6 @@
+BUILD: v1.5.06.0 - PrizePicks Dispatch Authority Gate
+worker.js: v1.5.06.0 - PrizePicks Dispatch Authority Gate
+main.py: v1.5.06.0 - PrizePicks Dispatch Authority Gate
+control_room.html: v1.5.06.0 - PrizePicks Dispatch Authority Gate
+scrape.yml: repository_dispatch + workflow_dispatch only; no GitHub schedule cron.
+ZIP: alphadog_v1.5.06.0_prizepicks_dispatch_authority_gate.zip
