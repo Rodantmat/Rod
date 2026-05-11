@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.0 - PrizePicks Dispatch Authority Gate";
+const SYSTEM_VERSION = "v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9,7 +9,7 @@ const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
 const BOARD_QUEUE_RETRY_LIMIT = 5;
 const BOARD_QUEUE_RUNTIME_CUTOFF_MS = 25000;
 const PHASE3AB_TICK_RUNTIME_CUTOFF_MS = 26000;
-const WORKER_DEPLOY_TARGET = "alphadog-phase3-starter-groups";
+const WORKER_DEPLOY_TARGET = "prop-ingestion-git";
 const PRIMARY_MODEL = "gemini-2.5-pro";
 const FALLBACK_MODEL = "gemini-2.5-flash";
 const SCRAPE_MODEL = "gemini-2.5-flash";
@@ -1247,6 +1247,15 @@ function deriveGithubRepoFromPromptBaseUrl(env = {}) {
 }
 
 function getGithubDispatchConfig(env = {}) {
+  const owner = readEnvCandidate(env, [
+    "GITHUB_OWNER",
+    "GITHUB_ORG",
+    "GITHUB_ACCOUNT",
+    "GH_OWNER",
+    "GH_ORG",
+    "GITHUB_DISPATCH_OWNER",
+    "THE_GITHUB_OWNER"
+  ]);
   const repo = readEnvCandidate(env, [
     "GITHUB_REPO",
     "GITHUB_REPOSITORY",
@@ -1262,6 +1271,10 @@ function getGithubDispatchConfig(env = {}) {
     "GH_TOKEN",
     "GITHUB_PAT",
     "GH_PAT",
+    "GITHUB_FINE_GRAINED_TOKEN",
+    "GITHUB_FINE_GRAINED_PAT",
+    "ALPHADOG_GITHUB_TOKEN",
+    "ALPHADOG_GITHUB_PAT",
     "GITHUB_DISPATCH_TOKEN",
     "GITHUB_ACTIONS_TOKEN",
     "GITHUB_API_TOKEN",
@@ -1294,30 +1307,51 @@ function getGithubDispatchConfig(env = {}) {
     "THE_GITHUB_REF"
   ]);
   const repoFallback = deriveGithubRepoFromPromptBaseUrl(env);
-  const resolvedRepo = repo.value || repoFallback;
+  const repoRaw = String(repo.value || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  const ownerRaw = String(owner.value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
+  let resolvedRepo = '';
+  let repoSource = null;
+  if (/^[^/]+\/[^/]+$/.test(repoRaw)) {
+    resolvedRepo = repoRaw;
+    repoSource = repo.source;
+  } else if (ownerRaw && repoRaw && !repoRaw.includes('/')) {
+    resolvedRepo = `${ownerRaw}/${repoRaw}`;
+    repoSource = `${owner.source || 'GITHUB_OWNER'}+${repo.source || 'GITHUB_REPO'}`;
+  } else if (repoFallback) {
+    resolvedRepo = repoFallback;
+    repoSource = 'derived_from_PROMPT_BASE_URL';
+  } else if (repoRaw) {
+    resolvedRepo = repoRaw;
+    repoSource = repo.source;
+  }
   const resolvedWorkflow = githubWorkflowFileName(workflow.value || "scrape.yml");
   const resolvedRef = ref.value || "main";
   const missing = [];
-  if (!resolvedRepo) missing.push('GITHUB_REPO');
+  if (!resolvedRepo) missing.push('GITHUB_REPO_OR_GITHUB_OWNER_PLUS_GITHUB_REPO');
   if (!token.value) missing.push('GITHUB_TOKEN');
   if (!resolvedWorkflow) missing.push('GITHUB_WORKFLOW_FILE');
   return {
     repo: resolvedRepo,
+    owner: ownerRaw || null,
+    repo_name: repoRaw || null,
     token: token.value,
     workflow: resolvedWorkflow,
     ref: resolvedRef,
     missing,
     configured: missing.length === 0,
-    repo_source: repo.source || (repoFallback ? 'derived_from_PROMPT_BASE_URL' : null),
+    repo_source: repoSource,
+    owner_source: owner.source,
+    raw_repo_source: repo.source,
     token_source: token.source,
     workflow_source: workflow.source || "default:scrape.yml",
     ref_source: ref.source || "default:main",
+    owner_checked: owner.checked,
     repo_checked: repo.checked,
     token_checked: token.checked,
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_4_38'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_1_owner_repo_secret_alignment'
   };
 }
 
@@ -1331,16 +1365,20 @@ function githubDispatchBindingStatus(env = {}) {
     ref_bound: !!cfg.ref,
     missing: cfg.missing,
     resolver: cfg.resolver,
+    repo: cfg.repo,
+    owner_source: cfg.owner_source,
+    raw_repo_source: cfg.raw_repo_source,
     repo_source: cfg.repo_source,
     token_source: cfg.token_source,
     workflow_source: cfg.workflow_source,
     ref_source: cfg.ref_source,
+    owner_checked: cfg.owner_checked,
     repo_checked: cfg.repo_checked,
     token_checked: cfg.token_checked,
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. Missing dispatch config is a hard failed PrizePicks Board result, not a pending retry and never a soft pass.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.1 supports split GITHUB_OWNER + GITHUB_REPO secrets and preserves dashboard secrets with keep_vars.'
   };
 }
 
@@ -3235,7 +3273,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   }
 
   const outboundDispatchId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || crypto.randomUUID()).slice(0,120);
-  const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || '').trim();
+  const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const slateDate = String(input?.slate_date || input?.requested_slate_date || '').trim();
   const chainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
   await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_repository_event', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub repository_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });

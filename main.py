@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.06.0 - PrizePicks Dispatch Authority Gate"
+SCRIPT_VERSION = "v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -11,7 +11,7 @@ TOKEN = os.getenv("CF_API_TOKEN")
 ACC_ID = os.getenv("CF_ACCOUNT_ID")
 DB_ID = os.getenv("CF_DATABASE_ID")
 PROXY = os.getenv("PROXY_URL")
-WORKER_STATUS_URL = (os.getenv("ALPHADOG_WORKER_STATUS_URL") or os.getenv("ALPHADOG_WORKER_URL") or "").rstrip("/")
+WORKER_STATUS_URL = (os.getenv("ALPHADOG_WORKER_STATUS_URL") or os.getenv("ALPHADOG_WORKER_URL") or os.getenv("CONTROL_WORKER_URL") or "https://prop-ingestion-git.rodolfoaamattos.workers.dev").rstrip("/")
 WORKER_INGEST_TOKEN = os.getenv("INGEST_TOKEN") or os.getenv("ALPHADOG_INGEST_TOKEN") or ""
 GITHUB_EVENT_NAME = os.getenv("GITHUB_EVENT_NAME") or "unknown"
 GITHUB_EVENT_ACTION = os.getenv("GITHUB_EVENT_ACTION") or ""

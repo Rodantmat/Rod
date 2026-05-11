@@ -1,0 +1,7 @@
+BUILD: v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate
+worker.js: v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate
+main.py: v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate
+control_room.html: v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate
+scrape.yml: repository_dispatch + workflow_dispatch only; no GitHub schedule cron.
+wrangler.jsonc: name prop-ingestion-git; keep_vars true; minute cron preserved.
+ZIP: alphadog_v1.5.06.1_prizepicks_secret_resolver_alignment_gate.zip

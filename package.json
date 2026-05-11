@@ -1,11 +1,13 @@
 {
-  "name": "prop-engine-cloudflare-worker",
+  "name": "alphadog-production-scheduled-backend",
   "version": "1.0.0",
   "type": "module",
   "private": true,
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "deploy": "wrangler deploy --name prop-ingestion-git",
+    "dev": "wrangler dev",
+    "deploy:triggers": "wrangler triggers deploy --name prop-ingestion-git",
+    "deploy:version": "wrangler versions upload --name prop-ingestion-git"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
