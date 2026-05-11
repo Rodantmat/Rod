@@ -1,0 +1,21 @@
+AlphaDog v1.5.06.8 - One-Source Capsule Parity Gate
+
+Validation performed before packaging:
+- worker.js syntax checked with node --check: PASS.
+- Full intraday cascade job list checked: 8 jobs only, excludes static_weekly and incremental_daily.
+- Full intraday cascade includes both odds_api_morning and odds_api_afternoon.
+- PrizePicks board now uses async getGithubDispatchConfigForJob inside triggerPrizePicksGithubBoardRefresh, not a separate schedule-only resolver.
+- Odds Morning/Intraday now use async getOddsApiKeyForJob inside runOddsApiMarketIntel, not a separate schedule-only resolver.
+- Async capsule resource resolver checks direct env, accepted aliases, inline config text, KV/Secret bindings, DB resource tables, and config.txt.
+- Schedule Cascade still only enqueues jobs; it does not own or mutate job resource hydration.
+
+Expected test:
+1. Cancel Queue.
+2. Init Production Clock.
+3. Production Clock Status must show intraday full runs exclude Static/Incremental and include both odds windows.
+4. Schedule Cascade.
+5. Wait 20-30 minutes.
+6. Manual SQL check chain_id.
+
+Fail condition:
+- Any missing_github_dispatch_secret or Missing ODDS_API_KEY after this build means the production deployment truly cannot access the resource under any checked address/source, not that the cascade path is using a different resolver.

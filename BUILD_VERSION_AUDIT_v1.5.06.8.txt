@@ -1,0 +1,15 @@
+AlphaDog Build Version Audit
+Expected version: v1.5.06.8 - One-Source Capsule Parity Gate
+
+Files checked:
+- worker.js: SYSTEM_VERSION = v1.5.06.8 - One-Source Capsule Parity Gate
+- control_room.html: visible version tag updated to v1.5.06.8 - One-Source Capsule Parity Gate
+- main.py: SCRIPT_VERSION updated to v1.5.06.8 - One-Source Capsule Parity Gate
+- README_v1.5.06.8.txt: created
+- RESOURCE_RESOLVER_TEST_v1.5.06.8.txt: created
+
+Packaging rule:
+Flat folder only. No subdirectories.
+
+Validation:
+node --check worker.js = PASS

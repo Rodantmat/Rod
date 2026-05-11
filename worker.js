@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.7 - Unified Resource Address Resolver";
+const SYSTEM_VERSION = "v1.5.06.8 - One-Source Capsule Parity Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -908,7 +908,7 @@ export default {
         return new Response(null, { headers: CORS_HEADERS });
       }
 
-      if (url.pathname === "/health") { const h = health(env); await logSystemEvent(env, { trigger_source: "control_room_debug", action_label: "DEBUG > Health", job_name: "health", status: "success", http_status: 200, output_preview: h }); return json(h); }
+      if (url.pathname === "/health") { const h = await health(env); await logSystemEvent(env, { trigger_source: "control_room_debug", action_label: "DEBUG > Health", job_name: "health", status: "success", http_status: 200, output_preview: h }); return json(h); }
       if (url.pathname === "/health/daily") return withCors(await handleDailyHealth(request, env));
       if (url.pathname === "/prizepicks/scraper/status" && request.method === "POST") return withCors(await handlePrizePicksScraperStatus(request, env));
       if (url.pathname === "/prizepicks/scraper/install" && (request.method === "GET" || request.method === "POST")) return withCors(await handlePrizePicksScraperInstall(request, env));
@@ -1150,217 +1150,284 @@ function hydratePromptTemplate(prompt, slateDate) {
 }
 
 
-function oddsApiSecretCandidateNames() {
-  return [
+function getOddsApiKey(env = {}) {
+  const candidates = [
     "ODDS_API_KEY",
     "THE_ODDS_API_KEY",
     "ODDSAPI_KEY",
     "ODDS_API_TOKEN",
     "ODDS_API",
     "THEODDSAPIKEY",
-    "THE_ODDS_API",
-    "THE_ODDS_API_TOKEN",
-    "ODDS_KEY",
-    "SPORTS_ODDS_API_KEY"
+    "THE_ODDS_API"
   ];
-}
-
-function normalizeSecretNameForScan(v) {
-  return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-}
-
-function readSecretValueSync(value) {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (value && typeof value === "object") {
-    for (const k of ["value", "key", "secret", "token", "apiKey", "api_key"]) {
-      if (typeof value[k] === "string" && value[k].trim()) return value[k].trim();
-    }
-  }
-  return "";
-}
-
-async function readSecretValueAsync(value, names, checked, sourcePrefix) {
-  const direct = readSecretValueSync(value);
-  if (direct) return { key: direct, source: sourcePrefix, resolver: "sync_value" };
-  if (value && typeof value === "object") {
-    for (const method of ["get", "getSecret", "read", "secret"]) {
-      if (typeof value[method] !== "function") continue;
-      for (const name of names) {
-        checked.push(`${sourcePrefix}.${method}(${name})`);
-        try {
-          const got = await value[method](name);
-          const val = readSecretValueSync(got);
-          if (val) return { key: val, source: `${sourcePrefix}.${method}(${name})`, resolver: "async_secret_binding" };
-        } catch (_) {}
-      }
-    }
-  }
-  return null;
-}
-
-function getOddsApiKey(env = {}) {
-  const candidates = oddsApiSecretCandidateNames();
-  const accepted = new Set(candidates.map(normalizeSecretNameForScan));
+  const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const accepted = new Set(candidates.map(normalizeName));
   const checked = [...candidates];
 
   for (const name of candidates) {
     const value = env && env[name];
-    const direct = readSecretValueSync(value);
-    if (direct) return { key: direct, source: name, configured: true, checked, resolver: "direct_or_nested_candidate" };
+    if (typeof value === "string" && value.trim()) {
+      return { key: value.trim(), source: name, configured: true, checked, resolver: "direct_candidate" };
+    }
+    if (value && typeof value === "object") {
+      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+      if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "nested_candidate" };
+    }
   }
 
   try {
     for (const name of Object.keys(env || {})) {
-      const normalized = normalizeSecretNameForScan(name);
+      const normalized = normalizeName(name);
       if (!accepted.has(normalized)) continue;
+      const value = env[name];
       checked.push(name);
-      const direct = readSecretValueSync(env[name]);
-      if (direct) return { key: direct, source: name, configured: true, checked, resolver: "normalized_env_scan" };
+      if (typeof value === "string" && value.trim()) {
+        return { key: value.trim(), source: name, configured: true, checked, resolver: "normalized_env_scan" };
+      }
+      if (value && typeof value === "object") {
+        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+        if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "normalized_nested_env_scan" };
+      }
     }
   } catch (_) {}
 
-  return { key: "", source: null, configured: false, checked, resolver: "sync_not_found" };
+  return { key: "", source: null, configured: false, checked, resolver: "not_found" };
 }
 
-async function getOddsApiKeyCapsule(env = {}, input = {}) {
-  const candidates = oddsApiSecretCandidateNames();
-  const checked = [];
-
-  // Function-capsule first: any caller may pass a job-local resource bundle without relying on globals.
-  const capsuleSources = [
-    ["input.odds_api_key", input && input.odds_api_key],
-    ["input.api_key", input && input.api_key],
-    ["input.function_capsule.ODDS_API_KEY", input && input.function_capsule && input.function_capsule.ODDS_API_KEY],
-    ["input.function_capsule.secrets.ODDS_API_KEY", input && input.function_capsule && input.function_capsule.secrets && input.function_capsule.secrets.ODDS_API_KEY],
-    ["input.resources.ODDS_API_KEY", input && input.resources && input.resources.ODDS_API_KEY],
-    ["input.secrets.ODDS_API_KEY", input && input.secrets && input.secrets.ODDS_API_KEY]
-  ];
-  for (const [source, value] of capsuleSources) {
-    checked.push(source);
-    const val = readSecretValueSync(value);
-    if (val) return { key: val, source, configured: true, checked, resolver: "function_capsule_input" };
-  }
-
-  const sync = getOddsApiKey(env);
-  checked.push(...(sync.checked || []));
-  if (sync.key) return { ...sync, checked, resolver: `capsule_${sync.resolver || "sync"}` };
-
-  // Cloudflare Secret Store / KV-style bindings: the function resolves its own resource inside the function.
-  const storeNames = ["SECRETS", "SECRET_STORE", "ALPHADOG_SECRETS", "CONFIG", "CONFIG_STORE", "ENV", "VARS", "KV", "SETTINGS"];
-  for (const storeName of storeNames) {
-    const store = env && env[storeName];
-    const got = await readSecretValueAsync(store, candidates, checked, storeName);
-    if (got && got.key) return { key: got.key, source: got.source, configured: true, checked, resolver: got.resolver };
-  }
-
-  // Last-resort object scan: do not expose values, only report names checked.
-  try {
-    for (const [name, value] of Object.entries(env || {})) {
-      const upper = normalizeSecretNameForScan(name);
-      const looksOdds = upper.includes("ODDS") || upper.includes("THEODDS") || upper.includes("SPORTSODDS");
-      const looksSecretStore = upper.includes("SECRET") || upper.includes("CONFIG");
-      if (!looksOdds && !looksSecretStore) continue;
-      checked.push(name);
-      const direct = readSecretValueSync(value);
-      if (direct && looksOdds) return { key: direct, source: name, configured: true, checked, resolver: "broad_direct_odds_resource_scan" };
-      const got = await readSecretValueAsync(value, candidates, checked, name);
-      if (got && got.key) return { key: got.key, source: got.source, configured: true, checked, resolver: got.resolver };
-    }
-  } catch (_) {}
-
-  return { key: "", source: null, configured: false, checked, resolver: "capsule_not_found" };
-}
-
-function oddsApiBindingStatusFromResolved(resolved, env = {}) {
+function oddsApiBindingStatus(env = {}) {
+  const resolved = getOddsApiKey(env);
   const rawPrimary = env && typeof env.ODDS_API_KEY === "string" ? env.ODDS_API_KEY.trim() : "";
   return {
     configured: !!resolved.key,
     source: resolved.source,
     resolver: resolved.resolver || null,
     primary_bound: !!rawPrimary,
-    candidate_names_checked: resolved.checked || oddsApiSecretCandidateNames(),
+    candidate_names_checked: resolved.checked,
     key_length: resolved.key ? resolved.key.length : 0,
     fatal_when_missing: false,
-    capsule_rule: "Odds jobs self-hydrate their own function capsule before execution; helpers receive the resolved capsule key instead of reading raw env again.",
-    rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs use the Odds API function-capsule resolver. Missing key is recoverable and must not trap the queue.'
+    rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs all use getOddsApiKey(env). Missing key is treated as a recoverable config/logic diagnostic and must not trap the queue.'
   };
-}
-
-function oddsApiBindingStatus(env = {}) {
-  const resolved = getOddsApiKey(env);
-  return oddsApiBindingStatusFromResolved(resolved, env);
 }
 
 function readEnvCandidate(env = {}, names = []) {
   const checked = [];
   const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const accepted = new Set(names.map(normalizeName));
-  const wanted = Array.from(accepted);
-  const valueFrom = (value) => {
-    if (typeof value === "string" && value.trim()) return value.trim();
-    if (value && typeof value === "object") {
-      for (const k of ["value", "key", "secret", "token", "apiKey", "api_key", "accessToken", "access_token"]) {
-        if (typeof value[k] === "string" && value[k].trim()) return value[k].trim();
-      }
-    }
-    return "";
-  };
-  const looksLikeWantedResource = (normalized) => {
-    if (!normalized) return false;
-    if (accepted.has(normalized)) return true;
-    const wantsOdds = wanted.some(x => x.includes("ODDS") || x.includes("THEODDS"));
-    const wantsGithubToken = wanted.some(x => x.includes("GITHUB") || x.startsWith("GH") || x.includes("PAT"));
-    const wantsGithubRepo = wanted.some(x => x.includes("REPO") || x.includes("REPOSITORY") || x.includes("OWNER") || x.includes("ORG"));
-    const wantsWorkflow = wanted.some(x => x.includes("WORKFLOW"));
-    const wantsRef = wanted.some(x => x.includes("BRANCH") || x.endsWith("REF"));
-    if (wantsOdds) {
-      return normalized.includes("ODDS") || normalized.includes("THEODDS") || normalized.includes("ODDSAPI") || normalized.includes("SPORTSODDS");
-    }
-    if (wantsGithubToken) {
-      const githubish = normalized.includes("GITHUB") || normalized.startsWith("GH") || normalized.includes("GHACTIONS") || normalized.includes("ACTIONS");
-      const secretish = normalized.includes("TOKEN") || normalized.includes("PAT") || normalized.includes("SECRET") || normalized.includes("ACCESS");
-      return githubish && secretish;
-    }
-    if (wantsGithubRepo) {
-      const githubish = normalized.includes("GITHUB") || normalized.startsWith("GH") || normalized.includes("REPOSITORY");
-      const repoish = normalized.includes("REPO") || normalized.includes("REPOSITORY") || normalized.includes("OWNER") || normalized.includes("ORG") || normalized.includes("ACCOUNT");
-      return githubish && repoish;
-    }
-    if (wantsWorkflow) return normalized.includes("WORKFLOW") || normalized.includes("SCRAPEYML") || normalized.includes("SCRAPEWORKFLOW");
-    if (wantsRef) return normalized.includes("GITHUBREF") || normalized.includes("GITHUBBRANCH") || normalized === "BRANCH" || normalized === "REF" || normalized.endsWith("BRANCH") || normalized.endsWith("REF");
-    return false;
-  };
 
   for (const name of names) {
     checked.push(name);
-    const val = valueFrom(env && env[name]);
-    if (val) return { value: val, source: name, checked, resolver: "exact_candidate" };
+    const value = env && env[name];
+    if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
+    if (value && typeof value === "object") {
+      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+      if (nested.trim()) return { value: nested.trim(), source: name, checked };
+    }
   }
 
   try {
     for (const name of Object.keys(env || {})) {
       if (!accepted.has(normalizeName(name))) continue;
       if (!checked.includes(name)) checked.push(name);
-      const val = valueFrom(env[name]);
-      if (val) return { value: val, source: name, checked, resolver: "normalized_exact_env_scan" };
+      const value = env[name];
+      if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
+      if (value && typeof value === "object") {
+        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
+        if (nested.trim()) return { value: nested.trim(), source: name, checked };
+      }
     }
   } catch (_) {}
 
-  // v1.5.06.7: broad resource-address resolver.
-  // This preserves the previous exact bindings but also catches already-existing resources
-  // whose names are project-specific, such as PRIZEPICKS_GITHUB_WORKFLOW_TOKEN,
-  // ALPHADOG_ODDS_API_PROD_KEY, THEODDS_API_KEY, etc. Values are never logged.
+  return { value: "", source: null, checked };
+}
+
+
+const ALPHADOG_CAPSULE_CONFIG_CACHE = { loaded_at: 0, data: null, error: null, source: null };
+
+function normalizeResourceName(v) {
+  return String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function parseAlphaDogConfigText(text = '') {
+  const out = {};
+  const raw = String(text || '').trim();
+  if (!raw) return out;
   try {
-    for (const name of Object.keys(env || {})) {
-      const normalized = normalizeName(name);
-      if (!looksLikeWantedResource(normalized)) continue;
-      if (!checked.includes(name)) checked.push(name);
-      const val = valueFrom(env[name]);
-      if (val) return { value: val, source: name, checked, resolver: "broad_resource_address_scan" };
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[String(k).trim()] = String(v).trim();
+      }
     }
   } catch (_) {}
+  for (const line of raw.split(/\r?\n/)) {
+    let l = String(line || '').trim();
+    if (!l || l.startsWith('#') || l.startsWith('//')) continue;
+    if (l.startsWith('export ')) l = l.slice(7).trim();
+    const m = l.match(/^([A-Za-z_][A-Za-z0-9_\-.]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1].trim();
+    let val = String(m[2] || '').trim();
+    val = val.replace(/^['"]|['"]$/g, '').trim();
+    if (key && val) out[key] = val;
+  }
+  return out;
+}
 
-  return { value: "", source: null, checked, resolver: "not_found" };
+function findConfigValue(config = {}, names = []) {
+  const wanted = new Set((names || []).map(normalizeResourceName));
+  for (const [k, v] of Object.entries(config || {})) {
+    if (!wanted.has(normalizeResourceName(k))) continue;
+    const val = typeof v === 'string' ? v.trim() : String(v || '').trim();
+    if (val) return { value: val, key: k };
+  }
+  return { value: '', key: null };
+}
+
+async function loadCapsuleRemoteConfig(env = {}) {
+  const now = Date.now();
+  if (ALPHADOG_CAPSULE_CONFIG_CACHE.data && now - ALPHADOG_CAPSULE_CONFIG_CACHE.loaded_at < 60000) return ALPHADOG_CAPSULE_CONFIG_CACHE;
+  const urls = [];
+  for (const name of ['ALPHADOG_CONFIG_URL','CONTROL_CONFIG_URL','CONFIG_URL']) {
+    const v = env && typeof env[name] === 'string' ? env[name].trim() : '';
+    if (v) urls.push({ url: v, source: name });
+  }
+  const base = String(env.PROMPT_BASE_URL || '').trim().replace(/\/+$/,'');
+  if (base) urls.push({ url: `${base}/config.txt`, source: 'PROMPT_BASE_URL/config.txt' });
+  urls.push({ url: 'https://raw.githubusercontent.com/Rodantmat/Rod/main/config.txt', source: 'default_repo_config.txt' });
+  const seen = new Set();
+  for (const item of urls) {
+    if (!item.url || seen.has(item.url)) continue;
+    seen.add(item.url);
+    try {
+      const res = await fetch(item.url + (item.url.includes('?') ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) continue;
+      const text = await res.text();
+      const parsed = parseAlphaDogConfigText(text);
+      if (Object.keys(parsed).length) {
+        ALPHADOG_CAPSULE_CONFIG_CACHE.loaded_at = now;
+        ALPHADOG_CAPSULE_CONFIG_CACHE.data = parsed;
+        ALPHADOG_CAPSULE_CONFIG_CACHE.error = null;
+        ALPHADOG_CAPSULE_CONFIG_CACHE.source = item.source;
+        return ALPHADOG_CAPSULE_CONFIG_CACHE;
+      }
+    } catch (err) {
+      ALPHADOG_CAPSULE_CONFIG_CACHE.error = String(err?.message || err);
+    }
+  }
+  ALPHADOG_CAPSULE_CONFIG_CACHE.loaded_at = now;
+  ALPHADOG_CAPSULE_CONFIG_CACHE.data = {};
+  ALPHADOG_CAPSULE_CONFIG_CACHE.source = null;
+  return ALPHADOG_CAPSULE_CONFIG_CACHE;
+}
+
+async function readCapsuleResourceCandidate(env = {}, names = [], options = {}) {
+  const checked = [];
+  const direct = readEnvCandidate(env, names);
+  checked.push(...(direct.checked || []));
+  if (direct.value) return { value: direct.value, source: direct.source, resolver: 'direct_env', checked };
+
+  const inlineNames = ['ALPHADOG_CONFIG_TEXT','CONTROL_CONFIG_TEXT','CONFIG_TEXT','CONFIG_TXT','FUNCTION_CAPSULE_CONFIG','CAPSULE_RESOURCE_CONFIG'];
+  for (const inlineName of inlineNames) {
+    const raw = env && env[inlineName];
+    const text = typeof raw === 'string' ? raw : (raw && typeof raw.value === 'string' ? raw.value : '');
+    if (!text.trim()) continue;
+    const found = findConfigValue(parseAlphaDogConfigText(text), names);
+    checked.push(`${inlineName}:${found.key || 'checked'}`);
+    if (found.value) return { value: found.value, source: `${inlineName}.${found.key}`, resolver: 'inline_config_text', checked };
+  }
+
+  const kvBindings = ['ALPHADOG_SECRETS','ALPHADOG_CONFIG','CAPSULE_RESOURCES','FUNCTION_CAPSULE_RESOURCES','SECRET_STORE','SECRETS','CONFIG_KV','CONTROL_CONFIG'];
+  for (const bindingName of kvBindings) {
+    const binding = env && env[bindingName];
+    if (!binding || typeof binding.get !== 'function') continue;
+    for (const name of names) {
+      checked.push(`${bindingName}.get(${name})`);
+      try {
+        const val = await binding.get(name);
+        if (typeof val === 'string' && val.trim()) return { value: val.trim(), source: `${bindingName}.${name}`, resolver: 'kv_secret_binding', checked };
+      } catch (_) {}
+    }
+  }
+
+  if (env && env.DB && options.db !== false) {
+    const tableSpecs = [
+      { table:'data_function_resources', keyCols:['resource_key','key','name'], valueCols:['resource_value','value','secret_value','config_value'] },
+      { table:'data_refresh_resources', keyCols:['resource_key','key','name'], valueCols:['resource_value','value','secret_value','config_value'] },
+      { table:'data_refresh_config', keyCols:['config_key','key','name'], valueCols:['config_value','value','secret_value'] },
+      { table:'system_config', keyCols:['config_key','key','name'], valueCols:['config_value','value','secret_value'] },
+      { table:'app_config', keyCols:['config_key','key','name'], valueCols:['config_value','value','secret_value'] },
+      { table:'alphadog_config', keyCols:['config_key','key','name'], valueCols:['config_value','value','secret_value'] }
+    ];
+    for (const spec of tableSpecs) {
+      for (const kcol of spec.keyCols) for (const vcol of spec.valueCols) {
+        for (const name of names) {
+          checked.push(`${spec.table}.${kcol}/${vcol}:${name}`);
+          try {
+            const row = await env.DB.prepare(`SELECT ${vcol} AS v FROM ${spec.table} WHERE ${kcol}=? LIMIT 1`).bind(name).first();
+            const val = typeof row?.v === 'string' ? row.v.trim() : String(row?.v || '').trim();
+            if (val) return { value: val, source: `${spec.table}.${name}`, resolver: 'db_resource_table', checked };
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  const remote = await loadCapsuleRemoteConfig(env).catch(err => ({ data:{}, source:null, error:String(err?.message || err) }));
+  const found = findConfigValue(remote.data || {}, names);
+  checked.push(`${remote.source || 'remote_config'}:${found.key || 'checked'}`);
+  if (found.value) return { value: found.value, source: `${remote.source}.${found.key}`, resolver: 'remote_config_txt', checked };
+
+  return { value: '', source: null, resolver: 'not_found_after_env_inline_kv_db_remote', checked };
+}
+
+function oddsApiKeyCandidates() {
+  return ["ODDS_API_KEY","THE_ODDS_API_KEY","ODDSAPI_KEY","ODDS_API_TOKEN","ODDS_API","THEODDSAPIKEY","THE_ODDS_API","THEODDS_API_KEY","ODDS_KEY","ODDSAPI_TOKEN","ODDS_API_SECRET","THE_ODDS_API_SECRET"];
+}
+
+function githubTokenCandidates() {
+  return ["GITHUB_TOKEN","GH_TOKEN","GITHUB_PAT","GH_PAT","GH_ACCESS_TOKEN","GH_PERSONAL_ACCESS_TOKEN","GH_FINE_GRAINED_TOKEN","GH_FINE_GRAINED_PAT","GITHUB_FINE_GRAINED_TOKEN","GITHUB_FINE_GRAINED_PAT","ALPHADOG_GITHUB_TOKEN","ALPHADOG_GITHUB_PAT","GITHUB_DISPATCH_TOKEN","GITHUB_DISPATCH_PAT","GITHUB_WORKFLOW_TOKEN","GITHUB_WORKFLOW_PAT","GITHUB_ACTIONS_TOKEN","GITHUB_ACTIONS_PAT","GITHUB_API_TOKEN","GITHUB_ACCESS_TOKEN","GITHUB_PERSONAL_ACCESS_TOKEN","GITHUB_PAT_TOKEN","GITHUB_TOKEN_PAT","GITHUB_SECRET_TOKEN","GITHUB_DISPATCH_SECRET","GH_PERSONAL_ACCESS_TOKEN","PRIZEPICKS_GITHUB_TOKEN","PRIZEPICKS_GITHUB_PAT","ALPHADOG_PRIZEPICKS_GITHUB_TOKEN","CAPSULE_GITHUB_TOKEN","CAPSULE_GITHUB_PAT","ROD_GITHUB_TOKEN","ROD_GITHUB_PAT","THE_GITHUB_TOKEN","THE_GITHUB_PAT","THE_GITHUB_API_TOKEN","CF_GITHUB_TOKEN"];
+}
+
+async function getOddsApiKeyForJob(env = {}, input = {}) {
+  const direct = getOddsApiKey(env);
+  if (direct.key) return { ...direct, resolver: direct.resolver || 'direct_env' };
+  const r = await readCapsuleResourceCandidate(env, oddsApiKeyCandidates(), { job:'odds_api', input });
+  return { key: r.value || '', source: r.source || null, configured: !!r.value, checked: r.checked || [], resolver: r.resolver || 'not_found' };
+}
+
+async function getGithubDispatchConfigForJob(env = {}, input = {}) {
+  const base = getGithubDispatchConfig(env);
+  if (base.configured) return { ...base, resolver: `${base.resolver}|direct_env` };
+  const token = await readCapsuleResourceCandidate(env, githubTokenCandidates(), { job:'prizepicks_board', input });
+  const cfgRemote = await loadCapsuleRemoteConfig(env).catch(() => ({ data:{}, source:null }));
+  const repoFallback = findConfigValue(cfgRemote.data || {}, ["GITHUB_REPO","GITHUB_REPOSITORY","GH_REPO","GH_REPOSITORY","GITHUB_DISPATCH_REPO","THE_GITHUB_REPO"]);
+  const ownerFallback = findConfigValue(cfgRemote.data || {}, ["GITHUB_OWNER","GITHUB_ORG","GITHUB_ACCOUNT","GH_OWNER","THE_GITHUB_OWNER"]);
+  const workflowFallback = findConfigValue(cfgRemote.data || {}, ["GITHUB_WORKFLOW_FILE","GITHUB_WORKFLOW","GITHUB_ACTIONS_WORKFLOW","GITHUB_DISPATCH_WORKFLOW","WORKFLOW_FILE","GITHUB_SCRAPE_WORKFLOW","PRIZEPICKS_WORKFLOW_FILE"]);
+  const refFallback = findConfigValue(cfgRemote.data || {}, ["GITHUB_REF","GITHUB_BRANCH","GH_REF","GH_BRANCH","GITHUB_DISPATCH_REF","GITHUB_DISPATCH_BRANCH"]);
+  const owner = base.owner || ownerFallback.value || 'Rodantmat';
+  let repo = base.repo || repoFallback.value || '';
+  if (repo && !repo.includes('/') && owner) repo = `${owner}/${repo}`;
+  const workflow = githubWorkflowFileName(base.workflow || workflowFallback.value || 'scrape.yml');
+  const ref = base.ref || refFallback.value || 'main';
+  const missing = [];
+  if (!repo) missing.push('GITHUB_REPO_OR_GITHUB_OWNER_PLUS_GITHUB_REPO');
+  if (!token.value) missing.push('GITHUB_TOKEN');
+  if (!workflow) missing.push('GITHUB_WORKFLOW_FILE');
+  return {
+    ...base,
+    repo,
+    owner,
+    token: token.value || '',
+    workflow,
+    ref,
+    missing,
+    configured: missing.length === 0,
+    token_source: token.source || base.token_source,
+    token_checked: token.checked || base.token_checked,
+    token_length: token.value ? token.value.length : 0,
+    resolver: 'async_one_source_capsule_parity_env_inline_kv_db_remote_config',
+    remote_config_source: cfgRemote.source || null
+  };
 }
 
 function deriveGithubRepoFromPromptBaseUrl(env = {}) {
@@ -1495,7 +1562,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_7_unified_resource_address_resolver'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_8_one_source_capsule_parity_gate'
   };
 }
 
@@ -1522,7 +1589,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.7 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.8 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
 }
 
@@ -1544,7 +1611,7 @@ function buildFunctionCapsule(jobName, env = {}, input = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const dbBound = !!env.DB;
   const common = {
-    capsule_version: 'function_capsule_v1_5_06_7',
+    capsule_version: 'function_capsule_v1_5_06_8',
     job,
     db_bound: dbBound,
     worker_url_bound: !!workerUrl,
@@ -1572,7 +1639,9 @@ function withFunctionCapsule(jobName, body = {}, env = {}) {
   return { ...(body || {}), function_capsule: capsule, capsule_job: String(jobName || body?.job || '') };
 }
 
-function health(env) {
+async function health(env) {
+  const asyncOdds = await getOddsApiKeyForJob(env, { job:'health' }).catch(() => getOddsApiKey(env));
+  const asyncGithub = await getGithubDispatchConfigForJob(env, { job:'health' }).catch(() => getGithubDispatchConfig(env));
   return {
     ok: true,
     version: SYSTEM_VERSION,
@@ -1581,12 +1650,12 @@ function health(env) {
     ingest_token_bound: !!env.INGEST_TOKEN,
     gemini_key_bound: !!env.GEMINI_API_KEY,
     prompt_base_url_bound: !!env.PROMPT_BASE_URL,
-    odds_api_key_bound: !!getOddsApiKey(env).key,
-    odds_api_binding: oddsApiBindingStatus(env),
-    github_repo_bound: githubDispatchBindingStatus(env).repo_bound,
-    github_token_bound: githubDispatchBindingStatus(env).token_bound,
-    github_workflow_file_bound: githubDispatchBindingStatus(env).workflow_file_bound,
-    github_dispatch_binding: githubDispatchBindingStatus(env),
+    odds_api_key_bound: !!asyncOdds.key,
+    odds_api_binding: { ...oddsApiBindingStatus(env), configured: !!asyncOdds.key, source: asyncOdds.source || oddsApiBindingStatus(env).source, resolver: asyncOdds.resolver || oddsApiBindingStatus(env).resolver, key_length: asyncOdds.key ? asyncOdds.key.length : 0 },
+    github_repo_bound: !!asyncGithub.repo,
+    github_token_bound: !!asyncGithub.token,
+    github_workflow_file_bound: !!asyncGithub.workflow,
+    github_dispatch_binding: { ...githubDispatchBindingStatus(env), configured: !!asyncGithub.configured, repo_bound: !!asyncGithub.repo, token_bound: !!asyncGithub.token, workflow_file_bound: !!asyncGithub.workflow, token_source: asyncGithub.token_source, token_length: asyncGithub.token_length, resolver: asyncGithub.resolver },
     scheduled_handler_present: true,
     production_clock_present: true,
     jobs: Object.keys(JOBS),
@@ -3223,7 +3292,7 @@ function priorAdminStepResult(state, stepName) {
 }
 
 async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
-  const githubCfg = getGithubDispatchConfig(env);
+  const githubCfg = await getGithubDispatchConfigForJob(env, input);
   const repo = String(githubCfg.repo || '').trim();
   const token = String(githubCfg.token || '').trim();
   const workflow = githubWorkflowFileName(githubCfg.workflow || 'scrape.yml');
@@ -8862,7 +8931,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    // v1.5.06.7: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
+    // v1.5.06.8: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
     // It must never expand from the first selected job to all later enabled catalog rows.
     // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
     selected = [];
@@ -8910,7 +8979,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.7 Unified Resource Address Resolver: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.8 One-Source Capsule Parity Gate: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
@@ -9057,7 +9126,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.06.0 PrizePicks Dispatch Authority Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.06.8 One-Source Capsule Parity Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
 }
 
 
@@ -15053,17 +15122,15 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
 }
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
-  const oddsKeyInfo = await getOddsApiKeyCapsule(env, input || {});
-  const oddsCapsule = { api_key_source: oddsKeyInfo.source || null, resolver: oddsKeyInfo.resolver || null, configured: !!oddsKeyInfo.key };
+  const oddsKeyInfo = await getOddsApiKeyForJob(env, input);
   if (!oddsKeyInfo.key) return {
     ok:true,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:input.job || 'run_odds_api_market_intel',
     error:'Missing ODDS_API_KEY secret',
-    odds_api_binding: oddsApiBindingStatusFromResolved(oddsKeyInfo, env),
-    function_capsule: oddsCapsule,
-    note:'Odds API function capsule could not hydrate a key from direct env, accepted aliases, Secret Store/KV-style bindings, or job-local resources. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
+    odds_api_binding: oddsApiBindingStatus(env),
+    note:'Odds API function capsule checked direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, and remote config.txt. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
   };
   const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   await ensureOddsApiTables(env);
@@ -15153,7 +15220,6 @@ async function runOddsApiMarketIntel(input, env) {
     overwrite_preflight,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
-    function_capsule: oddsCapsule,
     odds_api_binding: oddsApiBindingStatus(env),
     game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
     selected_events:selected.length,

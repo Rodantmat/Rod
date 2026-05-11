@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.06.6 - Odds Capsule Resource Resolver"
+SCRIPT_VERSION = "v1.5.06.8 - One-Source Capsule Parity Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
