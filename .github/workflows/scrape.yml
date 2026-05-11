@@ -56,7 +56,8 @@ jobs:
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          ALPHADOG_WORKER_URL: ${{ github.event.inputs.worker_url || github.event.client_payload.worker_url || secrets.ALPHADOG_WORKER_URL }}
+          ALPHADOG_WORKER_URL: ${{ github.event.inputs.worker_url || github.event.client_payload.worker_url || secrets.ALPHADOG_WORKER_URL || secrets.CONTROL_WORKER_URL }}
+          CONTROL_WORKER_URL: ${{ secrets.CONTROL_WORKER_URL }}
           ALPHADOG_WORKER_STATUS_URL: ${{ secrets.ALPHADOG_WORKER_STATUS_URL }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: python main.py
