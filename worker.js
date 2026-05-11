@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.8 - One-Source Capsule Parity Gate";
+const SYSTEM_VERSION = "v1.5.06.9 - Capsule Parity Recovery Lock";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1209,37 +1209,72 @@ function oddsApiBindingStatus(env = {}) {
   };
 }
 
-function readEnvCandidate(env = {}, names = []) {
+function readEnvCandidate(env = {}, names = [], options = {}) {
   const checked = [];
   const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const accepted = new Set(names.map(normalizeName));
+  const accepted = new Set((names || []).map(normalizeName));
+  const rawNames = Array.isArray(names) ? names : [];
 
-  for (const name of names) {
-    checked.push(name);
-    const value = env && env[name];
-    if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
+  function coerceSecretValue(value) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") return String(value).trim();
     if (value && typeof value === "object") {
-      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-      if (nested.trim()) return { value: nested.trim(), source: name, checked };
+      for (const k of ["value", "key", "token", "secret", "secret_value", "config_value", "resource_value", "api_key", "apiKey", "pat"]) {
+        const nested = value[k];
+        if (typeof nested === "string" && nested.trim()) return nested.trim();
+        if (typeof nested === "number" || typeof nested === "boolean") return String(nested).trim();
+      }
     }
+    return "";
+  }
+
+  for (const name of rawNames) {
+    checked.push(name);
+    const val = coerceSecretValue(env && env[name]);
+    if (val) return { value: val, source: name, checked, resolver: 'direct_named_candidate' };
   }
 
   try {
     for (const name of Object.keys(env || {})) {
       if (!accepted.has(normalizeName(name))) continue;
       if (!checked.includes(name)) checked.push(name);
-      const value = env[name];
-      if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
-      if (value && typeof value === "object") {
-        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-        if (nested.trim()) return { value: nested.trim(), source: name, checked };
-      }
+      const val = coerceSecretValue(env[name]);
+      if (val) return { value: val, source: name, checked, resolver: 'normalized_candidate_scan' };
     }
   } catch (_) {}
 
-  return { value: "", source: null, checked };
-}
+  // Recovery lock: if the real production secret was created with a slightly different
+  // address, do not fail the scheduled capsule just because the exact alias list missed it.
+  // This keeps manual one-by-one and queued/scheduled jobs using the same broad resolver.
+  const purpose = String(options.purpose || options.job || '').toLowerCase();
+  const wantsGithub = purpose.includes('github') || purpose.includes('prizepicks') || rawNames.some(n => /GITHUB|GH_|GH[A-Z_]*TOKEN|PAT/i.test(String(n)));
+  const wantsOdds = purpose.includes('odds') || rawNames.some(n => /ODDS/i.test(String(n)));
+  const negativeGithub = /REPO|OWNER|WORKFLOW|BRANCH|REF|URL|BASE|D1|DB|ACCOUNT|ZONE|EMAIL|USER|NAME|FILE|PATH|DATE|ENV|MODE|PROMPT|INGEST/;
+  const negativeOdds = /URL|BASE|REGION|MARKET|SPORT|BOOK|FORMAT|WINDOW|D1|DB|PROMPT|INGEST/;
+  try {
+    for (const name of Object.keys(env || {})) {
+      const norm = normalizeName(name);
+      if (checked.includes(name)) continue;
+      let match = false;
+      if (wantsGithub) {
+        const tokenish = norm.includes('GITHUB') || norm.startsWith('GH') || norm.includes('GIT') || norm.includes('PAT');
+        const secretish = norm.includes('TOKEN') || norm.includes('PAT') || norm.includes('SECRET') || norm.includes('KEY');
+        match = tokenish && secretish && !negativeGithub.test(norm);
+      }
+      if (!match && wantsOdds) {
+        const oddsish = norm.includes('ODDS') || norm.includes('THEODDS') || norm.includes('SPORTSODDS');
+        const secretish = norm.includes('KEY') || norm.includes('TOKEN') || norm.includes('SECRET') || norm === 'ODDSAPI';
+        match = oddsish && secretish && !negativeOdds.test(norm);
+      }
+      if (!match) continue;
+      checked.push(`fuzzy:${name}`);
+      const val = coerceSecretValue(env[name]);
+      if (val) return { value: val, source: name, checked, resolver: wantsGithub ? 'fuzzy_env_github_secret_scan' : 'fuzzy_env_odds_secret_scan' };
+    }
+  } catch (_) {}
 
+  return { value: "", source: null, checked, resolver: 'not_found' };
+}
 
 const ALPHADOG_CAPSULE_CONFIG_CACHE = { loaded_at: 0, data: null, error: null, source: null };
 
@@ -1277,6 +1312,32 @@ function findConfigValue(config = {}, names = []) {
   const wanted = new Set((names || []).map(normalizeResourceName));
   for (const [k, v] of Object.entries(config || {})) {
     if (!wanted.has(normalizeResourceName(k))) continue;
+    const val = typeof v === 'string' ? v.trim() : String(v || '').trim();
+    if (val) return { value: val, key: k };
+  }
+  return { value: '', key: null };
+}
+
+function findConfigValueFuzzy(config = {}, names = [], options = {}) {
+  const purpose = String(options.purpose || options.job || '').toLowerCase();
+  const wantsGithub = purpose.includes('github') || purpose.includes('prizepicks') || (names || []).some(n => /GITHUB|GH_|PAT/i.test(String(n)));
+  const wantsOdds = purpose.includes('odds') || (names || []).some(n => /ODDS/i.test(String(n)));
+  const negativeGithub = /REPO|OWNER|WORKFLOW|BRANCH|REF|URL|BASE|D1|DB|ACCOUNT|ZONE|EMAIL|USER|NAME|FILE|PATH|DATE|ENV|MODE|PROMPT|INGEST/;
+  const negativeOdds = /URL|BASE|REGION|MARKET|SPORT|BOOK|FORMAT|WINDOW|D1|DB|PROMPT|INGEST/;
+  for (const [k, v] of Object.entries(config || {})) {
+    const norm = normalizeResourceName(k);
+    let match = false;
+    if (wantsGithub) {
+      const tokenish = norm.includes('GITHUB') || norm.startsWith('GH') || norm.includes('GIT') || norm.includes('PAT');
+      const secretish = norm.includes('TOKEN') || norm.includes('PAT') || norm.includes('SECRET') || norm.includes('KEY');
+      match = tokenish && secretish && !negativeGithub.test(norm);
+    }
+    if (!match && wantsOdds) {
+      const oddsish = norm.includes('ODDS') || norm.includes('THEODDS') || norm.includes('SPORTSODDS');
+      const secretish = norm.includes('KEY') || norm.includes('TOKEN') || norm.includes('SECRET') || norm === 'ODDSAPI';
+      match = oddsish && secretish && !negativeOdds.test(norm);
+    }
+    if (!match) continue;
     const val = typeof v === 'string' ? v.trim() : String(v || '').trim();
     if (val) return { value: val, key: k };
   }
@@ -1322,7 +1383,7 @@ async function loadCapsuleRemoteConfig(env = {}) {
 
 async function readCapsuleResourceCandidate(env = {}, names = [], options = {}) {
   const checked = [];
-  const direct = readEnvCandidate(env, names);
+  const direct = readEnvCandidate(env, names, options);
   checked.push(...(direct.checked || []));
   if (direct.value) return { value: direct.value, source: direct.source, resolver: 'direct_env', checked };
 
@@ -1331,9 +1392,11 @@ async function readCapsuleResourceCandidate(env = {}, names = [], options = {}) 
     const raw = env && env[inlineName];
     const text = typeof raw === 'string' ? raw : (raw && typeof raw.value === 'string' ? raw.value : '');
     if (!text.trim()) continue;
-    const found = findConfigValue(parseAlphaDogConfigText(text), names);
+    const parsedInline = parseAlphaDogConfigText(text);
+    let found = findConfigValue(parsedInline, names);
+    if (!found.value) found = findConfigValueFuzzy(parsedInline, names, options);
     checked.push(`${inlineName}:${found.key || 'checked'}`);
-    if (found.value) return { value: found.value, source: `${inlineName}.${found.key}`, resolver: 'inline_config_text', checked };
+    if (found.value) return { value: found.value, source: `${inlineName}.${found.key}`, resolver: found.key ? 'inline_config_text' : 'inline_config_text_fuzzy', checked };
   }
 
   const kvBindings = ['ALPHADOG_SECRETS','ALPHADOG_CONFIG','CAPSULE_RESOURCES','FUNCTION_CAPSULE_RESOURCES','SECRET_STORE','SECRETS','CONFIG_KV','CONTROL_CONFIG'];
@@ -1373,7 +1436,8 @@ async function readCapsuleResourceCandidate(env = {}, names = [], options = {}) 
   }
 
   const remote = await loadCapsuleRemoteConfig(env).catch(err => ({ data:{}, source:null, error:String(err?.message || err) }));
-  const found = findConfigValue(remote.data || {}, names);
+  let found = findConfigValue(remote.data || {}, names);
+  if (!found.value) found = findConfigValueFuzzy(remote.data || {}, names, options);
   checked.push(`${remote.source || 'remote_config'}:${found.key || 'checked'}`);
   if (found.value) return { value: found.value, source: `${remote.source}.${found.key}`, resolver: 'remote_config_txt', checked };
 
@@ -1562,7 +1626,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_8_one_source_capsule_parity_gate'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_9_capsule_parity_recovery_lock'
   };
 }
 
@@ -1589,7 +1653,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.8 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.9 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
 }
 
@@ -1611,7 +1675,7 @@ function buildFunctionCapsule(jobName, env = {}, input = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const dbBound = !!env.DB;
   const common = {
-    capsule_version: 'function_capsule_v1_5_06_8',
+    capsule_version: 'function_capsule_v1_5_06_9',
     job,
     db_bound: dbBound,
     worker_url_bound: !!workerUrl,
@@ -3556,16 +3620,29 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       worker_url:workerUrl
     }
   };
-  const response = await fetch(workflowDispatchUrl, {
-    method:'POST',
-    headers:{
-      'Authorization':`Bearer ${token}`,
-      'Accept':'application/vnd.github+json',
-      'X-GitHub-Api-Version':'2022-11-28',
-      'User-Agent':'AlphaDog-Control-Room-Worker'
-    },
-    body:JSON.stringify(workflowPayload)
-  });
+  const dispatchController = new AbortController();
+  const dispatchTimeout = setTimeout(() => dispatchController.abort('github_workflow_dispatch_timeout_12s'), 12000);
+  let response;
+  try {
+    response = await fetch(workflowDispatchUrl, {
+      method:'POST',
+      headers:{
+        'Authorization':`Bearer ${token}`,
+        'Accept':'application/vnd.github+json',
+        'X-GitHub-Api-Version':'2022-11-28',
+        'User-Agent':'AlphaDog-Control-Room-Worker'
+      },
+      body:JSON.stringify(workflowPayload),
+      signal: dispatchController.signal
+    });
+  } catch (err) {
+    clearTimeout(dispatchTimeout);
+    const error = String(err?.message || err || 'github_workflow_dispatch_fetch_failed');
+    await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatch_failed', step:'github_workflow_dispatch_fetch_failed', progress_message:'Worker failed before GitHub workflow_dispatch returned.', started_at:nowIso, finished_at:new Date().toISOString(), error_message:error.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_event_type:'workflow_dispatch' });
+    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:'trigger_prizepicks_github_board_refresh', status:'github_workflow_dispatch_fetch_failed', error, terminal_failure:true, blocks_downstream:true, board_refresh_complete:false, dispatch_id:outboundDispatchId, github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, endpoint:'actions/workflows/:workflow_id/dispatches', binding: githubDispatchBindingStatus(env), function_capsule: input?.function_capsule || buildFunctionCapsule('trigger_prizepicks_github_board_refresh', env, input) }, note:'GitHub workflow_dispatch did not return inside the Worker safety timeout. This avoids leaving PrizePicks Board stuck running with null output.' };
+  } finally {
+    clearTimeout(dispatchTimeout);
+  }
   const text = await response.text().catch(() => '');
   const ok = response.status === 204;
   const triggeredAt = nowIso;
@@ -8931,7 +9008,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    // v1.5.06.8: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
+    // v1.5.06.9: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
     // It must never expand from the first selected job to all later enabled catalog rows.
     // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
     selected = [];
@@ -8979,7 +9056,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.8 One-Source Capsule Parity Gate: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.9 Capsule Parity Recovery Lock: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
@@ -9126,7 +9203,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.06.8 One-Source Capsule Parity Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.06.9 Capsule Parity Recovery Lock is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
 }
 
 

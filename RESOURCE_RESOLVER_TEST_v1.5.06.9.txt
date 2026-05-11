@@ -1,0 +1,12 @@
+AlphaDog v1.5.06.9 - Capsule Parity Recovery Lock
+
+Validated locally:
+- worker.js parses with node --check.
+- Shared resource resolver includes exact env, normalized env, fuzzy env, inline config text, KV/Secret-style bindings, DB config/resource tables, and remote config.txt fallback.
+- GitHub fuzzy resolver excludes repo/owner/workflow/ref/url/path style variables.
+- Odds fuzzy resolver excludes URL/base/region/market/sport/book/window style variables.
+- Schedule cascade remains 8 jobs and does not include static_weekly or incremental_daily.
+
+Production validation required after deploy:
+- DEBUG > Health must show github_token_bound true and odds_api_key_bound true.
+- Schedule Cascade should not report missing_github_dispatch_secret or Missing ODDS_API_KEY if Health sees those bindings.
