@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.07.4 - Cascade Eligibility Gate";
+const SYSTEM_VERSION = "v1.5.07.5 - Scoring Completion Reaper Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9315,6 +9315,99 @@ function isOptionalRefreshDependency(row) {
   return key === 'odds_api_morning' || key === 'odds_api_afternoon';
 }
 
+
+async function finalizeCompletedScoringQueueFromScoringRuns(env, seed = {}, input = {}) {
+  await ensureRefreshOrchestratorTables(env);
+  const requestId = String(seed?.request_id || seed?.running_request_id || '').trim();
+  if (!requestId) return { finalized:false, reason:'missing_request_id' };
+  const q = await env.DB.prepare(`
+    SELECT request_id, chain_id, job_key, display_name, sequence_order, status, requested_slate_date, started_at, created_at, updated_at
+    FROM data_refresh_queue
+    WHERE request_id=?
+      AND job_key='scoring_refresh'
+    LIMIT 1
+  `).bind(requestId).first().catch(() => null);
+  if (!q) return { finalized:false, reason:'queue_row_not_found_or_not_scoring', request_id:requestId };
+  if (String(q.status || '').toLowerCase() === 'completed') return { finalized:true, already_completed:true, queue:q };
+  const startedAnchor = q.started_at || q.updated_at || q.created_at || null;
+  const scoring = await env.DB.prepare(`
+    SELECT run_id, slate_date, status, rows_targeted, rows_certified, rows_promoted, rows_active, created_at, completed_at, error, substr(details_json,1,3000) AS details_preview
+    FROM scoring_runs
+    WHERE slate_date=COALESCE(?, slate_date)
+      AND completed_at IS NOT NULL
+      AND error IS NULL
+      AND UPPER(COALESCE(status,'')) IN ('COMPLETED','COMPLETED_WITH_SKIPS','SUCCESS','PASS')
+      AND datetime(completed_at) >= datetime(COALESCE(?, created_at, '1970-01-01 00:00:00'))
+    ORDER BY datetime(completed_at) DESC, datetime(created_at) DESC
+    LIMIT 1
+  `).bind(q.requested_slate_date || null, startedAnchor).first().catch(() => null);
+  if (!scoring) return { finalized:false, reason:'no_completed_scoring_run_after_queue_start', request_id:requestId, queue_started_at:startedAnchor, slate_date:q.requested_slate_date || null };
+  const wrapped = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'refresh_orchestrator_tick',
+    orchestrator:'single_lane_independent',
+    request_id:q.request_id,
+    chain_id:q.chain_id,
+    job_key:'scoring_refresh',
+    job_index:Number(q.sequence_order || 90),
+    display_name:q.display_name || '09 Scoring Board',
+    routed_job:'run_full_scoring_refresh_v1',
+    result:{
+      ok:true,
+      data_ok:true,
+      version:SYSTEM_VERSION,
+      job:'run_full_scoring_refresh_v1',
+      status:'SCORING_QUEUE_FINALIZED_FROM_SCORING_RUNS_REAPER',
+      slate_date:scoring.slate_date,
+      run_id:scoring.run_id,
+      scoring_run_status:scoring.status,
+      rows_targeted:Number(scoring.rows_targeted || 0),
+      rows_certified:Number(scoring.rows_certified || 0),
+      rows_promoted:Number(scoring.rows_promoted || 0),
+      rows_active:Number(scoring.rows_active || 0),
+      scoring_created_at:scoring.created_at || null,
+      scoring_completed_at:scoring.completed_at || null,
+      details_preview:scoring.details_preview || null,
+      note:'Scoring already completed in scoring_runs; v1.5.07.5 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
+    },
+    elapsed_ms:0
+  };
+  await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET status='completed',
+        finished_at=COALESCE(finished_at, ?),
+        updated_at=CURRENT_TIMESTAMP,
+        error=NULL,
+        output_json=?
+    WHERE request_id=?
+      AND job_key='scoring_refresh'
+      AND status IN ('pending','running','failed')
+  `).bind(scoring.completed_at || new Date().toISOString(), JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), q.request_id).run().catch(() => null);
+  await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET running_flag=0,
+        run_requested_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        last_status='completed',
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        last_finished_at=COALESCE(last_finished_at, CURRENT_TIMESTAMP),
+        last_duration_ms=0,
+        last_output_json=?,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE job_key='scoring_refresh'
+  `).bind(JSON.stringify(wrapped).slice(0,10000)).run().catch(() => null);
+  await releaseSingleLaneEnqueueLock(env, q.request_id, { status:'completed', job_key:'scoring_refresh', source:'scoring_runs_reaper' }).catch(() => null);
+  await releaseSingleLaneGlobalState(env, 'IDLE', wrapped).catch(() => null);
+  await singleLaneLog(env, { request_id:q.request_id, chain_id:q.chain_id, job_key:'scoring_refresh', job_index:Number(q.sequence_order || 90), event_type:'scoring_queue_reaper_completed', status:'completed', message:'09 Scoring Board finalized from scoring_runs completion reaper.', payload_json:wrapped }).catch(() => null);
+  await refreshOrchestratorEvent(env, { request_id:q.request_id, chain_id:q.chain_id, job_key:'scoring_refresh', event_type:'single_lane_scoring_reaper_complete', status:'completed', message:'Scoring queue/global wrapper finalized from scoring_runs.', payload_json:wrapped }).catch(() => null);
+  return { finalized:true, queue:q, scoring_run:scoring, wrapped };
+}
+
 async function releaseNextRefreshQueueRow(env, row, meta = {}) {
   const next = await env.DB.prepare(`
     SELECT request_id, job_key, display_name
@@ -9844,8 +9937,15 @@ async function runRefreshOrchestratorTick(input, env) {
   if (Number(state?.lock_flag || 0) === 1) {
     activeLockedRow = await env.DB.prepare(`SELECT * FROM data_orchestrator_jobs WHERE running_flag=1 ORDER BY updated_at DESC LIMIT 1`).first().catch(() => null);
     const seconds = state?.updated_at ? Math.round((Date.now() - parseD1TimestampMaybe(state.updated_at)) / 1000) : null;
+    const lockedJobKey = String(state?.running_job_key || activeLockedRow?.job_key || '');
+    if (lockedJobKey === 'scoring_refresh') {
+      const scoringReaper = await finalizeCompletedScoringQueueFromScoringRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_scoring_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'scoring_reaper_error', error:String(e?.message || e) }));
+      if (scoringReaper?.finalized) {
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.5 finalized the stuck queue row and released the global lock without waiting for timeout.' };
+      }
+    }
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
-    // v1.5.07.4: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
+    // v1.5.07.5: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
@@ -9921,7 +10021,7 @@ async function runRefreshOrchestratorTick(input, env) {
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.07.4: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      // v1.5.07.5: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -11903,7 +12003,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.07.4 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.5 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);

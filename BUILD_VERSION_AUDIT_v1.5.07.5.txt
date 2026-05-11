@@ -1,0 +1,20 @@
+BUILD VERSION AUDIT
+
+Expected version everywhere:
+v1.5.07.5 - Scoring Completion Reaper Gate
+
+Files included:
+- worker.js
+- control_room.html
+- main.py
+- package.json
+- scrape.yml
+- wrangler.jsonc
+- README_v1.5.07.5.txt
+- BUILD_VERSION_AUDIT_v1.5.07.5.txt
+
+Validation target:
+The Worker response version, control room version tag, main.py SCRIPT_VERSION, README version, audit version, and ZIP filename must match v1.5.07.5.
+
+Surgical change:
+Scoring completion reaper finalizes stuck scoring_refresh queue/global wrapper from scoring_runs completion evidence.
