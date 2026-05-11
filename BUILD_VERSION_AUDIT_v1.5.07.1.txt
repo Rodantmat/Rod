@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.07.1 - Production Clock Catchup Gate
+
+Files checked:
+- worker.js: SYSTEM_VERSION = v1.5.07.1 - Production Clock Catchup Gate
+- control_room.html: visible version tag updated to v1.5.07.1 - Production Clock Catchup Gate
+- main.py: SCRIPT_VERSION updated to v1.5.07.1 - Production Clock Catchup Gate
+- README_v1.5.07.1.txt: created
+
+Patch certification:
+- Production Clock due logic is catch-up/window based, not exact-minute only.
+- Due slots blocked by an active single-lane job are not marked as enqueued.
+- Clock emits explicit due-slot checked/blocked/enqueued events.
+- Stale pending NULL run_after cascade child rows are released to run when lower sequence jobs are terminal, not failed.
+- Existing successful scoring finalizer gate from the previous scoring finalizer is preserved.
+- ZIP is flat; no subdirectories.

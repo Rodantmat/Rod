@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.07.0 - Scoring Queue Finalizer Gate"
+SCRIPT_VERSION = "v1.5.07.1 - Production Clock Catchup Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
