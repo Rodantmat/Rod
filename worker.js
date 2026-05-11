@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.07.6 - Pending Eligibility Recovery Gate";
+const SYSTEM_VERSION = "v1.5.07.7 - One-Shot Clock Plan Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -134,6 +134,7 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
   refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
+  refresh_orchestrator_create_one_shot_full_run: "DATA REFRESHING > Create One-Shot Full Run",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -1008,6 +1009,7 @@ export default {
         const productionClockWatchdog = await productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' });
         const productionClock = await enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' });
         const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
+        const oneShotClockCleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'scheduled_minute_after_tick' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
         if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
           result = {
             ok: true,
@@ -1019,6 +1021,7 @@ export default {
             production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
             orchestrator_tick: orchestratorTick,
+            one_shot_cleanup: oneShotClockCleanup,
             note: 'Minute cron checked the production schedule table and advanced the database-backed orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
           };
         } else {
@@ -1796,6 +1799,7 @@ function executableJobNames() {
     "refresh_orchestrator_cancel_all",
     "refresh_orchestrator_schedule_status",
     "refresh_orchestrator_seed_production_clock",
+    "refresh_orchestrator_create_one_shot_full_run",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -9165,10 +9169,110 @@ function productionRefreshSchedulePlans() {
   ];
 }
 
+
+function addMinutesPTScheduleParts(minutes = 5) {
+  const target = new Date(Date.now() + Math.max(1, Number(minutes || 5)) * 60 * 1000);
+  return getPTScheduleParts(target);
+}
+
+function productionFullCascadeJobKeys() {
+  return ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
+}
+
+function productionPlanIsOneShot(plan) {
+  const key = String(plan?.plan_key || '');
+  return String(plan?.schedule_kind || '').toLowerCase() === 'once' || key.startsWith('one_shot_full_backend_run_');
+}
+
+async function createOneShotProductionFullRunPlan(input, env) {
+  await ensureProductionRefreshScheduleTables(env);
+  const delayMinutes = Math.max(1, Math.min(Number(input?.delay_minutes || 5), 30));
+  const target = addMinutesPTScheduleParts(delayMinutes);
+  const ymd = String(target.date || '').replace(/-/g, '');
+  const hhmm = `${String(target.hour).padStart(2,'0')}${String(target.minute).padStart(2,'0')}`;
+  const planKey = `one_shot_full_backend_run_${ymd}_${hhmm}_${crypto.randomUUID().slice(0,8)}`;
+  const jobKeys = productionFullCascadeJobKeys();
+  await env.DB.prepare(`
+    INSERT INTO data_refresh_schedule_plan
+      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes, created_at, updated_at)
+    VALUES (?, ?, 1, 'once', ?, ?, ?, 'cascade', ?, NULL, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(
+    planKey,
+    `One-Shot Full Backend Run ${target.date} ${String(target.hour).padStart(2,'0')}:${String(target.minute).padStart(2,'0')} PT`,
+    target.date,
+    Number(target.hour),
+    Number(target.minute),
+    JSON.stringify(jobKeys),
+    `ONE_SHOT_AUTO_DELETE_AFTER_TERMINAL_CHAIN. Created by Control Room button. Due in ${delayMinutes} minute(s). Runs through the same data_refresh_schedule_plan -> minute cron -> production clock -> single-lane orchestrator path as the 9AM/1PM/10PM scheduled full backend runs.`
+  ).run();
+  await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_plan_created', status:'scheduled', message:'One-shot full backend schedule plan created.', payload_json:{ plan_key:planKey, due_pt:target, delay_minutes:delayMinutes, job_keys:jobKeys } });
+  await singleLaneLog(env, { event_type:'production_clock_one_shot_plan_created', status:'scheduled', message:'One-shot full backend schedule plan created.', payload_json:{ plan_key:planKey, due_pt:target, delay_minutes:delayMinutes, job_keys:jobKeys } });
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'refresh_orchestrator_create_one_shot_full_run',
+    status:'one_shot_full_backend_run_scheduled',
+    plan_key:planKey,
+    due_pt:target,
+    delay_minutes:delayMinutes,
+    mode:'cascade',
+    selected_job_keys:jobKeys,
+    manual_ticks_required:false,
+    note:'One-shot plan inserted into data_refresh_schedule_plan. The minute cron will enqueue it when due, run it exactly through the Production Clock schedule path, and auto-delete the one-shot schedule row after the chain reaches terminal state.'
+  };
+}
+
+async function cleanupCompletedOneShotProductionPlans(env, context = {}) {
+  await ensureProductionRefreshScheduleTables(env);
+  const plans = await sampleRows(env, `
+    SELECT plan_key, display_name, last_enqueued_key, last_enqueued_at, notes
+    FROM data_refresh_schedule_plan
+    WHERE enabled=1
+      AND schedule_kind='once'
+      AND plan_key LIKE 'one_shot_full_backend_run_%'
+    ORDER BY datetime(created_at) ASC
+    LIMIT 25
+  `).catch(() => []);
+  const deleted = [];
+  for (const plan of plans) {
+    if (!plan.last_enqueued_key) continue;
+    const like = `%"plan_key":"${String(plan.plan_key).replace(/'/g, "''")}"%`;
+    const summary = await env.DB.prepare(`
+      SELECT
+        COUNT(*) AS total_rows,
+        SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS active_rows,
+        SUM(CASE WHEN status IN ('completed','failed','cancelled','blocked') THEN 1 ELSE 0 END) AS terminal_rows,
+        MAX(updated_at) AS newest_updated
+      FROM data_refresh_queue
+      WHERE input_json LIKE ?
+    `).bind(like).first().catch(() => null);
+    if (Number(summary?.total_rows || 0) > 0 && Number(summary?.active_rows || 0) === 0) {
+      const res = await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=? AND schedule_kind='once'`).bind(plan.plan_key).run().catch(() => null);
+      if (Number(res?.meta?.changes || 0) > 0) {
+        const item = { plan_key:plan.plan_key, display_name:plan.display_name, queue_summary:summary, context };
+        deleted.push(item);
+        await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_plan_deleted', status:'deleted', message:'One-shot schedule plan auto-deleted after terminal queue chain.', payload_json:item });
+        await singleLaneLog(env, { event_type:'production_clock_one_shot_plan_deleted', status:'deleted', message:'One-shot schedule plan auto-deleted after terminal queue chain.', payload_json:item });
+      }
+    }
+  }
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'cleanup_completed_one_shot_production_plans', deleted_count:deleted.length, deleted };
+}
+
 function productionPlanIsDue(plan, pt) {
   if (!plan || Number(plan.enabled) !== 1) return false;
+  const kind = String(plan.schedule_kind || '').toLowerCase();
+  if (kind === 'once') {
+    if (plan.last_enqueued_key) return false;
+    const dueDate = String(plan.byday || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return false;
+    const nowKey = `${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
+    const dueKey = `${dueDate}|${String(plan.hour_pt).padStart(2,'0')}${String(plan.minute_pt).padStart(2,'0')}`;
+    return nowKey >= dueKey;
+  }
   if (Number(plan.hour_pt) !== Number(pt.hour) || Number(plan.minute_pt) !== Number(pt.minute)) return false;
-  if (String(plan.schedule_kind || '').toLowerCase() === 'weekly') {
+  if (kind === 'weekly') {
     return String(pt.weekday || '').slice(0,3).toLowerCase() === String(plan.byday || '').slice(0,3).toLowerCase();
   }
   return true;
@@ -9176,7 +9280,8 @@ function productionPlanIsDue(plan, pt) {
 
 async function enqueueProductionPlan(env, plan, pt, input = {}) {
   await ensureProductionRefreshScheduleTables(env);
-  const dueKey = `${plan.plan_key}|${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
+  const dueDateForKey = productionPlanIsOneShot(plan) && /^\d{4}-\d{2}-\d{2}$/.test(String(plan.byday || '')) ? String(plan.byday) : pt.date;
+  const dueKey = `${plan.plan_key}|${dueDateForKey}|${String(plan.hour_pt).padStart(2,'0')}${String(plan.minute_pt).padStart(2,'0')}`;
   if (String(plan.last_enqueued_key || '') === dueKey) {
     return { ok:true, data_ok:true, status:'already_enqueued_for_slot', plan_key:plan.plan_key, due_key:dueKey };
   }
@@ -9188,7 +9293,7 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
     return { ok:true, data_ok:true, status:'blocked_active_single_lane_waiting', plan_key:plan.plan_key, active:running || state, due_key:dueKey, note:'Production clock will retry this due slot on the next minute. No overlapping refresh jobs are allowed.' };
   }
   const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock', trigger:'production_refresh_clock', job_keys:jobKeys, slate_mode:'AUTO', plan_key:plan.plan_key, due_key:dueKey, pt }, String(plan.mode || 'selected'));
-  if (enq?.ok !== false) {
+  if (enq?.ok !== false && (Number(enq?.enqueued_count || 0) > 0 || String(enq?.status || '').includes('requested'))) {
     await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, plan.plan_key).run();
   }
   await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq } });
@@ -9214,7 +9319,7 @@ async function productionRefreshClockStatus(input, env) {
   const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
   const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT; optional one-shot full backend plans auto-delete after terminal queue completion. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
 }
 
 async function runStaticTempAutoLoop(input, env) {
@@ -9370,7 +9475,7 @@ async function finalizeCompletedScoringQueueFromScoringRuns(env, seed = {}, inpu
       scoring_created_at:scoring.created_at || null,
       scoring_completed_at:scoring.completed_at || null,
       details_preview:scoring.details_preview || null,
-      note:'Scoring already completed in scoring_runs; v1.5.07.6 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
+      note:'Scoring already completed in scoring_runs; v1.5.07.7 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
     },
     elapsed_ms:0
   };
@@ -9472,7 +9577,7 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     recovered.push({ ...row, recovered_action:isScoring ? 'cancelled_running_timeout' : 'requeued_running_timeout' });
   }
 
-  // v1.5.07.6 hard gate:
+  // v1.5.07.7 hard gate:
   // A downstream cascade row can sit pending for a long time while an upstream stage is running.
   // That is not stale. Stale-pending recovery must judge age only after the row becomes eligible.
   // It must never fail a pending/null-run row just because its original queue created_at is old.
@@ -9961,11 +10066,11 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'scoring_refresh') {
       const scoringReaper = await finalizeCompletedScoringQueueFromScoringRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_scoring_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'scoring_reaper_error', error:String(e?.message || e) }));
       if (scoringReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.7 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
-    // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
+    // v1.5.07.7: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
@@ -9999,9 +10104,10 @@ async function runRefreshOrchestratorTick(input, env) {
     LIMIT 1
   `).first().catch(() => null);
   if (!row) {
+    const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'idle_no_requested_job' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
     const jobs = await sampleRows(env, `SELECT job_key, job_index, display_name, run_requested_flag, running_flag, blocked_flag, blocked_by_job_key, last_status, last_fail, last_error_code, last_started_at, last_finished_at, updated_at FROM data_orchestrator_jobs ORDER BY job_index ASC`);
     const legacyActive = await sampleRows(env, `SELECT request_id, chain_id, job_key, status, error, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`);
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', cleanup, jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', cleanup, one_shot_cleanup, jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
   }
 
   const requestId = row.current_request_id || crypto.randomUUID();
@@ -10041,7 +10147,7 @@ async function runRefreshOrchestratorTick(input, env) {
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.07.6: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      // v1.5.07.7: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -10130,7 +10236,8 @@ async function runRefreshOrchestratorTick(input, env) {
       await releaseSingleLaneGlobalState(env, 'FAILED_RELEASED', wrapped);
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked } });
       await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked } });
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
+      const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'job_failed', request_id:requestId, chain_id:chainId, job_key:row.job_key }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, one_shot_cleanup, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
     }
 
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
@@ -10140,7 +10247,8 @@ async function runRefreshOrchestratorTick(input, env) {
     await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:wrapped });
     await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
     const remaining = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0`).first().catch(() => ({ rows_count:0 }));
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
+    const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'job_completed', request_id:requestId, chain_id:chainId, job_key:row.job_key, active_remaining:Number(remaining?.rows_count || 0) }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, one_shot_cleanup, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
   } catch (err) {
     const error = String(err?.message || err);
     const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, routed_job:row.job_name, status:'failed_exception', error, elapsed_ms:Date.now()-started };
@@ -12023,7 +12131,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.07.6 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.7 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
@@ -12998,6 +13106,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
+  if (jobName === "refresh_orchestrator_create_one_shot_full_run") return await createOneShotProductionFullRunPlan({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".
