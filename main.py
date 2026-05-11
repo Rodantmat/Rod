@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.06.2 - GitHub Workflow Dispatch Truth Gate"
+SCRIPT_VERSION = "v1.5.06.3 - PrizePicks Idempotent Dispatch Latch"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
@@ -208,9 +208,9 @@ def write_progress(cf_url, headers, status, step=None, progress_message=None, ro
               step=excluded.step,
               progress_message=excluded.progress_message,
               finished_at=COALESCE(excluded.finished_at, prizepicks_scraper_runs.finished_at),
-              rows_fetched=COALESCE(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched),
-              rows_temp=COALESCE(excluded.rows_temp, prizepicks_scraper_runs.rows_temp),
-              rows_main=COALESCE(excluded.rows_main, prizepicks_scraper_runs.rows_main),
+              rows_fetched=CASE WHEN excluded.rows_fetched IS NULL THEN prizepicks_scraper_runs.rows_fetched WHEN prizepicks_scraper_runs.rows_fetched IS NULL THEN excluded.rows_fetched ELSE MAX(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched) END,
+              rows_temp=CASE WHEN excluded.rows_temp IS NULL THEN prizepicks_scraper_runs.rows_temp WHEN prizepicks_scraper_runs.rows_temp IS NULL THEN excluded.rows_temp ELSE MAX(excluded.rows_temp, prizepicks_scraper_runs.rows_temp) END,
+              rows_main=CASE WHEN excluded.rows_main IS NULL THEN prizepicks_scraper_runs.rows_main WHEN prizepicks_scraper_runs.rows_main IS NULL THEN excluded.rows_main ELSE MAX(excluded.rows_main, prizepicks_scraper_runs.rows_main) END,
               error_message=excluded.error_message,
               source=excluded.source,
               script_version=excluded.script_version,

@@ -1,0 +1,20 @@
+BUILD VERSION AUDIT
+
+Expected version: v1.5.06.3 - PrizePicks Idempotent Dispatch Latch
+
+Files checked:
+- worker.js: SYSTEM_VERSION updated.
+- control_room.html: visible/version strings updated.
+- main.py: SCRIPT_VERSION updated.
+- README_v1.5.06.3.txt: created.
+- BUILD_VERSION_AUDIT_v1.5.06.3.txt: created.
+
+Primary fix:
+- triggerPrizePicksGithubBoardRefresh now uses prizepicks_scraper_runs as a dispatch latch.
+- Existing progress for the same dispatch_id/request_id prevents a second workflow_dispatch during cron wait ticks.
+- Progress counters are monotonic to prevent fetched/promoted row counts from regressing.
+
+No intentional changes:
+- No production scoring math changes.
+- No candidate-board schema changes.
+- No static/incremental mining changes.
