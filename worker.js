@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.5 - Function Capsule Secret Gate";
+const SYSTEM_VERSION = "v1.5.06.6 - Odds Capsule Resource Resolver";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1150,63 +1150,140 @@ function hydratePromptTemplate(prompt, slateDate) {
 }
 
 
-function getOddsApiKey(env = {}) {
-  const candidates = [
+function oddsApiSecretCandidateNames() {
+  return [
     "ODDS_API_KEY",
     "THE_ODDS_API_KEY",
     "ODDSAPI_KEY",
     "ODDS_API_TOKEN",
     "ODDS_API",
     "THEODDSAPIKEY",
-    "THE_ODDS_API"
+    "THE_ODDS_API",
+    "THE_ODDS_API_TOKEN",
+    "ODDS_KEY",
+    "SPORTS_ODDS_API_KEY"
   ];
-  const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const accepted = new Set(candidates.map(normalizeName));
+}
+
+function normalizeSecretNameForScan(v) {
+  return String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function readSecretValueSync(value) {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object") {
+    for (const k of ["value", "key", "secret", "token", "apiKey", "api_key"]) {
+      if (typeof value[k] === "string" && value[k].trim()) return value[k].trim();
+    }
+  }
+  return "";
+}
+
+async function readSecretValueAsync(value, names, checked, sourcePrefix) {
+  const direct = readSecretValueSync(value);
+  if (direct) return { key: direct, source: sourcePrefix, resolver: "sync_value" };
+  if (value && typeof value === "object") {
+    for (const method of ["get", "getSecret", "read", "secret"]) {
+      if (typeof value[method] !== "function") continue;
+      for (const name of names) {
+        checked.push(`${sourcePrefix}.${method}(${name})`);
+        try {
+          const got = await value[method](name);
+          const val = readSecretValueSync(got);
+          if (val) return { key: val, source: `${sourcePrefix}.${method}(${name})`, resolver: "async_secret_binding" };
+        } catch (_) {}
+      }
+    }
+  }
+  return null;
+}
+
+function getOddsApiKey(env = {}) {
+  const candidates = oddsApiSecretCandidateNames();
+  const accepted = new Set(candidates.map(normalizeSecretNameForScan));
   const checked = [...candidates];
 
   for (const name of candidates) {
     const value = env && env[name];
-    if (typeof value === "string" && value.trim()) {
-      return { key: value.trim(), source: name, configured: true, checked, resolver: "direct_candidate" };
-    }
-    if (value && typeof value === "object") {
-      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-      if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "nested_candidate" };
-    }
+    const direct = readSecretValueSync(value);
+    if (direct) return { key: direct, source: name, configured: true, checked, resolver: "direct_or_nested_candidate" };
   }
 
   try {
     for (const name of Object.keys(env || {})) {
-      const normalized = normalizeName(name);
+      const normalized = normalizeSecretNameForScan(name);
       if (!accepted.has(normalized)) continue;
-      const value = env[name];
       checked.push(name);
-      if (typeof value === "string" && value.trim()) {
-        return { key: value.trim(), source: name, configured: true, checked, resolver: "normalized_env_scan" };
-      }
-      if (value && typeof value === "object") {
-        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-        if (nested.trim()) return { key: nested.trim(), source: name, configured: true, checked, resolver: "normalized_nested_env_scan" };
-      }
+      const direct = readSecretValueSync(env[name]);
+      if (direct) return { key: direct, source: name, configured: true, checked, resolver: "normalized_env_scan" };
     }
   } catch (_) {}
 
-  return { key: "", source: null, configured: false, checked, resolver: "not_found" };
+  return { key: "", source: null, configured: false, checked, resolver: "sync_not_found" };
 }
 
-function oddsApiBindingStatus(env = {}) {
-  const resolved = getOddsApiKey(env);
+async function getOddsApiKeyCapsule(env = {}, input = {}) {
+  const candidates = oddsApiSecretCandidateNames();
+  const checked = [];
+
+  // Function-capsule first: any caller may pass a job-local resource bundle without relying on globals.
+  const capsuleSources = [
+    ["input.odds_api_key", input && input.odds_api_key],
+    ["input.api_key", input && input.api_key],
+    ["input.function_capsule.ODDS_API_KEY", input && input.function_capsule && input.function_capsule.ODDS_API_KEY],
+    ["input.function_capsule.secrets.ODDS_API_KEY", input && input.function_capsule && input.function_capsule.secrets && input.function_capsule.secrets.ODDS_API_KEY],
+    ["input.resources.ODDS_API_KEY", input && input.resources && input.resources.ODDS_API_KEY],
+    ["input.secrets.ODDS_API_KEY", input && input.secrets && input.secrets.ODDS_API_KEY]
+  ];
+  for (const [source, value] of capsuleSources) {
+    checked.push(source);
+    const val = readSecretValueSync(value);
+    if (val) return { key: val, source, configured: true, checked, resolver: "function_capsule_input" };
+  }
+
+  const sync = getOddsApiKey(env);
+  checked.push(...(sync.checked || []));
+  if (sync.key) return { ...sync, checked, resolver: `capsule_${sync.resolver || "sync"}` };
+
+  // Cloudflare Secret Store / KV-style bindings: the function resolves its own resource inside the function.
+  const storeNames = ["SECRETS", "SECRET_STORE", "ALPHADOG_SECRETS", "CONFIG", "CONFIG_STORE", "ENV", "VARS", "KV", "SETTINGS"];
+  for (const storeName of storeNames) {
+    const store = env && env[storeName];
+    const got = await readSecretValueAsync(store, candidates, checked, storeName);
+    if (got && got.key) return { key: got.key, source: got.source, configured: true, checked, resolver: got.resolver };
+  }
+
+  // Last-resort object scan: do not expose values, only report names checked.
+  try {
+    for (const [name, value] of Object.entries(env || {})) {
+      const upper = normalizeSecretNameForScan(name);
+      if (!upper.includes("ODDS") && !upper.includes("SECRET") && !upper.includes("CONFIG")) continue;
+      const got = await readSecretValueAsync(value, candidates, checked, name);
+      if (got && got.key) return { key: got.key, source: got.source, configured: true, checked, resolver: got.resolver };
+    }
+  } catch (_) {}
+
+  return { key: "", source: null, configured: false, checked, resolver: "capsule_not_found" };
+}
+
+function oddsApiBindingStatusFromResolved(resolved, env = {}) {
   const rawPrimary = env && typeof env.ODDS_API_KEY === "string" ? env.ODDS_API_KEY.trim() : "";
   return {
     configured: !!resolved.key,
     source: resolved.source,
     resolver: resolved.resolver || null,
     primary_bound: !!rawPrimary,
-    candidate_names_checked: resolved.checked,
+    candidate_names_checked: resolved.checked || oddsApiSecretCandidateNames(),
     key_length: resolved.key ? resolved.key.length : 0,
     fatal_when_missing: false,
-    rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs all use getOddsApiKey(env). Missing key is treated as a recoverable config/logic diagnostic and must not trap the queue.'
+    capsule_rule: "Odds jobs self-hydrate their own function capsule before execution; helpers receive the resolved capsule key instead of reading raw env again.",
+    rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs use the Odds API function-capsule resolver. Missing key is recoverable and must not trap the queue.'
   };
+}
+
+function oddsApiBindingStatus(env = {}) {
+  const resolved = getOddsApiKey(env);
+  return oddsApiBindingStatusFromResolved(resolved, env);
 }
 
 function readEnvCandidate(env = {}, names = []) {
@@ -1372,7 +1449,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_5_function_capsule_secret_gate'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_6_odds_capsule_resource_resolver'
   };
 }
 
@@ -1399,7 +1476,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.5 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.6 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
 }
 
@@ -1421,7 +1498,7 @@ function buildFunctionCapsule(jobName, env = {}, input = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const dbBound = !!env.DB;
   const common = {
-    capsule_version: 'function_capsule_v1_5_06_5',
+    capsule_version: 'function_capsule_v1_5_06_6',
     job,
     db_bound: dbBound,
     worker_url_bound: !!workerUrl,
@@ -8739,7 +8816,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    // v1.5.06.5: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
+    // v1.5.06.6: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
     // It must never expand from the first selected job to all later enabled catalog rows.
     // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
     selected = [];
@@ -8787,7 +8864,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.5 Function Capsule Secret Gate: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.6 Odds Capsule Resource Resolver: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
@@ -14930,15 +15007,17 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
 }
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
-  const oddsKeyInfo = getOddsApiKey(env);
+  const oddsKeyInfo = await getOddsApiKeyCapsule(env, input || {});
+  const oddsCapsule = { api_key_source: oddsKeyInfo.source || null, resolver: oddsKeyInfo.resolver || null, configured: !!oddsKeyInfo.key };
   if (!oddsKeyInfo.key) return {
     ok:true,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:input.job || 'run_odds_api_market_intel',
     error:'Missing ODDS_API_KEY secret',
-    odds_api_binding: oddsApiBindingStatus(env),
-    note:'Odds API key resolver checked all accepted binding names. Health and job execution use getOddsApiKey(env). This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
+    odds_api_binding: oddsApiBindingStatusFromResolved(oddsKeyInfo, env),
+    function_capsule: oddsCapsule,
+    note:'Odds API function capsule could not hydrate a key from direct env, accepted aliases, Secret Store/KV-style bindings, or job-local resources. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
   };
   const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   await ensureOddsApiTables(env);
@@ -15028,6 +15107,7 @@ async function runOddsApiMarketIntel(input, env) {
     overwrite_preflight,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
+    function_capsule: oddsCapsule,
     odds_api_binding: oddsApiBindingStatus(env),
     game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
     selected_events:selected.length,
