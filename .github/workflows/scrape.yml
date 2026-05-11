@@ -1,19 +1,32 @@
 name: MLB Automatic Scraper
+
 on:
-  schedule:
-    # Safety fallback only. AlphaDog Worker/Production Clock is the primary dispatcher.
-    # These times intentionally avoid the exact Worker dispatch minute and every run writes
-    # mlb_stats_refresh_audit + optional Worker callback status using github.run_id.
-    - cron: '7 12,15,18,21,0,6 * * *'
+  repository_dispatch:
+    types: [alphadog_prizepicks_board]
   workflow_dispatch:
     inputs:
       dispatch_id:
         description: 'AlphaDog orchestrator dispatch/request id'
         required: false
         type: string
-
+      request_id:
+        description: 'AlphaDog request id fallback'
+        required: false
+        type: string
+      chain_id:
+        description: 'AlphaDog chain id'
+        required: false
+        type: string
+      slate_date:
+        description: 'Requested slate date YYYY-MM-DD'
+        required: false
+        type: string
+      worker_url:
+        description: 'AlphaDog Worker URL override'
+        required: false
+        type: string
 concurrency:
-  group: alphadog-prizepicks-scraper-${{ github.event.inputs.dispatch_id || github.run_id }}
+  group: alphadog-prizepicks-scraper-${{ github.event.inputs.dispatch_id || github.event.inputs.request_id || github.event.client_payload.dispatch_id || github.event.client_payload.request_id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -33,13 +46,17 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_DATABASE_ID: ${{ secrets.CF_DATABASE_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
-          GITHUB_DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
-          ALPHADOG_DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
-          DISPATCH_ID: ${{ github.event.inputs.dispatch_id }}
+          GITHUB_DISPATCH_ID: ${{ github.event.inputs.dispatch_id || github.event.inputs.request_id || github.event.client_payload.dispatch_id || github.event.client_payload.request_id }}
+          ALPHADOG_DISPATCH_ID: ${{ github.event.inputs.dispatch_id || github.event.inputs.request_id || github.event.client_payload.dispatch_id || github.event.client_payload.request_id }}
+          DISPATCH_ID: ${{ github.event.inputs.dispatch_id || github.event.inputs.request_id || github.event.client_payload.dispatch_id || github.event.client_payload.request_id }}
+          ALPHADOG_REQUEST_ID: ${{ github.event.inputs.request_id || github.event.inputs.dispatch_id || github.event.client_payload.request_id || github.event.client_payload.dispatch_id }}
+          ALPHADOG_CHAIN_ID: ${{ github.event.inputs.chain_id || github.event.client_payload.chain_id }}
+          ALPHADOG_SLATE_DATE: ${{ github.event.inputs.slate_date || github.event.client_payload.slate_date }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-          ALPHADOG_WORKER_URL: ${{ secrets.ALPHADOG_WORKER_URL }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          ALPHADOG_WORKER_URL: ${{ github.event.inputs.worker_url || github.event.client_payload.worker_url || secrets.ALPHADOG_WORKER_URL }}
           ALPHADOG_WORKER_STATUS_URL: ${{ secrets.ALPHADOG_WORKER_STATUS_URL }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: python main.py
