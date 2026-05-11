@@ -1,0 +1,16 @@
+BUILD VERSION AUDIT
+
+Expected version: v1.5.06.4 - Schedule Cascade Scope Gate
+
+Checked files:
+- worker.js: SYSTEM_VERSION updated.
+- control_room.html: visible version tag updated.
+- main.py: script version references updated where present.
+- README_v1.5.06.4.txt: created.
+- BUILD_VERSION_AUDIT_v1.5.06.4.txt: created.
+
+Patch verification:
+- requestSingleLaneJobs cascade mode is now scope-locked to explicit requested job_keys.
+- productionRefreshSchedulePlans intraday full runs include both Odds API Morning and Odds API Intraday.
+- productionRefreshSchedulePlans intraday full runs exclude Static Weekly and Incremental Daily.
+- cancelRefreshOrchestratorQueue now cancels queue rows and resets orchestrator flags/locks/global state.

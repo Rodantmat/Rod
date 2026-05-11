@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.2 - GitHub Workflow Dispatch Truth Gate";
+const SYSTEM_VERSION = "v1.5.06.4 - Schedule Cascade Scope Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1353,7 +1353,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_2_workflow_dispatch_truth_gate'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_4_schedule_cascade_scope_gate'
   };
 }
 
@@ -1380,7 +1380,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.2 uses workflow_dispatch as the primary GitHub trigger because fine-grained tokens with Actions write can trigger workflows without repository Contents write.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.4 keeps workflow_dispatch as the primary GitHub trigger, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
 }
 
@@ -2908,9 +2908,9 @@ async function upsertPrizePicksScraperProgress(env, payload = {}) {
       progress_message=COALESCE(excluded.progress_message, prizepicks_scraper_runs.progress_message),
       started_at=COALESCE(excluded.started_at, prizepicks_scraper_runs.started_at),
       finished_at=COALESCE(excluded.finished_at, prizepicks_scraper_runs.finished_at),
-      rows_fetched=COALESCE(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched),
-      rows_temp=COALESCE(excluded.rows_temp, prizepicks_scraper_runs.rows_temp),
-      rows_main=COALESCE(excluded.rows_main, prizepicks_scraper_runs.rows_main),
+      rows_fetched=CASE WHEN excluded.rows_fetched IS NULL THEN prizepicks_scraper_runs.rows_fetched WHEN prizepicks_scraper_runs.rows_fetched IS NULL THEN excluded.rows_fetched ELSE MAX(excluded.rows_fetched, prizepicks_scraper_runs.rows_fetched) END,
+      rows_temp=CASE WHEN excluded.rows_temp IS NULL THEN prizepicks_scraper_runs.rows_temp WHEN prizepicks_scraper_runs.rows_temp IS NULL THEN excluded.rows_temp ELSE MAX(excluded.rows_temp, prizepicks_scraper_runs.rows_temp) END,
+      rows_main=CASE WHEN excluded.rows_main IS NULL THEN prizepicks_scraper_runs.rows_main WHEN prizepicks_scraper_runs.rows_main IS NULL THEN excluded.rows_main ELSE MAX(excluded.rows_main, prizepicks_scraper_runs.rows_main) END,
       error_message=excluded.error_message,
       source=COALESCE(excluded.source, prizepicks_scraper_runs.source),
       script_version=COALESCE(excluded.script_version, prizepicks_scraper_runs.script_version),
@@ -3046,12 +3046,19 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const currentRequestId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || '').trim();
   const priorDispatchId = String(prior.dispatch_id || prior.run_id || prior.request_id || '').trim();
   const priorMatchesCurrentRequest = !!currentRequestId && !!priorDispatchId && priorDispatchId === currentRequestId;
-  const requestedAt = priorMatchesCurrentRequest ? (prior.requested_at || prior.triggered_at || null) : null;
-  const requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
+  let requestedAt = priorMatchesCurrentRequest ? (prior.requested_at || prior.triggered_at || null) : null;
+  let requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
   const dispatchId = String((priorMatchesCurrentRequest ? priorDispatchId : '') || currentRequestId || priorDispatchId || '').trim();
   await ensurePrizePicksScraperProgressTable(env).catch(() => null);
-  const audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
-  const scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
+  let audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
+  let scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
+  const progressLatchRow = scraper_progress?.matched_dispatch || null;
+  if (!requestedAt && progressLatchRow) {
+    requestedAt = progressLatchRow.started_at || progressLatchRow.created_at || progressLatchRow.updated_at || nowIso;
+    requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
+    audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
+    scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
+  }
   const priorGithub = priorMatchesCurrentRequest ? (prior.github || prior.github_dispatch || prior.github_dispatch_config || null) : null;
   const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithub) : null;
 
@@ -8663,11 +8670,23 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const catalogRows = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
   const requestedSet = new Set(requested);
+  const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    const starts = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
-    const startOrder = starts.length ? Math.min(...starts.map(r => Number(r.sequence_order || 9999))) : 20;
-    selected = catalogRows.filter(r => Number(r.sequence_order || 9999) >= startOrder && Number(r.supports_cascade || 0) !== 0);
+    // v1.5.06.4: schedule-backed cascade is scope-locked to the plan's explicit job list.
+    // It must never expand from the first selected job to all later enabled catalog rows.
+    // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
+    selected = [];
+    const seen = new Set();
+    for (const key of requested) {
+      if (seen.has(key)) continue;
+      const row = catalogByKey.get(key);
+      if (row && Number(row.supports_cascade || 0) !== 0) {
+        selected.push(row);
+        seen.add(key);
+      }
+    }
+    selected.sort((a, b) => Number(a.sequence_order || 9999) - Number(b.sequence_order || 9999));
   } else {
     selected = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
   }
@@ -8702,7 +8721,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.0 PrizePicks Dispatch Authority Gate: each PrizePicks board queue row owns its own workflow_dispatch request, while the true incremental selector, no-delta terminal success gate, heartbeat recovery, and progress ledger remain preserved.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.4 Schedule Cascade Scope Gate: schedule-backed cascades enqueue only the plan-selected jobs; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
@@ -8744,14 +8763,13 @@ async function ensureProductionRefreshScheduleTables(env) {
 }
 
 function productionRefreshSchedulePlans() {
-  const intradayMorning = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','scoring_refresh'];
-  const intradayLater = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_afternoon','scoring_refresh'];
+  const intradayFull = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
   return [
     { plan_key:'weekly_static_monday_0030_pt', display_name:'Weekly Static Reference Refresh', schedule_kind:'weekly', byday:'Mon', hour_pt:0, minute_pt:30, mode:'selected', job_keys:['static_weekly'], notes:'Monday 12:30 AM PT. Static/reference only; runs before daily incremental and cannot overlap due global queue.' },
     { plan_key:'daily_incremental_0130_pt', display_name:'Daily Incremental Delta', schedule_kind:'daily', hour_pt:1, minute_pt:30, mode:'selected', job_keys:['incremental_daily'], notes:'Daily 1:30 AM PT. True delta when live base is A/A+ certified.' },
-    { plan_key:'intraday_full_0900_pt', display_name:'Intraday Refresh 9:00 AM', schedule_kind:'daily', hour_pt:9, minute_pt:0, mode:'cascade', job_keys:intradayMorning, notes:'Everyday phases + PrizePicks board/context + morning Odds API + scoring. Sleeper board is intentionally excluded/manual.' },
-    { plan_key:'intraday_full_1300_pt', display_name:'Intraday Refresh 1:00 PM', schedule_kind:'daily', hour_pt:13, minute_pt:0, mode:'cascade', job_keys:intradayLater, notes:'Everyday phases + PrizePicks board/context + Odds API refresh + scoring. Sleeper board is intentionally excluded/manual.' },
-    { plan_key:'intraday_full_2200_pt', display_name:'Intraday Refresh 10:00 PM', schedule_kind:'daily', hour_pt:22, minute_pt:0, mode:'cascade', job_keys:intradayLater, notes:'Late refresh for next-board/rollover context. Sleeper board is intentionally excluded/manual.' }
+    { plan_key:'intraday_full_0900_pt', display_name:'Intraday Refresh 9:00 AM', schedule_kind:'daily', hour_pt:9, minute_pt:0, mode:'cascade', job_keys:intradayFull, notes:'Everyday phases + PrizePicks board/context + both Odds API windows + scoring. Static weekly and incremental daily are intentionally excluded.' },
+    { plan_key:'intraday_full_1300_pt', display_name:'Intraday Refresh 1:00 PM', schedule_kind:'daily', hour_pt:13, minute_pt:0, mode:'cascade', job_keys:intradayFull, notes:'Everyday phases + PrizePicks board/context + both Odds API windows + scoring. Static weekly and incremental daily are intentionally excluded.' },
+    { plan_key:'intraday_full_2200_pt', display_name:'Intraday Refresh 10:00 PM', schedule_kind:'daily', hour_pt:22, minute_pt:0, mode:'cascade', job_keys:intradayFull, notes:'Late refresh for next-board/rollover context with both Odds API windows. Static weekly and incremental daily are intentionally excluded.' }
   ];
 }
 
@@ -8804,7 +8822,7 @@ async function productionRefreshClockStatus(input, env) {
   const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
   const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Sleeper board is excluded/manual.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
 }
 
 async function runStaticTempAutoLoop(input, env) {
@@ -9559,8 +9577,38 @@ async function runRefreshOrchestratorTick(input, env) {
 
 async function cancelRefreshOrchestratorQueue(input, env) {
   await ensureRefreshOrchestratorTables(env);
-  const res = await env.DB.prepare(`UPDATE data_refresh_queue SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error,'cancelled_by_user') WHERE status IN ('pending','running')`).run();
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_cancel_all', status:'cancelled_active_queue', changes:Number(res?.meta?.changes || 0), note:'Cancelled pending/running orchestrator queue rows only. It did not mutate data tables.' };
+  const reason = String(input?.reason || 'cancelled_by_user');
+  const activeRows = await sampleRows(env, `SELECT request_id, chain_id, job_key, status FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []);
+  const res = await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?),
+        output_json=COALESCE(output_json, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_cancel_all', status:'cancelled_by_user', reason }).slice(0,3000)).run();
+  const jobRes = await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET run_requested_flag=0,
+        running_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        current_request_id=NULL,
+        current_chain_id=NULL,
+        current_slate_date=NULL,
+        current_slate_mode=NULL,
+        last_status='cancelled_by_user',
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
+  `).run().catch(() => ({ meta:{ changes:0 } }));
+  const lockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(() => ({ meta:{ changes:0 } }));
+  await releaseSingleLaneGlobalState(env, 'CANCELLED_BY_USER', { reason, active_rows:activeRows });
+  await singleLaneLog(env, { event_type:'cancel_all_active_queue', status:'cancelled', message:'User cancelled all active single-lane queue rows and reset orchestrator flags.', payload_json:{ reason, active_rows:activeRows, queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0) } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_cancel_all', status:'cancelled_active_queue_and_reset_flags', queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0), cancelled_rows:activeRows, note:'Cancelled pending/running orchestrator queue rows, reset job flags, released active enqueue locks, and released the global single-lane state. It did not mutate data tables.' };
 }
 
 async function ensureIncrementalTempUniqueIndexes(env) {
