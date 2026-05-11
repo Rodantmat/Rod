@@ -1,0 +1,39 @@
+AlphaDog v1.5.06.7 - Unified Resource Address Resolver
+Offline validation performed before ZIP delivery:
+
+1. Syntax check:
+   node --check worker.js
+   Result: PASS
+
+2. Version alignment:
+   worker.js SYSTEM_VERSION = v1.5.06.7 - Unified Resource Address Resolver
+   control_room.html version string updated to v1.5.06.7
+   README and build audit renamed/updated to v1.5.06.7
+   Result: PASS
+
+3. Static source validation:
+   - broad_resource_address_scan exists in readEnvCandidate()
+   - broad_direct_odds_resource_scan exists in getOddsApiKeyCapsule()
+   - Schedule-backed cascade remains scope-locked to selected jobs
+   - Full intraday runs include odds_api_morning and odds_api_afternoon
+   - Full intraday runs exclude static_weekly and incremental_daily by selected plan list
+   Result: PASS
+
+4. Resolver correction made:
+   Previous issue was not the schedule. It was resource addressing in routed/capsule execution paths.
+   v1.5.06.7 keeps exact candidate binding checks and adds broad project-resource address scans.
+   This is designed to catch already-existing resources with project-specific names without exposing values.
+
+5. Expected post-deploy test:
+   - DATA REFRESHING > Cancel Queue
+   - DATA REFRESHING > Init Production Clock
+   - DATA REFRESHING > Production Clock Status
+   - DATA REFRESHING > Schedule Cascade
+   - wait 20 minutes
+   - run the chain SQL/status check
+
+6. Certification rule:
+   A healthy full run should show 8 queued jobs:
+   everyday_phase1, weather_roof, lineup_context, prizepicks_board, prizepicks_context,
+   odds_api_morning, odds_api_afternoon, scoring_refresh.
+   It should not include static_weekly or incremental_daily.

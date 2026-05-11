@@ -1,0 +1,17 @@
+AlphaDog/OXYGEN-COBALT Build Version Audit
+Expected version: v1.5.06.7 - Unified Resource Address Resolver
+
+Files included:
+- worker.js: SYSTEM_VERSION is v1.5.06.7 - Unified Resource Address Resolver.
+- control_room.html: visible version tag is v1.5.06.7 - Unified Resource Address Resolver.
+- main.py: SCRIPT_VERSION is v1.5.06.7 - Unified Resource Address Resolver.
+- README_v1.5.06.7.txt: created.
+- BUILD_VERSION_AUDIT_v1.5.06.7.txt: created.
+- wrangler.jsonc, package.json, scrape.yml included unchanged except package structure.
+
+Validation:
+- worker.js passes node syntax check.
+- ZIP is flat-folder only.
+- No subdirectories.
+- Intraday schedule scope remains everyday/market/odds/scoring only.
+- Weekly static and daily incremental remain separate scheduled plans.

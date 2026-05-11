@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.6 - Odds Capsule Resource Resolver";
+const SYSTEM_VERSION = "v1.5.06.7 - Unified Resource Address Resolver";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1257,7 +1257,12 @@ async function getOddsApiKeyCapsule(env = {}, input = {}) {
   try {
     for (const [name, value] of Object.entries(env || {})) {
       const upper = normalizeSecretNameForScan(name);
-      if (!upper.includes("ODDS") && !upper.includes("SECRET") && !upper.includes("CONFIG")) continue;
+      const looksOdds = upper.includes("ODDS") || upper.includes("THEODDS") || upper.includes("SPORTSODDS");
+      const looksSecretStore = upper.includes("SECRET") || upper.includes("CONFIG");
+      if (!looksOdds && !looksSecretStore) continue;
+      checked.push(name);
+      const direct = readSecretValueSync(value);
+      if (direct && looksOdds) return { key: direct, source: name, configured: true, checked, resolver: "broad_direct_odds_resource_scan" };
       const got = await readSecretValueAsync(value, candidates, checked, name);
       if (got && got.key) return { key: got.key, source: got.source, configured: true, checked, resolver: got.resolver };
     }
@@ -1290,31 +1295,72 @@ function readEnvCandidate(env = {}, names = []) {
   const checked = [];
   const normalizeName = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const accepted = new Set(names.map(normalizeName));
+  const wanted = Array.from(accepted);
+  const valueFrom = (value) => {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (value && typeof value === "object") {
+      for (const k of ["value", "key", "secret", "token", "apiKey", "api_key", "accessToken", "access_token"]) {
+        if (typeof value[k] === "string" && value[k].trim()) return value[k].trim();
+      }
+    }
+    return "";
+  };
+  const looksLikeWantedResource = (normalized) => {
+    if (!normalized) return false;
+    if (accepted.has(normalized)) return true;
+    const wantsOdds = wanted.some(x => x.includes("ODDS") || x.includes("THEODDS"));
+    const wantsGithubToken = wanted.some(x => x.includes("GITHUB") || x.startsWith("GH") || x.includes("PAT"));
+    const wantsGithubRepo = wanted.some(x => x.includes("REPO") || x.includes("REPOSITORY") || x.includes("OWNER") || x.includes("ORG"));
+    const wantsWorkflow = wanted.some(x => x.includes("WORKFLOW"));
+    const wantsRef = wanted.some(x => x.includes("BRANCH") || x.endsWith("REF"));
+    if (wantsOdds) {
+      return normalized.includes("ODDS") || normalized.includes("THEODDS") || normalized.includes("ODDSAPI") || normalized.includes("SPORTSODDS");
+    }
+    if (wantsGithubToken) {
+      const githubish = normalized.includes("GITHUB") || normalized.startsWith("GH") || normalized.includes("GHACTIONS") || normalized.includes("ACTIONS");
+      const secretish = normalized.includes("TOKEN") || normalized.includes("PAT") || normalized.includes("SECRET") || normalized.includes("ACCESS");
+      return githubish && secretish;
+    }
+    if (wantsGithubRepo) {
+      const githubish = normalized.includes("GITHUB") || normalized.startsWith("GH") || normalized.includes("REPOSITORY");
+      const repoish = normalized.includes("REPO") || normalized.includes("REPOSITORY") || normalized.includes("OWNER") || normalized.includes("ORG") || normalized.includes("ACCOUNT");
+      return githubish && repoish;
+    }
+    if (wantsWorkflow) return normalized.includes("WORKFLOW") || normalized.includes("SCRAPEYML") || normalized.includes("SCRAPEWORKFLOW");
+    if (wantsRef) return normalized.includes("GITHUBREF") || normalized.includes("GITHUBBRANCH") || normalized === "BRANCH" || normalized === "REF" || normalized.endsWith("BRANCH") || normalized.endsWith("REF");
+    return false;
+  };
 
   for (const name of names) {
     checked.push(name);
-    const value = env && env[name];
-    if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
-    if (value && typeof value === "object") {
-      const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-      if (nested.trim()) return { value: nested.trim(), source: name, checked };
-    }
+    const val = valueFrom(env && env[name]);
+    if (val) return { value: val, source: name, checked, resolver: "exact_candidate" };
   }
 
   try {
     for (const name of Object.keys(env || {})) {
       if (!accepted.has(normalizeName(name))) continue;
       if (!checked.includes(name)) checked.push(name);
-      const value = env[name];
-      if (typeof value === "string" && value.trim()) return { value: value.trim(), source: name, checked };
-      if (value && typeof value === "object") {
-        const nested = typeof value.value === "string" ? value.value : (typeof value.key === "string" ? value.key : "");
-        if (nested.trim()) return { value: nested.trim(), source: name, checked };
-      }
+      const val = valueFrom(env[name]);
+      if (val) return { value: val, source: name, checked, resolver: "normalized_exact_env_scan" };
     }
   } catch (_) {}
 
-  return { value: "", source: null, checked };
+  // v1.5.06.7: broad resource-address resolver.
+  // This preserves the previous exact bindings but also catches already-existing resources
+  // whose names are project-specific, such as PRIZEPICKS_GITHUB_WORKFLOW_TOKEN,
+  // ALPHADOG_ODDS_API_PROD_KEY, THEODDS_API_KEY, etc. Values are never logged.
+  try {
+    for (const name of Object.keys(env || {})) {
+      const normalized = normalizeName(name);
+      if (!looksLikeWantedResource(normalized)) continue;
+      if (!checked.includes(name)) checked.push(name);
+      const val = valueFrom(env[name]);
+      if (val) return { value: val, source: name, checked, resolver: "broad_resource_address_scan" };
+    }
+  } catch (_) {}
+
+  return { value: "", source: null, checked, resolver: "not_found" };
 }
 
 function deriveGithubRepoFromPromptBaseUrl(env = {}) {
@@ -1449,7 +1495,7 @@ function getGithubDispatchConfig(env = {}) {
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_6_odds_capsule_resource_resolver'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_7_unified_resource_address_resolver'
   };
 }
 
@@ -1476,7 +1522,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.6 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.7 keeps workflow_dispatch as the primary GitHub trigger, hydrates the PrizePicks function capsule on every execution path, latches each PrizePicks request_id, and scope-locks schedule-backed cascades to the plan-selected job list.'
   };
 }
 
@@ -1498,7 +1544,7 @@ function buildFunctionCapsule(jobName, env = {}, input = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const dbBound = !!env.DB;
   const common = {
-    capsule_version: 'function_capsule_v1_5_06_6',
+    capsule_version: 'function_capsule_v1_5_06_7',
     job,
     db_bound: dbBound,
     worker_url_bound: !!workerUrl,
@@ -8816,7 +8862,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const catalogByKey = new Map(catalogRows.map(r => [String(r.job_key), r]));
   let selected;
   if (mode === 'cascade') {
-    // v1.5.06.6: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
+    // v1.5.06.7: schedule-backed cascade is scope-locked to the plan's explicit job list; each queued function also self-hydrates its own capsule.
     // It must never expand from the first selected job to all later enabled catalog rows.
     // This prevents intraday full runs from accidentally including static_weekly or incremental_daily.
     selected = [];
@@ -8864,7 +8910,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.6 Odds Capsule Resource Resolver: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.7 Unified Resource Address Resolver: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
 }
 
 
