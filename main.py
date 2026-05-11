@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.07.3 - Phase1 Continuation Hard Gate Verified"
+SCRIPT_VERSION = "v1.5.07.4 - Cascade Eligibility Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

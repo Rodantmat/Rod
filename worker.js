@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.07.3 - Phase1 Continuation Hard Gate Verified";
+const SYSTEM_VERSION = "v1.5.07.4 - Cascade Eligibility Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -8991,6 +8991,48 @@ function singleLaneShouldTerminalFail(row, result, attempts) {
   return false;
 }
 
+async function getCascadePendingEligibility(env, row) {
+  const requestId = String(row?.request_id || '');
+  const chainId = String(row?.chain_id || '');
+  const sequenceOrder = Number(row?.sequence_order || 0);
+  if (!requestId || !chainId) {
+    return { eligible:false, reason:'missing_request_or_chain' };
+  }
+  const upstreamActive = await env.DB.prepare(`
+    SELECT request_id, job_key, status, sequence_order, updated_at, finished_at, error
+    FROM data_refresh_queue
+    WHERE chain_id=?
+      AND sequence_order < ?
+      AND status IN ('pending','running')
+    ORDER BY sequence_order ASC
+    LIMIT 1
+  `).bind(chainId, sequenceOrder).first().catch(() => null);
+  if (upstreamActive) {
+    return { eligible:false, reason:'waiting_on_upstream_active', upstream_active:upstreamActive };
+  }
+  const upstreamFailed = await env.DB.prepare(`
+    SELECT request_id, job_key, status, sequence_order, updated_at, finished_at, error
+    FROM data_refresh_queue
+    WHERE chain_id=?
+      AND sequence_order < ?
+      AND status='failed'
+    ORDER BY sequence_order DESC
+    LIMIT 1
+  `).bind(chainId, sequenceOrder).first().catch(() => null);
+  if (upstreamFailed && singleLaneBlockedDependents(upstreamFailed.job_key).includes(String(row?.job_key || ''))) {
+    return { eligible:false, blocked:true, reason:'blocked_by_required_upstream_failure', upstream_failed:upstreamFailed };
+  }
+  const prior = await env.DB.prepare(`
+    SELECT MAX(datetime(finished_at)) AS latest_finished_at
+    FROM data_refresh_queue
+    WHERE chain_id=?
+      AND sequence_order < ?
+      AND finished_at IS NOT NULL
+  `).bind(chainId, sequenceOrder).first().catch(() => null);
+  const eligibleAt = prior?.latest_finished_at || row?.created_at || row?.updated_at || null;
+  return { eligible:true, reason:'upstream_clear', eligible_at:eligibleAt };
+}
+
 async function setSingleLaneGlobalState(env, patch = {}) {
   await env.DB.prepare(`INSERT OR IGNORE INTO data_orchestrator_state (state_key, lock_flag, status, updated_at) VALUES ('GLOBAL', 0, 'IDLE', CURRENT_TIMESTAMP)`).run();
   await env.DB.prepare(`UPDATE data_orchestrator_state SET
@@ -9305,15 +9347,8 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
       AND q.started_at IS NULL
       AND q.finished_at IS NULL
       AND datetime(q.created_at) <= datetime('now','-30 minutes')
-      AND NOT EXISTS (
-        SELECT 1
-        FROM data_refresh_queue p
-        WHERE p.chain_id=q.chain_id
-          AND p.sequence_order < q.sequence_order
-          AND p.status IN ('pending','running')
-      )
     ORDER BY datetime(q.created_at) ASC, q.sequence_order ASC
-    LIMIT 20
+    LIMIT 40
   `);
   const recovered = [];
   const staleRunningRows = await sampleRows(env, `
@@ -9343,22 +9378,68 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     recovered.push(row);
   }
   for (const row of staleRows) {
-    const reason = `stale_pending_null_run_after_recovered:${input.reason || input.trigger || 'watchdog'}`;
-    await env.DB.prepare(`
-      UPDATE data_refresh_queue
-      SET status='failed',
-          finished_at=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, ?),
-          output_json=COALESCE(output_json, ?)
-      WHERE request_id=?
-        AND status='pending'
-        AND run_after IS NULL
-        AND started_at IS NULL
-        AND finished_at IS NULL
-    `).bind(reason, JSON.stringify({ ok:false, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'failed_stale_pending_row', reason, recovered_at:new Date().toISOString(), row }).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_pending_recovered', status:'failed', message:reason, payload_json:{ row, input } });
-    recovered.push(row);
+    const eligibility = await getCascadePendingEligibility(env, row).catch(e => ({ eligible:false, reason:'eligibility_check_error', error:String(e?.message || e) }));
+    if (eligibility?.blocked) {
+      const reason = `blocked_by_required_upstream_failure:${eligibility?.upstream_failed?.job_key || 'upstream'}`;
+      await env.DB.prepare(`
+        UPDATE data_refresh_queue
+        SET status='blocked',
+            finished_at=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP,
+            error=COALESCE(error, ?),
+            output_json=COALESCE(output_json, ?)
+        WHERE request_id=?
+          AND status='pending'
+          AND started_at IS NULL
+          AND finished_at IS NULL
+      `).bind(reason, JSON.stringify({ ok:false, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'blocked_pending_row', reason, recovered_at:new Date().toISOString(), row, eligibility }).slice(0,3000), row.request_id).run().catch(() => null);
+      await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'pending_row_blocked_by_upstream_failure', status:'blocked', message:reason, payload_json:{ row, input, eligibility } });
+      recovered.push({ ...row, recovered_action:'blocked', eligibility });
+      continue;
+    }
+    if (!eligibility?.eligible) {
+      recovered.push({ ...row, recovered_action:'skipped_not_eligible', eligibility });
+      continue;
+    }
+    const eligibleAt = eligibility?.eligible_at || row.updated_at || row.created_at;
+    const eligibleSeconds = eligibleAt ? Math.round((Date.now() - parseD1TimestampMaybe(eligibleAt)) / 1000) : 0;
+    if (eligibleSeconds < 1800) {
+      recovered.push({ ...row, recovered_action:'skipped_recently_eligible', eligibility, eligible_seconds:eligibleSeconds });
+      continue;
+    }
+    const reason = `stale_pending_null_run_after_eligible_requeued:${input.reason || input.trigger || 'watchdog'}`;
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE data_refresh_queue
+        SET run_after=CURRENT_TIMESTAMP,
+            updated_at=CURRENT_TIMESTAMP,
+            error=COALESCE(error, ?),
+            output_json=COALESCE(output_json, ?)
+        WHERE request_id=?
+          AND status='pending'
+          AND run_after IS NULL
+          AND started_at IS NULL
+          AND finished_at IS NULL
+      `).bind(reason, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'requeued_stale_eligible_pending_row', reason, recovered_at:new Date().toISOString(), row, eligibility, eligible_seconds:eligibleSeconds }).slice(0,3000), row.request_id),
+      env.DB.prepare(`
+        UPDATE data_orchestrator_jobs
+        SET run_requested_flag=1,
+            running_flag=0,
+            current_request_id=?,
+            current_chain_id=?,
+            last_status='requeued_stale_eligible_pending_row',
+            last_fail=0,
+            last_error_code=NULL,
+            last_error_message=NULL,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE job_key=?
+      `).bind(row.request_id, row.chain_id, row.job_key)
+    ]).catch(async () => {
+      await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=COALESCE(error, ?), output_json=COALESCE(output_json, ?) WHERE request_id=? AND status='pending' AND run_after IS NULL AND started_at IS NULL AND finished_at IS NULL`).bind(reason, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:'requeued_stale_eligible_pending_row', reason, recovered_at:new Date().toISOString(), row, eligibility, eligible_seconds:eligibleSeconds }).slice(0,3000), row.request_id).run().catch(() => null);
+      await env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, current_request_id=?, current_chain_id=?, last_status='requeued_stale_eligible_pending_row', last_fail=0, last_error_code=NULL, last_error_message=NULL, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.request_id, row.chain_id, row.job_key).run().catch(() => null);
+    });
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'stale_eligible_pending_requeued', status:'pending', message:reason, payload_json:{ row, input, eligibility, eligible_seconds:eligibleSeconds } });
+    recovered.push({ ...row, recovered_action:'requeued', eligibility, eligible_seconds:eligibleSeconds });
   }
   return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status: recovered.length ? 'recovered_stale_rows' : 'no_stale_rows', recovered_count:recovered.length, recovered, trigger:input.trigger || null };
 }
@@ -9764,7 +9845,7 @@ async function runRefreshOrchestratorTick(input, env) {
     activeLockedRow = await env.DB.prepare(`SELECT * FROM data_orchestrator_jobs WHERE running_flag=1 ORDER BY updated_at DESC LIMIT 1`).first().catch(() => null);
     const seconds = state?.updated_at ? Math.round((Date.now() - parseD1TimestampMaybe(state.updated_at)) / 1000) : null;
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
-    // v1.5.07.3: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
+    // v1.5.07.4: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
@@ -9840,7 +9921,7 @@ async function runRefreshOrchestratorTick(input, env) {
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.07.3: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      // v1.5.07.4: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -11822,7 +11903,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.07.3 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.4 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
