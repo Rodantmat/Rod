@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.07.0 - Scoring Queue Finalizer Gate
+
+Verified files:
+- worker.js: SYSTEM_VERSION = v1.5.07.0 - Scoring Queue Finalizer Gate
+- control_room.html: visible version tag updated to v1.5.07.0 - Scoring Queue Finalizer Gate
+- main.py: SCRIPT_VERSION updated to v1.5.07.0 - Scoring Queue Finalizer Gate
+- README_v1.5.07.0.txt: created
+
+Patch focus:
+- queue-owned scoring run_id handoff
+- scoring queue finalizer
+- fast candidate board fallback from active_score_board
+- GLOBAL lock release when scoring already completed internally
