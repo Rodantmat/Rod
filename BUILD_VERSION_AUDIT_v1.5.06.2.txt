@@ -1,0 +1,16 @@
+Build version audit
+Version: v1.5.06.2 - GitHub Workflow Dispatch Truth Gate
+
+worker.js: v1.5.06.2 - GitHub Workflow Dispatch Truth Gate
+main.py: v1.5.06.2 - GitHub Workflow Dispatch Truth Gate
+README: README_v1.5.06.2.txt
+wrangler.jsonc: prop-ingestion-git, keep_vars true, GITHUB_OWNER/GITHUB_REPO/GITHUB_WORKFLOW_FILE/GITHUB_REF plaintext defaults included
+scrape.yml: workflow_dispatch inputs preserved; repository_dispatch trigger preserved as fallback
+
+Primary fix:
+- Worker now uses GitHub Actions workflow_dispatch endpoint instead of repository_dispatch for PrizePicks board refresh.
+- This avoids the Contents-write permission requirement that caused HTTP 403 with fine-grained token Actions permissions.
+
+Validation target:
+- Latest queue error should move away from github_repository_dispatch_failed / missing_github_dispatch_secret after GITHUB_TOKEN is visible.
+- Ledger should receive dispatching/dispatched rows and then main.py callbacks.

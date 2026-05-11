@@ -7,6 +7,8 @@
     "PROMPT_BASE_URL": "https://raw.githubusercontent.com/Rodantmat/Rod/main",
     "ALPHADOG_WORKER_URL": "https://prop-ingestion-git.rodolfoaamattos.workers.dev",
     "WORKER_URL": "https://prop-ingestion-git.rodolfoaamattos.workers.dev",
+    "GITHUB_OWNER": "Rodantmat",
+    "GITHUB_REPO": "Rod",
     "GITHUB_WORKFLOW_FILE": "scrape.yml",
     "GITHUB_REF": "main"
   },

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.06.1 - PrizePicks Secret Resolver Alignment Gate";
+const SYSTEM_VERSION = "v1.5.06.2 - GitHub Workflow Dispatch Truth Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1307,8 +1307,10 @@ function getGithubDispatchConfig(env = {}) {
     "THE_GITHUB_REF"
   ]);
   const repoFallback = deriveGithubRepoFromPromptBaseUrl(env);
-  const repoRaw = String(repo.value || '').trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
-  const ownerRaw = String(owner.value || '').trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
+  const ownerDefault = 'Rodantmat';
+  const repoDefault = 'Rod';
+  const repoRaw = String(repo.value || repoDefault).trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+  const ownerRaw = String(owner.value || ownerDefault).trim().replace(/^@/, '').replace(/^\/+|\/+$/g, '');
   let resolvedRepo = '';
   let repoSource = null;
   if (/^[^/]+\/[^/]+$/.test(repoRaw)) {
@@ -1316,7 +1318,7 @@ function getGithubDispatchConfig(env = {}) {
     repoSource = repo.source;
   } else if (ownerRaw && repoRaw && !repoRaw.includes('/')) {
     resolvedRepo = `${ownerRaw}/${repoRaw}`;
-    repoSource = `${owner.source || 'GITHUB_OWNER'}+${repo.source || 'GITHUB_REPO'}`;
+    repoSource = `${owner.source || 'default:GITHUB_OWNER=Rodantmat'}+${repo.source || 'default:GITHUB_REPO=Rod'}`;
   } else if (repoFallback) {
     resolvedRepo = repoFallback;
     repoSource = 'derived_from_PROMPT_BASE_URL';
@@ -1343,15 +1345,15 @@ function getGithubDispatchConfig(env = {}) {
     owner_source: owner.source,
     raw_repo_source: repo.source,
     token_source: token.source,
-    workflow_source: workflow.source || "default:scrape.yml",
-    ref_source: ref.source || "default:main",
+    workflow_source: workflow.source || "default:GITHUB_WORKFLOW_FILE=scrape.yml",
+    ref_source: ref.source || "default:GITHUB_REF=main",
     owner_checked: owner.checked,
     repo_checked: repo.checked,
     token_checked: token.checked,
     workflow_checked: workflow.checked,
     ref_checked: ref.checked,
     token_length: token.value ? token.value.length : 0,
-    resolver: 'shared_github_dispatch_resolver_v1_5_06_1_owner_repo_secret_alignment'
+    resolver: 'shared_github_dispatch_resolver_v1_5_06_2_workflow_dispatch_truth_gate'
   };
 }
 
@@ -1378,7 +1380,7 @@ function githubDispatchBindingStatus(env = {}) {
     workflow_checked: cfg.workflow_checked,
     ref_checked: cfg.ref_checked,
     token_length: cfg.token_length,
-    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.1 supports split GITHUB_OWNER + GITHUB_REPO secrets and preserves dashboard secrets with keep_vars.'
+    rule: 'Health and PrizePicks board dispatch use the same getGithubDispatchConfig(env) resolver. v1.5.06.2 uses workflow_dispatch as the primary GitHub trigger because fine-grained tokens with Actions write can trigger workflows without repository Contents write.'
   };
 }
 
@@ -3208,7 +3210,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       version:SYSTEM_VERSION,
       job:'trigger_prizepicks_github_board_refresh',
       status: ghRun ? 'github_audit_result_timeout' : 'github_workflow_dispatch_not_observed',
-      error: ghRun ? 'github_repository_dispatch_but_no_matching_scraper_progress_or_audit' : 'github_repository_dispatch_accepted_but_no_scraper_progress_or_workflow_run_observed',
+      error: ghRun ? 'github_workflow_dispatch_but_no_matching_scraper_progress_or_audit' : 'github_workflow_dispatch_accepted_but_no_scraper_progress_or_workflow_run_observed',
       board_refresh_complete:false,
       requested_at:requestedAt,
       elapsed_seconds:elapsedSeconds,
@@ -3219,7 +3221,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       scraper_progress,
       github_run,
       next_check:'inspect GitHub Actions run visibility and confirm scrape.yml/main.py were committed to the configured repository',
-      note: ghRun ? 'GitHub workflow was observed but no completed/failed scraper progress or mlb_stats_refresh_audit row appeared before the dynamic timeout. This is treated as a real board-refresh failure.' : 'GitHub repository_dispatch returned accepted, but the Worker could not observe scraper progress, audit output, or a matching workflow run before the dynamic timeout. Check scrape.yml repository_dispatch, repo/ref, GitHub token Actions permissions, and main.py callback/write path.'
+      note: ghRun ? 'GitHub workflow was observed but no completed/failed scraper progress or mlb_stats_refresh_audit row appeared before the dynamic timeout. This is treated as a real board-refresh failure.' : 'GitHub workflow_dispatch returned accepted, but the Worker could not observe scraper progress, audit output, or a matching workflow run before the dynamic timeout. Check scrape.yml workflow_dispatch, repo/ref, GitHub token Actions write permission, and main.py callback/write path.'
     };
   }
 
@@ -3276,25 +3278,20 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const slateDate = String(input?.slate_date || input?.requested_slate_date || '').trim();
   const chainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_repository_event', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub repository_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow_dispatch', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub workflow_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
 
-  const repoDispatchUrl = `https://api.github.com/repos/${repo}/dispatches`;
-  const repoPayload = {
-    event_type:'alphadog_prizepicks_board',
-    client_payload:{
+  const workflowDispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
+  const workflowPayload = {
+    ref,
+    inputs:{
       dispatch_id:outboundDispatchId,
       request_id:outboundDispatchId,
       chain_id:chainId,
       slate_date:slateDate,
-      worker_url:workerUrl,
-      workflow_file:workflow,
-      ref,
-      source:'alphadog_worker_repository_dispatch',
-      version:SYSTEM_VERSION,
-      requested_at:nowIso
+      worker_url:workerUrl
     }
   };
-  const response = await fetch(repoDispatchUrl, {
+  const response = await fetch(workflowDispatchUrl, {
     method:'POST',
     headers:{
       'Authorization':`Bearer ${token}`,
@@ -3302,26 +3299,26 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       'X-GitHub-Api-Version':'2022-11-28',
       'User-Agent':'AlphaDog-Control-Room-Worker'
     },
-    body:JSON.stringify(repoPayload)
+    body:JSON.stringify(workflowPayload)
   });
   const text = await response.text().catch(() => '');
   const ok = response.status === 204;
   const triggeredAt = nowIso;
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:ok ? 'dispatched' : 'dispatch_failed', step:ok ? 'github_repository_dispatch_accepted' : 'github_repository_dispatch_failed', progress_message:ok ? 'GitHub repository_dispatch returned HTTP 204; waiting for scrape.yml/main.py progress callback/audit.' : `GitHub repository_dispatch failed with HTTP ${response.status}.`, started_at:triggeredAt, finished_at:ok ? null : triggeredAt, error_message:ok ? null : text.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_event_type:'alphadog_prizepicks_board' });
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:ok ? 'dispatched' : 'dispatch_failed', step:ok ? 'github_workflow_dispatch_accepted' : 'github_workflow_dispatch_failed', progress_message:ok ? 'GitHub workflow_dispatch returned HTTP 204; waiting for scrape.yml/main.py progress callback/audit.' : `GitHub workflow_dispatch failed with HTTP ${response.status}.`, started_at:triggeredAt, finished_at:ok ? null : triggeredAt, error_message:ok ? null : text.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_event_type:'workflow_dispatch' });
   return {
     ok,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:'trigger_prizepicks_github_board_refresh',
-    status:ok ? 'github_repository_dispatch_waiting_for_board_update' : 'github_repository_dispatch_failed',
+    status:ok ? 'github_workflow_dispatch_waiting_for_board_update' : 'github_workflow_dispatch_failed',
     board_refresh_complete:false,
     requested_at:triggeredAt,
     dispatch_id:outboundDispatchId,
-    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, dispatch_event_type:'alphadog_prizepicks_board', http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env), payload:repoPayload.client_payload },
+    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, dispatch_event_type:'workflow_dispatch', http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env), payload:workflowPayload.inputs, endpoint:'actions/workflows/:workflow_id/dispatches' },
     mlb_stats_before:current,
     audit,
     next_check:'next minute cron tick',
-    note:ok ? 'GitHub repository_dispatch sent to scrape.yml. The workflow must include repository_dispatch type alphadog_prizepicks_board; main.py must write prizepicks_scraper_runs or mlb_stats_refresh_audit for the matching dispatch_id before downstream jobs can start.' : 'GitHub repository_dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE/ref, and repository Actions settings.'
+    note:ok ? 'GitHub workflow_dispatch sent to scrape.yml. This uses the Actions workflow trigger directly, avoiding repository_dispatch Contents-write permission problems. main.py must write prizepicks_scraper_runs or mlb_stats_refresh_audit for the matching dispatch_id before downstream jobs can start.' : 'GitHub workflow_dispatch failed; check GITHUB_TOKEN Actions read/write permission, selected repository Rodantmat/Rod, workflow file scrape.yml, branch main, and repository Actions settings.'
   };
 }
 
@@ -3393,7 +3390,7 @@ async function runAdminFreshnessPipelineStep(input, env, state = {}) {
     complete: done,
     needs_continue: !done,
     result,
-    prizepicks_bridge: { skipped: false, mode: 'github_actions_repository_dispatch', workflow_file: getGithubDispatchConfig(env).workflow, repo_configured: !!getGithubDispatchConfig(env).repo, token_configured: !!getGithubDispatchConfig(env).token },
+    prizepicks_bridge: { skipped: false, mode: 'github_actions_workflow_dispatch', workflow_file: getGithubDispatchConfig(env).workflow, repo_configured: !!getGithubDispatchConfig(env).repo, token_configured: !!getGithubDispatchConfig(env).token },
     sequence: steps,
     note: 'v1.3.59 runs Admin/Main UI full refresh as bounded backend cron steps: incremental daily, everyday, Phase 2 weather/lineup, PrizePicks GitHub board refresh, Phase 2C context rebuild, odds windows, then scoring. Static is intentionally excluded.'
   };
@@ -8705,7 +8702,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.0 PrizePicks Dispatch Authority Gate: each PrizePicks board queue row owns its own repository_dispatch request, while the true incremental selector, no-delta terminal success gate, heartbeat recovery, and progress ledger remain preserved.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.0 PrizePicks Dispatch Authority Gate: each PrizePicks board queue row owns its own workflow_dispatch request, while the true incremental selector, no-delta terminal success gate, heartbeat recovery, and progress ledger remain preserved.' };
 }
 
 
@@ -9316,7 +9313,7 @@ function refreshResultIsPartial(result) {
 
 function isPrizePicksBoardWaitingResult(result) {
   const status = String(result?.status || result?.result?.status || result?.error || '').toLowerCase();
-  return status.includes('github_repository_dispatch_waiting_for_board_update') || status.includes('github_workflow_dispatched_waiting_for_board_update') || status.includes('waiting_for_board_update');
+  return status.includes('github_workflow_dispatch_waiting_for_board_update') || status.includes('github_workflow_dispatched_waiting_for_board_update') || status.includes('waiting_for_board_update');
 }
 
 function isScoringLockWaitResult(row, result) {
@@ -9383,7 +9380,7 @@ function isRequiredBaseTerminalFailure(row, result) {
     if (status.includes('missing_github_dispatch_secret_hard_fail')) return true;
     if (error.includes('missing_github_dispatch_secret')) return true;
     if (status.includes('invalid_github_repo_format')) return true;
-    if (status.includes('github_repository_dispatch_failed')) return true;
+    if (status.includes('github_workflow_dispatch_failed')) return true;
     if (status.includes('github_workflow_dispatch_failed')) return true;
   }
   return false;
