@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.05.9 - PrizePicks Repository Dispatch Bridge";
+const SYSTEM_VERSION = "v1.5.05.8 - PrizePicks Ledger Installer Guard";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -2932,7 +2932,7 @@ async function getGithubPrizePicksWorkflowRunStatus(env, requestedAt = null, dis
       return { configured:false, observed:false, reason:'missing_github_repo_or_workflow', binding:githubDispatchBindingStatus(env), prior_github:prior || null };
     }
     const sinceIso = requestedMs ? new Date(Math.max(0, requestedMs - 120000)).toISOString() : null;
-    const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(ref)}&per_page=20`;
+    const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(ref)}&per_page=15`;
     const headers = {
       'Accept':'application/vnd.github+json',
       'X-GitHub-Api-Version':'2022-11-28',
@@ -2979,7 +2979,7 @@ async function getGithubPrizePicksWorkflowRunStatus(env, requestedAt = null, dis
       since:sinceIso,
       candidate_run:candidate,
       recent_runs:compactRuns,
-      rule:'This is diagnostic visibility only. PrizePicks board success still requires prizepicks_scraper_runs or mlb_stats_refresh_audit. GitHub run visibility cannot certify the board by itself. Lookup includes workflow_dispatch, repository_dispatch, and scheduled runs on the configured workflow/ref.'
+      rule:'This is diagnostic visibility only. PrizePicks board success still requires mlb_stats_refresh_audit; GitHub run visibility cannot certify the board by itself.'
     };
   } catch (e) {
     return { configured:false, observed:false, error:String(e && e.message || e), requested_at:requestedAt || null, dispatch_id:wantedDispatchId || null };
@@ -3232,28 +3232,9 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   }
 
   const outboundDispatchId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || crypto.randomUUID()).slice(0,120);
-  const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || '').trim();
-  const slateDate = String(input?.slate_date || input?.requested_slate_date || '').trim();
-  const chainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_repository_event', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub repository_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
-
-  const repoDispatchUrl = `https://api.github.com/repos/${repo}/dispatches`;
-  const repoPayload = {
-    event_type:'alphadog_prizepicks_board',
-    client_payload:{
-      dispatch_id:outboundDispatchId,
-      request_id:outboundDispatchId,
-      chain_id:chainId,
-      slate_date:slateDate,
-      worker_url:workerUrl,
-      workflow_file:workflow,
-      ref,
-      source:'alphadog_worker_repository_dispatch',
-      version:SYSTEM_VERSION,
-      requested_at:nowIso
-    }
-  };
-  const response = await fetch(repoDispatchUrl, {
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow', progress_message:'Worker accepted PrizePicks board request and is dispatching scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION });
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
+  const response = await fetch(url, {
     method:'POST',
     headers:{
       'Authorization':`Bearer ${token}`,
@@ -3261,26 +3242,26 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
       'X-GitHub-Api-Version':'2022-11-28',
       'User-Agent':'AlphaDog-Control-Room-Worker'
     },
-    body:JSON.stringify(repoPayload)
+    body:JSON.stringify({ ref, inputs:{ dispatch_id:outboundDispatchId } })
   });
   const text = await response.text().catch(() => '');
   const ok = response.status === 204;
   const triggeredAt = nowIso;
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:ok ? 'dispatched' : 'dispatch_failed', step:ok ? 'github_repository_dispatch_accepted' : 'github_repository_dispatch_failed', progress_message:ok ? 'GitHub repository_dispatch returned HTTP 204; waiting for scrape.yml/main.py progress callback/audit.' : `GitHub repository_dispatch failed with HTTP ${response.status}.`, started_at:triggeredAt, finished_at:ok ? null : triggeredAt, error_message:ok ? null : text.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_event_type:'alphadog_prizepicks_board' });
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:ok ? 'dispatched' : 'dispatch_failed', step:ok ? 'github_dispatch_accepted' : 'github_dispatch_failed', progress_message:ok ? 'GitHub workflow dispatch returned HTTP 204; waiting for main.py progress callback/audit.' : `GitHub workflow dispatch failed with HTTP ${response.status}.`, started_at:triggeredAt, finished_at:ok ? null : triggeredAt, error_message:ok ? null : text.slice(0,1000), source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
   return {
     ok,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:'trigger_prizepicks_github_board_refresh',
-    status:ok ? 'github_repository_dispatch_waiting_for_board_update' : 'github_repository_dispatch_failed',
+    status:ok ? 'github_workflow_dispatched_waiting_for_board_update' : 'github_workflow_dispatch_failed',
     board_refresh_complete:false,
     requested_at:triggeredAt,
     dispatch_id:outboundDispatchId,
-    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, dispatch_event_type:'alphadog_prizepicks_board', http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env), payload:repoPayload.client_payload },
+    github:{ repo, workflow_file:workflow, ref, dispatch_id:outboundDispatchId, http_status:response.status, ok, response_preview:text.slice(0,700) || null, binding: githubDispatchBindingStatus(env) },
     mlb_stats_before:current,
     audit,
     next_check:'next minute cron tick',
-    note:ok ? 'GitHub repository_dispatch sent to scrape.yml. The workflow must include repository_dispatch type alphadog_prizepicks_board; main.py must write prizepicks_scraper_runs or mlb_stats_refresh_audit for the matching dispatch_id before downstream jobs can start.' : 'GitHub repository_dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE/ref, and repository Actions settings.'
+    note:ok ? 'GitHub scrape.yml workflow dispatched. The orchestrator will keep retrying this step until mlb_stats_refresh_audit contains a completed/failed row for this dispatch_id; mlb_stats freshness alone cannot certify this stage.' : 'GitHub workflow dispatch failed; check GITHUB_REPO, GITHUB_TOKEN permissions, GITHUB_WORKFLOW_FILE, and ref.'
   };
 }
 
