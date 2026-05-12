@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.5.09.4 - Durable Retry Clean Publish Gate -->
+<!-- v1.5.09.5 - One-Shot Full Run Scheduler -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -48,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.5.09.4 - Durable Retry Clean Publish Gate</div>
+<div id="versionTag">v1.5.09.5 - One-Shot Full Run Scheduler</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -85,6 +85,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="run" onclick="orchestratorPrizePicksBoardOnly()">Run PrizePicks Board Only</button>
 <button class="warn" onclick="orchestratorCascade()">Cascade From First Checked</button>
 <button class="check" onclick="runJobButton('DATA REFRESHING > Production Clock Status','refresh_orchestrator_schedule_status')">Production Clock Status</button>
+<button class="warn" onclick="runJobButton('DATA REFRESHING > Schedule One-Shot Full Run +2 Min','schedule_one_shot_full_run_plus_2min')">Schedule One-Shot Full Run +2 Min</button>
 <button class="check" onclick="runJobButton('DATA REFRESHING > Orchestrator Status','refresh_orchestrator_status')">Orchestrator Status</button>
 <button class="audit" onclick="runJobButton('DATA REFRESHING > Run One Queue Tick','refresh_orchestrator_tick')">Run Queue Tick</button>
 <button class="debug" onclick="runJobButton('DATA REFRESHING > Init Production Clock','refresh_orchestrator_seed_production_clock')">Init Clock</button>
@@ -92,7 +93,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 <button class="check" onclick="installPrizePicksLedger()">Install PP Ledger</button>
 <button class="danger" onclick="runJobButton('DATA REFRESHING > Cancel Queue','refresh_orchestrator_cancel_all')">Cancel Active Queue</button>
 </div>
-<div class="small">Production schedule: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; intraday full cascades at 9:00 AM, 1:00 PM, and 10:00 PM PT. Full cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Selected Only = independent checked jobs. Cascade = ordered chain, one at a time.</div>
+<div class="small">Production schedule: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; intraday full cascades at 9:00 AM, 1:00 PM, and 10:00 PM PT. One-Shot +2 Min schedules a temporary full cascade through the same Production Clock path and auto-clears after enqueue. Full cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Selected Only = independent checked jobs. Cascade = ordered chain, one at a time.</div>
 </div>
 
 <div class="section"><h3>SCRAPE</h3><div class="grid">
@@ -677,7 +678,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.5.09.4 - Durable Retry Clean Publish Gate",
+    version: "v1.5.09.5 - One-Shot Full Run Scheduler",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.4 - Durable Retry Clean Publish Gate";
-const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
+const SYSTEM_VERSION = "v1.5.09.5 - One-Shot Full Run Scheduler";
+const SYSTEM_CODENAME = "One-Shot Full Run Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -134,6 +134,7 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
   refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
+  schedule_one_shot_full_run_plus_2min: "DATA REFRESHING > Schedule One-Shot Full Run +2 Min",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -775,6 +776,7 @@ const JOBS = {
   check_incremental_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "check derived incremental metrics coverage" },
   check_incremental_all: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "check all incremental base tables" },
   certify_incremental_live_tables: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics", "incremental_live_certification_audits"], note: "hard certify live incremental tables after promotion/derived" },
+  schedule_one_shot_full_run_plus_2min: { prompt: null, tables: ["data_refresh_schedule_plan", "data_refresh_queue", "data_orchestrator_jobs", "data_refresh_events"], note: "schedule one temporary Production Clock full cascade for roughly two minutes from now, then auto-clear the temporary plan after enqueue" },
 
   schedule_everyday_phase1_once: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "schedule one protected everyday phase 1 baseline pipeline test" },
   run_everyday_phase1_tick: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "advance one protected everyday phase 1 baseline pipeline step" },
@@ -9285,11 +9287,20 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
     return { ok:true, data_ok:true, status:'blocked_active_single_lane_waiting', plan_key:plan.plan_key, active:running || state, due_key:dueKey, note:'Production clock will retry this due slot on the next minute. No overlapping refresh jobs are allowed.' };
   }
   const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock', trigger:'production_refresh_clock', job_keys:jobKeys, slate_mode:'AUTO', plan_key:plan.plan_key, due_key:dueKey, pt }, String(plan.mode || 'selected'));
-  if (enq?.ok !== false) {
+  const enqStatus = String(enq?.status || '');
+  const enqueueAccepted = !!(enq && enq.ok !== false && enq.data_ok === true && (enq.chain_id || Number(enq.enqueued_count || 0) > 0 || /requested|enqueued/i.test(enqStatus)));
+  if (enqueueAccepted) {
     await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, plan.plan_key).run();
   }
-  await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq } });
-  return { ...enq, plan_key:plan.plan_key, display_name:plan.display_name, due_key:dueKey, note:'Production clock requested independent single-lane jobs in the database. Minute cron will run one stage per tick by job_index.' };
+  const isOneShot = String(plan.schedule_kind || '').toLowerCase() === 'once' || String(plan.plan_key || '').startsWith('one_shot_full_run_');
+  if (isOneShot && enqueueAccepted) {
+    await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=?`).bind(plan.plan_key).run().catch(async () => {
+      await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET enabled=0, notes=COALESCE(notes,'') || ' | auto-cleared after enqueue', updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(plan.plan_key).run().catch(() => null);
+    });
+    await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_one_shot_cleared', status:'cleared', message:'One-shot full-run schedule auto-cleared after enqueue.', payload_json:{ plan_key:plan.plan_key, due_key:dueKey, enqueue_status:enqStatus, enqueued_count:enq?.enqueued_count || 0 } }).catch(() => null);
+  }
+  await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq, enqueue_accepted:enqueueAccepted, one_shot_cleared:!!(isOneShot && enqueueAccepted) } });
+  return { ...enq, plan_key:plan.plan_key, display_name:plan.display_name, due_key:dueKey, one_shot: isOneShot, one_shot_cleared: !!(isOneShot && enqueueAccepted), note: isOneShot ? 'One-shot Production Clock full run was accepted into the regular queue and the temporary schedule plan was cleared. Minute cron will run one stage per tick by job_index.' : 'Production clock requested independent single-lane jobs in the database. Minute cron will run one stage per tick by job_index.' };
 }
 
 
@@ -9340,13 +9351,86 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   return result;
 }
 
+
+async function scheduleOneShotFullRunPlus2Min(input, env) {
+  await ensureProductionRefreshScheduleTables(env);
+  const delayMinutes = Math.max(1, Math.min(Number(input?.delay_minutes || 2), 10));
+  const runAt = new Date(Date.now() + delayMinutes * 60 * 1000);
+  const pt = getPTScheduleParts(runAt);
+  const intradayFull = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
+
+  const existing = await env.DB.prepare(`
+    SELECT plan_key, display_name, schedule_kind, enabled, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes, created_at, updated_at
+    FROM data_refresh_schedule_plan
+    WHERE enabled=1
+      AND plan_key LIKE 'one_shot_full_run_%'
+      AND last_enqueued_key IS NULL
+    ORDER BY datetime(updated_at) DESC
+    LIMIT 1
+  `).first().catch(() => null);
+
+  if (existing) {
+    return {
+      ok:true,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:input?.job || 'schedule_one_shot_full_run_plus_2min',
+      status:'already_scheduled',
+      existing_plan:existing,
+      next_action:'Wait for the minute cron to pick up the existing one-shot plan, or cancel it manually before scheduling another.',
+      note:'Duplicate protection blocked a second one-shot full run. Only one temporary full-run schedule can be active at a time.'
+    };
+  }
+
+  await env.DB.prepare(`
+    DELETE FROM data_refresh_schedule_plan
+    WHERE plan_key LIKE 'one_shot_full_run_%'
+      AND (
+        last_enqueued_key IS NOT NULL
+        OR enabled=0
+        OR datetime(updated_at) <= datetime('now','-12 hours')
+      )
+  `).run().catch(() => null);
+
+  const slot = `${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
+  const planKey = `one_shot_full_run_${String(pt.date || '').replaceAll('-','')}_${slot}_${crypto.randomUUID().slice(0,8)}`;
+  const notes = `Temporary one-shot full Production Clock cascade scheduled from Control Room. PT target ${pt.date} ${String(pt.hour).padStart(2,'0')}:${String(pt.minute).padStart(2,'0')}. Auto-clears after enqueue; success/failure is owned by data_refresh_queue chain.`;
+
+  await env.DB.prepare(`
+    INSERT INTO data_refresh_schedule_plan
+      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, notes, created_at, updated_at)
+    VALUES (?, 'One-Shot Full Run +2 Min', 1, 'once', NULL, ?, ?, 'cascade', ?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(planKey, Number(pt.hour), Number(pt.minute), JSON.stringify(intradayFull), notes).run();
+
+  await refreshOrchestratorEvent(env, {
+    event_type:'production_clock_one_shot_scheduled',
+    status:'scheduled',
+    message:'One-shot full run scheduled for the next Production Clock minute window.',
+    payload_json:{ version:SYSTEM_VERSION, plan_key:planKey, delay_minutes:delayMinutes, target_pt:pt, job_keys:intradayFull, auto_clear_rule:'delete schedule plan after first accepted enqueue; queue chain owns completion/failure' }
+  }).catch(() => null);
+
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'schedule_one_shot_full_run_plus_2min',
+    status:'scheduled',
+    plan_key:planKey,
+    target_pt:pt,
+    delay_minutes:delayMinutes,
+    selected_job_keys:intradayFull,
+    next_action:'Do not run manual ticks unless cron is disabled. The minute cron will detect this temporary plan, enqueue the regular full cascade, and auto-clear the plan after enqueue.',
+    note:'This is a repeatable Production Clock one-shot schedule, not SQL makeup and not a direct long request. It uses the same cascade path as the 9AM/1PM/10PM scheduled full runs.'
+  };
+}
+
 async function productionRefreshClockStatus(input, env) {
   await ensureProductionRefreshScheduleTables(env);
   const pt = getPTScheduleParts();
   const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
   const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. One-shot full-run plans can be scheduled from Control Room for delayed testing and auto-clear after enqueue. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
 }
 
 async function runStaticTempAutoLoop(input, env) {
@@ -13614,6 +13698,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
+  if (jobName === "schedule_one_shot_full_run_plus_2min") return await scheduleOneShotFullRunPlus2Min({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, delay_minutes: 2 }, env);
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".

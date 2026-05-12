@@ -1,0 +1,18 @@
+AlphaDog Build Version Audit
+Version: v1.5.09.5 - One-Shot Full Run Scheduler
+
+Verified labels:
+- worker.js SYSTEM_VERSION = v1.5.09.5 - One-Shot Full Run Scheduler
+- control_room.html visible version tag = v1.5.09.5 - One-Shot Full Run Scheduler
+- README_v1.5.09.5.txt included
+- BUILD_VERSION_AUDIT_v1.5.09.5.txt included
+
+Primary patch:
+- Added schedule_one_shot_full_run_plus_2min job.
+- Added Control Room button: Schedule One-Shot Full Run +2 Min.
+- Added temporary schedule plan insertion into data_refresh_schedule_plan.
+- Added one-shot auto-clear after accepted queue enqueue.
+- Preserved regular Production Clock plans and regular full cascade job list.
+
+Validation:
+- node --check worker.js passed.
