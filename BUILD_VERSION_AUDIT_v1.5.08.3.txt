@@ -1,0 +1,21 @@
+BUILD VERSION AUDIT
+
+Version: v1.5.08.3 - Schedule Scanner Restore Gate
+
+Files included:
+- worker.js
+- control_room.html
+- main.py
+- scrape.yml
+- package.json
+- wrangler.jsonc
+- README_v1.5.08.3.txt
+- BUILD_VERSION_AUDIT_v1.5.08.3.txt
+
+Audit result:
+- worker.js SYSTEM_VERSION is v1.5.08.3 - Schedule Scanner Restore Gate.
+- control_room.html version tag is v1.5.08.3 - Schedule Scanner Restore Gate.
+- main.py SCRIPT_VERSION is v1.5.08.3 - Schedule Scanner Restore Gate.
+- README and audit filenames match v1.5.08.3.
+- Patch target is schedule scanner eligibility/logging only.
+- PrizePicks dispatch/completion logic is preserved from v1.5.08.2.

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.2 - PrizePicks Completion Reaper Gate";
+const SYSTEM_VERSION = "v1.5.08.3 - Schedule Scanner Restore Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9189,18 +9189,44 @@ function productionRefreshSchedulePlans() {
   ];
 }
 
+function productionPlanDueInfo(plan, pt) {
+  if (!plan || Number(plan.enabled) !== 1) return null;
+  const kind = String(plan.schedule_kind || '').toLowerCase();
+  if (kind === 'weekly' && String(pt.weekday || '').slice(0,3).toLowerCase() !== String(plan.byday || '').slice(0,3).toLowerCase()) return null;
+
+  const scheduledHour = Number(plan.hour_pt);
+  const scheduledMinute = Number(plan.minute_pt);
+  if (!Number.isFinite(scheduledHour) || !Number.isFinite(scheduledMinute)) return null;
+
+  const scheduledMinutes = (scheduledHour * 60) + scheduledMinute;
+  const currentMinutes = (Number(pt.hour) * 60) + Number(pt.minute);
+  const catchupWindowMinutes = kind === 'once' ? 180 : 30;
+  if (currentMinutes < scheduledMinutes) return null;
+  if ((currentMinutes - scheduledMinutes) > catchupWindowMinutes) return null;
+
+  const slot = `${String(scheduledHour).padStart(2,'0')}${String(scheduledMinute).padStart(2,'0')}`;
+  return {
+    due: true,
+    plan_key: plan.plan_key,
+    schedule_kind: kind || 'daily',
+    scheduled_hour_pt: scheduledHour,
+    scheduled_minute_pt: scheduledMinute,
+    current_hour_pt: Number(pt.hour),
+    current_minute_pt: Number(pt.minute),
+    catchup_window_minutes: catchupWindowMinutes,
+    minutes_late: currentMinutes - scheduledMinutes,
+    due_key: `${plan.plan_key}|${pt.date}|${slot}`
+  };
+}
+
 function productionPlanIsDue(plan, pt) {
-  if (!plan || Number(plan.enabled) !== 1) return false;
-  if (Number(plan.hour_pt) !== Number(pt.hour) || Number(plan.minute_pt) !== Number(pt.minute)) return false;
-  if (String(plan.schedule_kind || '').toLowerCase() === 'weekly') {
-    return String(pt.weekday || '').slice(0,3).toLowerCase() === String(plan.byday || '').slice(0,3).toLowerCase();
-  }
-  return true;
+  return !!productionPlanDueInfo(plan, pt);
 }
 
 async function enqueueProductionPlan(env, plan, pt, input = {}) {
   await ensureProductionRefreshScheduleTables(env);
-  const dueKey = `${plan.plan_key}|${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
+  const dueInfo = input?.due_info || productionPlanDueInfo(plan, pt) || {};
+  const dueKey = dueInfo.due_key || `${plan.plan_key}|${pt.date}|${String(plan.hour_pt).padStart(2,'0')}${String(plan.minute_pt).padStart(2,'0')}`;
   if (String(plan.last_enqueued_key || '') === dueKey) {
     return { ok:true, data_ok:true, status:'already_enqueued_for_slot', plan_key:plan.plan_key, due_key:dueKey };
   }
@@ -9226,10 +9252,45 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   const self_heal = await selfHealRefreshOrchestratorState(env, { trigger: input?.trigger || 'production_clock_preflight', reason: 'pre_enqueue_due_plan_self_heal' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
   const pt = getPTScheduleParts();
   const plans = await sampleRows(env, `SELECT * FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
-  const duePlans = plans.filter(pl => productionPlanIsDue(pl, pt));
+  const evaluated = plans.map(plan => ({ plan, due_info: productionPlanDueInfo(plan, pt) }));
+  const duePlans = evaluated.filter(x => !!x.due_info);
   const results = [];
-  for (const plan of duePlans) results.push(await enqueueProductionPlan(env, plan, pt, input));
-  return { ok:true, data_ok:!results.some(r => r.ok === false || r.data_ok === false), version:SYSTEM_VERSION, job:'production_refresh_clock', status: duePlans.length ? 'due_checked' : 'not_due', cron, pt, due_count:duePlans.length, stale_recovery, self_heal, results, note:'Production schedule is database-backed. Static, incremental, and intraday refresh plans enqueue into the same no-overlap orchestrator queue. v1.4.35 runs self-heal before enqueue to prevent duplicate clock chains and stale partial rows from trapping the 10pm run.' };
+  for (const item of duePlans) {
+    results.push(await enqueueProductionPlan(env, item.plan, pt, { ...(input || {}), due_info: item.due_info }));
+  }
+  const result = {
+    ok:true,
+    data_ok:!results.some(r => r.ok === false || r.data_ok === false),
+    version:SYSTEM_VERSION,
+    job:'production_refresh_clock',
+    status: duePlans.length ? 'due_checked' : 'not_due',
+    cron,
+    pt,
+    scan_policy:'v1.5.08.3_schedule_scanner_restore_exact_slot_plus_catchup_window',
+    due_count:duePlans.length,
+    due_plan_keys:duePlans.map(x => x.plan.plan_key),
+    evaluated_plans:evaluated.map(x => ({
+      plan_key:x.plan.plan_key,
+      display_name:x.plan.display_name,
+      schedule_kind:x.plan.schedule_kind,
+      enabled:x.plan.enabled,
+      hour_pt:x.plan.hour_pt,
+      minute_pt:x.plan.minute_pt,
+      last_enqueued_key:x.plan.last_enqueued_key || null,
+      due_info:x.due_info || null
+    })),
+    stale_recovery,
+    self_heal,
+    results,
+    note:'Production schedule scan now runs every minute and logs every scan. Daily/weekly plans are eligible on the exact PT slot plus a 30-minute catch-up window so a slow cleanup/tick cannot miss 9AM/1PM/10PM. One-shot plans use a 180-minute catch-up window. Due keys are anchored to the scheduled slot, not the current catch-up minute.'
+  };
+  await refreshOrchestratorEvent(env, {
+    event_type:'production_clock_schedule_scan',
+    status:result.status,
+    message:duePlans.length ? `Production clock found ${duePlans.length} due plan(s).` : 'Production clock schedule scan found no due plans.',
+    payload_json:result
+  }).catch(() => null);
+  return result;
 }
 
 async function productionRefreshClockStatus(input, env) {
@@ -9421,7 +9482,7 @@ async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, in
       audit,
       scraper_progress:progress,
       certification_rule:'completed_prizepicks_scraper_progress_or_audit_row_wins_before_timeout',
-      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.2 finalized the queue wrapper from the audit/progress row before any timeout or downstream blocking decision.'
+      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.3 preserves v1.5.08.2 finalization and finalized the queue wrapper from the audit/progress row before any timeout or downstream blocking decision.'
     },
     elapsed_ms:0
   };
@@ -10140,7 +10201,7 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'prizepicks_board') {
       const prizePicksReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_prizepicks_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'prizepicks_reaper_error', error:String(e?.message || e) }));
       if (prizePicksReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper audit/progress rows. v1.5.08.2 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper audit/progress rows. v1.5.08.3 preserves v1.5.08.2 finalization and finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
       }
     }
     if (lockedJobKey === 'scoring_refresh') {
