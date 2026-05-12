@@ -1,0 +1,15 @@
+AlphaDog Build Version Audit
+
+Expected build:
+v1.5.08.0 - PrizePicks Real Dispatch Gate
+
+Files checked:
+- ZIP filename: alphadog_v1.5.08.0_prizepicks_real_dispatch_gate.zip
+- worker.js SYSTEM_VERSION: v1.5.08.0 - PrizePicks Real Dispatch Gate
+- control_room.html visible version tag: v1.5.08.0 - PrizePicks Real Dispatch Gate
+- control_room.html JS fallback version: control_room_v1_5_08_0_prizepicks_real_dispatch_gate
+- main.py SCRIPT_VERSION: v1.5.08.0 - PrizePicks Real Dispatch Gate
+- README_v1.5.08.0.txt included
+
+Patch scope:
+PrizePicks board dispatch/wait lifecycle only. No scoring math, no Phase 1 logic, no schedule redesign.

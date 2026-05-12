@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.07.9 - PrizePicks Dispatch Seed Gate"
+SCRIPT_VERSION = "v1.5.08.0 - PrizePicks Real Dispatch Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
