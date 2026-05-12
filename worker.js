@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.3 - Candidate Board Fresh Publish Gate";
+const SYSTEM_VERSION = "v1.5.09.4 - Durable Retry Clean Publish Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1207,6 +1207,14 @@ function oddsApiBindingStatus(env = {}) {
     fatal_when_missing: false,
     rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs all use getOddsApiKey(env). Missing key is treated as a recoverable config/logic diagnostic and must not trap the queue.'
   };
+}
+
+
+function isRetryableD1TransientError(message) {
+  const msg = String(message || '');
+  if (!msg) return false;
+  if (/SQLITE_AUTH|not authorized|no such table|no such column|unrecognized token|syntax error|too many terms|constraint failed|UNIQUE constraint|FOREIGN KEY constraint/i.test(msg)) return false;
+  return /D1_ERROR|Network connection lost|network connection|database is locked|SQLITE_BUSY|SQLITE_LOCKED|temporarily unavailable|connection reset|internal error|fetch failed|timeout|timed out/i.test(msg);
 }
 
 function readEnvCandidate(env = {}, names = [], options = {}) {
@@ -10235,10 +10243,38 @@ async function productionRefreshWatchdog(env, input = {}) {
   return result;
 }
 
+
+async function releaseNextPendingRefreshQueueRow(env, row, reason = 'terminal_stage_released_next') {
+  try {
+    if (!env?.DB || !row?.chain_id) return { released:false, reason:'missing_db_or_chain' };
+    const seq = Number(row.sequence_order ?? row.job_index ?? 0);
+    const next = await env.DB.prepare(`
+      SELECT request_id, job_key, display_name, sequence_order, run_after
+      FROM data_refresh_queue
+      WHERE chain_id=?
+        AND status='pending'
+        AND sequence_order>?
+        AND (run_after IS NULL OR datetime(run_after) <= datetime('now','-2 minutes'))
+      ORDER BY sequence_order ASC, datetime(created_at) ASC
+      LIMIT 1
+    `).bind(row.chain_id, seq).first().catch(() => null);
+    if (!next?.request_id) return { released:false, reason:'no_pending_downstream_row' };
+    await env.DB.prepare(`
+      UPDATE data_refresh_queue
+      SET run_after=CURRENT_TIMESTAMP,
+          updated_at=CURRENT_TIMESTAMP,
+          output_json=json_set(COALESCE(output_json,'{}'),'$.auto_release_reason',?,'$.auto_release_after_job',?,'$.auto_release_at',CURRENT_TIMESTAMP)
+      WHERE request_id=? AND status='pending'
+    `).bind(String(reason || 'terminal_stage_released_next'), String(row.job_key || ''), next.request_id).run();
+    return { released:true, reason, request_id:next.request_id, job_key:next.job_key, display_name:next.display_name };
+  } catch (e) {
+    return { released:false, reason:'release_next_exception', error:String(e?.message || e) };
+  }
+}
+
 async function markRefreshQueueCompleted(env, row, wrapped) {
   await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
-  const next = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE chain_id=? AND status='pending' AND run_after IS NULL ORDER BY sequence_order ASC, created_at ASC LIMIT 1`).bind(row.chain_id).first().catch(() => null);
-  if (next) await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(next.request_id).run();
+  await releaseNextPendingRefreshQueueRow(env, row, 'mark_completed_released_next');
 }
 
 function incrementalNoDeltaTerminalSuccessPayload(input, requestId, modeInfo, extra = {}) {
@@ -10577,19 +10613,21 @@ async function runRefreshOrchestratorTick(input, env) {
       }
       await releaseSingleLaneEnqueueLock(env, requestId, { status:'failed', job_key:row.job_key, error:err });
       await releaseSingleLaneGlobalState(env, 'FAILED_RELEASED', wrapped);
-      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked } });
-      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked } });
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
+      const releasedNext = blocked.length ? { released:false, reason:'required_failure_blocked_downstream' } : await releaseNextPendingRefreshQueueRow(env, row, 'optional_failed_stage_released_downstream_repeatable');
+      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked, released_next:releasedNext } });
+      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked, released_next:releasedNext } });
+      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], released_next:releasedNext, last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and optional failures release downstream repeatably while required failures still block dependents.' };
     }
 
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
     await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
     await releaseSingleLaneEnqueueLock(env, requestId, { status:'completed', job_key:row.job_key });
     await releaseSingleLaneGlobalState(env, 'IDLE', wrapped);
-    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:wrapped });
-    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
+    const releasedNext = await releaseNextPendingRefreshQueueRow(env, row, 'completed_stage_released_downstream_repeatable');
+    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:{...wrapped, released_next:releasedNext} });
+    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:{...wrapped, released_next:releasedNext} });
     const remaining = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0`).first().catch(() => ({ rows_count:0 }));
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], released_next:releasedNext, last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. The next pending downstream queue row is released repeatably when needed; next cron tick starts the next requested stage by job_index.' };
   } catch (err) {
     const error = String(err?.message || err);
     const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, routed_job:row.job_name, status:'failed_exception', error, elapsed_ms:Date.now()-started };
@@ -18228,7 +18266,11 @@ async function runFullScoringRefreshV1(input, env) {
     const failure_error=String((!candidateOk && scoringOk ? (candidate_board?.error||candidate_board?.status||candidate_board?.note) : null)||scoring?.error||scoring?.status||candidate_board?.error||candidate_board?.status||export_board?.error||'');
     return { ok: true, data_ok: !!(scoringOk && candidateOk), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'queue_owned_scoring_no_pipeline_lock_volatile_overwrite_finalizer', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, queue_owned: queueOwned, scoring_ok: scoringOk, candidate_board_ok: candidateOk, failure_stage, failure_error: failure_error || null, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null, error: export_board.error || null, status: export_board.status || null } : candidateBoardSummary(export_board), lock_status: queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task_output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then inspect/export Candidate Board.', note: failure_stage ? `Full scoring refresh did not pass at ${failure_stage}: ${failure_error || 'no detailed error returned'}` : 'Full scoring refresh completed. Queue-owned scoring no longer uses AUTO_SCORING_REFRESH_V1 and cannot wait on its own stale lock.' };
   } catch (e) {
-    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', note:'v1.4.33 exposes the real scoring refresh exception and prevents queue-owned scoring from self-locking.' };
+    const msg = String(e?.message || e);
+    if (queueOwned && isRetryableD1TransientError(msg)) {
+      return { ok:true, data_ok:false, partial:true, retryable:true, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', status:'SCORING_REFRESH_TRANSIENT_D1_RETRY', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:msg, stack:String(e?.stack||'').slice(0,1200), lock_status:'QUEUE_OWNED_NO_PIPELINE_LOCK', note:'Retryable D1/network exception returned partial_continue so the same queue row retries on the next tick without publishing stale candidates.' };
+    }
+    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:msg, stack:String(e?.stack||'').slice(0,1800), lock_status:queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', note:'v1.5.09.4 exposes the real scoring refresh exception; retryable D1/network drops are requeued, non-retryable exceptions still fail safely.' };
   } finally {
     if (!queueOwned) await releasePipelineLock(env, lockId, lockedBy);
   }
@@ -18629,6 +18671,7 @@ async function runMlbScoringV1(input,env){
  input = input || {};
  let runId=null;
  let slateDate=null;
+ const queueOwnedScoringInput = input?.queue_owned_scoring === true || input?.orchestrator_internal === true || input?.backend_orchestrator === true || !!input?.queue_request_id || !!input?.queue_chain_id;
  if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',error:'Missing DB binding'};
  const runBatch=async(stmts,size=50)=>{let n=0; for(let i=0;i<stmts.length;i+=size){const chunk=stmts.slice(i,i+size); if(chunk.length){await env.DB.batch(chunk); n+=chunk.length;}} return n;};
  try{
@@ -18636,7 +18679,7 @@ async function runMlbScoringV1(input,env){
   slateDate=scoringSlateGuard.slate_date;
   runId=`score_v1|${slateDate}|${Date.now()}|${simpleHashText(String(Math.random()))}`;
   await ensureOddsApiTables(env); await ensureMlbScoringV1Tables(env);
-  const queueOwnedScoring = input?.queue_owned_scoring === true || input?.orchestrator_internal === true || input?.backend_orchestrator === true || !!input?.queue_request_id || !!input?.queue_chain_id;
+  const queueOwnedScoring = queueOwnedScoringInput;
   let resumedRun = false;
   let resumeGroupIndex = 0;
   const parseRunDetails = (txt) => { try { return JSON.parse(String(txt || '{}')); } catch (_e) { return {}; } };
@@ -18861,8 +18904,32 @@ async function runMlbScoringV1(input,env){
   return{ok:true,data_ok:finalStatus!=='FAILED_NO_DURABLE_SCORING_OUTPUT',version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,status:finalStatus,mode:'scoring_v1_backend_orchestrated_durable_chunked_publish',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted:durableFinal.score_rows,active:durableFinal.active_rows,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},durable_final:durableFinal,distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.5.08.6 chunks scoring through durable checkpoints, resumes via scoring_runs.details_json, and only finalizes from real persisted output rows.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.15_rbi_sharp_probability_buffer',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized the failed run instead of leaving it PENDING. v1.4.15 preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes only top-20 pickable Sleeper RBI UNDER probability candidates with reserve buffer.'};
+  if (queueOwnedScoringInput && isRetryableD1TransientError(msg)) {
+    try {
+      if (runId) {
+        await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=?, details_json=?, completed_at=NULL WHERE run_id=?`).bind(
+          msg,
+          JSON.stringify({ stage:'transient_d1_retry_preserved_for_next_tick', guard:'v1.5.09.4_durable_retry_clean_publish_gate', error:msg, retryable:true }),
+          runId
+        ).run();
+      }
+    } catch (_e) {}
+    return {
+      ok:true,
+      data_ok:false,
+      partial:true,
+      retryable:true,
+      version:SYSTEM_VERSION,
+      job:input.job||'run_mlb_scoring_v1',
+      slate_date:slateDate,
+      run_id:runId,
+      status:'SCORING_TRANSIENT_D1_RETRY',
+      error:msg,
+      note:'Retryable D1/network scoring failure preserved the durable RUNNING checkpoint for the next queue tick instead of finalizing a failed half-run or publishing a candidate board.'
+    };
+  }
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.4_durable_retry_clean_publish_gate',error:msg,retryable:false}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught a non-retryable failed run and finalized it. Retryable D1/network drops are now preserved for queue continuation instead of becoming failed half-runs.'};
  }
 }
 

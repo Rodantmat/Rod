@@ -1,0 +1,17 @@
+BUILD VERSION AUDIT
+Version: v1.5.09.4 - Durable Retry Clean Publish Gate
+
+Files verified:
+- worker.js: SYSTEM_VERSION set to v1.5.09.4 - Durable Retry Clean Publish Gate
+- control_room.html: visible version text updated to v1.5.09.4 - Durable Retry Clean Publish Gate
+- README_v1.5.09.4.txt included
+- BUILD_VERSION_AUDIT_v1.5.09.4.txt included
+
+Patch scope:
+- Durable retry handling for queue-owned scoring D1/network transient failures
+- Repeatable downstream run_after release after completed/optional-failed terminal stages
+- Candidate board publish gate preserved
+- No scoring math changes
+- No UI layout changes
+- No Main UI changes
+- No production table schema changes
