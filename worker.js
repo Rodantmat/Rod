@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.0 - Everyday Phase 1 Continuation Gate";
+const SYSTEM_VERSION = "v1.5.09.1 - Odds API Certification Finalizer Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10329,6 +10329,10 @@ async function runRefreshOrchestratorTick(input, env) {
       }
     }
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board';
+    // v1.5.09.1: Odds API jobs can be killed after temp rows are written but before certification/promotion.
+    // Continue locked odds rows immediately so the next tick can certify/promote existing temp rows instead of
+    // waiting for a dynamic timeout with a silent RUNNING queue row.
+    const canContinueLockedOddsApi = activeLockedRow && ['odds_api_morning','odds_api_afternoon'].includes(String(activeLockedRow.job_key || ''));
     // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
@@ -10338,7 +10342,7 @@ async function runRefreshOrchestratorTick(input, env) {
     // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
     // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
     const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
+    if (!canContinueLockedPrizePicks && !canContinueLockedOddsApi && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
@@ -15987,8 +15991,144 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
   await safeDbRun(env, `UPDATE odds_api_run_certifications SET cleaned_at=CURRENT_TIMESTAMP WHERE run_id=?`, [runId]);
   return { cleaned:true, keep_failed_ignored:!!keepFailed, details:out };
 }
+
+async function oddsApiLatestTempRunForQueue(env, slateDate, windowName, queueRequestId = null) {
+  const slate = String(slateDate || '').trim();
+  const win = String(windowName || '').toUpperCase();
+  const qid = String(queueRequestId || '').trim();
+  if (!env?.DB || !slate || !win) return null;
+  if (qid) {
+    const direct = await safeDbFirst(env, `
+      SELECT run_id, MAX(created_at) AS latest_created
+      FROM odds_api_requests_temp
+      WHERE run_id=? AND slate_date=? AND window_name=?
+      GROUP BY run_id
+      LIMIT 1`, [qid, slate, win]);
+    if (direct?.run_id) return direct.run_id;
+  }
+  const row = await safeDbFirst(env, `
+    SELECT run_id, MAX(created_at) AS latest_created, COUNT(*) AS request_rows
+    FROM odds_api_requests_temp
+    WHERE slate_date=? AND window_name=?
+    GROUP BY run_id
+    ORDER BY datetime(MAX(created_at)) DESC
+    LIMIT 1`, [slate, win]);
+  return row?.run_id || null;
+}
+
+async function oddsApiTempRunCounts(env, runId) {
+  if (!env?.DB || !runId) return { request_rows:0, event_rows:0, game_market_rows:0, prop_rows:0, hits_rows:0, rbi_rows:0, total_bases_rows:0 };
+  const r = await safeDbFirst(env, `
+    SELECT
+      (SELECT COUNT(*) FROM odds_api_requests_temp WHERE run_id=?) AS request_rows,
+      (SELECT COUNT(*) FROM odds_api_events_temp WHERE run_id=?) AS event_rows,
+      (SELECT COUNT(*) FROM odds_api_game_markets_temp WHERE run_id=?) AS game_market_rows,
+      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=?) AS prop_rows,
+      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='HITS') AS hits_rows,
+      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='RBI') AS rbi_rows,
+      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='TOTAL_BASES') AS total_bases_rows`, [runId, runId, runId, runId, runId, runId, runId]);
+  return {
+    request_rows:Number(r?.request_rows || 0),
+    event_rows:Number(r?.event_rows || 0),
+    game_market_rows:Number(r?.game_market_rows || 0),
+    prop_rows:Number(r?.prop_rows || 0),
+    hits_rows:Number(r?.hits_rows || 0),
+    rbi_rows:Number(r?.rbi_rows || 0),
+    total_bases_rows:Number(r?.total_bases_rows || 0)
+  };
+}
+
+async function oddsApiWriteQueueProgress(env, input, status, payload = {}) {
+  const requestId = String(input?.queue_request_id || '').trim();
+  if (!env?.DB || !requestId) return { skipped:true, reason:'missing_queue_request_id' };
+  const out = {
+    ok:true,
+    data_ok:false,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'run_odds_api_market_intel',
+    queue_request_id:requestId,
+    queue_chain_id:input?.queue_chain_id || null,
+    queue_job_key:input?.queue_job_key || input?.orchestrator_job_key || null,
+    status,
+    ...payload,
+    updated_at:new Date().toISOString(),
+    note:'v1.5.09.1 Odds API rows are never allowed to stay RUNNING silently; queue output records fetch/certification/promotion progress.'
+  };
+  await env.DB.prepare(`UPDATE data_refresh_queue SET output_json=?, updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status IN ('pending','running')`).bind(JSON.stringify(out).slice(0,5000), requestId).run().catch(() => null);
+  return { wrote:true, status };
+}
+
+async function finalizeOddsApiTempRunForQueue(env, input, runId, slateDate, windowName, reason = 'odds_api_resume_existing_temp_run') {
+  const counts = await oddsApiTempRunCounts(env, runId);
+  if (counts.request_rows <= 0 && counts.event_rows <= 0 && counts.game_market_rows <= 0 && counts.prop_rows <= 0) {
+    return { finalized:false, reason:'no_temp_rows_for_run', run_id:runId, temp_counts:counts };
+  }
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_certifying_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, resume_reason:reason });
+  const existingCert = await safeDbFirst(env, `SELECT run_id,status,certification_grade,promoted_at,cleaned_at,error FROM odds_api_run_certifications WHERE run_id=?`, [runId]);
+  let certification = existingCert && String(existingCert.status || '').toUpperCase() === 'PROMOTED'
+    ? { ok:true, reused:true, ...existingCert, temp_counts:counts }
+    : await certifyOddsApiTempRun(env, runId, slateDate, windowName, counts.request_rows > 0, counts.event_rows, {
+        resume_reason:reason,
+        queue_request_id:input?.queue_request_id || null,
+        queue_chain_id:input?.queue_chain_id || null,
+        temp_counts:counts,
+        certification_source:'v1.5.09.1_odds_api_finalizer_gate'
+      });
+  if (!certification?.ok) {
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_certification_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
+    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_certification_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, error:certification?.error || 'odds_api_certification_failed' };
+  }
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_promoting_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
+  let promotion = { promoted:false, reason:'not_attempted' };
+  let cleanup = { cleaned:false, reason:'not_attempted' };
+  try {
+    promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
+    const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
+    cleanup = await clearOddsApiTempTables(env);
+    cleanup.main_purge = mainPurge;
+  } catch (err) {
+    promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err) };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_promotion_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion });
+    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_promotion_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion, error:promotion.error };
+  }
+  const result = {
+    finalized:true,
+    ok:true,
+    data_ok:!!promotion.promoted,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'run_odds_api_market_intel',
+    status:promotion.promoted ? 'odds_api_certified_promoted_from_existing_temp_run' : 'odds_api_existing_temp_run_not_promoted',
+    run_id:runId,
+    slate_date:slateDate,
+    window_name:windowName,
+    temp_counts:counts,
+    certification,
+    promotion,
+    cleanup,
+    resume_reason:reason,
+    note:'Existing Odds API temp rows were certified, promoted, cleaned, and returned as terminal success without refetching.'
+  };
+  await oddsApiWriteQueueProgress(env, input, result.status, result);
+  return result;
+}
+
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
+  const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
+  await ensureOddsApiTables(env);
+  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
+  const slateDate = slateResolution.resolved_slate_date;
+  const windowName = String(input.window_name || 'MORNING').toUpperCase();
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_runner_started', { slate_date:slateDate, window_name:windowName, requested_slate_date:requestedSlateDate });
+
+  // v1.5.09.1: certification/promotion finalizer gate. If a previous Worker request was killed
+  // after fetch/temp writes, do not refetch or wipe temp. Resume at certify -> promote -> complete.
+  const existingTempRunId = await oddsApiLatestTempRunForQueue(env, slateDate, windowName, input?.queue_request_id || null);
+  if (existingTempRunId) {
+    const finalized = await finalizeOddsApiTempRunForQueue(env, input, existingTempRunId, slateDate, windowName, 'existing_temp_detected_before_fetch');
+    if (finalized?.finalized) return finalized;
+  }
+
   const oddsKeyInfo = await getOddsApiKeyForJob(env, input);
   if (!oddsKeyInfo.key) return {
     ok:true,
@@ -15999,14 +16139,10 @@ async function runOddsApiMarketIntel(input, env) {
     odds_api_binding: oddsApiBindingStatus(env),
     note:'Odds API function capsule checked direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, and remote config.txt. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
   };
-  const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
-  await ensureOddsApiTables(env);
-  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
-  const slateDate = slateResolution.resolved_slate_date;
-  const windowName = String(input.window_name || 'MORNING').toUpperCase();
   const runId = oddsRunId(slateDate, windowName);
-  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp' });
+  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp_no_existing_resume_rows' });
   await cleanOddsApiTempRun(env, runId).catch(() => null);
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_fetch_started', { slate_date:slateDate, window_name:windowName, run_id:runId, overwrite_preflight });
   const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
   const gameResult = await oddsApiFetchJson(gameUrl);
@@ -16049,6 +16185,7 @@ async function runOddsApiMarketIntel(input, env) {
   const zeroSelectedReason = selected.length <= 0 && allEvents.length > 0 && Number(skippedCounts.SKIPPED_OTHER_DATE || 0) > 0
     ? 'SELECTED_EVENTS_ZERO_DUE_TO_SLATE_MISMATCH'
     : 'NO_SELECTED_EVENTS';
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_temp_rows_written_certifying', { slate_date:slateDate, window_name:windowName, run_id:runId, selected_events:selected.length, prop_requests:propRequests, prop_rows:propRows, game_save:gameSave });
   const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResult.ok, selected.length, {
     requested_slate_date: requestedSlateDate,
     resolved_slate_date: slateDate,
@@ -16062,10 +16199,12 @@ async function runOddsApiMarketIntel(input, env) {
   let cleanup = { cleaned:false, reason:'not_promoted' };
   if (certification.ok) {
     try {
+      await oddsApiWriteQueueProgress(env, input, 'odds_api_certified_promoting', { slate_date:slateDate, window_name:windowName, run_id:runId, certification });
       promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
       const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
       cleanup = await clearOddsApiTempTables(env);
       cleanup.main_purge = mainPurge;
+      await oddsApiWriteQueueProgress(env, input, 'odds_api_promoted_cleaned', { slate_date:slateDate, window_name:windowName, run_id:runId, certification, promotion, cleanup });
     } catch (err) {
       promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.50' };
       cleanup = await clearOddsApiTempTables(env).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));

@@ -1,0 +1,25 @@
+BUILD VERSION AUDIT
+Version: v1.5.09.1 - Odds API Certification Finalizer Gate
+
+worker.js SYSTEM_VERSION: v1.5.09.1 - Odds API Certification Finalizer Gate
+control_room.html versionTag: v1.5.09.1 - Odds API Certification Finalizer Gate
+README: README_v1.5.09.1.txt
+
+Patched files:
+- worker.js
+- control_room.html
+- README_v1.5.09.1.txt
+- BUILD_VERSION_AUDIT_v1.5.09.1.txt
+
+Patch scope:
+- Odds API certification/promotion/finalization path
+- Odds API queue progress visibility
+- Odds API locked-job continuation for odds_api_morning and odds_api_afternoon
+
+Not touched intentionally:
+- Everyday Phase 1 logic except preserving existing v1.5.09.0 behavior
+- PrizePicks Board/GitHub scraper flow
+- PrizePicks Context
+- scoring math and candidate board scoring
+- Main UI
+- broad orchestrator architecture
