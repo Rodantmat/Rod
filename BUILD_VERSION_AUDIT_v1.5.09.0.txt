@@ -1,0 +1,11 @@
+BUILD VERSION AUDIT
+Version: v1.5.09.0 - Everyday Phase 1 Continuation Gate
+
+worker.js SYSTEM_VERSION: v1.5.09.0 - Everyday Phase 1 Continuation Gate
+control_room.html versionTag: v1.5.09.0 - Everyday Phase 1 Continuation Gate
+README: README_v1.5.09.0.txt
+
+Patch scope verified:
+- Everyday Phase 1 continuation/finalization only.
+- Scoring math untouched.
+- PrizePicks/Odds/Main UI untouched except version tag display in control room.

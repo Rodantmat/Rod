@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.9 - Same-Slate Scoring Context Gate";
+const SYSTEM_VERSION = "v1.5.09.0 - Everyday Phase 1 Continuation Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10321,6 +10321,13 @@ async function runRefreshOrchestratorTick(input, env) {
         return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
+    if (lockedJobKey === 'everyday_phase1') {
+      const everydayReconcile = await reconcileEverydayPhase1Runs(env, activeLockedRow?.current_slate_date || state?.current_slate_date || activeLockedRow?.requested_slate_date, { reason:'locked_everyday_phase1_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+      const everydayReaper = await finalizeCompletedEverydayPhase1QueueFromRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id, current_slate_date:activeLockedRow?.current_slate_date }, { reason:'locked_everyday_phase1_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'everyday_reaper_error', error:String(e?.message || e) }));
+      if (everydayReaper?.finalized) {
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_everyday_phase1_completed_by_child_reaper', cleanup, everyday_reconcile:everydayReconcile, everyday_reaper:everydayReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'Everyday Phase 1 child row had completed; v1.5.09.0 finalized the parent queue row and released the global lane.' };
+      }
+    }
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board';
     // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
@@ -10402,7 +10409,8 @@ async function runRefreshOrchestratorTick(input, env) {
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.07.6: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      const everydayQueueReconcile = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'orchestrator_before_everyday_phase1_tick' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+      // v1.5.09.0: Queue-owned Everyday Phase 1 must never restart from the beginning when a child row is stale.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -10415,6 +10423,7 @@ async function runRefreshOrchestratorTick(input, env) {
         job:'everyday_phase1_all_direct',
         status: tick?.phase1_complete ? 'completed' : 'partial_continue',
         slate_date:slate.slate_date,
+        reconciliation:everydayQueueReconcile,
         scheduled,
         tick,
         check,
@@ -12280,6 +12289,132 @@ async function ensureEverydayPhase1Tables(env) {
   ).run();
 }
 
+
+async function reconcileEverydayPhase1Runs(env, slateDate, opts = {}) {
+  await ensureEverydayPhase1Tables(env);
+  const d = String(slateDate || '').slice(0, 10);
+  const staleSeconds = Number(opts.stale_seconds || 600);
+  const nowReason = String(opts.reason || 'everyday_phase1_continuation_gate');
+  const summary = {
+    ok: true,
+    version: SYSTEM_VERSION,
+    job: 'reconcile_everyday_phase1_runs',
+    slate_date: d || null,
+    stale_seconds: staleSeconds,
+    old_stale_terminalized: 0,
+    impossible_running_finished_reconciled: 0,
+    duplicate_active_cancelled: 0,
+    current_stale_requeued: 0,
+    active_kept: null,
+    reason: nowReason
+  };
+
+  // Running rows with finished_at are impossible. If they are current-step completed, restore completed;
+  // otherwise terminalize them as recovered so they cannot poison future active-run selection.
+  const impossible = await env.DB.prepare(`
+    UPDATE everyday_phase1_runs
+    SET status = CASE WHEN current_step='completed' THEN 'completed' ELSE 'stale_recovered_impossible_finished_running' END,
+        error = COALESCE(error, 'reconciled_running_with_finished_at'),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE status='running'
+      AND finished_at IS NOT NULL
+  `).run().catch(() => null);
+  summary.impossible_running_finished_reconciled = Number(impossible?.meta?.changes || 0);
+
+  // Previous-slate active child rows are ghosts. They are diagnostic noise and can block active-run
+  // selection if a future query is broadened by mistake. Terminalize without touching live data tables.
+  if (d) {
+    const old = await env.DB.prepare(`
+      UPDATE everyday_phase1_runs
+      SET status='stale_recovered_old_slate',
+          finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP),
+          updated_at=CURRENT_TIMESTAMP,
+          error=COALESCE(error, 'stale_old_slate_child_run_recovered_by_v1_5_09_0')
+      WHERE status IN ('pending','running')
+        AND slate_date < ?
+    `).bind(d).run().catch(() => null);
+    summary.old_stale_terminalized = Number(old?.meta?.changes || 0);
+  }
+
+  if (d) {
+    const activeRows = await env.DB.prepare(`
+      SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, finished_at, error
+      FROM everyday_phase1_runs
+      WHERE slate_date=?
+        AND status IN ('pending','running')
+      ORDER BY datetime(created_at) DESC
+      LIMIT 20
+    `).bind(d).all().catch(() => ({ results: [] }));
+    const active = activeRows?.results || [];
+    const keep = active[0] || null;
+    summary.active_kept = keep ? { request_id: keep.request_id, status: keep.status, current_step: keep.current_step, updated_at: keep.updated_at } : null;
+    const dupes = active.slice(1).map(r => r.request_id).filter(Boolean);
+    if (dupes.length) {
+      const dupSql = `
+        UPDATE everyday_phase1_runs
+        SET status='stale_recovered_duplicate_active_child',
+            finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP),
+            updated_at=CURRENT_TIMESTAMP,
+            error=COALESCE(error, 'duplicate_active_child_cancelled_by_v1_5_09_0')
+        WHERE request_id IN (${dupes.map(() => '?').join(',')})
+      `;
+      const dupRes = await env.DB.prepare(dupSql).bind(...dupes).run().catch(() => null);
+      summary.duplicate_active_cancelled = Number(dupRes?.meta?.changes || 0);
+    }
+
+    // Same-slate stale RUNNING child should continue from current_step, not restart. Requeue it as
+    // pending with started_at cleared; current_step/output_preview stay intact for audit continuity.
+    if (keep && keep.status === 'running' && keep.current_step !== 'completed') {
+      const age = await env.DB.prepare(`SELECT CAST((julianday(CURRENT_TIMESTAMP)-julianday(?))*86400 AS INTEGER) AS seconds_since_update`).bind(keep.updated_at).first().catch(() => null);
+      const seconds = Number(age?.seconds_since_update || 0);
+      if (seconds >= staleSeconds) {
+        const rq = await env.DB.prepare(`
+          UPDATE everyday_phase1_runs
+          SET status='pending',
+              started_at=NULL,
+              updated_at=CURRENT_TIMESTAMP,
+              error=NULL,
+              output_preview=?
+          WHERE request_id=?
+            AND status='running'
+        `).bind(JSON.stringify({ recovered_by:'v1.5.09.0_everyday_phase1_continuation_gate', previous:keep, seconds_since_update:seconds, action:'requeued_same_slate_child_from_current_step' }).slice(0,4000), keep.request_id).run().catch(() => null);
+        summary.current_stale_requeued = Number(rq?.meta?.changes || 0);
+        summary.active_kept = { request_id: keep.request_id, status:'pending', current_step: keep.current_step, updated_at:'CURRENT_TIMESTAMP', seconds_since_update:seconds };
+      }
+    }
+  }
+  return summary;
+}
+
+async function finalizeCompletedEverydayPhase1QueueFromRuns(env, rowLike = {}, opts = {}) {
+  await ensureEverydayPhase1Tables(env);
+  const requestId = rowLike?.request_id || rowLike?.current_request_id || rowLike?.running_request_id || null;
+  const chainId = rowLike?.chain_id || rowLike?.current_chain_id || rowLike?.running_chain_id || null;
+  const slateDate = String(rowLike?.requested_slate_date || rowLike?.current_slate_date || rowLike?.slate_date || '').slice(0,10);
+  const child = requestId
+    ? await env.DB.prepare(`SELECT * FROM everyday_phase1_runs WHERE request_id=? LIMIT 1`).bind(requestId).first().catch(() => null)
+    : null;
+  if (!child || child.status !== 'completed') return { finalized:false, reason:'no_completed_everyday_child_for_queue_request', request_id:requestId, child_status:child?.status || null };
+  const wrapped = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:opts.job || 'refresh_orchestrator_tick',
+    status:'everyday_phase1_completed_by_child_reaper',
+    request_id:requestId,
+    chain_id:chainId,
+    slate_date:child.slate_date || slateDate,
+    child_run:child,
+    note:'v1.5.09.0 finalized parent queue/job state from a completed everyday_phase1_runs child row.'
+  };
+  await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND job_key='everyday_phase1' AND status IN ('pending','running','partial_continue')`).bind(JSON.stringify(wrapped).slice(0,5000), requestId).run().catch(() => null);
+  await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='everyday_phase1' AND current_request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), requestId).run().catch(() => null);
+  await releaseSingleLaneGlobalState(env, 'IDLE', wrapped).catch(() => null);
+  await releaseSingleLaneEnqueueLock(env, requestId, { status:'completed', job_key:'everyday_phase1', reason:'completed_child_reaper' }).catch(() => null);
+  await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:'everyday_phase1', event_type:'everyday_phase1_child_reaper_finalized_parent', status:'completed', message:'Everyday Phase 1 parent finalized from completed child row.', payload_json:wrapped }).catch(() => null);
+  return { finalized:true, request_id:requestId, chain_id:chainId, child_status:child.status, child_step:child.current_step, wrapped };
+}
+
 const EVERYDAY_PHASE1_STEPS = [
   "games_markets",
   "starters",
@@ -12301,11 +12436,12 @@ function nextEverydayPhase1Step(step) {
 async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
+  const reconciliation = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'schedule_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+  const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY datetime(created_at) DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, reconciliation, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. v1.5.09.0 will continue it from current_step through backend minute ticks." };
   const requestId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)").bind(requestId, slate.slate_date).run();
-  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually or let the scheduler call it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"usually 10-30 seconds after one auto tick; lineups may return retry_later and not block", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
+  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, reconciliation, run_after:"backend minute cron will continue it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"bounded backend minute ticks; no browser queue tick required", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
 }
 
 function everydayPhase1JobForStep(step) {
@@ -12347,15 +12483,16 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
 async function runEverydayPhase1Tick(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
+  const reconciliation = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'tick_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY datetime(created_at) DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, reconciliation, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
   const requestId = row.request_id;
   let currentStep = row.current_step || "games_markets";
   const startedAt = Date.now();
   const maxSteps = Number(input?.max_steps || 8);
   const maxMs = Number(input?.max_ms || 22000);
   const processed = [];
-  if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
+  if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(JSON.stringify({ resumed_by:'v1.5.09.0_everyday_phase1_continuation_gate', current_step:currentStep, previous_row:row }).slice(0,4000), requestId).run();
   try {
     for (let i = 0; i < maxSteps; i++) {
       if (currentStep === "completed") break;
@@ -12367,6 +12504,7 @@ async function runEverydayPhase1Tick(input, env) {
         return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_unknown_step", request_id:requestId, step, processed, live_tables_touched:false };
       }
       const t0 = Date.now();
+      await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', current_step=?, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify({ attempting_step:step, routed_job:jobName, started_at:new Date().toISOString(), processed }).slice(0,4000), requestId).run().catch(() => null);
       const alreadySatisfied = await everydayPhase1StepAlreadySatisfied(env, slate.slate_date, step).catch(() => null);
       let result;
       let skippedExecution = false;
@@ -12384,7 +12522,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.07.6 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.09.0 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
@@ -12400,7 +12538,7 @@ async function runEverydayPhase1Tick(input, env) {
     }
     const complete = currentStep === "completed";
     const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:complete ? "completed" : "partial_continue", request_id:requestId, slate_date:slate.slate_date, processed_steps:processed.length, processed, next_step:currentStep, phase1_complete:complete, final_check:check, elapsed_ms:Date.now()-startedAt, live_tables_touched:processed.length>0, note:complete ? "Everyday Phase 1 auto-run completed. Lineups can be retry-later/non-blocking if not posted." : "Everyday Phase 1 auto-run stopped at safety budget. Run Baseline Tick again to continue." };
+    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:complete ? "completed" : "partial_continue", request_id:requestId, slate_date:slate.slate_date, reconciliation, processed_steps:processed.length, processed, next_step:currentStep, phase1_complete:complete, final_check:check, elapsed_ms:Date.now()-startedAt, live_tables_touched:processed.length>0, note:complete ? "Everyday Phase 1 auto-run completed and terminalized the child row." : "Everyday Phase 1 auto-run stopped at safety budget. Backend minute cron will continue from next_step." };
   } catch (err) {
     const error = String(err?.message || err);
     await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=? WHERE request_id=?").bind(error, JSON.stringify({ processed, error }).slice(0,4000), requestId).run().catch(() => null);
