@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.1 - Odds API Certification Finalizer Gate";
+const SYSTEM_VERSION = "v1.5.09.2 - Scoring Partial Continue Queue Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9034,6 +9034,7 @@ function singleLaneBlockedDependents(failedJobKey) {
 function singleLaneIsPartialOrWaiting(row, result) {
   if (isIncrementalNoDeltaTerminalSuccess(result) || isIncrementalNoDeltaTerminalSuccess(result?.last_tick) || isIncrementalNoDeltaTerminalSuccess(result?.result)) return false;
   const st = String(result?.status || result?.result_status || '').toLowerCase();
+  if (isScoringPartialContinueResult(row, result)) return true;
   if (refreshResultIsPartial(result)) return true;
   if (String(row?.job_key || '') === 'prizepicks_board' && (st.includes('waiting') || st.includes('dispatched'))) return true;
   return false;
@@ -9043,6 +9044,7 @@ function singleLaneShouldTerminalFail(row, result, attempts) {
   if (result?.terminal_failure === true) return true;
   const jobKey = String(row?.job_key || '');
   const statusText = String(result?.status || result?.result_status || result?.error || '').toLowerCase();
+  if (jobKey === 'scoring_refresh' && isScoringPartialContinueResult(row, result)) return false;
   if (jobKey === 'prizepicks_board') {
     if (statusText.includes('missing_github')) return true;
     if (statusText.includes('waiting') || statusText.includes('dispatched')) return false;
@@ -9923,6 +9925,7 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
     stale_partial_rows_requeued: 0,
     orphan_pending_rows_released: 0,
     stale_non_scoring_running_requeued: 0,
+    scoring_partial_failures_requeued: 0,
     optional_failures_released_next: 0,
     external_only_failure_policy: ['cloudflare_unavailable','github_unavailable','odds_api_unavailable','gemini_unavailable'],
     note: 'Auto-healing preflight treats queue stalls, duplicate scheduled chains, stale partial_continue rows, orphan pending rows, and optional odds failures as logic recoveries, not terminal pipeline failures.'
@@ -10047,6 +10050,61 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
     `).bind(row.request_id).run();
     out.orphan_pending_rows_released++;
     await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'orphan_pending_released', status:'pending', message:'Pending row had no active predecessor and was released automatically.', payload_json:{ row, reason } });
+  }
+
+  const scoringPartialFailures = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, display_name, status, error, run_after, started_at, finished_at, updated_at, sequence_order, substr(COALESCE(output_json,''),1,1800) AS output_preview
+    FROM data_refresh_queue
+    WHERE job_key='scoring_refresh'
+      AND status='failed'
+      AND (
+        UPPER(COALESCE(error,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
+        OR UPPER(COALESCE(output_json,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
+      )
+      AND datetime(updated_at) >= datetime('now','-6 hours')
+    ORDER BY datetime(updated_at) DESC
+    LIMIT 10
+  `).catch(() => []);
+  for (const row of scoringPartialFailures) {
+    const payload = JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'scoring_partial_continue_failure_requeued', reason, row }).slice(0,3000);
+    await env.DB.batch([
+      env.DB.prepare(`
+        UPDATE data_refresh_queue
+        SET status='pending',
+            run_after=CURRENT_TIMESTAMP,
+            started_at=NULL,
+            finished_at=NULL,
+            updated_at=CURRENT_TIMESTAMP,
+            error=NULL,
+            output_json=COALESCE(output_json, ?)
+        WHERE request_id=?
+          AND job_key='scoring_refresh'
+          AND status='failed'
+          AND (
+            UPPER(COALESCE(error,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
+            OR UPPER(COALESCE(output_json,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
+          )
+      `).bind(payload, row.request_id),
+      env.DB.prepare(`
+        UPDATE data_orchestrator_jobs
+        SET run_requested_flag=1,
+            running_flag=0,
+            last_status='scoring_partial_continue_requeued',
+            last_fail=0,
+            last_error_code=NULL,
+            last_error_message=NULL,
+            current_request_id=?,
+            current_chain_id=?,
+            updated_at=CURRENT_TIMESTAMP
+        WHERE job_key='scoring_refresh'
+      `).bind(row.request_id, row.chain_id)
+    ]).catch(async () => {
+      await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, started_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=COALESCE(output_json, ?) WHERE request_id=? AND job_key='scoring_refresh' AND status='failed'`).bind(payload, row.request_id).run().catch(() => null);
+      await env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, last_status='scoring_partial_continue_requeued', last_fail=0, last_error_code=NULL, last_error_message=NULL, current_request_id=?, current_chain_id=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='scoring_refresh'`).bind(row.request_id, row.chain_id).run().catch(() => null);
+    });
+    await releaseSingleLaneEnqueueLock(env, row.request_id, { status:'requeued_scoring_partial_continue', job_key:'scoring_refresh' }).catch(() => null);
+    out.scoring_partial_failures_requeued++;
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:'scoring_refresh', event_type:'scoring_partial_continue_failure_requeued', status:'pending', message:'Failed scoring row was actually a durable partial_continue and was requeued for the minute cron.', payload_json:{ row, reason } });
   }
 
   const optionalFailures = await sampleRows(env, `
@@ -10233,6 +10291,23 @@ function isScoringLockWaitResult(row, result) {
   if (String(row?.job_key || '') !== 'scoring_refresh') return false;
   const status = String(result?.status || result?.result_status || result?.error || '').toUpperCase();
   return status === 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK' || status === 'LOCKED_SKIP_SCORING_ALREADY_RUNNING';
+}
+
+function isScoringPartialContinueResult(row, result) {
+  if (String(row?.job_key || '') !== 'scoring_refresh') return false;
+  const statusText = String(
+    result?.status ||
+    result?.result_status ||
+    result?.error ||
+    result?.failure_error ||
+    result?.scoring?.status ||
+    result?.result?.status ||
+    ''
+  ).toUpperCase();
+  if (statusText.includes('SCORING_PARTIAL_CONTINUE')) return true;
+  if (result?.partial === true && statusText.includes('PARTIAL')) return true;
+  if (result?.scoring_partial === true) return true;
+  return false;
 }
 
 async function prizePicksBoardFreshnessGate(env, row) {

@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlphaDog Control Room</title>
-<!-- v1.5.09.1 - Odds API Certification Finalizer Gate -->
+<!-- v1.5.09.2 - Scoring Partial Continue Queue Gate -->
 <style>
 body{background:#0b0f14;color:#00ff88;font-family:monospace;padding:10px;margin:0}
 h2{font-size:21px;color:#00ff88} h3{color:#fff;font-size:14px}
@@ -48,7 +48,7 @@ textarea#sqlInput, textarea{user-select:text;-webkit-user-select:text;pointer-ev
 </head>
 <body>
 <h2>ALPHADOG CONTROL ROOM</h2>
-<div id="versionTag">v1.5.09.1 - Odds API Certification Finalizer Gate</div>
+<div id="versionTag">v1.5.09.2 - Scoring Partial Continue Queue Gate</div>
 <div class="small">PT Now: <span id="ptNowLabel"></span></div>
 <div class="small">Slate Mode: <span id="slateModeLabel"></span> | Resolved Slate: <span id="targetDateLabel"></span></div>
 <div class="status" id="status">READY</div>
@@ -677,7 +677,7 @@ async function runRfiRegressionSuite(){
   const suite = {
     ok: false,
     suite: "rfi_regression_x3",
-    version: "v1.5.09.1 - Odds API Certification Finalizer Gate",
+    version: "v1.5.09.2 - Scoring Partial Continue Queue Gate",
     slate_date: d,
     cycle_count: cycles,
     cycles: [],

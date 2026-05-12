@@ -1,0 +1,18 @@
+Build Version Audit
+Version: v1.5.09.2 - Scoring Partial Continue Queue Gate
+
+Files checked:
+- worker.js: SYSTEM_VERSION set to v1.5.09.2 - Scoring Partial Continue Queue Gate
+- control_room.html: visible version text updated to v1.5.09.2 - Scoring Partial Continue Queue Gate
+- README_v1.5.09.2.txt included
+- BUILD_VERSION_AUDIT_v1.5.09.2.txt included
+
+Patch validation:
+- node --check worker.js passed.
+- No folder/subdirectory structure added.
+- Flat ZIP delivery preserved.
+
+Patch intent:
+- Fix scoring_refresh partial continuation queue handling only.
+- SCORING_PARTIAL_CONTINUE must remain pending/continuable for minute cron pickup, not failed.
+- Existing failed scoring_refresh rows caused by SCORING_PARTIAL_CONTINUE are self-healed back to pending automatically.
