@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.2 - Scoring Partial Continue Queue Gate";
+const SYSTEM_VERSION = "v1.5.09.3 - Candidate Board Fresh Publish Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -18454,8 +18454,11 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     rows=res.results||[];
     if(rows.length) candidateSource='promoted_score_tables_fallback';
   }
-  // v1.4.31: keep the existing live selected-slate board visible until the new publish succeeds.
-  // Non-selected slates remain volatile and are purged; selected-slate rows are upserted in place.
+  // v1.5.09.3: keep non-selected slate purge, but do not preserve same-slate
+  // candidate rows across a successful rebuild. The old UPSERT-only path could leave
+  // stale selected-slate candidates from a previous scoring run when the newer run
+  // had lower scores or different pickability. Same-slate rows are deleted only after
+  // source rows exist; if source rows are empty, the selected board is preserved.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
   if(!rows.length){
     return {ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,status:'NO_SCORE_ROWS_AVAILABLE_FOR_CANDIDATE_PUBLISH',candidate_source:candidateSource,active_rows_seen:0,candidates_written:0,summary:{QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0},pickability_summary:null,rollover_guard:{pass:true,active_slate:slateDate,policy:'NO_EMPTY_WINDOW_SELECTED_BOARD_PRESERVED'},slate_replace:{mode:'NO_SOURCE_ROWS_NO_SELECTED_SLATE_DELETE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight},error:'active_score_board_and_promoted_score_tables_empty',next_action:'Run Check MLB Scores and inspect scoring_runs details_json; candidate publish refused to blank selected slate because no score rows existed.',note:'v1.4.34 refuses empty candidate publish and reports the real source-row problem instead of silently returning no detailed error.'};
@@ -18541,9 +18544,19 @@ async function buildMlbScoreCandidateBoardV1(input, env){
       updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,releaseLineType,releaseLineNumber,r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
     if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:releaseLineNumber,line_type:releaseLineType,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
+  const selectedSlateRowsDeletedForFreshPublish = inserts.length > 0
+    ? await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run()
+    : { meta: { changes: 0 }, changes: 0 };
+  slate_replace.selected_slate_fresh_publish_delete = {
+    attempted: inserts.length > 0,
+    deleted_rows: Number(selectedSlateRowsDeletedForFreshPublish?.meta?.changes ?? selectedSlateRowsDeletedForFreshPublish?.changes ?? 0),
+    reason: inserts.length > 0 ? 'fresh_candidate_rows_ready_replace_selected_slate' : 'no_candidate_rows_ready_preserve_selected_slate'
+  };
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
+  const latestRunRows=await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=? AND run_id=?`).bind(slateDate, rows[0]?.run_id || '').first().catch(()=>({rows_count:0}));
+  const staleRunRows=await env.DB.prepare(`SELECT run_id, COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated FROM score_candidate_board WHERE slate_date=? AND COALESCE(run_id,'')<>? GROUP BY run_id ORDER BY rows_count DESC LIMIT 10`).bind(slateDate, rows[0]?.run_id || '').all().catch(()=>({results:[]}));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_volatile_overwrite_pickability_same_slate_context_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.33 keeps the selected-slate board visible during rebuild, purges only non-selected slate rows before publish, and bridges PrizePicks goblin/demon More-only rows to sportsbook OVER candidates only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed; v1.5.08.9 blocks stale current-game context from candidate publication.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_fresh_selected_slate_publish_pickability_same_slate_context_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,candidate_source:candidateSource,latest_source_run_id:rows[0]?.run_id||null,latest_run_candidate_rows:Number(latestRunRows?.rows_count||0),stale_same_slate_run_rows:staleRunRows.results||[],summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE. Same-slate stale candidates from prior runs are removed after fresh rows are ready.',note:'v1.5.09.3 fixes stale selected-slate candidate persistence by replacing same-slate score_candidate_board rows during a successful rebuild. It preserves the no-empty-publish guard, keeps goblin/demon UNDER blocked, and does not touch scoring math, Odds API, PrizePicks, Phase 1/2A/2B, static, incremental, Gemini, cron, or Main UI.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();

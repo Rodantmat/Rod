@@ -1,0 +1,13 @@
+Build Version Audit
+Version: v1.5.09.3 - Candidate Board Fresh Publish Gate
+
+Verified package contents:
+- worker.js: SYSTEM_VERSION set to v1.5.09.3 - Candidate Board Fresh Publish Gate
+- control_room.html: visible version text updated to v1.5.09.3 - Candidate Board Fresh Publish Gate
+- README_v1.5.09.3.txt included
+- BUILD_VERSION_AUDIT_v1.5.09.3.txt included
+
+Patch summary:
+- Candidate board now fresh-replaces selected-slate score_candidate_board rows when new candidate rows are ready.
+- No-empty-publish guard remains active: if source rows are empty, selected-slate board is preserved and the function reports the source-row problem.
+- Candidate publish response now reports latest_source_run_id, latest_run_candidate_rows, stale_same_slate_run_rows, and selected_slate_fresh_publish_delete.
