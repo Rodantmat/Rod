@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.08.6 - Scoring Durability Continuation Gate"
+SCRIPT_VERSION = "v1.5.08.7 - Scoring Partial Propagation Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

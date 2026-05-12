@@ -1,0 +1,6 @@
+Build Version Audit
+Version: v1.5.08.7 - Scoring Partial Propagation Gate
+worker.js SYSTEM_VERSION: v1.5.08.7 - Scoring Partial Propagation Gate
+control_room.html version tag: v1.5.08.7 - Scoring Partial Propagation Gate
+README: README_v1.5.08.7.txt
+Scope: scoring_refresh lifecycle only; no scoring math changes.
