@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.07.8 - PrizePicks Wait Release Gate";
+const SYSTEM_VERSION = "v1.5.07.9 - PrizePicks Dispatch Seed Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -3246,6 +3246,27 @@ async function upsertPrizePicksScraperProgress(env, payload = {}) {
   return { run_id:runId, dispatch_id:dispatchId, status, step };
 }
 
+
+async function seedPrizePicksScraperDispatchRow(env, payload = {}) {
+  await ensurePrizePicksScraperProgressTable(env);
+  const runId = String(payload.run_id || payload.dispatch_id || payload.request_id || '').slice(0,160);
+  if (!runId) return { seeded:false, reason:'missing_run_id' };
+  const dispatchId = String(payload.dispatch_id || payload.request_id || runId).slice(0,160);
+  const now = new Date().toISOString();
+  const status = String(payload.status || 'orchestrator_seeded').slice(0,80);
+  const step = String(payload.step || status).slice(0,120);
+  const message = String(payload.progress_message || 'AlphaDog worker seeded PrizePicks scraper tracking row before GitHub workflow dispatch.').slice(0,1000);
+  const source = String(payload.source || 'alphadog_worker_dispatch_seed').slice(0,160);
+  let payloadJson = null;
+  try { payloadJson = JSON.stringify({ ...payload, run_id:runId, dispatch_id:dispatchId, seeded_at:now }).slice(0,6000); } catch (_) { payloadJson = null; }
+  const res = await env.DB.prepare(`
+    INSERT OR IGNORE INTO prizepicks_scraper_runs
+      (run_id, dispatch_id, status, step, progress_message, started_at, source, script_version, payload_json, heartbeat_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(runId, dispatchId, status, step, message, String(payload.started_at || now).slice(0,80), source, SYSTEM_VERSION, payloadJson).run();
+  return { seeded:Number(res?.meta?.changes || 0) > 0, run_id:runId, dispatch_id:dispatchId, status, changes:Number(res?.meta?.changes || 0) };
+}
+
 async function getPrizePicksScraperProgress(env, requestedAt = null, dispatchId = null) {
   const wanted = String(dispatchId || '').trim();
   const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
@@ -3611,7 +3632,8 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const slateDate = String(input?.slate_date || input?.requested_slate_date || '').trim();
   const chainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow_dispatch', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub workflow_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
+  const dispatchSeed = await seedPrizePicksScraperDispatchRow(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, request_id:outboundDispatchId, chain_id:chainId, slate_date:slateDate, status:'dispatch_seeded', step:'worker_dispatch_seeded', progress_message:'Worker seeded PrizePicks scraper tracking row immediately before workflow_dispatch.', started_at:nowIso, source:'alphadog_worker_dispatch_seed', github_repo:repo, github_workflow_file:workflow, github_ref:ref }).catch(e => ({ seeded:false, error:String(e?.message || e) }));
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow_dispatch', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub workflow_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_seed:dispatchSeed });
 
   const workflowDispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   const workflowPayload = {
@@ -9390,7 +9412,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.07.8 PrizePicks Wait Release Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.07.9 PrizePicks Dispatch Seed Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
 }
 
 
@@ -9500,7 +9522,7 @@ async function finalizeCompletedScoringQueueFromScoringRuns(env, seed = {}, inpu
       scoring_created_at:scoring.created_at || null,
       scoring_completed_at:scoring.completed_at || null,
       details_preview:scoring.details_preview || null,
-      note:'Scoring already completed in scoring_runs; v1.5.07.8 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
+      note:'Scoring already completed in scoring_runs; v1.5.07.9 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
     },
     elapsed_ms:0
   };
@@ -9586,7 +9608,20 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     const timeoutCheck = await refreshRowExceededDynamicTimeout(env, row, { sample_limit:10, min_samples:3 }).catch(() => ({ exceeded:false }));
     if (!timeoutCheck.exceeded) continue;
     const isScoring = String(row.job_key || '') === 'scoring_refresh';
-    const reason = `${isScoring ? 'dynamic_timeout_running_cancelled' : 'dynamic_timeout_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
+    const isPrizePicksBoard = String(row.job_key || '') === 'prizepicks_board';
+    const reason = `${isScoring ? 'dynamic_timeout_running_cancelled' : isPrizePicksBoard ? 'prizepicks_board_timeout_failed' : 'dynamic_timeout_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
+    const timeoutPayload = JSON.stringify({
+      ok:!isPrizePicksBoard,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:'refresh_queue_stale_recovery',
+      status:isScoring ? 'cancelled_dynamic_timeout_scoring_row' : isPrizePicksBoard ? 'failed_prizepicks_board_timeout' : 'requeued_dynamic_timeout_running_row',
+      reason,
+      recovered_at:new Date().toISOString(),
+      row,
+      timeout_check:timeoutCheck,
+      note:isPrizePicksBoard ? 'PrizePicks board refresh exceeded the dynamic runtime window without scraper progress/audit. The stage is terminally failed instead of being requeued forever.' : null
+    }).slice(0,3000);
     await env.DB.prepare(`
       UPDATE data_refresh_queue
       SET status=?,
@@ -9597,12 +9632,21 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
           output_json=COALESCE(output_json, ?)
       WHERE request_id=?
         AND status='running'
-    `).bind(isScoring ? 'cancelled' : 'pending', isScoring ? 1 : 0, isScoring ? 1 : 0, reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:isScoring?'cancelled_dynamic_timeout_scoring_row':'requeued_dynamic_timeout_running_row', reason, recovered_at:new Date().toISOString(), row, timeout_check:timeoutCheck }).slice(0,3000), row.request_id).run();
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'dynamic_timeout_scoring_cancelled':'dynamic_timeout_running_requeued', status:isScoring?'cancelled':'pending', message:reason, payload_json:{ row, input, timeout_check:timeoutCheck } });
-    recovered.push({ ...row, recovered_action:isScoring ? 'cancelled_running_timeout' : 'requeued_running_timeout' });
+    `).bind((isScoring || isPrizePicksBoard) ? (isPrizePicksBoard ? 'failed' : 'cancelled') : 'pending', (isScoring || isPrizePicksBoard) ? 1 : 0, (isScoring || isPrizePicksBoard) ? 1 : 0, reason, timeoutPayload, row.request_id).run();
+    if (isPrizePicksBoard) {
+      const blocked = singleLaneBlockedDependents('prizepicks_board');
+      if (blocked.length) {
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='blocked', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE chain_id=? AND job_key IN (${blocked.map(()=>'?').join(',')}) AND status IN ('pending','running')`).bind('blocked_by_prizepicks_board_timeout', row.chain_id, ...blocked).run().catch(() => null);
+        await env.DB.prepare(`UPDATE data_orchestrator_jobs SET blocked_flag=1, blocked_by_job_key='prizepicks_board', run_requested_flag=0, running_flag=0, last_status='blocked', last_fail=1, last_error_code='blocked_by_prizepicks_board_timeout', last_error_message='Blocked because PrizePicks Board timed out without scraper progress/audit.', updated_at=CURRENT_TIMESTAMP WHERE job_key IN (${blocked.map(()=>'?').join(',')})`).bind(...blocked).run().catch(() => null);
+      }
+      await releaseSingleLaneEnqueueLock(env, row.request_id, { status:'failed', job_key:'prizepicks_board', error:reason }).catch(() => null);
+      await releaseSingleLaneGlobalState(env, 'PRIZEPICKS_BOARD_TIMEOUT_FAILED', { row, reason, timeout_check:timeoutCheck }).catch(() => null);
+    }
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'dynamic_timeout_scoring_cancelled':isPrizePicksBoard?'prizepicks_board_timeout_failed':'dynamic_timeout_running_requeued', status:isScoring?'cancelled':isPrizePicksBoard?'failed':'pending', message:reason, payload_json:{ row, input, timeout_check:timeoutCheck } });
+    recovered.push({ ...row, recovered_action:isScoring ? 'cancelled_running_timeout' : isPrizePicksBoard ? 'failed_running_timeout' : 'requeued_running_timeout' });
   }
 
-  // v1.5.07.8 hard gate:
+  // v1.5.07.9 hard gate:
   // A downstream cascade row can sit pending for a long time while an upstream stage is running.
   // That is not stale. Stale-pending recovery must judge age only after the row becomes eligible.
   // It must never fail a pending/null-run row just because its original queue created_at is old.
@@ -10091,7 +10135,7 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'scoring_refresh') {
       const scoringReaper = await finalizeCompletedScoringQueueFromScoringRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_scoring_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'scoring_reaper_error', error:String(e?.message || e) }));
       if (scoringReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.8 finalized the stuck queue row and released the global lock without waiting for timeout.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.9 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
     const lockedPrizePicksWaiting = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
@@ -10104,7 +10148,7 @@ async function runRefreshOrchestratorTick(input, env) {
       return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_wait_released', cleanup, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board wait state was released back to pending for the next cron tick. The global lane is not held while GitHub scraper/audit writes finish.' };
     }
     const canContinueLockedPrizePicks = false;
-    // v1.5.07.8: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
+    // v1.5.07.9: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
@@ -10173,6 +10217,19 @@ async function runRefreshOrchestratorTick(input, env) {
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
+      const prizepicksDispatchSeed = await seedPrizePicksScraperDispatchRow(env, {
+        run_id: requestId,
+        dispatch_id: requestId,
+        request_id: requestId,
+        chain_id: chainId,
+        slate_date: slate.slate_date,
+        status: 'orchestrator_seeded',
+        step: 'single_lane_prizepicks_board_started',
+        progress_message: 'Single-lane orchestrator seeded PrizePicks scraper tracking before workflow_dispatch. This row prevents invisible dispatch waits.',
+        started_at: new Date().toISOString(),
+        source: 'alphadog_worker_single_lane_orchestrator'
+      }).catch(e => ({ seeded:false, error:String(e?.message || e) }));
+      body.prizepicks_dispatch_seed = prizepicksDispatchSeed;
       let priorState = {};
       for (const rawPrior of [row.last_output_json, queueBeforeStart?.output_json]) {
         if (priorState.step_results) break;
@@ -10184,7 +10241,7 @@ async function runRefreshOrchestratorTick(input, env) {
       }
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.07.8: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      // v1.5.07.9: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -12165,7 +12222,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.07.8 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.9 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);

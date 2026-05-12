@@ -1,0 +1,15 @@
+AlphaDog Build Version Audit
+
+Expected version:
+v1.5.07.9 - PrizePicks Dispatch Seed Gate
+
+Checks:
+- ZIP filename: alphadog_v1.5.07.9_prizepicks_dispatch_seed_gate.zip
+- worker.js SYSTEM_VERSION: v1.5.07.9 - PrizePicks Dispatch Seed Gate
+- control_room.html visible version tag: v1.5.07.9 - PrizePicks Dispatch Seed Gate
+- control_room.html JS fallback version: control_room_v1_5_07_9_prizepicks_dispatch_seed_gate
+- main.py SCRIPT_VERSION: v1.5.07.9 - PrizePicks Dispatch Seed Gate
+- README_v1.5.07.9.txt included
+- New route preserved: refresh_orchestrator_create_one_shot_full_run
+- Button preserved: Create One-Shot Full Run +5 Min
+- PrizePicks Board fix: worker seeds prizepicks_scraper_runs before workflow_dispatch and terminally fails board timeout instead of requeueing forever.
