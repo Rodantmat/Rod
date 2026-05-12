@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.5 - Recovery Dispatch Seed Gate";
+const SYSTEM_VERSION = "v1.5.08.6 - Scoring Durability Continuation Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9569,7 +9569,7 @@ async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, in
       scraper_progress:progress,
       callback_event:callbackEvent,
       certification_rule:'completed_prizepicks_scraper_progress_audit_or_callback_row_wins_before_timeout',
-      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.5 finalizes immediately from prizepicks_scraper_runs, mlb_stats_refresh_audit, or the GitHub callback event before any timeout or downstream blocking decision.'
+      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.6 finalizes immediately from prizepicks_scraper_runs, mlb_stats_refresh_audit, or the GitHub callback event before any timeout or downstream blocking decision.'
     },
     elapsed_ms:0
   };
@@ -10288,7 +10288,7 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'prizepicks_board') {
       const prizePicksReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_prizepicks_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'prizepicks_reaper_error', error:String(e?.message || e) }));
       if (prizePicksReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper progress/audit/callback rows. v1.5.08.5 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper progress/audit/callback rows. v1.5.08.6 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
       }
     }
     if (lockedJobKey === 'scoring_refresh') {
@@ -10303,7 +10303,11 @@ async function runRefreshOrchestratorTick(input, env) {
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
     const canContinueLockedEverydayPhase1 = activeLockedRow && String(activeLockedRow.job_key || '') === 'everyday_phase1';
-    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1) {
+    // v1.5.08.6: Scoring is also a bounded continuation job. A killed scoring request can leave
+    // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
+    // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
+    const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
+    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
@@ -18175,22 +18179,62 @@ async function runMlbScoringV1(input,env){
   slateDate=scoringSlateGuard.slate_date;
   runId=`score_v1|${slateDate}|${Date.now()}|${simpleHashText(String(Math.random()))}`;
   await ensureOddsApiTables(env); await ensureMlbScoringV1Tables(env);
-  // v1.4.31: never purge live selected-slate scoring/candidate data before proving a new run can start.
-  // First finalize truly stale RUNNING rows. Then refuse only genuinely fresh active rows.
-  await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_RUNNING', error='Auto-finalized stale zero-progress RUNNING scoring run before new start', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='RUNNING' AND created_at < datetime('now','-3 minutes') AND COALESCE(rows_certified,0)=0 AND COALESCE(rows_promoted,0)=0`).bind(slateDate).run();
-  await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_RUNNING', error='Auto-finalized stale long RUNNING scoring run before new start', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='RUNNING' AND created_at < datetime('now','-8 minutes')`).bind(slateDate).run();
-  const activeRun = await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
-  if (activeRun && activeRun.run_id) {
-    return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, retry_safe:true, next_action:'Let the current run finish or wait for the stale-run reaper. Selected-slate board data is preserved while this waits.', note:'A fresh scoring run is already active. v1.4.33 does not purge active_score_board or score_candidate_board before start eligibility is proven.' };
+  const queueOwnedScoring = input?.queue_owned_scoring === true || input?.orchestrator_internal === true || input?.backend_orchestrator === true || !!input?.queue_request_id || !!input?.queue_chain_id;
+  let resumedRun = false;
+  let resumeGroupIndex = 0;
+  const parseRunDetails = (txt) => { try { return JSON.parse(String(txt || '{}')); } catch (_e) { return {}; } };
+  const countRunDurableRows = async (rid) => {
+    const r = await env.DB.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM mlb_hits_scores WHERE run_id=?) AS hits_rows,
+        (SELECT COUNT(*) FROM mlb_total_bases_scores WHERE run_id=?) AS tb_rows,
+        (SELECT COUNT(*) FROM mlb_rbi_scores WHERE run_id=?) AS rbi_rows,
+        (SELECT COUNT(*) FROM active_score_board WHERE run_id=?) AS active_rows,
+        (SELECT COUNT(*) FROM score_candidate_board WHERE run_id=?) AS candidate_rows
+    `).bind(rid,rid,rid,rid,rid).first().catch(() => null);
+    const hits=Number(r?.hits_rows||0), tb=Number(r?.tb_rows||0), rbi=Number(r?.rbi_rows||0), activeRows=Number(r?.active_rows||0), candidateRows=Number(r?.candidate_rows||0);
+    return { hits_rows:hits, tb_rows:tb, rbi_rows:rbi, active_rows:activeRows, candidate_rows:candidateRows, score_rows:hits+tb+rbi, total_rows:hits+tb+rbi+activeRows+candidateRows };
+  };
+  // v1.5.08.6: stale RUNNING runs are not judged by in-memory counters. A run that claims
+  // promotion but has zero durable output is a phantom progress run and must be failed before retry.
+  const staleRunning = await env.DB.prepare(`SELECT run_id, rows_promoted, rows_active, details_json, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 5`).bind(slateDate).all().catch(()=>({results:[]}));
+  for (const r of (staleRunning.results || [])) {
+    const durable = await countRunDurableRows(r.run_id);
+    const age = Number(r.age_minutes || 0);
+    const phantom = (Number(r.rows_promoted || 0) > 0 || Number(r.rows_active || 0) > 0) && durable.score_rows === 0 && durable.active_rows === 0;
+    if ((age >= 8) || (age >= 3 && phantom)) {
+      await env.DB.prepare(`UPDATE scoring_runs SET status=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(phantom?'FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT':'FAILED_STALE_RUNNING', phantom?'Scoring run claimed promoted/active rows but durable scoring tables were empty. Failed before v1.5.08.6 retry.':'Auto-finalized stale RUNNING scoring run before continuation retry.', JSON.stringify({stage:phantom?'failed_phantom_progress_no_durable_output':'failed_stale_running', durable, previous_details:parseRunDetails(r.details_json), guard:'v1.5.08.6_scoring_durability_continuation_gate'}), r.run_id).run().catch(()=>null);
+    }
   }
-  const volatile_preflight = await volatileOverwritePreflight(env, slateDate, { scoring:true, releaseScoringLock:false, reason:'run_mlb_scoring_start_after_active_run_gate' });
-  // v1.4.33: current DB keeps current diagnostics only. This prevents audit logs from growing by run/retry.
-  await env.DB.prepare(`DELETE FROM scoring_audit_logs WHERE slate_date=?`).bind(slateDate).run().catch(()=>null);
-  await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
-  await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
-  await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-  await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.4.15_rbi_sharp_probability_buffer'})).run();
-  await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',no_external_data:true})).run().catch(()=>null);
+  const activeRun = await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, details_json, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
+  if (activeRun && activeRun.run_id) {
+    const details = parseRunDetails(activeRun.details_json);
+    const durable = await countRunDurableRows(activeRun.run_id);
+    const phantom = (Number(activeRun.rows_promoted || 0) > 0 || Number(activeRun.rows_active || 0) > 0) && durable.score_rows === 0 && durable.active_rows === 0 && Number(activeRun.age_minutes || 0) >= 3;
+    if (queueOwnedScoring && !phantom) {
+      runId = activeRun.run_id;
+      resumedRun = true;
+      resumeGroupIndex = Math.max(0, Number(details.durable_group_index || details.group_index || 0));
+      await env.DB.prepare(`UPDATE scoring_runs SET details_json=? WHERE run_id=?`).bind(JSON.stringify({ ...details, stage:'resumed_from_durable_checkpoint', resume_group_index:resumeGroupIndex, durable, guard:'v1.5.08.6_scoring_durability_continuation_gate' }), runId).run().catch(()=>null);
+    } else {
+      if (queueOwnedScoring && phantom) {
+        await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT', error='Scoring run claimed promoted/active rows but durable scoring tables were empty.', details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(JSON.stringify({stage:'failed_phantom_progress_no_durable_output_active_gate', durable, previous_details:details, guard:'v1.5.08.6_scoring_durability_continuation_gate'}), activeRun.run_id).run().catch(()=>null);
+      } else {
+        return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, durable, retry_safe:true, next_action:'Let the current run finish or wait for the stale-run reaper. Selected-slate board data is preserved while this waits.', note:'A fresh scoring run is already active. v1.5.08.6 only resumes queued scoring through the orchestrator continuation lane.' };
+      }
+    }
+  }
+  let volatile_preflight = { skipped:resumedRun, reason:resumedRun?'resume_existing_scoring_run_do_not_purge_outputs':'new_scoring_run' };
+  if (!resumedRun) {
+    volatile_preflight = await volatileOverwritePreflight(env, slateDate, { scoring:true, releaseScoringLock:false, reason:'run_mlb_scoring_start_after_active_run_gate' });
+    // v1.4.33: current DB keeps current diagnostics only. This prevents audit logs from growing by run/retry.
+    await env.DB.prepare(`DELETE FROM scoring_audit_logs WHERE slate_date=?`).bind(slateDate).run().catch(()=>null);
+    await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
+    await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
+    await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
+    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.5.08.6_scoring_durability_continuation_gate'})).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',no_external_data:true, guard:'v1.5.08.6_scoring_durability_continuation_gate'})).run().catch(()=>null);
+  }
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
@@ -18199,8 +18243,26 @@ async function runMlbScoringV1(input,env){
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
   const scratchStmts=[], scoreStmts=[], activeStmts=[], auditStmts=[];
+  const scoringStartedMs = Date.now();
+  const scoringBudgetMs = queueOwnedScoring ? Math.max(12000, Math.min(26000, Number(input?.max_ms || 22000))) : Math.max(25000, Math.min(42000, Number(input?.max_ms || 38000)));
   const preparedExactKeys = new Set();
   let scoringGroupIndex = 0;
+  const durableCheckpoint = async (stage, extra = {}) => {
+    const pending = { scratch:scratchStmts.length, score:scoreStmts.length, active:activeStmts.length, audit:auditStmts.length };
+    if (scratchStmts.length) { await runBatch(scratchStmts,50); scratchStmts.length = 0; }
+    if (scoreStmts.length) { await runBatch(scoreStmts,50); scoreStmts.length = 0; }
+    if (activeStmts.length) { await runBatch(activeStmts,50); activeStmts.length = 0; }
+    if (auditStmts.length) { await runBatch(auditStmts,50); auditStmts.length = 0; }
+    const durable = await countRunDurableRows(runId);
+    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(
+      cert,
+      durable.score_rows || promoted,
+      durable.active_rows || active,
+      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,resumed_run:resumedRun,guard:'v1.5.08.6_scoring_durability_continuation_gate',...extra}),
+      runId
+    ).run().catch(()=>null);
+    return durable;
+  };
   const pushSkipAudit = (_kind, _sample, _payload = {}) => {
     // v1.4.33: skip audits are counted in scoring_runs.details_json only.
     // Per-group audit inserts caused explosive volatile growth and timeout loops.
@@ -18208,8 +18270,13 @@ async function runMlbScoringV1(input,env){
   };
   for(const [k,g] of groups.entries()){
    scoringGroupIndex++;
+   if (resumeGroupIndex && scoringGroupIndex <= resumeGroupIndex) continue;
    if (scoringGroupIndex % 25 === 0) {
-    await env.DB.prepare(`UPDATE scoring_runs SET rows_certified=?, rows_promoted=?, rows_active=?, details_json=? WHERE run_id=?`).bind(cert,promoted,active,JSON.stringify({stage:'scoring_loop_progress',group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted,active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,guard:'v1.4.15_rbi_sharp_probability_buffer'}),runId).run().catch(()=>null);
+    await durableCheckpoint('scoring_loop_durable_checkpoint', { checkpoint_reason:'group_interval' });
+   }
+   if (queueOwnedScoring && (Date.now() - scoringStartedMs) > scoringBudgetMs) {
+    const durable = await durableCheckpoint('partial_continue_time_budget_released', { checkpoint_reason:'time_budget_before_group', elapsed_ms:Date.now()-scoringStartedMs });
+    return { ok:true, data_ok:false, partial:true, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', status:'SCORING_PARTIAL_CONTINUE', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, run_id:runId, resumed_run:resumedRun, group_index:scoringGroupIndex, groups_total:groups.size, durable, rows:{odds_rows:rows.length, groups:groups.size, scratch, certified:cert, promoted:durable.score_rows || promoted, active:durable.active_rows || active, blocked_groups:blocked, skipped_one_sided_groups:skippedOneSided, skipped_unpaired_groups:skippedUnpaired, skipped_group_errors:skippedGroupErrors}, note:'v1.5.08.6 wrote durable scoring rows/checkpoint and released the queue lane for the next cron tick before Worker timeout.' };
    }
    try{
    const s=g.sample; const fam=String(s.prop_family||propFamilyFromMarket(s.market_key)); const byBook=new Map();
@@ -18315,16 +18382,15 @@ async function runMlbScoringV1(input,env){
     'Compact scoring summary; row-level audit is stored on active_score_board and score_candidate_board only.',
     JSON.stringify({version:SYSTEM_VERSION,run_id:runId,odds_rows:rows.length,groups:groups.size,scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)}).slice(0,3500)
   ));
-  // v1.4.33/v1.4.33: safe publish. Do not delete the readable selected-slate board before replacement writes succeed.
-  // Upsert new rows first, then remove rows from older run_ids for this slate after successful publish.
-  await runBatch(scratchStmts,50); await runBatch(scoreStmts,50); await runBatch(activeStmts,50); await runBatch(auditStmts,50);
+  // v1.5.08.6: final publish is truth-bound to actual durable rows, not in-memory counters.
+  const durableFinal = await durableCheckpoint('final_publish_before_cleanup', { checkpoint_reason:'final_publish' });
   // v1.4.34 safe publish: only remove the previous selected-slate active rows after
   // the replacement active board actually wrote rows. A zero-row/failed publish must
   // never blank the readable board.
-  if (activeStmts.length > 0 && active > 0) {
+  if (durableFinal.active_rows > 0) {
     await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
   }
-  if (scoreStmts.length > 0 && promoted > 0) {
+  if (durableFinal.score_rows > 0) {
     for (const t of ['mlb_hits_scores','mlb_total_bases_scores','mlb_rbi_scores']) {
       await env.DB.prepare(`DELETE FROM ${t} WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run();
     }
@@ -18332,9 +18398,10 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run(); const left=await env.DB.prepare(`SELECT COUNT(*) AS c FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).first();
   await env.DB.prepare(`DELETE FROM scoring_audit_logs WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run().catch(()=>null);
   await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run().catch(()=>null);
-  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED',scratch,cert,promoted,active,JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_safe_publish:true,compact_audit_only:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),batches:{scratch:scratchStmts.length,score:scoreStmts.length,active:activeStmts.length,audit:auditStmts.length}}),runId).run();
+  const finalStatus = durableFinal.score_rows > 0 && durableFinal.active_rows > 0 ? ((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED') : 'FAILED_NO_DURABLE_SCORING_OUTPUT';
+  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(finalStatus,scratch,cert,durableFinal.score_rows,durableFinal.active_rows, finalStatus==='FAILED_NO_DURABLE_SCORING_OUTPUT'?'Scoring completed loop but durable output verification found zero score/active rows.':null, JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_safe_publish:true,compact_audit_only:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',durable_final:durableFinal,rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),guard:'v1.5.08.6_scoring_durability_continuation_gate'}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
-  return{ok:true,data_ok:promoted>0,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,mode:'scoring_v1_backend_orchestrated_sleeper_rbi_top20_probability_board',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted,active,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.4.15 keeps orchestrated scoring, preserves HITS/TB calibration, skips PrizePicks RBI, disables RBI UNDER Gemini, and promotes the top 20 pickable Sleeper RBI UNDER 0.5 candidates by sharply calibrated deterministic hit probability with display reserve buffer.'};
+  return{ok:true,data_ok:finalStatus!=='FAILED_NO_DURABLE_SCORING_OUTPUT',version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,status:finalStatus,mode:'scoring_v1_backend_orchestrated_durable_chunked_publish',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted:durableFinal.score_rows,active:durableFinal.active_rows,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},durable_final:durableFinal,distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.5.08.6 chunks scoring through durable checkpoints, resumes via scoring_runs.details_json, and only finalizes from real persisted output rows.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.4.15_rbi_sharp_probability_buffer',error:msg}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}

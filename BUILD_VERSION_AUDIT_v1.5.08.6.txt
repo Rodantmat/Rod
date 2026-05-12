@@ -1,0 +1,28 @@
+AlphaDog Build Version Audit
+
+Version: v1.5.08.6 - Scoring Durability Continuation Gate
+
+Files included in this flat ZIP:
+- worker.js
+- control_room.html
+- main.py
+- scrape.yml
+- wrangler.jsonc
+- package.json
+- README_v1.5.08.6.txt
+- BUILD_VERSION_AUDIT_v1.5.08.6.txt
+
+Version sync checks:
+- worker.js SYSTEM_VERSION is v1.5.08.6 - Scoring Durability Continuation Gate.
+- control_room.html visible version tag is v1.5.08.6 - Scoring Durability Continuation Gate.
+- main.py SCRIPT_VERSION is v1.5.08.6 - Scoring Durability Continuation Gate.
+- README and audit filenames match v1.5.08.6.
+
+Patch scope check:
+- No scoring math changed.
+- No Main UI read-only board logic changed.
+- No Expansion/POTD files added.
+- Patch is limited to scoring_refresh durability, continuation, phantom-progress detection, and finalization truth checks.
+
+Syntax check:
+- node --check worker.js passed before packaging.
