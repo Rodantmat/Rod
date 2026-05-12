@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.08.8 - Scoring Checkpoint Pickup Gate"
+SCRIPT_VERSION = "v1.5.08.9 - Same-Slate Scoring Context Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

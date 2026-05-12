@@ -1,0 +1,9 @@
+AlphaDog/OXYGEN-COBALT Build Version Audit
+Version: v1.5.08.9 - Same-Slate Scoring Context Gate
+worker.js SYSTEM_VERSION: v1.5.08.9 - Same-Slate Scoring Context Gate
+control_room.html version tag: v1.5.08.9 - Same-Slate Scoring Context Gate
+main.py SCRIPT_VERSION: v1.5.08.9 - Same-Slate Scoring Context Gate
+README: README_v1.5.08.9.txt
+Flat ZIP: yes
+Subdirectories: none
+Patch scope: same-slate scoring context hydration + active/candidate publish gate only
