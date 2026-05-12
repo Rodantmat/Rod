@@ -1,0 +1,21 @@
+BUILD VERSION AUDIT
+
+Version: v1.5.08.2 - PrizePicks Completion Reaper Gate
+Files expected in ZIP root only:
+- worker.js
+- control_room.html
+- main.py
+- scrape.yml
+- package.json
+- wrangler.jsonc
+- README_v1.5.08.2.txt
+- BUILD_VERSION_AUDIT_v1.5.08.2.txt
+
+Validated patch target:
+- Worker SYSTEM_VERSION updated.
+- Control Room visible version labels updated where present.
+- README and audit file labels match v1.5.08.2.
+- No subfolders included.
+
+Primary fix:
+PrizePicks Board completion finalization is now checked before timeout/blocking decisions. Completed scraper audit/progress rows are authoritative for the queue wrapper.

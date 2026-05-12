@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.1 - PrizePicks Audit Finalizer Gate";
+const SYSTEM_VERSION = "v1.5.08.2 - PrizePicks Completion Reaper Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -134,7 +134,6 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
   refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
-  refresh_orchestrator_create_one_shot_full_run: "DATA REFRESHING > Create One-Shot Full Run",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
   promote_incremental_temp_to_live: "CERTIFY TEMP > Promote Incremental Temp To Live",
@@ -1009,7 +1008,6 @@ export default {
         const productionClockWatchdog = await productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' });
         const productionClock = await enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' });
         const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
-        const oneShotClockCleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'scheduled_minute_after_tick' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
         if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
           result = {
             ok: true,
@@ -1021,7 +1019,6 @@ export default {
             production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
             orchestrator_tick: orchestratorTick,
-            one_shot_cleanup: oneShotClockCleanup,
             note: 'Minute cron checked the production schedule table and advanced the database-backed orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
           };
         } else {
@@ -1799,7 +1796,6 @@ function executableJobNames() {
     "refresh_orchestrator_cancel_all",
     "refresh_orchestrator_schedule_status",
     "refresh_orchestrator_seed_production_clock",
-    "refresh_orchestrator_create_one_shot_full_run",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -3246,27 +3242,6 @@ async function upsertPrizePicksScraperProgress(env, payload = {}) {
   return { run_id:runId, dispatch_id:dispatchId, status, step };
 }
 
-
-async function seedPrizePicksScraperDispatchRow(env, payload = {}) {
-  await ensurePrizePicksScraperProgressTable(env);
-  const runId = String(payload.run_id || payload.dispatch_id || payload.request_id || '').slice(0,160);
-  if (!runId) return { seeded:false, reason:'missing_run_id' };
-  const dispatchId = String(payload.dispatch_id || payload.request_id || runId).slice(0,160);
-  const now = new Date().toISOString();
-  const status = String(payload.status || 'orchestrator_seeded').slice(0,80);
-  const step = String(payload.step || status).slice(0,120);
-  const message = String(payload.progress_message || 'AlphaDog worker seeded PrizePicks scraper tracking row before GitHub workflow dispatch.').slice(0,1000);
-  const source = String(payload.source || 'alphadog_worker_dispatch_seed').slice(0,160);
-  let payloadJson = null;
-  try { payloadJson = JSON.stringify({ ...payload, run_id:runId, dispatch_id:dispatchId, seeded_at:now }).slice(0,6000); } catch (_) { payloadJson = null; }
-  const res = await env.DB.prepare(`
-    INSERT OR IGNORE INTO prizepicks_scraper_runs
-      (run_id, dispatch_id, status, step, progress_message, started_at, source, script_version, payload_json, heartbeat_at, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `).bind(runId, dispatchId, status, step, message, String(payload.started_at || now).slice(0,80), source, SYSTEM_VERSION, payloadJson).run();
-  return { seeded:Number(res?.meta?.changes || 0) > 0, run_id:runId, dispatch_id:dispatchId, status, changes:Number(res?.meta?.changes || 0) };
-}
-
 async function getPrizePicksScraperProgress(env, requestedAt = null, dispatchId = null) {
   const wanted = String(dispatchId || '').trim();
   const requestedMs = requestedAt ? Date.parse(String(requestedAt)) : 0;
@@ -3302,42 +3277,6 @@ async function getPrizePicksScraperProgress(env, requestedAt = null, dispatchId 
   } catch (e) {
     return { table_exists:false, dispatch_id:wanted || null, matched_dispatch:null, latest_after_request:null, recent:[], error:String(e && e.message || e) };
   }
-}
-
-
-function prizePicksTerminalSuccessRow(row) {
-  if (!row) return false;
-  const status = String(row.status || '').toLowerCase();
-  return (status === 'completed' || status === 'success') && Number(row.rows_main || 0) > 0;
-}
-
-function prizePicksTerminalFailureRow(row) {
-  if (!row) return false;
-  const status = String(row.status || '').toLowerCase();
-  return status === 'failed' || status === 'error' || status === 'dispatch_failed';
-}
-
-async function getPrizePicksBoardTerminalEvidence(env, dispatchId = null, requestedAt = null) {
-  const wanted = String(dispatchId || '').trim();
-  if (!wanted) return { terminal:false, success:false, failed:false, dispatch_id:null, reason:'missing_dispatch_id' };
-  const scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, wanted).catch(e => ({ error:String(e?.message || e), matched_dispatch:null, latest_after_request:null }));
-  const audit = await getPrizePicksRefreshAudit(env, requestedAt, wanted).catch(e => ({ error:String(e?.message || e), matched_dispatch:null, latest_after_request:null }));
-  const scraperRow = scraper_progress?.matched_dispatch || scraper_progress?.latest_after_request || null;
-  const auditRow = audit?.matched_dispatch || audit?.latest_after_request || null;
-
-  if (prizePicksTerminalSuccessRow(scraperRow)) {
-    return { terminal:true, success:true, failed:false, source:'prizepicks_scraper_runs', dispatch_id:wanted, row:scraperRow, scraper_progress, audit, rule:'matched scraper progress completed with promoted rows_main > 0' };
-  }
-  if (prizePicksTerminalSuccessRow(auditRow)) {
-    return { terminal:true, success:true, failed:false, source:'mlb_stats_refresh_audit', dispatch_id:wanted, row:auditRow, scraper_progress, audit, rule:'matched audit completed with promoted rows_main > 0' };
-  }
-  if (prizePicksTerminalFailureRow(scraperRow)) {
-    return { terminal:true, success:false, failed:true, source:'prizepicks_scraper_runs', dispatch_id:wanted, row:scraperRow, scraper_progress, audit, error:String(scraperRow.error_message || scraperRow.status || 'prizepicks_scraper_failed') };
-  }
-  if (prizePicksTerminalFailureRow(auditRow)) {
-    return { terminal:true, success:false, failed:true, source:'mlb_stats_refresh_audit', dispatch_id:wanted, row:auditRow, scraper_progress, audit, error:String(auditRow.error_message || auditRow.status || 'prizepicks_audit_failed') };
-  }
-  return { terminal:false, success:false, failed:false, dispatch_id:wanted, scraper_progress, audit, scraper_status:scraperRow?.status || null, audit_status:auditRow?.status || null };
 }
 
 async function getGithubPrizePicksWorkflowRunStatus(env, requestedAt = null, dispatchId = null, priorGithub = null) {
@@ -3435,19 +3374,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   let audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
   let scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
   const progressLatchRow = scraper_progress?.matched_dispatch || null;
-  const progressLatchStatus = String(progressLatchRow?.status || '').toLowerCase();
-  const progressLatchStep = String(progressLatchRow?.step || '').toLowerCase();
-  const progressLatchIsPreDispatchSeed = !!progressLatchRow
-    && !progressLatchRow.github_run_id
-    && !progressLatchRow.finished_at
-    && !Number(progressLatchRow.rows_main || 0)
-    && (
-      progressLatchStatus === 'orchestrator_seeded'
-      || progressLatchStatus === 'dispatch_seeded'
-      || progressLatchStep === 'single_lane_prizepicks_board_started'
-      || progressLatchStep === 'worker_dispatch_seeded'
-    );
-  if (!requestedAt && progressLatchRow && !progressLatchIsPreDispatchSeed) {
+  if (!requestedAt && progressLatchRow) {
     requestedAt = progressLatchRow.started_at || progressLatchRow.created_at || progressLatchRow.updated_at || nowIso;
     requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
     audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
@@ -3455,50 +3382,6 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   }
   const priorGithub = priorMatchesCurrentRequest ? (prior.github || prior.github_dispatch || prior.github_dispatch_config || null) : null;
   const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithub) : null;
-  const terminalEvidence = await getPrizePicksBoardTerminalEvidence(env, dispatchId, requestedAt);
-  if (terminalEvidence?.success) {
-    return {
-      ok:true,
-      data_ok:true,
-      version:SYSTEM_VERSION,
-      job:'trigger_prizepicks_github_board_refresh',
-      status:'board_refresh_certified_by_terminal_evidence',
-      board_refresh_complete:true,
-      requested_at:requestedAt || terminalEvidence?.row?.started_at || terminalEvidence?.row?.created_at || terminalEvidence?.row?.updated_at || nowIso,
-      dispatch_id:dispatchId || null,
-      detected_at:nowIso,
-      terminal_evidence:terminalEvidence,
-      audit:terminalEvidence?.audit || audit,
-      scraper_progress:terminalEvidence?.scraper_progress || scraper_progress,
-      github_run,
-      mlb_stats:current,
-      certification_rule:'terminal_evidence_preempts_dispatch_wait',
-      note:'PrizePicks Board already has terminal completed scraper/audit evidence for this dispatch_id with rows_main > 0. The queue wrapper must finalize immediately and advance downstream instead of re-entering start/wait logic.'
-    };
-  }
-  if (terminalEvidence?.failed) {
-    return {
-      ok:false,
-      data_ok:false,
-      version:SYSTEM_VERSION,
-      job:'trigger_prizepicks_github_board_refresh',
-      status:'board_refresh_failed_by_terminal_evidence',
-      error:String(terminalEvidence.error || 'prizepicks_board_terminal_failure'),
-      board_refresh_complete:false,
-      requested_at:requestedAt || terminalEvidence?.row?.started_at || terminalEvidence?.row?.created_at || terminalEvidence?.row?.updated_at || nowIso,
-      dispatch_id:dispatchId || null,
-      detected_at:nowIso,
-      terminal_evidence:terminalEvidence,
-      audit:terminalEvidence?.audit || audit,
-      scraper_progress:terminalEvidence?.scraper_progress || scraper_progress,
-      github_run,
-      mlb_stats:current,
-      terminal_failure:true,
-      blocks_downstream:true,
-      certification_rule:'terminal_evidence_preempts_dispatch_wait',
-      note:'PrizePicks Board has terminal failed scraper/audit evidence for this dispatch_id. The queue wrapper must fail cleanly instead of re-dispatching or waiting.'
-    };
-  }
 
   if (requestedMs) {
     const progressRow = scraper_progress?.matched_dispatch || scraper_progress?.latest_after_request || null;
@@ -3724,8 +3607,7 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const workerUrl = String(env.ALPHADOG_WORKER_URL || env.WORKER_URL || env.CONTROL_WORKER_URL || env.PUBLIC_WORKER_URL || 'https://prop-ingestion-git.rodolfoaamattos.workers.dev').trim();
   const slateDate = String(input?.slate_date || input?.requested_slate_date || '').trim();
   const chainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
-  const dispatchSeed = await seedPrizePicksScraperDispatchRow(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, request_id:outboundDispatchId, chain_id:chainId, slate_date:slateDate, status:'dispatch_seeded', step:'worker_dispatch_seeded', progress_message:'Worker seeded PrizePicks scraper tracking row immediately before workflow_dispatch.', started_at:nowIso, source:'alphadog_worker_dispatch_seed', github_repo:repo, github_workflow_file:workflow, github_ref:ref }).catch(e => ({ seeded:false, error:String(e?.message || e) }));
-  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow_dispatch', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub workflow_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref, dispatch_seed:dispatchSeed });
+  await upsertPrizePicksScraperProgress(env, { run_id:outboundDispatchId, dispatch_id:outboundDispatchId, status:'dispatching', step:'worker_dispatching_github_workflow_dispatch', progress_message:'Worker accepted PrizePicks board request and is dispatching GitHub workflow_dispatch for scrape.yml.', started_at:nowIso, source:'alphadog_worker_dispatch', script_version:SYSTEM_VERSION, github_repo:repo, github_workflow_file:workflow, github_ref:ref });
 
   const workflowDispatchUrl = `https://api.github.com/repos/${repo}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   const workflowPayload = {
@@ -8461,7 +8343,7 @@ function refreshRuntimeFallbackSeconds(jobKey) {
     everyday_phase1: 3600,
     weather_roof: 1800,
     lineup_context: 1800,
-    prizepicks_board: 900,
+    prizepicks_board: 1800,
     prizepicks_context: 3600,
     odds_api_morning: 2700,
     odds_api_afternoon: 2700,
@@ -8472,7 +8354,7 @@ function refreshRuntimeFallbackSeconds(jobKey) {
 
 function refreshRuntimeFloorSeconds(jobKey) {
   const key = String(jobKey || '');
-  if (key === 'prizepicks_board') return 600;
+  if (key === 'prizepicks_board') return 900;
   if (key === 'incremental_daily') return 1800;
   if (key === 'scoring_refresh') return 1800;
   return 600;
@@ -8483,7 +8365,7 @@ function refreshRuntimeCapSeconds(jobKey) {
   if (key === 'incremental_daily') return 21600;
   if (key === 'static_weekly') return 10800;
   if (key === 'scoring_refresh') return 10800;
-  if (key === 'prizepicks_board') return 1800;
+  if (key === 'prizepicks_board') return 3600;
   return 7200;
 }
 
@@ -8813,7 +8695,9 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     incremental_continue_locks_released:0,
     stale_incremental_heartbeat_recovered:0,
     stale_incremental_heartbeat_recovery:null,
-    job_flags_reconciled:0
+    job_flags_reconciled:0,
+    prizepicks_completion_reaper_finalized:0,
+    prizepicks_completion_reaper_checks:[]
   };
 
   await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active' AND datetime(updated_at) <= datetime('now','-4 hours')`).run().then(r => { out.stale_active_enqueue_locks_released += Number(r?.meta?.changes || 0); }).catch(() => null);
@@ -8825,6 +8709,20 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
         OR request_id IN (SELECT request_id FROM data_refresh_queue WHERE status IN ('completed','failed','cancelled','blocked'))
       )
   `).run().then(r => { out.released_enqueue_locks_purged += Number(r?.meta?.changes || 0); }).catch(() => null);
+
+  const activePrizePicksBoardRowsForReaper = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, status, started_at, updated_at, created_at
+    FROM data_refresh_queue
+    WHERE job_key='prizepicks_board'
+      AND status IN ('pending','running')
+    ORDER BY datetime(COALESCE(started_at, updated_at, created_at)) ASC
+    LIMIT 20
+  `).catch(() => []);
+  for (const pb of activePrizePicksBoardRowsForReaper) {
+    const pbReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id:pb.request_id, chain_id:pb.chain_id }, { reason:`cleanup_preflight:${reason}`, job:'single_lane_state_cleanup' }).catch(e => ({ finalized:false, reason:'prizepicks_completion_reaper_error', error:String(e?.message || e), request_id:pb.request_id }));
+    out.prizepicks_completion_reaper_checks.push(pbReaper);
+    if (pbReaper?.finalized) out.prizepicks_completion_reaper_finalized += 1;
+  }
 
   const activeRows = await sampleRows(env, `
     SELECT request_id, chain_id, job_key, requested_slate_date, status, run_after, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,800) AS output_preview
@@ -8938,6 +8836,14 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
         out.dynamic_timeout_skipped_active_locks += 1;
         out.dynamic_timeout_checks.push({ type:'enqueue_lock_skipped_downstream_pending', lock_key:l.lock_key, request_id:l.request_id, job_key:l.job_key, upstream_active:upstreamActive, reason:'downstream_pending_lock_waiting_on_upstream_chain_job' });
       } else {
+        if (String(l.job_key || '') === 'prizepicks_board') {
+          const pbReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id:l.request_id, chain_id:l.chain_id }, { reason:`active_lock_pre_timeout:${reason}`, job:'single_lane_state_cleanup' }).catch(e => ({ finalized:false, reason:'prizepicks_completion_reaper_error', error:String(e?.message || e), request_id:l.request_id }));
+          out.prizepicks_completion_reaper_checks.push(pbReaper);
+          if (pbReaper?.finalized) {
+            out.prizepicks_completion_reaper_finalized += 1;
+            continue;
+          }
+        }
         const timeoutCheck = await refreshRowExceededDynamicTimeout(env, { job_key:l.job_key, started_at:l.queue_started_at || l.created_at, updated_at:l.queue_updated_at || l.updated_at, created_at:l.created_at }, { sample_limit:10, min_samples:3 }).catch(() => ({ exceeded:false }));
         out.dynamic_timeout_checks.push({ type:'enqueue_lock', lock_key:l.lock_key, request_id:l.request_id, job_key:l.job_key, timeout_check:timeoutCheck });
         if (timeoutCheck?.exceeded) {
@@ -9107,31 +9013,6 @@ function singleLaneShouldTerminalFail(row, result, attempts) {
   if (Number(attempts || 0) >= Number(row?.max_attempts || 3)) return true;
   if (isOptionalRefreshDependency(row)) return true;
   return false;
-}
-
-
-async function releasePrizePicksWaitForNextCron(env, row, requestId, chainId, wrapped, statusText) {
-  const compact = JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000);
-  const full = JSON.stringify(wrapped).slice(0,10000);
-  await releaseSingleLaneGlobalState(env, 'WAITING_PRIZEPICKS_NEXT_TICK', wrapped);
-  await env.DB.prepare(`UPDATE data_orchestrator_jobs
-    SET running_flag=0,
-        run_requested_flag=1,
-        last_status='waiting_for_board_update_pending_next_tick',
-        last_fail=0,
-        last_error_code=?,
-        last_error_message=?,
-        last_output_json=?,
-        updated_at=CURRENT_TIMESTAMP
-    WHERE job_key=?`).bind(String(statusText || 'waiting_for_board_update').slice(0,250), String(statusText || 'waiting_for_board_update').slice(0,1000), full, row.job_key).run().catch(() => null);
-  await env.DB.prepare(`UPDATE data_refresh_queue
-    SET status='pending',
-        run_after=datetime('now','+1 minutes'),
-        updated_at=CURRENT_TIMESTAMP,
-        error=NULL,
-        output_json=?
-    WHERE request_id=?`).bind(compact, requestId).run().catch(() => null);
-  await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'prizepicks_wait_released', status:'pending', message:String(statusText || 'waiting_for_board_update'), payload_json:wrapped });
 }
 
 async function getCascadePendingEligibility(env, row) {
@@ -9308,110 +9189,10 @@ function productionRefreshSchedulePlans() {
   ];
 }
 
-
-function addMinutesPTScheduleParts(minutes = 5) {
-  const target = new Date(Date.now() + Math.max(1, Number(minutes || 5)) * 60 * 1000);
-  return getPTScheduleParts(target);
-}
-
-function productionFullCascadeJobKeys() {
-  return ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
-}
-
-function productionPlanIsOneShot(plan) {
-  const key = String(plan?.plan_key || '');
-  return String(plan?.schedule_kind || '').toLowerCase() === 'once' || key.startsWith('one_shot_full_backend_run_');
-}
-
-async function createOneShotProductionFullRunPlan(input, env) {
-  await ensureProductionRefreshScheduleTables(env);
-  const delayMinutes = Math.max(1, Math.min(Number(input?.delay_minutes || 5), 30));
-  const target = addMinutesPTScheduleParts(delayMinutes);
-  const ymd = String(target.date || '').replace(/-/g, '');
-  const hhmm = `${String(target.hour).padStart(2,'0')}${String(target.minute).padStart(2,'0')}`;
-  const planKey = `one_shot_full_backend_run_${ymd}_${hhmm}_${crypto.randomUUID().slice(0,8)}`;
-  const jobKeys = productionFullCascadeJobKeys();
-  await env.DB.prepare(`
-    INSERT INTO data_refresh_schedule_plan
-      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes, created_at, updated_at)
-    VALUES (?, ?, 1, 'once', ?, ?, ?, 'cascade', ?, NULL, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `).bind(
-    planKey,
-    `One-Shot Full Backend Run ${target.date} ${String(target.hour).padStart(2,'0')}:${String(target.minute).padStart(2,'0')} PT`,
-    target.date,
-    Number(target.hour),
-    Number(target.minute),
-    JSON.stringify(jobKeys),
-    `ONE_SHOT_AUTO_DELETE_AFTER_TERMINAL_CHAIN. Created by Control Room button. Due in ${delayMinutes} minute(s). Runs through the same data_refresh_schedule_plan -> minute cron -> production clock -> single-lane orchestrator path as the 9AM/1PM/10PM scheduled full backend runs.`
-  ).run();
-  await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_plan_created', status:'scheduled', message:'One-shot full backend schedule plan created.', payload_json:{ plan_key:planKey, due_pt:target, delay_minutes:delayMinutes, job_keys:jobKeys } });
-  await singleLaneLog(env, { event_type:'production_clock_one_shot_plan_created', status:'scheduled', message:'One-shot full backend schedule plan created.', payload_json:{ plan_key:planKey, due_pt:target, delay_minutes:delayMinutes, job_keys:jobKeys } });
-  return {
-    ok:true,
-    data_ok:true,
-    version:SYSTEM_VERSION,
-    job:input?.job || 'refresh_orchestrator_create_one_shot_full_run',
-    status:'one_shot_full_backend_run_scheduled',
-    plan_key:planKey,
-    due_pt:target,
-    delay_minutes:delayMinutes,
-    mode:'cascade',
-    selected_job_keys:jobKeys,
-    manual_ticks_required:false,
-    note:'One-shot plan inserted into data_refresh_schedule_plan. The minute cron will enqueue it when due, run it exactly through the Production Clock schedule path, and auto-delete the one-shot schedule row after the chain reaches terminal state.'
-  };
-}
-
-async function cleanupCompletedOneShotProductionPlans(env, context = {}) {
-  await ensureProductionRefreshScheduleTables(env);
-  const plans = await sampleRows(env, `
-    SELECT plan_key, display_name, last_enqueued_key, last_enqueued_at, notes
-    FROM data_refresh_schedule_plan
-    WHERE enabled=1
-      AND schedule_kind='once'
-      AND plan_key LIKE 'one_shot_full_backend_run_%'
-    ORDER BY datetime(created_at) ASC
-    LIMIT 25
-  `).catch(() => []);
-  const deleted = [];
-  for (const plan of plans) {
-    if (!plan.last_enqueued_key) continue;
-    const like = `%"plan_key":"${String(plan.plan_key).replace(/'/g, "''")}"%`;
-    const summary = await env.DB.prepare(`
-      SELECT
-        COUNT(*) AS total_rows,
-        SUM(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END) AS active_rows,
-        SUM(CASE WHEN status IN ('completed','failed','cancelled','blocked') THEN 1 ELSE 0 END) AS terminal_rows,
-        MAX(updated_at) AS newest_updated
-      FROM data_refresh_queue
-      WHERE input_json LIKE ?
-    `).bind(like).first().catch(() => null);
-    if (Number(summary?.total_rows || 0) > 0 && Number(summary?.active_rows || 0) === 0) {
-      const res = await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=? AND schedule_kind='once'`).bind(plan.plan_key).run().catch(() => null);
-      if (Number(res?.meta?.changes || 0) > 0) {
-        const item = { plan_key:plan.plan_key, display_name:plan.display_name, queue_summary:summary, context };
-        deleted.push(item);
-        await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_plan_deleted', status:'deleted', message:'One-shot schedule plan auto-deleted after terminal queue chain.', payload_json:item });
-        await singleLaneLog(env, { event_type:'production_clock_one_shot_plan_deleted', status:'deleted', message:'One-shot schedule plan auto-deleted after terminal queue chain.', payload_json:item });
-      }
-    }
-  }
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'cleanup_completed_one_shot_production_plans', deleted_count:deleted.length, deleted };
-}
-
 function productionPlanIsDue(plan, pt) {
   if (!plan || Number(plan.enabled) !== 1) return false;
-  const kind = String(plan.schedule_kind || '').toLowerCase();
-  if (kind === 'once') {
-    if (plan.last_enqueued_key) return false;
-    const dueDate = String(plan.byday || '');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return false;
-    const nowKey = `${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
-    const dueKey = `${dueDate}|${String(plan.hour_pt).padStart(2,'0')}${String(plan.minute_pt).padStart(2,'0')}`;
-    return nowKey >= dueKey;
-  }
   if (Number(plan.hour_pt) !== Number(pt.hour) || Number(plan.minute_pt) !== Number(pt.minute)) return false;
-  if (kind === 'weekly') {
+  if (String(plan.schedule_kind || '').toLowerCase() === 'weekly') {
     return String(pt.weekday || '').slice(0,3).toLowerCase() === String(plan.byday || '').slice(0,3).toLowerCase();
   }
   return true;
@@ -9419,8 +9200,7 @@ function productionPlanIsDue(plan, pt) {
 
 async function enqueueProductionPlan(env, plan, pt, input = {}) {
   await ensureProductionRefreshScheduleTables(env);
-  const dueDateForKey = productionPlanIsOneShot(plan) && /^\d{4}-\d{2}-\d{2}$/.test(String(plan.byday || '')) ? String(plan.byday) : pt.date;
-  const dueKey = `${plan.plan_key}|${dueDateForKey}|${String(plan.hour_pt).padStart(2,'0')}${String(plan.minute_pt).padStart(2,'0')}`;
+  const dueKey = `${plan.plan_key}|${pt.date}|${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
   if (String(plan.last_enqueued_key || '') === dueKey) {
     return { ok:true, data_ok:true, status:'already_enqueued_for_slot', plan_key:plan.plan_key, due_key:dueKey };
   }
@@ -9432,7 +9212,7 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
     return { ok:true, data_ok:true, status:'blocked_active_single_lane_waiting', plan_key:plan.plan_key, active:running || state, due_key:dueKey, note:'Production clock will retry this due slot on the next minute. No overlapping refresh jobs are allowed.' };
   }
   const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock', trigger:'production_refresh_clock', job_keys:jobKeys, slate_mode:'AUTO', plan_key:plan.plan_key, due_key:dueKey, pt }, String(plan.mode || 'selected'));
-  if (enq?.ok !== false && (Number(enq?.enqueued_count || 0) > 0 || String(enq?.status || '').includes('requested'))) {
+  if (enq?.ok !== false) {
     await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, plan.plan_key).run();
   }
   await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq } });
@@ -9458,7 +9238,7 @@ async function productionRefreshClockStatus(input, env) {
   const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
   const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT; optional one-shot full backend plans auto-delete after terminal queue completion. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
 }
 
 async function runStaticTempAutoLoop(input, env) {
@@ -9504,7 +9284,7 @@ async function refreshOrchestratorStatus(input, env) {
   const logs = await sampleRows(env, `SELECT created_at, job_key, job_index, event_type, status, fail, error_code, message, substr(payload_json,1,500) AS payload_preview FROM data_orchestrator_logs ORDER BY datetime(created_at) DESC LIMIT 30`);
   const runtime_profiles = [];
   for (const j of jobs) runtime_profiles.push(await getRefreshJobRuntimeProfile(env, j.job_key, { sample_limit:10, min_samples:3 }).catch(e => ({ job_key:j.job_key, error:String(e?.message || e) })));
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.08.1 PrizePicks Audit Finalizer Gate is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_status', status:'pass', mode:'single_lane_independent', catalog_count:catalog.length, catalog, state, jobs, active_summary:active, runtime_profiles, recent_queue:queue, recent_logs:logs, note:'v1.5.06.9 Capsule Parity Recovery Lock is active. Cron reads data_orchestrator_jobs/state, uses dynamic recent-runtime timeouts, keeps one lane active, checks scraper progress/audit rows, and prevents stale prior PrizePicks requests from hijacking a new queue row.' };
 }
 
 
@@ -9560,6 +9340,154 @@ function isOptionalRefreshDependency(row) {
 }
 
 
+async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, input = {}) {
+  await ensureRefreshOrchestratorTables(env);
+  const requestId = String(seed?.request_id || seed?.running_request_id || '').trim();
+  if (!requestId) return { finalized:false, reason:'missing_request_id' };
+  await ensurePrizePicksScraperProgressTable(env).catch(() => null);
+  const q = await env.DB.prepare(`
+    SELECT request_id, chain_id, job_key, display_name, sequence_order, status, requested_slate_date, started_at, created_at, updated_at
+    FROM data_refresh_queue
+    WHERE request_id=?
+      AND job_key='prizepicks_board'
+    LIMIT 1
+  `).bind(requestId).first().catch(() => null);
+  if (!q) return { finalized:false, reason:'queue_row_not_found_or_not_prizepicks_board', request_id:requestId };
+  const qStatus = String(q.status || '').toLowerCase();
+  if (qStatus === 'completed') return { finalized:true, already_completed:true, queue:q };
+  if (!['pending','running'].includes(qStatus)) return { finalized:false, reason:'queue_row_not_active', request_id:requestId, status:q.status };
+
+  const progress = await env.DB.prepare(`
+    SELECT run_id, dispatch_id, github_run_id, github_run_attempt, github_event_name, status, step, progress_message, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, heartbeat_at, created_at, updated_at, substr(payload_json,1,3000) AS payload_preview
+    FROM prizepicks_scraper_runs
+    WHERE run_id=? OR dispatch_id=? OR payload_json LIKE ?
+    ORDER BY datetime(COALESCE(finished_at, updated_at, heartbeat_at, started_at, created_at)) DESC
+    LIMIT 1
+  `).bind(requestId, requestId, `%${requestId}%`).first().catch(() => null);
+
+  const audit = await env.DB.prepare(`
+    SELECT run_id, status, started_at, finished_at, rows_fetched, rows_temp, rows_main, error_message, source, script_version, created_at, updated_at
+    FROM mlb_stats_refresh_audit
+    WHERE run_id=?
+    ORDER BY datetime(COALESCE(finished_at, updated_at, started_at, created_at)) DESC
+    LIMIT 1
+  `).bind(requestId).first().catch(() => null);
+
+  const progressStatus = String(progress?.status || '').toLowerCase();
+  const auditStatus = String(audit?.status || '').toLowerCase();
+  const progressComplete = progress && ['completed','success'].includes(progressStatus) && Number(progress.rows_main || 0) > 0;
+  const auditComplete = audit && ['completed','success','certified'].includes(auditStatus) && Number(audit.rows_main || 0) > 0 && audit.finished_at;
+  const progressFailed = progress && ['failed','error','dispatch_failed'].includes(progressStatus);
+  const auditFailed = audit && ['failed','error'].includes(auditStatus);
+
+  if (!progressComplete && !auditComplete) {
+    if (progressFailed || auditFailed) {
+      return { finalized:false, terminal_failure:true, reason:'prizepicks_scraper_failed_not_finalized_as_success', request_id:requestId, progress, audit };
+    }
+    return { finalized:false, reason:'no_completed_prizepicks_audit_or_progress_for_request', request_id:requestId, progress_status:progress?.status || null, audit_status:audit?.status || null, progress_rows_main:Number(progress?.rows_main || 0), audit_rows_main:Number(audit?.rows_main || 0), progress, audit };
+  }
+
+  const certified = progressComplete ? progress : audit;
+  const certifiedSource = progressComplete ? 'prizepicks_scraper_runs' : 'mlb_stats_refresh_audit';
+  const finishedAt = certified?.finished_at || certified?.updated_at || new Date().toISOString();
+  const wrapped = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'refresh_orchestrator_tick',
+    orchestrator:'single_lane_independent',
+    request_id:q.request_id,
+    chain_id:q.chain_id,
+    job_key:'prizepicks_board',
+    job_index:Number(q.sequence_order || 50),
+    display_name:q.display_name || '05 PrizePicks Board',
+    routed_job:'trigger_prizepicks_github_board_refresh',
+    result:{
+      ok:true,
+      data_ok:true,
+      version:SYSTEM_VERSION,
+      job:'trigger_prizepicks_github_board_refresh',
+      status:'PRIZEPICKS_BOARD_QUEUE_FINALIZED_FROM_COMPLETED_AUDIT_REAPER',
+      board_refresh_complete:true,
+      dispatch_id:requestId,
+      run_id:certified?.run_id || requestId,
+      github_run_id:progress?.github_run_id || null,
+      source:certifiedSource,
+      rows_fetched:Number(certified?.rows_fetched || 0),
+      rows_temp:Number(certified?.rows_temp || 0),
+      rows_main:Number(certified?.rows_main || 0),
+      started_at:certified?.started_at || q.started_at || null,
+      finished_at:finishedAt,
+      audit,
+      scraper_progress:progress,
+      certification_rule:'completed_prizepicks_scraper_progress_or_audit_row_wins_before_timeout',
+      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.2 finalized the queue wrapper from the audit/progress row before any timeout or downstream blocking decision.'
+    },
+    elapsed_ms:0
+  };
+
+  await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET status='completed',
+        finished_at=COALESCE(finished_at, ?),
+        updated_at=CURRENT_TIMESTAMP,
+        error=NULL,
+        output_json=?
+    WHERE request_id=?
+      AND job_key='prizepicks_board'
+      AND status IN ('pending','running')
+  `).bind(finishedAt, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), q.request_id).run().catch(() => null);
+
+  await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET running_flag=0,
+        run_requested_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        last_status='completed',
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        last_finished_at=COALESCE(last_finished_at, CURRENT_TIMESTAMP),
+        last_duration_ms=0,
+        last_output_json=?,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE job_key='prizepicks_board'
+  `).bind(JSON.stringify(wrapped).slice(0,10000)).run().catch(() => null);
+
+  await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET status='pending',
+        finished_at=NULL,
+        run_after=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=NULL
+    WHERE chain_id=?
+      AND status='blocked'
+      AND error LIKE 'blocked_by_prizepicks_board%'
+  `).bind(q.chain_id).run().catch(() => null);
+
+  await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET blocked_flag=0,
+        blocked_by_job_key=NULL,
+        run_requested_flag=1,
+        running_flag=0,
+        last_status='unblocked_after_prizepicks_audit_reaper',
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE blocked_by_job_key='prizepicks_board'
+  `).run().catch(() => null);
+
+  await releaseSingleLaneEnqueueLock(env, q.request_id, { status:'completed', job_key:'prizepicks_board', source:'prizepicks_audit_completion_reaper' }).catch(() => null);
+  await releaseSingleLaneGlobalState(env, 'IDLE', wrapped).catch(() => null);
+  await singleLaneLog(env, { request_id:q.request_id, chain_id:q.chain_id, job_key:'prizepicks_board', job_index:Number(q.sequence_order || 50), event_type:'prizepicks_board_queue_reaper_completed', status:'completed', message:'05 PrizePicks Board finalized from completed scraper audit/progress row.', payload_json:wrapped }).catch(() => null);
+  await refreshOrchestratorEvent(env, { request_id:q.request_id, chain_id:q.chain_id, job_key:'prizepicks_board', event_type:'single_lane_prizepicks_reaper_complete', status:'completed', message:'PrizePicks queue/global wrapper finalized from completed audit/progress row before timeout.', payload_json:wrapped }).catch(() => null);
+  return { finalized:true, queue:q, certified_source:certifiedSource, certified, progress, audit, wrapped };
+}
+
 async function finalizeCompletedScoringQueueFromScoringRuns(env, seed = {}, input = {}) {
   await ensureRefreshOrchestratorTables(env);
   const requestId = String(seed?.request_id || seed?.running_request_id || '').trim();
@@ -9614,7 +9542,7 @@ async function finalizeCompletedScoringQueueFromScoringRuns(env, seed = {}, inpu
       scoring_created_at:scoring.created_at || null,
       scoring_completed_at:scoring.completed_at || null,
       details_preview:scoring.details_preview || null,
-      note:'Scoring already completed in scoring_runs; v1.5.08.1 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
+      note:'Scoring already completed in scoring_runs; v1.5.07.6 finalized the stuck queue/global wrapper from scoring_runs instead of waiting for timeout.'
     },
     elapsed_ms:0
   };
@@ -9697,23 +9625,17 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
     LIMIT 20
   `);
   for (const row of staleRunningRows) {
+    if (String(row.job_key || '') === 'prizepicks_board') {
+      const pbReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id:row.request_id, chain_id:row.chain_id }, { reason:`stale_running_pre_timeout:${input.reason || input.trigger || 'watchdog'}`, job:'refresh_queue_stale_recovery' }).catch(e => ({ finalized:false, reason:'prizepicks_completion_reaper_error', error:String(e?.message || e), request_id:row.request_id }));
+      if (pbReaper?.finalized) {
+        recovered.push({ ...row, recovered_action:'finalized_prizepicks_board_from_completed_audit_before_timeout', prizepicks_reaper:pbReaper });
+        continue;
+      }
+    }
     const timeoutCheck = await refreshRowExceededDynamicTimeout(env, row, { sample_limit:10, min_samples:3 }).catch(() => ({ exceeded:false }));
     if (!timeoutCheck.exceeded) continue;
     const isScoring = String(row.job_key || '') === 'scoring_refresh';
-    const isPrizePicksBoard = String(row.job_key || '') === 'prizepicks_board';
-    const reason = `${isScoring ? 'dynamic_timeout_running_cancelled' : isPrizePicksBoard ? 'prizepicks_board_timeout_failed' : 'dynamic_timeout_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
-    const timeoutPayload = JSON.stringify({
-      ok:!isPrizePicksBoard,
-      data_ok:false,
-      version:SYSTEM_VERSION,
-      job:'refresh_queue_stale_recovery',
-      status:isScoring ? 'cancelled_dynamic_timeout_scoring_row' : isPrizePicksBoard ? 'failed_prizepicks_board_timeout' : 'requeued_dynamic_timeout_running_row',
-      reason,
-      recovered_at:new Date().toISOString(),
-      row,
-      timeout_check:timeoutCheck,
-      note:isPrizePicksBoard ? 'PrizePicks board refresh exceeded the dynamic runtime window without scraper progress/audit. The stage is terminally failed instead of being requeued forever.' : null
-    }).slice(0,3000);
+    const reason = `${isScoring ? 'dynamic_timeout_running_cancelled' : 'dynamic_timeout_running_requeued'}:${input.reason || input.trigger || 'watchdog'}`;
     await env.DB.prepare(`
       UPDATE data_refresh_queue
       SET status=?,
@@ -9724,21 +9646,12 @@ async function recoverStaleRefreshQueueRows(env, input = {}) {
           output_json=COALESCE(output_json, ?)
       WHERE request_id=?
         AND status='running'
-    `).bind((isScoring || isPrizePicksBoard) ? (isPrizePicksBoard ? 'failed' : 'cancelled') : 'pending', (isScoring || isPrizePicksBoard) ? 1 : 0, (isScoring || isPrizePicksBoard) ? 1 : 0, reason, timeoutPayload, row.request_id).run();
-    if (isPrizePicksBoard) {
-      const blocked = singleLaneBlockedDependents('prizepicks_board');
-      if (blocked.length) {
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='blocked', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=? WHERE chain_id=? AND job_key IN (${blocked.map(()=>'?').join(',')}) AND status IN ('pending','running')`).bind('blocked_by_prizepicks_board_timeout', row.chain_id, ...blocked).run().catch(() => null);
-        await env.DB.prepare(`UPDATE data_orchestrator_jobs SET blocked_flag=1, blocked_by_job_key='prizepicks_board', run_requested_flag=0, running_flag=0, last_status='blocked', last_fail=1, last_error_code='blocked_by_prizepicks_board_timeout', last_error_message='Blocked because PrizePicks Board timed out without scraper progress/audit.', updated_at=CURRENT_TIMESTAMP WHERE job_key IN (${blocked.map(()=>'?').join(',')})`).bind(...blocked).run().catch(() => null);
-      }
-      await releaseSingleLaneEnqueueLock(env, row.request_id, { status:'failed', job_key:'prizepicks_board', error:reason }).catch(() => null);
-      await releaseSingleLaneGlobalState(env, 'PRIZEPICKS_BOARD_TIMEOUT_FAILED', { row, reason, timeout_check:timeoutCheck }).catch(() => null);
-    }
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'dynamic_timeout_scoring_cancelled':isPrizePicksBoard?'prizepicks_board_timeout_failed':'dynamic_timeout_running_requeued', status:isScoring?'cancelled':isPrizePicksBoard?'failed':'pending', message:reason, payload_json:{ row, input, timeout_check:timeoutCheck } });
-    recovered.push({ ...row, recovered_action:isScoring ? 'cancelled_running_timeout' : isPrizePicksBoard ? 'failed_running_timeout' : 'requeued_running_timeout' });
+    `).bind(isScoring ? 'cancelled' : 'pending', isScoring ? 1 : 0, isScoring ? 1 : 0, reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_queue_stale_recovery', status:isScoring?'cancelled_dynamic_timeout_scoring_row':'requeued_dynamic_timeout_running_row', reason, recovered_at:new Date().toISOString(), row, timeout_check:timeoutCheck }).slice(0,3000), row.request_id).run();
+    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:isScoring?'dynamic_timeout_scoring_cancelled':'dynamic_timeout_running_requeued', status:isScoring?'cancelled':'pending', message:reason, payload_json:{ row, input, timeout_check:timeoutCheck } });
+    recovered.push({ ...row, recovered_action:isScoring ? 'cancelled_running_timeout' : 'requeued_running_timeout' });
   }
 
-  // v1.5.08.1 hard gate:
+  // v1.5.07.6 hard gate:
   // A downstream cascade row can sit pending for a long time while an upstream stage is running.
   // That is not stale. Stale-pending recovery must judge age only after the row becomes eligible.
   // It must never fail a pending/null-run row just because its original queue created_at is old.
@@ -10224,23 +10137,20 @@ async function runRefreshOrchestratorTick(input, env) {
     activeLockedRow = await env.DB.prepare(`SELECT * FROM data_orchestrator_jobs WHERE running_flag=1 ORDER BY updated_at DESC LIMIT 1`).first().catch(() => null);
     const seconds = state?.updated_at ? Math.round((Date.now() - parseD1TimestampMaybe(state.updated_at)) / 1000) : null;
     const lockedJobKey = String(state?.running_job_key || activeLockedRow?.job_key || '');
+    if (lockedJobKey === 'prizepicks_board') {
+      const prizePicksReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_prizepicks_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'prizepicks_reaper_error', error:String(e?.message || e) }));
+      if (prizePicksReaper?.finalized) {
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper audit/progress rows. v1.5.08.2 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
+      }
+    }
     if (lockedJobKey === 'scoring_refresh') {
       const scoringReaper = await finalizeCompletedScoringQueueFromScoringRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_scoring_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'scoring_reaper_error', error:String(e?.message || e) }));
       if (scoringReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.08.1 finalized the stuck queue row and released the global lock without waiting for timeout.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
-    const lockedPrizePicksWaiting = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
-    if (lockedPrizePicksWaiting) {
-      const waitRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
-      const waitChainId = state?.running_chain_id || activeLockedRow?.current_chain_id || null;
-      const activeQueue = waitRequestId ? await env.DB.prepare(`SELECT request_id, chain_id, job_key, status, started_at, updated_at, created_at, output_json FROM data_refresh_queue WHERE request_id=? LIMIT 1`).bind(waitRequestId).first().catch(() => null) : null;
-      const wrapped = (() => { try { return JSON.parse(activeQueue?.output_json || activeLockedRow?.last_output_json || state?.state_json || '{}'); } catch (_) { return { job_key:'prizepicks_board', request_id:waitRequestId, chain_id:waitChainId, status:'waiting_for_board_update' }; } })();
-      await releasePrizePicksWaitForNextCron(env, activeLockedRow, waitRequestId, waitChainId, wrapped, 'waiting_for_board_update');
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_wait_released', cleanup, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board wait state was released back to pending for the next cron tick. The global lane is not held while GitHub scraper/audit writes finish.' };
-    }
-    const canContinueLockedPrizePicks = false;
-    // v1.5.08.1: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
+    const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
+    // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
     // child run advance/finalize itself in bounded one-step slices.
@@ -10274,10 +10184,9 @@ async function runRefreshOrchestratorTick(input, env) {
     LIMIT 1
   `).first().catch(() => null);
   if (!row) {
-    const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'idle_no_requested_job' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
     const jobs = await sampleRows(env, `SELECT job_key, job_index, display_name, run_requested_flag, running_flag, blocked_flag, blocked_by_job_key, last_status, last_fail, last_error_code, last_started_at, last_finished_at, updated_at FROM data_orchestrator_jobs ORDER BY job_index ASC`);
     const legacyActive = await sampleRows(env, `SELECT request_id, chain_id, job_key, status, error, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`);
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', cleanup, one_shot_cleanup, jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_idle_no_requested_job', cleanup, jobs, legacy_active_queue:legacyActive, elapsed_ms:Date.now()-started, note:'No requested independent job is ready. Cron only reads database flags.' };
   }
 
   const requestId = row.current_request_id || crypto.randomUUID();
@@ -10309,28 +10218,15 @@ async function runRefreshOrchestratorTick(input, env) {
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
-      // v1.5.08.1: Do not pre-seed prizepicks_scraper_runs from the orchestrator before calling
-      // triggerPrizePicksGithubBoardRefresh. Pre-seeding created a matched dispatch row with
-      // no GitHub dispatch, which caused the trigger function to wait instead of sending
-      // workflow_dispatch. The trigger function itself owns seed -> dispatching -> dispatched.
-      body.prizepicks_dispatch_seed = { skipped:true, reason:'dispatch_seed_owned_by_trigger_function' };
       let priorState = {};
-      for (const rawPrior of [row.last_output_json, queueBeforeStart?.output_json]) {
-        if (priorState.step_results) break;
-        try {
-          const priorWrapped = JSON.parse(rawPrior || '{}');
-          const candidates = [
-            priorWrapped?.result?.result,
-            priorWrapped?.result,
-            priorWrapped
-          ].filter(Boolean);
-          const priorResult = candidates.find(x => x?.requested_at || x?.triggered_at || x?.dispatch_id || x?.run_id || x?.request_id || x?.status) || null;
-          if (priorResult) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
-        } catch (_) {}
-      }
+      try {
+        const priorWrapped = JSON.parse(row.last_output_json || '{}');
+        const priorResult = priorWrapped?.result || priorWrapped;
+        if (priorResult?.requested_at || priorResult?.triggered_at || priorResult?.status || priorResult?.dispatch_id) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
+      } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      // v1.5.08.1: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
+      // v1.5.07.6: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -10387,8 +10283,11 @@ async function runRefreshOrchestratorTick(input, env) {
     if (partial && !terminalFail) {
       if (String(row.job_key || '') === 'prizepicks_board' && singleLaneIsPartialOrWaiting(row, result)) {
         const statusText = String(result?.status || 'waiting_for_github_board_update');
-        await releasePrizePicksWaitForNextCron(env, row, requestId, chainId, wrapped, statusText);
-        return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_wait_released', processed:[{ job_key:row.job_key, status:statusText, cron_check_count:result?.cron_check_count, dynamic_timeout_seconds:result?.dynamic_timeout_seconds }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board is waiting for GitHub scraper/audit output, but the global lane was released. The same board stage remains pending for the next cron tick; downstream stages stay gated by job order until board succeeds or terminally fails.' };
+        await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, run_requested_flag=1, last_status='waiting_for_board_update', last_fail=0, last_error_code=?, last_error_message=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(statusText.slice(0,250), statusText.slice(0,1000), JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+        await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:'WAITING_PRIZEPICKS_BOARD', state_json:wrapped });
+        await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'waiting_locked', status:'running', message:statusText, payload_json:wrapped });
+        return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_waiting_locked', processed:[{ job_key:row.job_key, status:statusText, cron_check_count:result?.cron_check_count, max_cron_checks:result?.max_cron_checks }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board is still running/waiting. The global lane remains locked, the job flag stays active, and no downstream stage can start until success or the dynamic runtime timeout.' };
       }
       const partialStatus = String(result?.status || 'partial_continue');
       await releaseSingleLaneGlobalState(env, row.job_key === 'incremental_daily' ? 'WAITING_NEXT_INCREMENTAL_TICK' : 'WAITING_NEXT_TICK', wrapped);
@@ -10416,8 +10315,7 @@ async function runRefreshOrchestratorTick(input, env) {
       await releaseSingleLaneGlobalState(env, 'FAILED_RELEASED', wrapped);
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked } });
       await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked } });
-      const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'job_failed', request_id:requestId, chain_id:chainId, job_key:row.job_key }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, one_shot_cleanup, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
+      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
     }
 
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
@@ -10427,8 +10325,7 @@ async function runRefreshOrchestratorTick(input, env) {
     await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:wrapped });
     await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
     const remaining = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0`).first().catch(() => ({ rows_count:0 }));
-    const one_shot_cleanup = await cleanupCompletedOneShotProductionPlans(env, { reason:'job_completed', request_id:requestId, chain_id:chainId, job_key:row.job_key, active_remaining:Number(remaining?.rows_count || 0) }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, one_shot_cleanup, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
   } catch (err) {
     const error = String(err?.message || err);
     const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, routed_job:row.job_name, status:'failed_exception', error, elapsed_ms:Date.now()-started };
@@ -12311,7 +12208,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.08.1 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.6 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
@@ -13286,7 +13183,6 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
-  if (jobName === "refresh_orchestrator_create_one_shot_full_run") return await createOneShotProductionFullRunPlan({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".

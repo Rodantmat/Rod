@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.08.1 - PrizePicks Audit Finalizer Gate"
+SCRIPT_VERSION = "v1.5.08.2 - PrizePicks Completion Reaper Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
