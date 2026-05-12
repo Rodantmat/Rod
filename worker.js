@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.3 - Schedule Scanner Restore Gate";
+const SYSTEM_VERSION = "v1.5.08.4 - PrizePicks Callback Finalizer Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -8299,7 +8299,18 @@ async function handlePrizePicksScraperStatus(request, env) {
     message:`PrizePicks GitHub scraper status: ${status}`,
     payload_json:{ ...body, run_id:runId, received_at:now, source:'worker_status_callback' }
   }).catch(() => null);
-  return json({ ok:true, data_ok: status !== 'failed' && status !== 'error', version:SYSTEM_VERSION, job:'prizepicks_scraper_status_callback', status:'recorded', run_id:runId });
+
+  let queue_finalizer = null;
+  const statusLower = String(status || '').toLowerCase();
+  if ((statusLower === 'completed' || statusLower === 'success') && Number(rowsMain || 0) > 0) {
+    queue_finalizer = await finalizeCompletedPrizePicksBoardQueueFromAudit(
+      env,
+      { request_id:runId, chain_id:String(body.chain_id || '').trim() || undefined },
+      { reason:'prizepicks_status_callback_completed', job:'prizepicks_scraper_status_callback' }
+    ).catch(e => ({ finalized:false, reason:'callback_finalizer_error', error:String(e?.message || e) }));
+  }
+
+  return json({ ok:true, data_ok: status !== 'failed' && status !== 'error', version:SYSTEM_VERSION, job:'prizepicks_scraper_status_callback', status:'recorded', run_id:runId, queue_finalizer });
 }
 
 function refreshOrchestratorCatalogRows() {
@@ -9401,6 +9412,53 @@ function isOptionalRefreshDependency(row) {
 }
 
 
+
+async function getCompletedPrizePicksCallbackEvent(env, requestId) {
+  const wanted = String(requestId || '').trim();
+  if (!wanted) return null;
+  try {
+    const exists = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='data_refresh_events' LIMIT 1").first().catch(() => null);
+    if (!exists) return null;
+    const row = await env.DB.prepare(`
+      SELECT event_id, request_id, chain_id, job_key, event_type, status, message, created_at, substr(payload_json,1,6000) AS payload_json
+      FROM data_refresh_events
+      WHERE event_type='github_prizepicks_scraper_status'
+        AND status IN ('completed','success')
+        AND (request_id=? OR payload_json LIKE ?)
+      ORDER BY datetime(created_at) DESC
+      LIMIT 1
+    `).bind(wanted, `%${wanted}%`).first().catch(() => null);
+    if (!row) return null;
+    let payload = {};
+    try { payload = JSON.parse(String(row.payload_json || '{}')); } catch (_) { payload = {}; }
+    const rowsMain = Number(payload.rows_main ?? 0);
+    const rowsFetched = Number(payload.rows_fetched ?? 0);
+    if (!(rowsMain > 0 || rowsFetched > 0)) return { ...row, payload, completion_usable:false, rows_main:rowsMain, rows_fetched:rowsFetched };
+    return {
+      ...row,
+      payload,
+      completion_usable:true,
+      run_id:String(payload.run_id || payload.dispatch_id || payload.request_id || wanted),
+      dispatch_id:String(payload.dispatch_id || payload.request_id || payload.run_id || wanted),
+      github_run_id:payload.github_run_id || null,
+      github_run_attempt:payload.github_run_attempt || null,
+      github_event_name:payload.github_event_name || null,
+      started_at:payload.started_at || null,
+      finished_at:payload.finished_at || row.created_at || null,
+      rows_fetched:rowsFetched,
+      rows_temp:Number(payload.rows_temp ?? 0),
+      rows_main:rowsMain,
+      error_message:payload.error_message || null,
+      source:'data_refresh_events.github_prizepicks_scraper_status',
+      script_version:payload.script_version || null,
+      updated_at:row.created_at,
+      created_at:row.created_at
+    };
+  } catch (e) {
+    return { completion_usable:false, error:String(e?.message || e) };
+  }
+}
+
 async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, input = {}) {
   await ensureRefreshOrchestratorTables(env);
   const requestId = String(seed?.request_id || seed?.running_request_id || '').trim();
@@ -9434,23 +9492,25 @@ async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, in
     LIMIT 1
   `).bind(requestId).first().catch(() => null);
 
+  const callbackEvent = await getCompletedPrizePicksCallbackEvent(env, requestId).catch(() => null);
   const progressStatus = String(progress?.status || '').toLowerCase();
   const auditStatus = String(audit?.status || '').toLowerCase();
   const progressComplete = progress && ['completed','success'].includes(progressStatus) && Number(progress.rows_main || 0) > 0;
-  const auditComplete = audit && ['completed','success','certified'].includes(auditStatus) && Number(audit.rows_main || 0) > 0 && audit.finished_at;
+  const auditComplete = audit && ['completed','success','certified'].includes(auditStatus) && Number(audit.rows_main || 0) > 0;
+  const callbackComplete = callbackEvent && callbackEvent.completion_usable === true && Number(callbackEvent.rows_main || 0) > 0;
   const progressFailed = progress && ['failed','error','dispatch_failed'].includes(progressStatus);
   const auditFailed = audit && ['failed','error'].includes(auditStatus);
 
-  if (!progressComplete && !auditComplete) {
+  if (!progressComplete && !auditComplete && !callbackComplete) {
     if (progressFailed || auditFailed) {
-      return { finalized:false, terminal_failure:true, reason:'prizepicks_scraper_failed_not_finalized_as_success', request_id:requestId, progress, audit };
+      return { finalized:false, terminal_failure:true, reason:'prizepicks_scraper_failed_not_finalized_as_success', request_id:requestId, progress, audit, callback_event:callbackEvent };
     }
-    return { finalized:false, reason:'no_completed_prizepicks_audit_or_progress_for_request', request_id:requestId, progress_status:progress?.status || null, audit_status:audit?.status || null, progress_rows_main:Number(progress?.rows_main || 0), audit_rows_main:Number(audit?.rows_main || 0), progress, audit };
+    return { finalized:false, reason:'no_completed_prizepicks_audit_progress_or_callback_for_request', request_id:requestId, progress_status:progress?.status || null, audit_status:audit?.status || null, callback_status:callbackEvent?.status || null, progress_rows_main:Number(progress?.rows_main || 0), audit_rows_main:Number(audit?.rows_main || 0), callback_rows_main:Number(callbackEvent?.rows_main || 0), progress, audit, callback_event:callbackEvent };
   }
 
-  const certified = progressComplete ? progress : audit;
-  const certifiedSource = progressComplete ? 'prizepicks_scraper_runs' : 'mlb_stats_refresh_audit';
-  const finishedAt = certified?.finished_at || certified?.updated_at || new Date().toISOString();
+  const certified = progressComplete ? progress : (auditComplete ? audit : callbackEvent);
+  const certifiedSource = progressComplete ? 'prizepicks_scraper_runs' : (auditComplete ? 'mlb_stats_refresh_audit' : 'data_refresh_events');
+  const finishedAt = certified?.finished_at || certified?.updated_at || certified?.created_at || new Date().toISOString();
   const wrapped = {
     ok:true,
     data_ok:true,
@@ -9481,8 +9541,9 @@ async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, in
       finished_at:finishedAt,
       audit,
       scraper_progress:progress,
-      certification_rule:'completed_prizepicks_scraper_progress_or_audit_row_wins_before_timeout',
-      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.3 preserves v1.5.08.2 finalization and finalized the queue wrapper from the audit/progress row before any timeout or downstream blocking decision.'
+      callback_event:callbackEvent,
+      certification_rule:'completed_prizepicks_scraper_progress_audit_or_callback_row_wins_before_timeout',
+      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.4 finalizes immediately from prizepicks_scraper_runs, mlb_stats_refresh_audit, or the GitHub callback event before any timeout or downstream blocking decision.'
     },
     elapsed_ms:0
   };
@@ -10201,7 +10262,7 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'prizepicks_board') {
       const prizePicksReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_prizepicks_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'prizepicks_reaper_error', error:String(e?.message || e) }));
       if (prizePicksReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper audit/progress rows. v1.5.08.3 preserves v1.5.08.2 finalization and finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper progress/audit/callback rows. v1.5.08.4 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
       }
     }
     if (lockedJobKey === 'scoring_refresh') {

@@ -1,0 +1,24 @@
+AlphaDog Build Version Audit
+
+Version: v1.5.08.4 - PrizePicks Callback Finalizer Gate
+
+Files included:
+- worker.js
+- control_room.html
+- main.py
+- scrape.yml
+- package.json
+- wrangler.jsonc
+- README_v1.5.08.4.txt
+- BUILD_VERSION_AUDIT_v1.5.08.4.txt
+
+Version checks:
+- worker.js SYSTEM_VERSION is v1.5.08.4 - PrizePicks Callback Finalizer Gate.
+- control_room.html version tag is v1.5.08.4 - PrizePicks Callback Finalizer Gate.
+- main.py SCRIPT_VERSION is v1.5.08.4 - PrizePicks Callback Finalizer Gate.
+- README and audit filenames match v1.5.08.4.
+
+Patch summary:
+- Added callback-time finalization in handlePrizePicksScraperStatus.
+- Added data_refresh_events callback proof fallback for PrizePicks Board finalization.
+- Preserved existing schedule scanner restore logic and GitHub dispatch flow.
