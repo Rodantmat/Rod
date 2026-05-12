@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.08.4 - PrizePicks Callback Finalizer Gate";
+const SYSTEM_VERSION = "v1.5.08.5 - Recovery Dispatch Seed Gate";
 const SYSTEM_CODENAME = "Minute Cron Full Refresh Scheduler";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -3355,6 +3355,29 @@ function priorAdminStepResult(state, stepName) {
   return null;
 }
 
+function hasPrizePicksDispatchEvidence(payload = {}) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const status = String(p.status || p.result_status || p.error || '').toLowerCase();
+  const step = String(p.step || p.progress_step || '').toLowerCase();
+  const github = p.github && typeof p.github === 'object' ? p.github : {};
+  const githubPayload = github.payload && typeof github.payload === 'object' ? github.payload : {};
+  return !!(
+    p.dispatch_id ||
+    p.run_id ||
+    github.dispatch_id ||
+    githubPayload.dispatch_id ||
+    String(github.dispatch_event_type || '').toLowerCase().includes('workflow_dispatch') ||
+    status.includes('github_workflow_dispatch') ||
+    status.includes('github_workflow_dispatched') ||
+    status.includes('waiting_for_board_update') ||
+    status.includes('board_refresh_certified') ||
+    status.includes('github_scraper_') ||
+    status.includes('github_audit_result') ||
+    step.includes('github_workflow_dispatch') ||
+    step.includes('worker_dispatching_github_workflow_dispatch')
+  );
+}
+
 async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const githubCfg = await getGithubDispatchConfigForJob(env, input);
   const repo = String(githubCfg.repo || '').trim();
@@ -3365,11 +3388,14 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
   const current = await getPrizePicksMlbStatsFreshness(env);
   const prior = priorAdminStepResult(state, 'prizepicks_board') || {};
   const currentRequestId = String(input?.queue_request_id || input?.request_id || input?.queue_chain_id || input?.chain_id || '').trim();
-  const priorDispatchId = String(prior.dispatch_id || prior.run_id || prior.request_id || '').trim();
+  const priorHasDispatchEvidence = hasPrizePicksDispatchEvidence(prior);
+  const priorGithub = prior.github && typeof prior.github === 'object' ? prior.github : {};
+  const priorGithubPayload = priorGithub.payload && typeof priorGithub.payload === 'object' ? priorGithub.payload : {};
+  const priorDispatchId = String(prior.dispatch_id || prior.run_id || priorGithub.dispatch_id || priorGithubPayload.dispatch_id || (priorHasDispatchEvidence ? prior.request_id : '') || '').trim();
   const priorMatchesCurrentRequest = !!currentRequestId && !!priorDispatchId && priorDispatchId === currentRequestId;
-  let requestedAt = priorMatchesCurrentRequest ? (prior.requested_at || prior.triggered_at || null) : null;
+  let requestedAt = (priorMatchesCurrentRequest && priorHasDispatchEvidence) ? (prior.requested_at || prior.triggered_at || null) : null;
   let requestedMs = requestedAt ? Date.parse(requestedAt) : 0;
-  const dispatchId = String((priorMatchesCurrentRequest ? priorDispatchId : '') || currentRequestId || priorDispatchId || '').trim();
+  const dispatchId = String(((priorMatchesCurrentRequest && priorHasDispatchEvidence) ? priorDispatchId : '') || currentRequestId || '').trim();
   await ensurePrizePicksScraperProgressTable(env).catch(() => null);
   let audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
   let scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
@@ -3380,8 +3406,8 @@ async function triggerPrizePicksGithubBoardRefresh(input, env, state = {}) {
     audit = await getPrizePicksRefreshAudit(env, requestedAt, dispatchId);
     scraper_progress = await getPrizePicksScraperProgress(env, requestedAt, dispatchId);
   }
-  const priorGithub = priorMatchesCurrentRequest ? (prior.github || prior.github_dispatch || prior.github_dispatch_config || null) : null;
-  const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithub) : null;
+  const priorGithubForLookup = (priorMatchesCurrentRequest && priorHasDispatchEvidence) ? (prior.github || prior.github_dispatch || prior.github_dispatch_config || null) : null;
+  const github_run = requestedMs ? await getGithubPrizePicksWorkflowRunStatus(env, requestedAt, dispatchId, priorGithubForLookup) : null;
 
   if (requestedMs) {
     const progressRow = scraper_progress?.matched_dispatch || scraper_progress?.latest_after_request || null;
@@ -9543,7 +9569,7 @@ async function finalizeCompletedPrizePicksBoardQueueFromAudit(env, seed = {}, in
       scraper_progress:progress,
       callback_event:callbackEvent,
       certification_rule:'completed_prizepicks_scraper_progress_audit_or_callback_row_wins_before_timeout',
-      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.4 finalizes immediately from prizepicks_scraper_runs, mlb_stats_refresh_audit, or the GitHub callback event before any timeout or downstream blocking decision.'
+      note:'PrizePicks scraper already completed and wrote fresh rows; v1.5.08.5 finalizes immediately from prizepicks_scraper_runs, mlb_stats_refresh_audit, or the GitHub callback event before any timeout or downstream blocking decision.'
     },
     elapsed_ms:0
   };
@@ -10262,7 +10288,7 @@ async function runRefreshOrchestratorTick(input, env) {
     if (lockedJobKey === 'prizepicks_board') {
       const prizePicksReaper = await finalizeCompletedPrizePicksBoardQueueFromAudit(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id }, { reason:'locked_prizepicks_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'prizepicks_reaper_error', error:String(e?.message || e) }));
       if (prizePicksReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper progress/audit/callback rows. v1.5.08.4 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
+        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_prizepicks_completed_by_audit_reaper', cleanup, prizepicks_reaper:prizePicksReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'PrizePicks Board had already completed in scraper progress/audit/callback rows. v1.5.08.5 finalized the stuck queue row and released the global lock before timeout/blocking logic.' };
       }
     }
     if (lockedJobKey === 'scoring_refresh') {
@@ -10271,7 +10297,7 @@ async function runRefreshOrchestratorTick(input, env) {
         return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
-    const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board' && String(activeLockedRow.last_status || '').toLowerCase().includes('waiting');
+    const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board';
     // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
@@ -10344,7 +10370,7 @@ async function runRefreshOrchestratorTick(input, env) {
       try {
         const priorWrapped = JSON.parse(row.last_output_json || '{}');
         const priorResult = priorWrapped?.result || priorWrapped;
-        if (priorResult?.requested_at || priorResult?.triggered_at || priorResult?.status || priorResult?.dispatch_id) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
+        if (hasPrizePicksDispatchEvidence(priorResult)) priorState = { step_results:[{ step:'prizepicks_board', result:priorResult }] };
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
