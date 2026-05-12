@@ -1,0 +1,20 @@
+AlphaDog Build Version Audit
+
+Expected build:
+v1.5.08.1 - PrizePicks Audit Finalizer Gate
+
+Files checked:
+- ZIP filename: alphadog_v1.5.08.1_prizepicks_audit_finalizer_gate.zip
+- worker.js SYSTEM_VERSION: v1.5.08.1 - PrizePicks Audit Finalizer Gate
+- control_room.html visible version tag: v1.5.08.1 - PrizePicks Audit Finalizer Gate
+- control_room.html JS fallback version: control_room_v1_5_08_1_prizepicks_audit_finalizer_gate
+- main.py SCRIPT_VERSION: v1.5.08.1 - PrizePicks Audit Finalizer Gate
+- README_v1.5.08.1.txt included
+
+Patch scope:
+PrizePicks board dispatch/wait lifecycle only. No scoring math, no Phase 1 logic, no schedule redesign.
+
+Validation notes:
+- Patched worker.js from v1.5.08.0 current source.
+- Targeted root cause: board finished in scraper/audit tables but data_refresh_queue stayed running.
+- No scoring math changed. No UI flow changed except visible version labels.
