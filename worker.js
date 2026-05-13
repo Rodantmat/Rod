@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.4 - Orchestrator Hard Reset Gate";
+const SYSTEM_VERSION = "v1.5.10.5 - Incremental Locked Continuation Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10930,7 +10930,12 @@ async function runRefreshOrchestratorTick(input, env) {
     // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
     // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
     const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
+    // v1.5.10.5: Incremental Daily is a queue-owned auto-continue runner. Its first tick may
+    // schedule/advance a child incremental_temp_refresh_runs row and return auto_continue_scheduled.
+    // The parent queue/global lane must continue the same locked job on the next cron tick instead
+    // of reporting single_lane_busy forever. This is the root fix for the cron/orchestrator bridge.
+    const canContinueLockedIncremental = activeLockedRow && String(activeLockedRow.job_key || '') === 'incremental_daily';
+    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring && !canContinueLockedIncremental) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;

@@ -1,0 +1,15 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.10.5 - Incremental Locked Continuation Gate
+
+Files checked:
+- worker.js
+- control_room.html
+- main.py
+- README_v1.5.10.5.txt
+- BUILD_VERSION_AUDIT_v1.5.10.5.txt
+
+Patch summary:
+- Incremental Daily is now treated as a locked continuation job by runRefreshOrchestratorTick.
+- This prevents the parent GLOBAL lane from staying stuck in single_lane_busy after auto_continue_scheduled.
+- Existing hard reset cleaner remains intact.
+- Scheduled plans remain disabled unless manually re-enabled.

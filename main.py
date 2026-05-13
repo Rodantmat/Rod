@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.4 - Orchestrator Hard Reset Gate"
+SCRIPT_VERSION = "v1.5.10.5 - Incremental Locked Continuation Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
