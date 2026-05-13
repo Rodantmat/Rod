@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.8 - Odds Runner No-Silent-Hang Gate";
-const SYSTEM_CODENAME = "Odds Runner No-Silent-Hang Gate";
+const SYSTEM_VERSION = "v1.5.09.9 - Production Clock Finalizer Killer Gate";
+const SYSTEM_CODENAME = "Production Clock Finalizer Killer Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -132,6 +132,7 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_tick: "DATA REFRESHING > Run One Queue Tick",
   refresh_orchestrator_status: "DATA REFRESHING > Orchestrator Status",
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
+  refresh_orchestrator_kill_broken_tasks: "DATA REFRESHING > Killer Cleaner",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
   refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
   refresh_orchestrator_clean_run_state: "DATA REFRESHING > Clean Run State",
@@ -949,13 +950,20 @@ export default {
       try {
         cronLock = await acquireScheduledMinuteCronLock(env, cron);
         if (!cronLock.acquired) {
+          const duplicateResult = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'scheduled_handler', status:'duplicate_minute_invocation_suppressed', cron, cron_lock:cronLock, db_now_utc:new Date().toISOString(), pt:getPTScheduleParts() };
           await refreshOrchestratorEvent(env, {
             event_type: 'scheduled_handler_duplicate_suppressed',
             status: 'duplicate_suppressed',
             message: 'Duplicate Cloudflare scheduled handler invocation suppressed by minute lock.',
-            payload_json: { version: SYSTEM_VERSION, cron, cron_lock: cronLock, db_now_utc: new Date().toISOString(), pt: getPTScheduleParts() }
+            payload_json: duplicateResult
           }).catch(() => null);
-          console.log(JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'scheduled_handler', status:'duplicate_minute_invocation_suppressed', cron, cron_lock:cronLock }));
+          await refreshOrchestratorEvent(env, {
+            event_type: 'scheduled_handler_completed',
+            status: 'duplicate_suppressed',
+            message: 'scheduled_handler_duplicate_suppressed',
+            payload_json: duplicateResult
+          }).catch(() => null);
+          console.log(JSON.stringify(duplicateResult));
           return;
         }
       } catch (_) {
@@ -1007,9 +1015,10 @@ export default {
         // v1.3.59: the only active cron is the minute poller.
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
-        const productionClockWatchdog = await productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' });
-        const productionClock = await enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' });
-        const orchestratorTick = await runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env);
+        const lockReaper = await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
+        const productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
+        const productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
+        const orchestratorTick = await scheduledPhase(env, 'orchestrator_tick', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, watchdog_status:productionClockWatchdog?.status, production_clock_status:productionClock?.status, lock_reaper:lockReaper });
         if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
           result = {
             ok: true,
@@ -1089,6 +1098,8 @@ export default {
         result = { ok: true, version: SYSTEM_VERSION, job: 'scheduled_router', status: 'paused_disabled', cron, note: 'Old scheduled tasks remain paused. No mining queues, full-run jobs, slate tables, splits, game logs, or BvP tables were mutated.' };
       }
       try {
+        const minute_lock_finalizer = await finalizeScheduledMinuteCronLock(env, cronLock, 'completed', { result_status:result?.status || 'completed' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
+        result = { ...(result || {}), minute_lock_finalizer };
         await refreshOrchestratorEvent(env, {
           event_type: 'scheduled_handler_completed',
           status: result?.status || 'completed',
@@ -1107,6 +1118,7 @@ export default {
           payload_json: { version: SYSTEM_VERSION, cron: String(event?.cron || ''), error, stack: String(err?.stack || '').slice(0, 1200) }
         });
       } catch (_) {}
+      try { await finalizeScheduledMinuteCronLock(env, cronLock, 'error', { error }).catch(() => null); } catch (_) {}
       console.log(JSON.stringify({ ok:false, data_ok:false, version:SYSTEM_VERSION, job:'scheduled_handler', status:'error', error }));
     }));
   }
@@ -1494,7 +1506,7 @@ function redactedOddsApiKeyInfo(info = {}) {
     key_length: key ? key.length : 0,
     key_cached_in_isolate: !!ALPHADOG_LAST_GOOD_ODDS_API_KEY.key,
     fatal_when_missing: false,
-    parity_rule: 'v1.5.09.8 keeps Morning and Intraday on the same resolver path but bounds resolver/bootstrap/fetch stages and writes first-line progress before any long Odds operation.'
+    parity_rule: 'v1.5.09.9 keeps Morning and Intraday on the same resolver path but bounds resolver/bootstrap/fetch stages and writes first-line progress before any long Odds operation.'
   };
 }
 
@@ -1522,7 +1534,7 @@ async function getOddsApiKeyForJob(env = {}, input = {}) {
     return out;
   }
 
-  // v1.5.09.8 parity guard: if Morning resolved the key in this isolate, Intraday must reuse
+  // v1.5.09.9 parity guard: if Morning resolved the key in this isolate, Intraday must reuse
   // the same resolved key instead of failing from a later remote/config lookup miss.
   if (ALPHADOG_LAST_GOOD_ODDS_API_KEY.key && Date.now() - Number(ALPHADOG_LAST_GOOD_ODDS_API_KEY.saved_at || 0) < 6 * 60 * 60 * 1000) {
     return {
@@ -1872,6 +1884,7 @@ function executableJobNames() {
     "refresh_orchestrator_tick",
     "refresh_orchestrator_status",
     "refresh_orchestrator_cancel_all",
+    "refresh_orchestrator_kill_broken_tasks",
     "refresh_orchestrator_schedule_status",
     "refresh_orchestrator_seed_production_clock",
     "refresh_orchestrator_clean_run_state",
@@ -8288,9 +8301,66 @@ function scheduledMinuteLockKey(cron = '') {
   return { key: `scheduled_minute|${safeCron}|${minute}`, minute };
 }
 
+
+async function finalizeScheduledMinuteCronLock(env, cronLock, status = 'completed', payload = {}) {
+  if (!cronLock || !cronLock.acquired || !cronLock.lock_key) return { ok:true, skipped:true, reason:'lock_not_acquired' };
+  const finalStatus = String(status || 'completed').slice(0,80);
+  const res = await env.DB.prepare(`
+    UPDATE data_scheduled_minute_locks
+    SET status=?, updated_at=CURRENT_TIMESTAMP
+    WHERE lock_key=?
+  `).bind(finalStatus, String(cronLock.lock_key)).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  return { ok:!res?.error, lock_key:cronLock.lock_key, final_status:finalStatus, changes:Number(res?.meta?.changes || 0), error:res?.error || null, payload };
+}
+
+async function reapStaleScheduledMinuteLocks(env, reason = 'scheduled_minute_lock_reaper') {
+  const res = await env.DB.prepare(`
+    UPDATE data_scheduled_minute_locks
+    SET status='stale_released', updated_at=CURRENT_TIMESTAMP
+    WHERE status='active'
+      AND datetime(created_at) < datetime('now','-4 minutes')
+  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  return { ok:!res?.error, reason, stale_released:Number(res?.meta?.changes || 0), error:res?.error || null };
+}
+
+function timeoutSentinel(status, ms, extra = {}) {
+  return { ok:false, data_ok:false, status, timeout_ms:ms, timed_out:true, ...extra };
+}
+
+async function runWithSoftTimeout(label, ms, fn) {
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise(resolve => { timer = setTimeout(() => resolve(timeoutSentinel(`${label}_timeout`, ms, { label })), ms); })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function scheduledPhase(env, phase, fn, ms = 10000, meta = {}) {
+  const started = Date.now();
+  await refreshOrchestratorEvent(env, {
+    event_type:'scheduled_phase_start',
+    status:'started',
+    message:phase,
+    payload_json:{ version:SYSTEM_VERSION, phase, timeout_ms:ms, ...meta }
+  }).catch(() => null);
+  const result = await runWithSoftTimeout(phase, ms, fn).catch(err => ({ ok:false, data_ok:false, status:`${phase}_error`, error:String(err?.message || err), stack:String(err?.stack || '').slice(0,1200) }));
+  await refreshOrchestratorEvent(env, {
+    event_type:'scheduled_phase_done',
+    status:result?.timed_out ? 'timeout' : (result?.ok === false ? 'error' : 'completed'),
+    message:phase,
+    payload_json:{ version:SYSTEM_VERSION, phase, elapsed_ms:Date.now()-started, result }
+  }).catch(() => null);
+  return result;
+}
+
 async function acquireScheduledMinuteCronLock(env, cron = '') {
   await ensureRefreshOrchestratorTables(env);
   const { key, minute } = scheduledMinuteLockKey(cron);
+  await reapStaleScheduledMinuteLocks(env, 'acquire_scheduled_minute_lock_preflight').catch(() => null);
   await env.DB.prepare(`DELETE FROM data_scheduled_minute_locks WHERE datetime(created_at) < datetime('now','-2 hours')`).run().catch(() => null);
   const res = await env.DB.prepare(`
     INSERT OR IGNORE INTO data_scheduled_minute_locks (lock_key, cron, minute_utc, status, created_at, updated_at)
@@ -10543,6 +10613,102 @@ function isRequiredBaseTerminalFailure(row, result) {
   return false;
 }
 
+
+async function selectNextEligibleRefreshQueueRow(env) {
+  const q = await env.DB.prepare(`
+    SELECT
+      q.request_id,
+      q.chain_id,
+      q.job_key,
+      q.display_name AS queue_display_name,
+      q.sequence_order,
+      q.slate_date AS queue_slate_date,
+      q.slate_mode AS queue_slate_mode,
+      q.run_after,
+      q.status AS queue_status,
+      q.created_at AS queue_created_at,
+      q.updated_at AS queue_updated_at,
+      q.started_at AS queue_started_at,
+      j.job_index,
+      j.display_name AS job_display_name,
+      j.job_name,
+      j.group_name,
+      j.enabled_flag,
+      j.required_for_downstream,
+      j.blocks_downstream_on_fail,
+      j.allow_retry,
+      j.max_attempts,
+      j.last_status,
+      j.last_output_json,
+      j.last_started_at,
+      j.last_finished_at,
+      j.last_duration_ms,
+      (
+        SELECT COUNT(*)
+        FROM data_refresh_queue up
+        WHERE up.chain_id = q.chain_id
+          AND up.sequence_order < q.sequence_order
+          AND up.status IN ('pending','running')
+      ) AS upstream_active_count
+    FROM data_refresh_queue q
+    LEFT JOIN data_orchestrator_jobs j ON j.job_key = q.job_key
+    WHERE q.status='pending'
+      AND COALESCE(j.enabled_flag,1)=1
+      AND COALESCE(j.running_flag,0)=0
+      AND COALESCE(j.blocked_flag,0)=0
+      AND (q.run_after IS NULL OR datetime(q.run_after) <= datetime('now'))
+      AND (
+        SELECT COUNT(*)
+        FROM data_refresh_queue up
+        WHERE up.chain_id = q.chain_id
+          AND up.sequence_order < q.sequence_order
+          AND up.status IN ('pending','running')
+      ) = 0
+    ORDER BY datetime(COALESCE(q.run_after, q.created_at, q.updated_at)) ASC, q.sequence_order ASC
+    LIMIT 1
+  `).first().catch(() => null);
+  if (!q || !q.job_key || !q.job_name) return null;
+  const row = {
+    job_key:q.job_key,
+    job_index:Number(q.job_index || q.sequence_order || 999),
+    display_name:q.job_display_name || q.queue_display_name || q.job_key,
+    job_name:q.job_name,
+    group_name:q.group_name || null,
+    enabled_flag:1,
+    run_requested_flag:1,
+    running_flag:0,
+    required_for_downstream:Number(q.required_for_downstream || 0),
+    blocks_downstream_on_fail:Number(q.blocks_downstream_on_fail || 0),
+    allow_retry:Number(q.allow_retry ?? 1),
+    max_attempts:Number(q.max_attempts || 3),
+    current_request_id:q.request_id,
+    current_chain_id:q.chain_id,
+    current_slate_date:q.queue_slate_date || null,
+    current_slate_mode:q.queue_slate_mode || 'AUTO',
+    last_status:q.last_status || 'requested_from_queue',
+    last_output_json:q.last_output_json || null,
+    last_started_at:q.last_started_at || null,
+    last_finished_at:q.last_finished_at || null,
+    last_duration_ms:q.last_duration_ms || null,
+    source_queue_row:q
+  };
+  await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET run_requested_flag=1,
+        running_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        current_request_id=?,
+        current_chain_id=?,
+        current_slate_date=?,
+        current_slate_mode=?,
+        last_status='requested_from_queue',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE job_key=?
+  `).bind(row.current_request_id, row.current_chain_id, row.current_slate_date, row.current_slate_mode, row.job_key).run().catch(() => null);
+  return row;
+}
+
 async function runRefreshOrchestratorTick(input, env) {
   const started = Date.now();
   await ensureRefreshOrchestratorTables(env);
@@ -10594,7 +10760,7 @@ async function runRefreshOrchestratorTick(input, env) {
     }
   }
 
-  const row = activeLockedRow || await env.DB.prepare(`
+  const row = activeLockedRow || await selectNextEligibleRefreshQueueRow(env) || await env.DB.prepare(`
     SELECT * FROM data_orchestrator_jobs
     WHERE enabled_flag=1
       AND run_requested_flag=1
@@ -10761,6 +10927,82 @@ async function runRefreshOrchestratorTick(input, env) {
 }
 
 
+
+async function killBrokenRefreshOrchestratorTasks(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  const reason = String(input?.reason || 'manual_killer_cleaner_button').slice(0,500);
+  const before = {
+    queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
+    jobs: await sampleRows(env, `SELECT job_key, run_requested_flag, running_flag, blocked_flag, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 ORDER BY job_index ASC LIMIT 200`).catch(() => []),
+    minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => [])
+  };
+  const queueRes = await env.DB.prepare(`
+    UPDATE data_refresh_queue
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?),
+        output_json=COALESCE(output_json, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_kill_broken_tasks', status:'killed_open_queue_rows', reason }).slice(0,5000)).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const jobRes = await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET run_requested_flag=0,
+        running_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        current_request_id=NULL,
+        current_chain_id=NULL,
+        current_slate_date=NULL,
+        current_slate_mode=NULL,
+        last_status='killer_cleaner_reset',
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
+  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const enqueueLockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const minuteLockRes = await env.DB.prepare(`UPDATE data_scheduled_minute_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const taskRunsRes = await env.DB.prepare(`
+    UPDATE task_runs
+    SET status='killer_reset',
+        finished_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?)
+    WHERE status IN ('running','pending')
+      AND datetime(COALESCE(started_at, CURRENT_TIMESTAMP)) < datetime('now','-2 minutes')
+  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const deferredRes = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const pipelineLockRes = await env.DB.prepare(`UPDATE pipeline_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  await releaseSingleLaneGlobalState(env, 'KILLER_CLEANER_RESET', { reason, before }).catch(() => null);
+  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:input.job || 'refresh_orchestrator_kill_broken_tasks',
+    status:'killer_cleaner_completed',
+    reason,
+    changes:{
+      queue_cancelled:Number(queueRes?.meta?.changes || 0),
+      jobs_reset:Number(jobRes?.meta?.changes || 0),
+      enqueue_locks_released:Number(enqueueLockRes?.meta?.changes || 0),
+      minute_locks_released:Number(minuteLockRes?.meta?.changes || 0),
+      stale_task_runs_reset:Number(taskRunsRes?.meta?.changes || 0),
+      deferred_rows_cancelled:Number(deferredRes?.meta?.changes || 0),
+      pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0)
+    },
+    before,
+    note:'Manual killer/cleaner clears open broken orchestration state only. It does not wipe scoring tables, PrizePicks data, odds tables, or completed release board rows.'
+  };
+}
+
 async function cancelRefreshOrchestratorQueue(input, env) {
   await ensureRefreshOrchestratorTables(env);
   const reason = String(input?.reason || 'cancelled_by_user');
@@ -10792,9 +11034,10 @@ async function cancelRefreshOrchestratorQueue(input, env) {
     WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
   `).run().catch(() => ({ meta:{ changes:0 } }));
   const lockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(() => ({ meta:{ changes:0 } }));
+  const minuteLockRes = await env.DB.prepare(`UPDATE data_scheduled_minute_locks SET status='cancel_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(() => ({ meta:{ changes:0 } }));
   await releaseSingleLaneGlobalState(env, 'CANCELLED_BY_USER', { reason, active_rows:activeRows });
-  await singleLaneLog(env, { event_type:'cancel_all_active_queue', status:'cancelled', message:'User cancelled all active single-lane queue rows and reset orchestrator flags.', payload_json:{ reason, active_rows:activeRows, queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0) } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_cancel_all', status:'cancelled_active_queue_and_reset_flags', queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0), cancelled_rows:activeRows, note:'Cancelled pending/running orchestrator queue rows, reset job flags, released active enqueue locks, and released the global single-lane state. It did not mutate data tables.' };
+  await singleLaneLog(env, { event_type:'cancel_all_active_queue', status:'cancelled', message:'User cancelled all active single-lane queue rows and reset orchestrator flags.', payload_json:{ reason, active_rows:activeRows, queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0), minute_locks_released:Number(minuteLockRes?.meta?.changes || 0) } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_cancel_all', status:'cancelled_active_queue_and_reset_flags', queue_changes:Number(res?.meta?.changes || 0), job_changes:Number(jobRes?.meta?.changes || 0), locks_released:Number(lockRes?.meta?.changes || 0), minute_locks_released:Number(minuteLockRes?.meta?.changes || 0), cancelled_rows:activeRows, note:'Cancelled pending/running orchestrator queue rows, reset job flags, released active enqueue locks, released scheduled minute locks, and released the global single-lane state. It did not mutate data tables.' };
 }
 
 async function ensureIncrementalTempUniqueIndexes(env) {
@@ -13601,6 +13844,7 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_tick") return await runRefreshOrchestratorTick({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: 'manual' }, env);
   if (jobName === "refresh_orchestrator_status") return await refreshOrchestratorStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
+  if (jobName === "refresh_orchestrator_kill_broken_tasks") return await killBrokenRefreshOrchestratorTasks({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
   if (jobName === "refresh_orchestrator_clean_run_state") return await refreshOrchestratorCleanRunState({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_clean_run_state_button" }, env);
@@ -16126,7 +16370,7 @@ async function oddsApiWriteQueueProgress(env, input, status, payload = {}) {
     status,
     ...payload,
     updated_at:new Date().toISOString(),
-    no_silent_hang_gate:'v1.5.09.8 writes queue output before resolver/config/slate/fetch and before every long Odds stage.'
+    no_silent_hang_gate:'v1.5.09.9 writes queue output before resolver/config/slate/fetch and before every long Odds stage.'
   };
   await env.DB.prepare(`UPDATE data_refresh_queue SET output_json=?, updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status IN ('pending','running')`)
     .bind(oddsApiSafePreview(out, 5000), requestId)
@@ -16227,7 +16471,7 @@ async function finalizeOddsApiTempRunForQueue(env, input, runId, slateDate, wind
     queue_request_id:input?.queue_request_id || null,
     queue_chain_id:input?.queue_chain_id || null,
     temp_counts:counts,
-    certification_source:'v1.5.09.8_existing_temp_finalizer_restored'
+    certification_source:'v1.5.09.9_existing_temp_finalizer_restored'
   });
   if (!certification?.ok) {
     await oddsApiWriteQueueProgress(env, input, 'odds_api_certification_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
@@ -16302,7 +16546,7 @@ async function runOddsApiMarketIntel(input, env) {
       odds_api_binding: oddsBindingDiagnostic,
       resolver_status:keyResolution.resolver_status,
       resolver_error:keyResolution.resolver_error || null,
-      note:'Odds API key resolver failed explicitly. v1.5.09.8 does not allow silent resolver hangs; downstream scoring can continue, but the cascade must be treated as completed_with_warnings.'
+      note:'Odds API key resolver failed explicitly. v1.5.09.9 does not allow silent resolver hangs; downstream scoring can continue, but the cascade must be treated as completed_with_warnings.'
     };
     await oddsApiWriteQueueProgress(env, input, 'odds_api_failed_missing_key', result);
     return result;
@@ -16329,14 +16573,14 @@ async function runOddsApiMarketIntel(input, env) {
 
   const existingTempRunId = await oddsApiLatestTempRunForQueue(env, slateDate, windowName, input?.queue_request_id || null);
   if (existingTempRunId) {
-    const finalized = await finalizeOddsApiTempRunForQueue(env, input, existingTempRunId, slateDate, windowName, 'existing_temp_detected_before_fetch_v1_5_09_8');
+    const finalized = await finalizeOddsApiTempRunForQueue(env, input, existingTempRunId, slateDate, windowName, 'existing_temp_detected_before_fetch_v1_5_09_9');
     if (finalized?.finalized) return finalized;
   }
 
   const runId = oddsRunId(slateDate, windowName);
   await oddsApiWriteQueueProgress(env, input, 'odds_api_run_initialized', { slate_date:slateDate, requested_slate_date:requestedSlateDate, window_name:windowName, run_id:runId, odds_api_binding:oddsBindingDiagnostic });
 
-  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp_no_existing_resume_rows_v1_5_09_8' });
+  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp_no_existing_resume_rows_v1_5_09_9' });
   await cleanOddsApiTempRun(env, runId).catch(() => null);
   const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
@@ -16446,7 +16690,7 @@ async function runOddsApiMarketIntel(input, env) {
     promotion,
     cleanup,
     sample_events:eventResults.slice(0,25),
-    note:'v1.5.09.8 restores first-line queue progress, bounded resolver/slate/bootstrap/fetch stages, fetch timeouts, and existing-temp finalizer so Odds cannot remain RUNNING with output_json null.'
+    note:'v1.5.09.9 restores first-line queue progress, bounded resolver/slate/bootstrap/fetch stages, fetch timeouts, and existing-temp finalizer so Odds cannot remain RUNNING with output_json null.'
   };
   await oddsApiWriteQueueProgress(env, input, result.data_ok ? 'odds_api_completed' : 'odds_api_completed_with_warnings', result);
   return result;
@@ -18551,7 +18795,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     rows=res.results||[];
     if(rows.length) candidateSource='promoted_score_tables_fallback';
   }
-  // v1.5.09.8: keep the existing live selected-slate board visible until replacement rows are built.
+  // v1.5.09.9: keep the existing live selected-slate board visible until replacement rows are built.
   // Non-selected slates remain volatile and are purged immediately; selected-slate rows are deleted
   // only after a non-empty replacement batch exists so old same-slate run_ids cannot survive a certified publish.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
@@ -18784,13 +19028,13 @@ async function runMlbScoringV1(input,env){
     await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
     await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
     await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'})).run();
-    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'})).run().catch(()=>null);
+    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.9_production_clock_finalizer_killer_gate'})).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.9_production_clock_finalizer_killer_gate'})).run().catch(()=>null);
   }
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.9_production_clock_finalizer_killer_gate'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -18810,7 +19054,7 @@ async function runMlbScoringV1(input,env){
       cert,
       durable.score_rows || promoted,
       durable.active_rows || active,
-      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',...extra}),
+      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.9_production_clock_finalizer_killer_gate',...extra}),
       runId
     ).run().catch(()=>null);
     return durable;
@@ -18957,10 +19201,10 @@ async function runMlbScoringV1(input,env){
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   if (queueOwnedScoring && isTransientD1ScoringError(msg)) {
-    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
+    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.9_production_clock_finalizer_killer_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
     return{ok:true,data_ok:false,partial:true,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'SCORING_D1_TRANSIENT_RETRY_NEXT_TICK',error:msg,retry_safe:true,note:'Transient D1 failure was preserved as a retryable partial continuation instead of terminally failing the scoring queue.'};
   }
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.9_production_clock_finalizer_killer_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
   return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized a non-transient failure. v1.5.09.6 keeps D1 transient failures retryable but still fails true logic/data exceptions.'};
  }
 }
