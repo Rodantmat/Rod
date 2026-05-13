@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.09.7 - Odds Resolver Parity Gate"
+SCRIPT_VERSION = "v1.5.09.8 - Odds Runner No-Silent-Hang Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

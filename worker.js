@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.7 - Odds Resolver Parity Gate";
-const SYSTEM_CODENAME = "Scoring Stable Run Clean Gate";
+const SYSTEM_VERSION = "v1.5.09.8 - Odds Runner No-Silent-Hang Gate";
+const SYSTEM_CODENAME = "Odds Runner No-Silent-Hang Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1494,7 +1494,7 @@ function redactedOddsApiKeyInfo(info = {}) {
     key_length: key ? key.length : 0,
     key_cached_in_isolate: !!ALPHADOG_LAST_GOOD_ODDS_API_KEY.key,
     fatal_when_missing: false,
-    parity_rule: 'v1.5.09.7 forces Morning and Intraday Odds API jobs through the same async resolver and reports the actual async resolver path, not only direct env aliases.'
+    parity_rule: 'v1.5.09.8 keeps Morning and Intraday on the same resolver path but bounds resolver/bootstrap/fetch stages and writes first-line progress before any long Odds operation.'
   };
 }
 
@@ -1522,7 +1522,7 @@ async function getOddsApiKeyForJob(env = {}, input = {}) {
     return out;
   }
 
-  // v1.5.09.7 parity guard: if Morning resolved the key in this isolate, Intraday must reuse
+  // v1.5.09.8 parity guard: if Morning resolved the key in this isolate, Intraday must reuse
   // the same resolved key instead of failing from a later remote/config lookup miss.
   if (ALPHADOG_LAST_GOOD_ODDS_API_KEY.key && Date.now() - Number(ALPHADOG_LAST_GOOD_ODDS_API_KEY.saved_at || 0) < 6 * 60 * 60 * 1000) {
     return {
@@ -15875,17 +15875,28 @@ function stripApiKeyFromUrl(url) { try { const u = new URL(url); if (u.searchPar
 function ptFromISO(iso) { if (!iso) return { date:null, time:null, minutes:null, label:null }; const d = new Date(String(iso)); if (Number.isNaN(d.getTime())) return { date:null, time:null, minutes:null, label:null }; const parts = new Intl.DateTimeFormat('en-CA', { timeZone:'America/Los_Angeles', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false }).formatToParts(d); const m = {}; for (const p of parts) m[p.type] = p.value; const minutes = Number(m.hour) * 60 + Number(m.minute); return { date:`${m.year}-${m.month}-${m.day}`, time:`${m.hour}:${m.minute}`, minutes, label:`${m.hour}:${m.minute} PT` }; }
 function oddsEventWindow(iso) { const pt = ptFromISO(iso); if (pt.minutes === null) return { bucket:'UNKNOWN', pt }; return { bucket: pt.minutes < ODDS_API_WINDOW_SPLIT_MINUTES ? 'MORNING' : 'EARLY_AFTERNOON', pt }; }
 function oddsEventEligibleForWindow(ev, windowName) { const now = Date.now(); const startMs = Date.parse(ev.commence_time || ''); if (!Number.isFinite(startMs)) return { eligible:false, status:'SKIPPED_BAD_START_TIME' }; if (startMs <= now) return { eligible:false, status:'SKIPPED_STARTED' }; if (startMs <= now + ODDS_API_START_BUFFER_MINUTES * 60 * 1000) return { eligible:false, status:'SKIPPED_TOO_CLOSE' }; const w = oddsEventWindow(ev.commence_time); if (String(windowName).toUpperCase() === 'MORNING') return { eligible:true, status:'ELIGIBLE', bucket:w.bucket, pt:w.pt }; if (w.bucket !== 'EARLY_AFTERNOON') return { eligible:false, status:'SKIPPED_OTHER_WINDOW', bucket:w.bucket, pt:w.pt }; return { eligible:true, status:'ELIGIBLE', bucket:w.bucket, pt:w.pt }; }
-async function oddsApiFetchJson(url) {
+async function oddsApiFetchJson(url, options = {}) {
   const started = Date.now();
+  const timeoutMs = Number(options.timeout_ms || options.timeoutMs || 18000);
+  let controller = null;
+  let timeout = null;
   try {
-    const res = await fetch(url.toString(), { method:'GET', headers:{ 'accept':'application/json' } });
+    controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    if (controller && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timeout = setTimeout(() => { try { controller.abort('odds_api_fetch_timeout'); } catch (_) {} }, timeoutMs);
+    }
+    const res = await fetch(url.toString(), { method:'GET', headers:{ 'accept':'application/json' }, signal: controller ? controller.signal : undefined });
+    if (timeout) clearTimeout(timeout);
     const txt = await res.text();
     let data;
     try { data = JSON.parse(txt || 'null'); } catch { data = { parse_error:true, response_preview:txt.slice(0,1000) }; }
     const usage = { requests_remaining:res.headers.get('x-requests-remaining'), requests_used:res.headers.get('x-requests-used'), requests_last:res.headers.get('x-requests-last') };
-    return { ok:res.ok, http_status:res.status, data, usage, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()) };
+    return { ok:res.ok, http_status:res.status, data, usage, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()), timeout_ms:timeoutMs };
   } catch (err) {
-    return { ok:false, http_status:0, data:{ network_error:String(err?.message || err) }, usage:{ requests_remaining:null, requests_used:null, requests_last:null }, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()) };
+    if (timeout) clearTimeout(timeout);
+    const msg = String(err?.message || err || 'odds_api_fetch_error');
+    const timedOut = msg.toLowerCase().includes('abort') || msg.toLowerCase().includes('timeout') || Date.now() - started >= timeoutMs - 50;
+    return { ok:false, http_status:0, data:{ network_error:msg, timed_out:timedOut }, usage:{ requests_remaining:null, requests_used:null, requests_last:null }, elapsed_ms:Date.now()-started, redacted_url:stripApiKeyFromUrl(url.toString()), timeout_ms:timeoutMs };
   }
 }
 async function ensureOddsApiTables(env) {
@@ -16095,33 +16106,250 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
   await safeDbRun(env, `UPDATE odds_api_run_certifications SET cleaned_at=CURRENT_TIMESTAMP WHERE run_id=?`, [runId]);
   return { cleaned:true, keep_failed_ignored:!!keepFailed, details:out };
 }
-async function runOddsApiMarketIntel(input, env) {
-  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
-  const oddsKeyInfo = await getOddsApiKeyForJob(env, input);
-  const oddsBindingDiagnostic = redactedOddsApiKeyInfo(oddsKeyInfo);
-  if (!oddsKeyInfo.key) return {
+
+
+function oddsApiSafePreview(value, max = 4200) {
+  try { return JSON.stringify(value).slice(0, max); } catch (_) { return String(value || '').slice(0, max); }
+}
+
+async function oddsApiWriteQueueProgress(env, input, status, payload = {}) {
+  const requestId = String(input?.queue_request_id || input?.request_id || '').trim();
+  if (!env?.DB || !requestId) return { skipped:true, reason:'missing_queue_request_id', status };
+  const out = {
     ok:true,
     data_ok:false,
     version:SYSTEM_VERSION,
-    job:input.job || 'run_odds_api_market_intel',
-    error:'Missing ODDS_API_KEY secret',
-    odds_api_binding: oddsBindingDiagnostic,
-    note:'Odds API function capsule checked the shared async resolver used by both Morning and Intraday: direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, remote config.txt, and last-good isolate fallback. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context, but the full cascade should be treated as completed_with_warnings.'
+    job:input?.job || 'run_odds_api_market_intel',
+    queue_request_id:requestId,
+    queue_chain_id:input?.queue_chain_id || input?.chain_id || null,
+    queue_job_key:input?.queue_job_key || input?.orchestrator_job_key || null,
+    status,
+    ...payload,
+    updated_at:new Date().toISOString(),
+    no_silent_hang_gate:'v1.5.09.8 writes queue output before resolver/config/slate/fetch and before every long Odds stage.'
   };
+  await env.DB.prepare(`UPDATE data_refresh_queue SET output_json=?, updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status IN ('pending','running')`)
+    .bind(oddsApiSafePreview(out, 5000), requestId)
+    .run()
+    .catch(() => null);
+  return { wrote:true, status };
+}
+
+async function oddsApiWithTimeout(label, ms, fn) {
+  const started = Date.now();
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(`${label}_timeout_after_${ms}ms`)), ms);
+  });
+  try {
+    const value = await Promise.race([Promise.resolve().then(fn), timeout]);
+    clearTimeout(timeoutId);
+    return { ok:true, value, elapsed_ms:Date.now() - started };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return { ok:false, error:String(err?.message || err), elapsed_ms:Date.now() - started, timeout_ms:ms, label };
+  }
+}
+
+async function oddsApiResolveKeyBounded(env, input) {
+  const direct = getOddsApiKey(env);
+  if (direct?.key) {
+    const out = { ...direct, configured:true, resolver: direct.resolver || 'direct_env_fast_path' };
+    try { rememberGoodOddsApiKey(out); } catch (_) {}
+    return { ok:true, key_info:out, resolver_status:'direct_env_fast_path' };
+  }
+  const resolved = await oddsApiWithTimeout('odds_api_key_resolver', 3500, () => getOddsApiKeyForJob(env, input));
+  if (resolved.ok) return { ok:true, key_info:resolved.value || {}, resolver_status:'bounded_async_resolver', resolver_elapsed_ms:resolved.elapsed_ms };
+  if (ALPHADOG_LAST_GOOD_ODDS_API_KEY.key && Date.now() - Number(ALPHADOG_LAST_GOOD_ODDS_API_KEY.saved_at || 0) < 6 * 60 * 60 * 1000) {
+    return {
+      ok:true,
+      key_info:{
+        key: ALPHADOG_LAST_GOOD_ODDS_API_KEY.key,
+        source: ALPHADOG_LAST_GOOD_ODDS_API_KEY.source || 'last_good_odds_api_key',
+        configured:true,
+        checked:['bounded_async_resolver_timeout','last_good_odds_api_key:isolate_memory'],
+        resolver:'last_good_after_bounded_resolver_timeout'
+      },
+      resolver_status:'last_good_after_bounded_resolver_timeout',
+      resolver_error:resolved.error,
+      resolver_elapsed_ms:resolved.elapsed_ms
+    };
+  }
+  return { ok:false, key_info:{ key:'', source:null, configured:false, checked:['bounded_async_resolver_timeout'], resolver:'resolver_timeout_no_key' }, resolver_status:'resolver_timeout_no_key', resolver_error:resolved.error, resolver_elapsed_ms:resolved.elapsed_ms };
+}
+
+async function oddsApiLatestTempRunForQueue(env, slateDate, windowName, queueRequestId = null) {
+  try {
+    const direct = queueRequestId ? await env.DB.prepare(`SELECT run_id, COUNT(*) AS request_rows, MAX(created_at) AS latest_created FROM odds_api_requests_temp WHERE slate_date=? AND window_name=? AND payload_json LIKE ? GROUP BY run_id ORDER BY datetime(latest_created) DESC LIMIT 1`).bind(slateDate, windowName, `%${queueRequestId}%`).first() : null;
+    if (direct?.run_id) return direct.run_id;
+  } catch (_) {}
+  try {
+    const row = await env.DB.prepare(`
+      SELECT run_id,
+             SUM(CASE WHEN src='requests' THEN rows_count ELSE 0 END) AS request_rows,
+             SUM(rows_count) AS total_rows,
+             MAX(latest_created) AS latest_created
+      FROM (
+        SELECT run_id, 'requests' AS src, COUNT(*) AS rows_count, MAX(created_at) AS latest_created FROM odds_api_requests_temp WHERE slate_date=? AND window_name=? GROUP BY run_id
+        UNION ALL
+        SELECT run_id, 'events' AS src, COUNT(*) AS rows_count, MAX(last_seen_at) AS latest_created FROM odds_api_events_temp WHERE slate_date=? GROUP BY run_id
+        UNION ALL
+        SELECT run_id, 'game_markets' AS src, COUNT(*) AS rows_count, MAX(updated_at) AS latest_created FROM odds_api_game_markets_temp WHERE slate_date=? GROUP BY run_id
+        UNION ALL
+        SELECT run_id, 'props' AS src, COUNT(*) AS rows_count, MAX(updated_at) AS latest_created FROM odds_api_player_props_temp WHERE slate_date=? GROUP BY run_id
+      )
+      GROUP BY run_id
+      HAVING total_rows > 0
+      ORDER BY datetime(latest_created) DESC
+      LIMIT 1
+    `).bind(slateDate, windowName, slateDate, slateDate, slateDate).first();
+    return row?.run_id || null;
+  } catch (_) { return null; }
+}
+
+async function oddsApiTempRunCounts(env, runId) {
+  const out = { request_rows:0, event_rows:0, game_market_rows:0, prop_rows:0 };
+  try { out.request_rows = Number((await env.DB.prepare(`SELECT COUNT(*) AS c FROM odds_api_requests_temp WHERE run_id=?`).bind(runId).first())?.c || 0); } catch (_) {}
+  try { out.event_rows = Number((await env.DB.prepare(`SELECT COUNT(*) AS c FROM odds_api_events_temp WHERE run_id=?`).bind(runId).first())?.c || 0); } catch (_) {}
+  try { out.game_market_rows = Number((await env.DB.prepare(`SELECT COUNT(*) AS c FROM odds_api_game_markets_temp WHERE run_id=?`).bind(runId).first())?.c || 0); } catch (_) {}
+  try { out.prop_rows = Number((await env.DB.prepare(`SELECT COUNT(*) AS c FROM odds_api_player_props_temp WHERE run_id=?`).bind(runId).first())?.c || 0); } catch (_) {}
+  return out;
+}
+
+async function finalizeOddsApiTempRunForQueue(env, input, runId, slateDate, windowName, reason = 'odds_api_resume_existing_temp_run') {
+  const counts = await oddsApiTempRunCounts(env, runId);
+  if (counts.request_rows <= 0 && counts.event_rows <= 0 && counts.game_market_rows <= 0 && counts.prop_rows <= 0) {
+    return { finalized:false, reason:'no_temp_rows_for_run', run_id:runId, temp_counts:counts };
+  }
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_certifying_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, resume_reason:reason });
+  const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, counts.request_rows > 0, Math.max(counts.event_rows, 1), {
+    resume_reason:reason,
+    queue_request_id:input?.queue_request_id || null,
+    queue_chain_id:input?.queue_chain_id || null,
+    temp_counts:counts,
+    certification_source:'v1.5.09.8_existing_temp_finalizer_restored'
+  });
+  if (!certification?.ok) {
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_certification_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
+    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_certification_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, error:certification?.error || 'odds_api_certification_failed' };
+  }
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_promoting_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
+  let promotion = { promoted:false, reason:'not_attempted' };
+  let cleanup = { cleaned:false, reason:'not_attempted' };
+  try {
+    promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
+    const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
+    cleanup = await clearOddsApiTempTables(env);
+    cleanup.main_purge = mainPurge;
+  } catch (err) {
+    promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err) };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_promotion_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion });
+    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_promotion_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion, error:promotion.error };
+  }
+  const result = {
+    finalized:true,
+    ok:true,
+    data_ok:!!promotion.promoted,
+    version:SYSTEM_VERSION,
+    job:input?.job || 'run_odds_api_market_intel',
+    status:promotion.promoted ? 'odds_api_certified_promoted_from_existing_temp_run' : 'odds_api_existing_temp_run_not_promoted',
+    run_id:runId,
+    slate_date:slateDate,
+    window_name:windowName,
+    temp_counts:counts,
+    certification,
+    promotion,
+    cleanup,
+    resume_reason:reason,
+    note:'Existing Odds API temp rows were certified, promoted, cleaned, and returned as terminal success without refetching.'
+  };
+  await oddsApiWriteQueueProgress(env, input, result.status, result);
+  return result;
+}
+async function runOddsApiMarketIntel(input, env) {
+  if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
+  const jobName = input.job || 'run_odds_api_market_intel';
   const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
-  await ensureOddsApiTables(env);
-  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
-  const slateDate = slateResolution.resolved_slate_date;
   const windowName = String(input.window_name || 'MORNING').toUpperCase();
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_runner_started', {
+    requested_slate_date:requestedSlateDate,
+    window_name:windowName,
+    stage:'entry_before_resolver_tables_slate_or_fetch',
+    queue_request_id:input?.queue_request_id || null,
+    queue_chain_id:input?.queue_chain_id || null
+  });
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_resolver_started', { requested_slate_date:requestedSlateDate, window_name:windowName });
+  const keyResolution = await oddsApiResolveKeyBounded(env, input);
+  const oddsKeyInfo = keyResolution.key_info || {};
+  const oddsBindingDiagnostic = redactedOddsApiKeyInfo(oddsKeyInfo);
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_resolver_completed', {
+    requested_slate_date:requestedSlateDate,
+    window_name:windowName,
+    resolver_status:keyResolution.resolver_status,
+    resolver_error:keyResolution.resolver_error || null,
+    resolver_elapsed_ms:keyResolution.resolver_elapsed_ms || null,
+    odds_api_binding:oddsBindingDiagnostic
+  });
+  if (!oddsKeyInfo.key) {
+    const result = {
+      ok:true,
+      data_ok:false,
+      version:SYSTEM_VERSION,
+      job:jobName,
+      error:'Missing ODDS_API_KEY secret',
+      odds_api_binding: oddsBindingDiagnostic,
+      resolver_status:keyResolution.resolver_status,
+      resolver_error:keyResolution.resolver_error || null,
+      note:'Odds API key resolver failed explicitly. v1.5.09.8 does not allow silent resolver hangs; downstream scoring can continue, but the cascade must be treated as completed_with_warnings.'
+    };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_failed_missing_key', result);
+    return result;
+  }
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_tables_started', { requested_slate_date:requestedSlateDate, window_name:windowName });
+  const tablesReady = await oddsApiWithTimeout('odds_api_ensure_tables', 6000, () => ensureOddsApiTables(env));
+  if (!tablesReady.ok) {
+    const result = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:jobName, error:'odds_api_ensure_tables_timeout_or_error', details:tablesReady, note:'Pre-fetch table initialization failed explicitly; no silent running state allowed.' };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_failed_ensure_tables', result);
+    return result;
+  }
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_slate_resolution_started', { requested_slate_date:requestedSlateDate, window_name:windowName });
+  const slateResolved = await oddsApiWithTimeout('odds_api_slate_resolution', 6000, () => resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {}));
+  if (!slateResolved.ok) {
+    const result = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:jobName, error:'odds_api_slate_resolution_timeout_or_error', requested_slate_date:requestedSlateDate, window_name:windowName, details:slateResolved, note:'Pre-fetch slate resolution failed explicitly; no silent running state allowed.' };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_failed_slate_resolution', result);
+    return result;
+  }
+  const slateResolution = slateResolved.value || { requested_slate_date:requestedSlateDate, resolved_slate_date:requestedSlateDate, slate_resolution_reason:'fallback_after_empty_resolution', active_board:null };
+  const slateDate = slateResolution.resolved_slate_date || requestedSlateDate;
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_slate_resolution_completed', { requested_slate_date:requestedSlateDate, slate_date:slateDate, window_name:windowName, slate_resolution:slateResolution, elapsed_ms:slateResolved.elapsed_ms });
+
+  const existingTempRunId = await oddsApiLatestTempRunForQueue(env, slateDate, windowName, input?.queue_request_id || null);
+  if (existingTempRunId) {
+    const finalized = await finalizeOddsApiTempRunForQueue(env, input, existingTempRunId, slateDate, windowName, 'existing_temp_detected_before_fetch_v1_5_09_8');
+    if (finalized?.finalized) return finalized;
+  }
+
   const runId = oddsRunId(slateDate, windowName);
-  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp' });
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_run_initialized', { slate_date:slateDate, requested_slate_date:requestedSlateDate, window_name:windowName, run_id:runId, odds_api_binding:oddsBindingDiagnostic });
+
+  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp_no_existing_resume_rows_v1_5_09_8' });
   await cleanOddsApiTempRun(env, runId).catch(() => null);
   const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
-  const gameResult = await oddsApiFetchJson(gameUrl);
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_first_fetch_started', { slate_date:slateDate, window_name:windowName, run_id:runId, endpoint:`/${ODDS_API_SPORT_KEY}/odds`, redacted_url:stripApiKeyFromUrl(gameUrl.toString()), fetch_timeout_ms:18000 });
+  const gameResult = await oddsApiFetchJson(gameUrl, { timeout_ms:18000 });
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_first_fetch_completed', { slate_date:slateDate, window_name:windowName, run_id:runId, http_status:gameResult.http_status, ok:gameResult.ok, elapsed_ms:gameResult.elapsed_ms, usage:gameResult.usage, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) });
+
   await saveOddsApiRequestToTable(env, 'odds_api_requests_temp', runId, { slateDate, windowName, requestType:'GAME_ODDS', endpoint:`/${ODDS_API_SPORT_KEY}/odds`, eventId:null, redactedUrl:gameResult.redacted_url, result:gameResult, regions:cfg.regions, markets:cfg.gameMarkets, bookmakers:cfg.bookmakers });
   const allEvents = Array.isArray(gameResult.data) ? gameResult.data : [];
   const gameSave = gameResult.ok ? await normalizeAndSaveGameOddsToTable(env, 'odds_api_events_temp', 'odds_api_game_markets_temp', runId, slateDate, windowName, allEvents) : { events_saved:0, game_market_rows:0 };
+
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_event_selection_started', { slate_date:slateDate, window_name:windowName, run_id:runId, event_count:allEvents.length, game_save:gameSave });
   const selected = [];
   const skippedCounts = {};
   for (const ev of allEvents) {
@@ -16131,20 +16359,25 @@ async function runOddsApiMarketIntel(input, env) {
     if (!elig.eligible) { skippedCounts[elig.status] = (skippedCounts[elig.status] || 0) + 1; continue; }
     selected.push(ev);
   }
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_event_selection_completed', { slate_date:slateDate, window_name:windowName, run_id:runId, event_count:allEvents.length, selected_events:selected.length, skipped_counts:skippedCounts });
+
   let propRequests = 0, propRows = 0;
   const propMarketCounts = {};
   const propRequestBreakdown = { hits_tb_bundle:0, hits_tb_bundle_ok:0, hits_tb_bundle_failed:0, rbi_expansion:0, rbi_expansion_ok:0, rbi_expansion_failed:0 };
   const eventResults = [];
   async function runPropGroup(ev, groupName, requestType, markets, bookmakers) {
     const propUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/events/${encodeURIComponent(ev.id)}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets, oddsFormat:cfg.oddsFormat, bookmakers:String(bookmakers || '').trim() });
-    const propResult = await oddsApiFetchJson(propUrl);
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_prop_fetch_started', { slate_date:slateDate, window_name:windowName, run_id:runId, event_id:ev.id, request_type:requestType, group:groupName, prop_request_number:propRequests + 1, selected_events:selected.length, redacted_url:stripApiKeyFromUrl(propUrl.toString()), fetch_timeout_ms:18000 });
+    const propResult = await oddsApiFetchJson(propUrl, { timeout_ms:18000 });
     propRequests += 1;
     await saveOddsApiRequestToTable(env, 'odds_api_requests_temp', runId, { slateDate, windowName, requestType, endpoint:`/${ODDS_API_SPORT_KEY}/events/${ev.id}/odds`, eventId:ev.id, redactedUrl:propResult.redacted_url, result:propResult, regions:cfg.regions, markets, bookmakers });
     let saved = { prop_rows:0, market_counts:{} };
     if (propResult.ok) saved = await normalizeAndSavePropOddsToTable(env, 'odds_api_player_props_temp', runId, slateDate, windowName, propResult.data);
     propRows += saved.prop_rows || 0;
     for (const [k,v] of Object.entries(saved.market_counts || {})) propMarketCounts[k] = (propMarketCounts[k] || 0) + Number(v || 0);
-    return { group:groupName, markets, bookmakers, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) };
+    const item = { group:groupName, markets, bookmakers, http_status:propResult.http_status, ok:propResult.ok, prop_rows:saved.prop_rows || 0, usage:propResult.usage, elapsed_ms:propResult.elapsed_ms, error_preview:propResult.ok ? null : JSON.stringify(propResult.data || null).slice(0,500) };
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_prop_fetch_completed', { slate_date:slateDate, window_name:windowName, run_id:runId, event_id:ev.id, request_type:requestType, prop_requests:propRequests, prop_rows:propRows, result:item });
+    return item;
   }
   for (const ev of selected) {
     const hitsTb = await runPropGroup(ev, 'HITS_TOTAL_BASES_STRONG_6', 'EVENT_PROP_ODDS_HITS_TB_STRONG_6', cfg.hitsTbPropMarkets, cfg.hitsTbBookmakers);
@@ -16158,6 +16391,7 @@ async function runOddsApiMarketIntel(input, env) {
   const zeroSelectedReason = selected.length <= 0 && allEvents.length > 0 && Number(skippedCounts.SKIPPED_OTHER_DATE || 0) > 0
     ? 'SELECTED_EVENTS_ZERO_DUE_TO_SLATE_MISMATCH'
     : 'NO_SELECTED_EVENTS';
+  await oddsApiWriteQueueProgress(env, input, 'odds_api_temp_rows_written_certifying', { slate_date:slateDate, window_name:windowName, run_id:runId, selected_events:selected.length, prop_requests:propRequests, prop_rows:propRows, game_save:gameSave });
   const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResult.ok, selected.length, {
     requested_slate_date: requestedSlateDate,
     resolved_slate_date: slateDate,
@@ -16171,22 +16405,26 @@ async function runOddsApiMarketIntel(input, env) {
   let cleanup = { cleaned:false, reason:'not_promoted' };
   if (certification.ok) {
     try {
+      await oddsApiWriteQueueProgress(env, input, 'odds_api_certified_promoting', { slate_date:slateDate, window_name:windowName, run_id:runId, certification });
       promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
       const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
       cleanup = await clearOddsApiTempTables(env);
       cleanup.main_purge = mainPurge;
+      await oddsApiWriteQueueProgress(env, input, 'odds_api_promoted_cleaned', { slate_date:slateDate, window_name:windowName, run_id:runId, certification, promotion, cleanup });
     } catch (err) {
       promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.50' };
       cleanup = await clearOddsApiTempTables(env).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
+      await oddsApiWriteQueueProgress(env, input, 'odds_api_promotion_exception', { slate_date:slateDate, window_name:windowName, run_id:runId, certification, promotion, cleanup });
     }
   } else {
     cleanup = await clearOddsApiTempTables(env);
+    await oddsApiWriteQueueProgress(env, input, 'odds_api_certification_failed_cleaned', { slate_date:slateDate, window_name:windowName, run_id:runId, certification, cleanup });
   }
-  return {
+  const result = {
     ok:true,
     data_ok:certification.ok && promotion.promoted,
     version:SYSTEM_VERSION,
-    job:input.job || 'run_odds_api_market_intel',
+    job:jobName,
     slate_date:slateDate,
     requested_slate_date:requestedSlateDate,
     resolved_odds_slate_date:slateDate,
@@ -16197,7 +16435,7 @@ async function runOddsApiMarketIntel(input, env) {
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
     odds_api_binding: oddsBindingDiagnostic,
-    game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
+    game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500), elapsed_ms:gameResult.elapsed_ms },
     selected_events:selected.length,
     skipped_counts:skippedCounts,
     prop_requests:propRequests,
@@ -16208,10 +16446,10 @@ async function runOddsApiMarketIntel(input, env) {
     promotion,
     cleanup,
     sample_events:eventResults.slice(0,25),
-    rules:['mine Odds API into temp tables first','certify temp before promotion','promote temp to main only when game odds, selected events, Hits, and Total Bases pass','RBI expanded-book rows are useful but not fatal if low/empty','clean temp after certified promotion','keep failed temp rows for debug','Hits/Total Bases use strongest six books only','Player prop requests use regions=us; RBI uses Odds API key batter_rbis after live 422 validation rejected the expanded key','fixed bad betonline_ag key to betonlineag','RFI/NRFI Odds API remains disabled after INVALID_MARKET','no Gemini','no scoring'],
-    next_action: certification.ok ? 'Run ODDS API > Check Market Intel. If check is clean, move to scoring logic wiring.' : 'Certification failed. Check certification.failures and temp rows before rerunning.',
-    note:'v1.3.33 stages Odds API data in temp tables, certifies it, promotes only clean batches to main odds tables, then cleans temp after success. Dedicated cron wiring is locked for 4:30 AM PT morning odds, 6:00 AM PT morning refresh with Sleeper, and 11:00 AM PT early-afternoon odds.'
+    note:'v1.5.09.8 restores first-line queue progress, bounded resolver/slate/bootstrap/fetch stages, fetch timeouts, and existing-temp finalizer so Odds cannot remain RUNNING with output_json null.'
   };
+  await oddsApiWriteQueueProgress(env, input, result.data_ok ? 'odds_api_completed' : 'odds_api_completed_with_warnings', result);
+  return result;
 }
 async function checkOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'check_odds_api_market_intel', error:'Missing DB binding' };
@@ -18313,7 +18551,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     rows=res.results||[];
     if(rows.length) candidateSource='promoted_score_tables_fallback';
   }
-  // v1.5.09.7: keep the existing live selected-slate board visible until replacement rows are built.
+  // v1.5.09.8: keep the existing live selected-slate board visible until replacement rows are built.
   // Non-selected slates remain volatile and are purged immediately; selected-slate rows are deleted
   // only after a non-empty replacement batch exists so old same-slate run_ids cannot survive a certified publish.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
@@ -18546,13 +18784,13 @@ async function runMlbScoringV1(input,env){
     await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
     await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
     await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.7_odds_resolver_parity_gate'})).run();
-    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.7_odds_resolver_parity_gate'})).run().catch(()=>null);
+    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'})).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'})).run().catch(()=>null);
   }
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.7_odds_resolver_parity_gate'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -18572,7 +18810,7 @@ async function runMlbScoringV1(input,env){
       cert,
       durable.score_rows || promoted,
       durable.active_rows || active,
-      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.7_odds_resolver_parity_gate',...extra}),
+      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',...extra}),
       runId
     ).run().catch(()=>null);
     return durable;
@@ -18719,10 +18957,10 @@ async function runMlbScoringV1(input,env){
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   if (queueOwnedScoring && isTransientD1ScoringError(msg)) {
-    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.7_odds_resolver_parity_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
+    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
     return{ok:true,data_ok:false,partial:true,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'SCORING_D1_TRANSIENT_RETRY_NEXT_TICK',error:msg,retry_safe:true,note:'Transient D1 failure was preserved as a retryable partial continuation instead of terminally failing the scoring queue.'};
   }
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.7_odds_resolver_parity_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.8_odds_runner_no_silent_hang_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
   return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized a non-transient failure. v1.5.09.6 keeps D1 transient failures retryable but still fails true logic/data exceptions.'};
  }
 }
