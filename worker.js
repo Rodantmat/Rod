@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.1 - One-Shot Direct Pickup Rescue Gate";
+const SYSTEM_VERSION = "v1.5.10.2 - Everyday Retry-Later Release Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9433,7 +9433,7 @@ function productionPlanDueInfo(plan, pt) {
       catchup_window_minutes: catchupWindowMinutes,
       minutes_late: minutesLate,
       due_key: `${plan.plan_key}|${target.date}|${slot}`,
-      one_shot_pickup_policy: 'v1.5.10.1_key_date_plus_direct_pickup_rescue'
+      one_shot_pickup_policy: 'v1.5.10.2_key_date_plus_retry_later_release'
     };
   }
 
@@ -9693,7 +9693,7 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     status: duePlans.length ? 'due_checked' : 'not_due',
     cron,
     pt,
-    scan_policy:'v1.5.10.1_one_shot_direct_pickup_rescue_gate',
+    scan_policy:'v1.5.10.2_one_shot_retry_later_release_gate',
     due_count:duePlans.length,
     due_plan_keys:duePlans.map(x => x.plan.plan_key),
     evaluated_plans:evaluated.map(x => ({
@@ -10949,23 +10949,27 @@ async function runRefreshOrchestratorTick(input, env) {
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
       const tick = await runEverydayPhase1Tick({ ...body, job:'run_everyday_phase1_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:1, max_ms:18000 }, env);
       const check = await checkEverydayPhase1({ ...body, job:'check_everyday_phase1', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+      const everydayRetryLaterReleased = tick?.non_blocking_retry_later === true || String(tick?.status || '').toLowerCase().includes('retry_later_released');
       result = {
         ok: tick?.ok !== false,
-        data_ok: tick?.phase1_complete ? !!check?.data_ok : true,
+        data_ok: everydayRetryLaterReleased ? true : (tick?.phase1_complete ? !!check?.data_ok : true),
         version:SYSTEM_VERSION,
         job:'everyday_phase1_all_direct',
-        status: tick?.phase1_complete ? 'completed' : 'partial_continue',
+        status: everydayRetryLaterReleased ? 'completed_retry_later_released' : (tick?.phase1_complete ? 'completed' : 'partial_continue'),
         slate_date:slate.slate_date,
         scheduled,
         tick,
         check,
         phase1_complete: !!tick?.phase1_complete,
+        non_blocking_retry_later: everydayRetryLaterReleased,
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        note: tick?.phase1_complete
-          ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks.'
-          : 'Queue-owned Everyday Phase 1 advanced one bounded child step and released the global lane for the next minute tick.'
+        note: everydayRetryLaterReleased
+          ? 'Queue-owned Everyday Phase 1 hit a child retry_later condition and was finalized as degraded/non-blocking so downstream refresh stages can continue. The child run evidence remains in everyday_phase1_runs for audit/retry.'
+          : (tick?.phase1_complete
+            ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks.'
+            : 'Queue-owned Everyday Phase 1 advanced one bounded child step and released the global lane for the next minute tick.')
       };
     } else {
       result = await executeTaskJob(row.job_name, body, slate, env);
@@ -11065,7 +11069,8 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
   const before = {
     queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
     jobs: await sampleRows(env, `SELECT job_key, run_requested_flag, running_flag, blocked_flag, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 ORDER BY job_index ASC LIMIT 200`).catch(() => []),
-    minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => [])
+    minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
+    one_shot_plans: await sampleRows(env, `SELECT plan_key, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, created_at, updated_at FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%' ORDER BY datetime(created_at) DESC LIMIT 50`).catch(() => [])
   };
   const queueRes = await env.DB.prepare(`
     UPDATE data_refresh_queue
@@ -11110,9 +11115,13 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
         error=COALESCE(error, ?)
     WHERE status IN ('pending','running')
   `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const oneShotPlanRes = await env.DB.prepare(`
+    DELETE FROM data_refresh_schedule_plan
+    WHERE plan_key LIKE 'one_shot_full_run_%'
+  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   const pipelineLockRes = await env.DB.prepare(`UPDATE pipeline_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   await releaseSingleLaneGlobalState(env, 'KILLER_CLEANER_RESET', { reason, before }).catch(() => null);
-  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
+  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), one_shot_plans:Number(oneShotPlanRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, one_shot_plans:oneShotPlanRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
   return {
     ok:true,
     data_ok:true,
@@ -11127,6 +11136,7 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
       minute_locks_released:Number(minuteLockRes?.meta?.changes || 0),
       stale_task_runs_reset:Number(taskRunsRes?.meta?.changes || 0),
       deferred_rows_cancelled:Number(deferredRes?.meta?.changes || 0),
+      one_shot_plans_deleted:Number(oneShotPlanRes?.meta?.changes || 0),
       pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0)
     },
     before,
@@ -13012,6 +13022,37 @@ async function runEverydayPhase1Tick(input, env) {
       const nextStep = nextEverydayPhase1Step(step);
       processed.push({ step, routed_job:jobName, next_step:nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, skipped_execution:skippedExecution, live_tables_touched:!skippedExecution });
       currentStep = nextStep;
+      if (result?.retry_later === true) {
+        const retryLaterPayload = {
+          processed,
+          last_result:result,
+          non_blocking_retry_later:true,
+          release_reason:'everyday_phase1_child_retry_later_released_for_downstream',
+          preserved_child_request_id:requestId,
+          next_step:currentStep
+        };
+        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, JSON.stringify(retryLaterPayload).slice(0,4000), requestId).run();
+        const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+        return {
+          ok:true,
+          data_ok:true,
+          job:input.job || "run_everyday_phase1_tick",
+          version:SYSTEM_VERSION,
+          status:"completed_retry_later_released",
+          request_id:requestId,
+          slate_date:slate.slate_date,
+          processed_steps:processed.length,
+          processed,
+          next_step:currentStep,
+          phase1_complete:true,
+          non_blocking_retry_later:true,
+          retry_later_child:{ step, routed_job:jobName, status:result.status || null, note:result.note || null },
+          final_check:check,
+          elapsed_ms:Date.now()-startedAt,
+          live_tables_touched:processed.length>0,
+          note:"Everyday Phase 1 child step returned retry_later, so v1.5.10.2 safely released the parent stage as degraded/non-blocking. Downstream refresh stages can continue; the child evidence is preserved for a later slate retry."
+        };
+      }
       const complete = currentStep === "completed";
       await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed, last_result:result }).slice(0,4000), requestId).run();
       if (complete) break;

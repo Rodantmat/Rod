@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+
+ZIP target: alphadog_v1.5.10.2_everyday_retry_later_release_gate.zip
+worker.js SYSTEM_VERSION: v1.5.10.2 - Everyday Retry-Later Release Gate
+control_room.html visible tag: v1.5.10.2 - Everyday Retry-Later Release Gate
+main.py SCRIPT_VERSION: v1.5.10.2 - Everyday Retry-Later Release Gate
+README: README_v1.5.10.2.txt
+Audit file: BUILD_VERSION_AUDIT_v1.5.10.2.txt
+
+Patch summary:
+- Added Everyday Phase 1 retry_later release gate.
+- Added parent orchestrator handling for completed_retry_later_released.
+- Added Killer Cleaner deletion of stale temporary one-shot full-run plans.
+- Preserved existing UI and scheduled backend flow.
