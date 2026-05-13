@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.2 - Everyday Retry-Later Release Gate";
+const SYSTEM_VERSION = "v1.5.10.3 - Cron Queue-First Bridge Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1016,23 +1016,34 @@ export default {
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
         const lockReaper = await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
-        const productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
-        const productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
-        const oneShotPickup = await scheduledPhase(env, 'one_shot_pickup_rescue', () => pickupDueOneShotFullRunPlans(env, cron, { trigger:'scheduled_minute_tick_one_shot_rescue' }), 22000, { cron, production_clock_status:productionClock?.status });
-        const orchestratorTick = await scheduledPhase(env, 'orchestrator_tick', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, watchdog_status:productionClockWatchdog?.status, production_clock_status:productionClock?.status, one_shot_pickup_status:oneShotPickup?.status, lock_reaper:lockReaper });
-        if ((oneShotPickup && oneShotPickup.status !== 'no_due_one_shot') || (productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
+        const hotLane = await scheduledPhase(env, 'orchestrator_hot_lane_check', () => detectRefreshOrchestratorHotLane(env), 2500, { cron, lock_reaper:lockReaper });
+        let productionClockWatchdog = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
+        let productionClock = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
+        let oneShotPickup = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
+        let orchestratorTick = null;
+        if (hotLane?.has_work) {
+          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, lock_reaper:lockReaper, hot_lane:hotLane });
+        } else {
+          productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
+          productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
+          oneShotPickup = await scheduledPhase(env, 'one_shot_pickup_rescue', () => pickupDueOneShotFullRunPlans(env, cron, { trigger:'scheduled_minute_tick_one_shot_rescue' }), 22000, { cron, production_clock_status:productionClock?.status });
+          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, watchdog_status:productionClockWatchdog?.status, production_clock_status:productionClock?.status, one_shot_pickup_status:oneShotPickup?.status, lock_reaper:lockReaper });
+        }
+        const orchestratorIdle = isRefreshOrchestratorIdleStatus(orchestratorTick?.status);
+        if ((hotLane && hotLane.has_work) || (oneShotPickup && !['no_due_one_shot','skipped_hot_lane_clear'].includes(String(oneShotPickup.status || ''))) || (productionClock && !['not_due','skipped_hot_lane_clear'].includes(String(productionClock.status || ''))) || (orchestratorTick && !orchestratorIdle) || (productionClockWatchdog && !['not_due','skipped_hot_lane_clear'].includes(String(productionClockWatchdog.status || '')))) {
           result = {
             ok: true,
-            data_ok: !!orchestratorTick.data_ok && productionClock.data_ok !== false && oneShotPickup?.ok !== false,
+            data_ok: orchestratorTick?.ok !== false && productionClock?.data_ok !== false && oneShotPickup?.ok !== false,
             version: SYSTEM_VERSION,
             job: 'production_refresh_clock_minute_scheduler',
-            status: orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue' ? 'orchestrator_advanced' : (oneShotPickup && oneShotPickup.status !== 'no_due_one_shot' ? 'one_shot_pickup_checked' : 'production_clock_checked'),
+            status: hotLane?.has_work ? 'orchestrator_hot_lane_advanced' : (!orchestratorIdle ? 'orchestrator_advanced' : (oneShotPickup && oneShotPickup.status !== 'no_due_one_shot' ? 'one_shot_pickup_checked' : 'production_clock_checked')),
             cron,
+            hot_lane: hotLane,
             production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
             one_shot_pickup_rescue: oneShotPickup,
             orchestrator_tick: orchestratorTick,
-            note: 'Minute cron checked the production schedule table, runs a direct one-shot pickup rescue for due temporary full-run plans, and advances the database-backed orchestrator one safe queued refresh unit at a time.'
+            note: 'Minute cron now checks queued/requested orchestrator work first. If a selected/manual/cascade job is already queued, it advances that hot lane before any schedule scan or one-shot rescue can consume the cron lifecycle.'
           };
         } else {
         const scheduledAdminRefresh = { ok:true, status:'legacy_admin_schedule_disabled_by_v1.3.89', note:'Production Refresh Clock owns scheduled refreshes. Manual admin buttons still work, but old direct 9/12/21 full-refresh slots are disabled to prevent collisions.' };
@@ -8357,6 +8368,48 @@ async function scheduledPhase(env, phase, fn, ms = 10000, meta = {}) {
     payload_json:{ version:SYSTEM_VERSION, phase, elapsed_ms:Date.now()-started, result }
   }).catch(() => null);
   return result;
+}
+
+
+function isRefreshOrchestratorIdleStatus(status) {
+  const s = String(status || '').toLowerCase();
+  return !s || s === 'idle_no_due_refresh_queue' || s === 'single_lane_idle_no_requested_job' || s === 'idle_no_due_work';
+}
+
+async function detectRefreshOrchestratorHotLane(env) {
+  await ensureRefreshOrchestratorTables(env);
+  const requestedJobs = await sampleRows(env, `
+    SELECT job_key, job_index, display_name, run_requested_flag, running_flag, blocked_flag,
+           current_request_id, current_chain_id, last_status, updated_at
+    FROM data_orchestrator_jobs
+    WHERE enabled_flag=1
+      AND run_requested_flag=1
+      AND COALESCE(blocked_flag,0)=0
+    ORDER BY job_index ASC
+    LIMIT 10
+  `).catch(() => []);
+  const activeQueue = await sampleRows(env, `
+    SELECT request_id, chain_id, job_key, sequence_order, status, tick_count, started_at, updated_at, error
+    FROM data_refresh_queue
+    WHERE status IN ('pending','running','requested')
+    ORDER BY sequence_order ASC, datetime(created_at) ASC
+    LIMIT 10
+  `).catch(() => []);
+  return {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:'detect_refresh_orchestrator_hot_lane',
+    status:(requestedJobs.length || activeQueue.length) ? 'hot_lane_present' : 'no_hot_lane',
+    has_work:!!(requestedJobs.length || activeQueue.length),
+    requested_jobs_count:requestedJobs.length,
+    active_queue_count:activeQueue.length,
+    requested_jobs:requestedJobs,
+    active_queue:activeQueue,
+    note:(requestedJobs.length || activeQueue.length)
+      ? 'Queued/requested orchestrator work exists; the minute cron must advance this lane before schedule scans, watchdogs, or one-shot pickup rescue.'
+      : 'No queued/requested orchestrator work detected before schedule scan.'
+  };
 }
 
 async function acquireScheduledMinuteCronLock(env, cron = '') {

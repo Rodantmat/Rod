@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.2 - Everyday Retry-Later Release Gate"
+SCRIPT_VERSION = "v1.5.10.3 - Cron Queue-First Bridge Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

@@ -1,0 +1,12 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.10.3 - Cron Queue-First Bridge Gate
+
+Files checked:
+- worker.js SYSTEM_VERSION updated
+- control_room.html version tag updated
+- main.py SCRIPT_VERSION updated
+- README filename/version updated
+- BUILD_VERSION_AUDIT filename/version updated
+
+Patch scope:
+Scheduled minute cron bridge only. Queue-first hot-lane logic added before schedule scan / watchdog / one-shot rescue.
