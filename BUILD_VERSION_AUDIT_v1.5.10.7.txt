@@ -1,0 +1,8 @@
+Build Version Audit
+Version: v1.5.10.7 - Incremental Delta Fetch Timeout Gate
+
+Checks:
+- worker.js SYSTEM_VERSION updated.
+- control_room.html visible version labels updated.
+- README version matches.
+- Flat ZIP delivery.

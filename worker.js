@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.6 - Incremental Delta Microbatch Gate";
+const SYSTEM_VERSION = "v1.5.10.7 - Incremental Delta Fetch Timeout Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -12025,23 +12025,45 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'delta_mode_not_available', mode_info:modeInfo, live_tables_touched:false, note:'True delta requires a certified live base. Use fallback full-safe rebuild if this blocks.' };
   }
 
+  const heartbeatRequestId = input?.incremental_request_id || await latestActiveIncrementalTempRequestId(env);
+  await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
+    status:'stage_delta_logs_schedule_fetch_start',
+    current_step:'stage_delta_logs',
+    refresh_mode:'delta',
+    start_date:startDate,
+    end_date:endDate,
+    note:'v1.5.10.7 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+  });
+
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
-  if (!schedule.ok) return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, live_tables_touched:false };
+  if (!schedule.ok) {
+    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
+      status:'stage_delta_logs_schedule_fetch_failed',
+      current_step:'stage_delta_logs',
+      refresh_mode:'delta',
+      start_date:startDate,
+      end_date:endDate,
+      error:schedule.error || 'schedule_fetch_failed',
+      url:schedule.url || null,
+      note:'MLB schedule fetch failed or timed out. The incremental run will fail visibly instead of heartbeat-looping with empty temp rows.'
+    });
+    return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, schedule_url:schedule.url || null, live_tables_touched:false };
+  }
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const progress = await staticProgressMap(env, 'incremental_delta_game_logs', season, 0);
   const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 1), 2));
   const selected = finalGames.filter(g => !['COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED'].includes(progress.get(Number(g.gamePk || 0)))).slice(0, hardLimit);
-  const heartbeatRequestId = input?.incremental_request_id || await latestActiveIncrementalTempRequestId(env);
   await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
     status:'stage_delta_logs_started',
     current_step:'stage_delta_logs',
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
+    schedule_games_seen:(schedule.games || []).length,
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.6 microbatch heartbeat before external MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.7 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`
@@ -12405,7 +12427,7 @@ async function runIncrementalTempScheduledTick(input, env) {
   await writeIncrementalTempHeartbeat(env, requestId, { status:'tick_started', current_step:step, trigger, force_due:forceDue, hard_reconcile:hardReconcile || null });
   let result;
   try {
-    if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp(input, env);
+    if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp({ ...(input || {}), incremental_request_id: requestId }, env);
     else if (step === 'stage_logs') result = await stageIncrementalGameLogsTemp(input, env);
     else if (step === 'stage_splits') result = await stageIncrementalSplitsTemp(input, env);
     else if (step === 'audit') result = await auditIncrementalTempCertification({ ...input, job:'audit_incremental_temp_certification' }, env);
@@ -14748,18 +14770,27 @@ function sleepMs(ms) {
 
 async function fetchJsonWithRetry(url, options = {}, retries = 3, label = "fetch_json") {
   let lastError = null;
+  const timeoutMs = Math.max(1500, Math.min(Number(options.timeout_ms || options.timeoutMs || 7500), 12000));
   for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => { try { controller.abort(`timeout_${timeoutMs}ms`); } catch (_) {} }, timeoutMs);
     try {
-      const res = await fetch(url, { headers: { "accept": "application/json", ...(options.headers || {}) }, ...options });
-      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt };
+      const fetchOptions = { ...options, headers: { "accept": "application/json", ...(options.headers || {}) }, signal: controller.signal };
+      delete fetchOptions.timeout_ms;
+      delete fetchOptions.timeoutMs;
+      const res = await fetch(url, fetchOptions);
+      clearTimeout(timeout);
+      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt, timeout_ms: timeoutMs };
       lastError = new Error(`${label} HTTP ${res.status}`);
       if (![408, 425, 429, 500, 502, 503, 504].includes(Number(res.status))) break;
     } catch (err) {
-      lastError = err;
+      clearTimeout(timeout);
+      const raw = String(err?.message || err || `${label} failed`);
+      lastError = new Error(raw.includes('abort') || raw.includes('timeout') ? `${label} timeout after ${timeoutMs}ms` : raw);
     }
     if (attempt < retries) await sleepMs(250 * attempt);
   }
-  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`) };
+  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`), timeout_ms: timeoutMs };
 }
 
 function decimalInnings(ip) {
