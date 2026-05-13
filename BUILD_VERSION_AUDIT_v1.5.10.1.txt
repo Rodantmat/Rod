@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+
+ZIP target: alphadog_v1.5.10.1_one_shot_schedule_pickup_gate.zip
+worker.js SYSTEM_VERSION: v1.5.10.1 - One-Shot Direct Pickup Rescue Gate
+control_room.html visible tag: v1.5.10.1 - One-Shot Direct Pickup Rescue Gate
+main.py SCRIPT_VERSION: v1.5.10.1 - One-Shot Direct Pickup Rescue Gate
+README: README_v1.5.10.1.txt
+Audit file: BUILD_VERSION_AUDIT_v1.5.10.1.txt
+
+Patch scope verified:
+- One-shot schedule due detection now parses one_shot_full_run_YYYYMMDD_HHMM_* plan_key.
+- One-shot catch-up window is 240 minutes.
+- Schedule scan diagnostics include skip_reason for non-due plans.
+- Killer cleaner, finalizer, scoring, PrizePicks, Odds API internals, and Main UI are not intentionally changed.

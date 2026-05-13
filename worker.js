@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.0 - One-Shot Schedule Pickup Gate";
+const SYSTEM_VERSION = "v1.5.10.1 - One-Shot Direct Pickup Rescue Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1018,19 +1018,21 @@ export default {
         const lockReaper = await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
         const productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
         const productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
-        const orchestratorTick = await scheduledPhase(env, 'orchestrator_tick', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, watchdog_status:productionClockWatchdog?.status, production_clock_status:productionClock?.status, lock_reaper:lockReaper });
-        if ((productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
+        const oneShotPickup = await scheduledPhase(env, 'one_shot_pickup_rescue', () => pickupDueOneShotFullRunPlans(env, cron, { trigger:'scheduled_minute_tick_one_shot_rescue' }), 22000, { cron, production_clock_status:productionClock?.status });
+        const orchestratorTick = await scheduledPhase(env, 'orchestrator_tick', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, watchdog_status:productionClockWatchdog?.status, production_clock_status:productionClock?.status, one_shot_pickup_status:oneShotPickup?.status, lock_reaper:lockReaper });
+        if ((oneShotPickup && oneShotPickup.status !== 'no_due_one_shot') || (productionClock && productionClock.status !== 'not_due') || (orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue') || (productionClockWatchdog && productionClockWatchdog.status !== 'not_due')) {
           result = {
             ok: true,
-            data_ok: !!orchestratorTick.data_ok && productionClock.data_ok !== false,
+            data_ok: !!orchestratorTick.data_ok && productionClock.data_ok !== false && oneShotPickup?.ok !== false,
             version: SYSTEM_VERSION,
             job: 'production_refresh_clock_minute_scheduler',
-            status: orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue' ? 'orchestrator_advanced' : 'production_clock_checked',
+            status: orchestratorTick && orchestratorTick.status !== 'idle_no_due_refresh_queue' ? 'orchestrator_advanced' : (oneShotPickup && oneShotPickup.status !== 'no_due_one_shot' ? 'one_shot_pickup_checked' : 'production_clock_checked'),
             cron,
             production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
+            one_shot_pickup_rescue: oneShotPickup,
             orchestrator_tick: orchestratorTick,
-            note: 'Minute cron checked the production schedule table and advanced the database-backed orchestrator. It runs one safe queued refresh unit at a time and does not overlap pipelines.'
+            note: 'Minute cron checked the production schedule table, runs a direct one-shot pickup rescue for due temporary full-run plans, and advances the database-backed orchestrator one safe queued refresh unit at a time.'
           };
         } else {
         const scheduledAdminRefresh = { ok:true, status:'legacy_admin_schedule_disabled_by_v1.3.89', note:'Production Refresh Clock owns scheduled refreshes. Manual admin buttons still work, but old direct 9/12/21 full-refresh slots are disabled to prevent collisions.' };
@@ -9431,7 +9433,7 @@ function productionPlanDueInfo(plan, pt) {
       catchup_window_minutes: catchupWindowMinutes,
       minutes_late: minutesLate,
       due_key: `${plan.plan_key}|${target.date}|${slot}`,
-      one_shot_pickup_policy: 'v1.5.10.0_key_date_plus_hour_minute'
+      one_shot_pickup_policy: 'v1.5.10.1_key_date_plus_direct_pickup_rescue'
     };
   }
 
@@ -9527,6 +9529,7 @@ async function scheduleOneShotFullRunPlus2Min(input, env) {
   const suffix = simpleHashText(`${Date.now()}|${crypto.randomUUID()}`).slice(0,8);
   const planKey = `one_shot_full_run_${String(targetPT.date || '').replace(/-/g,'')}_${String(targetPT.hour).padStart(2,'0')}${String(targetPT.minute).padStart(2,'0')}_${suffix}`;
   const jobKeys = productionFullRunJobKeys();
+  await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE schedule_kind='once' AND plan_key LIKE 'one_shot_full_run_%'`).run().catch(() => null);
   await env.DB.prepare(`
     INSERT INTO data_refresh_schedule_plan
       (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, notes, created_at, updated_at)
@@ -9690,7 +9693,7 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     status: duePlans.length ? 'due_checked' : 'not_due',
     cron,
     pt,
-    scan_policy:'v1.5.10.0_one_shot_key_date_pickup_gate',
+    scan_policy:'v1.5.10.1_one_shot_direct_pickup_rescue_gate',
     due_count:duePlans.length,
     due_plan_keys:duePlans.map(x => x.plan.plan_key),
     evaluated_plans:evaluated.map(x => ({
@@ -9707,7 +9710,7 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     stale_recovery,
     self_heal,
     results,
-    note:'Production schedule scan runs every minute. Daily/weekly plans use exact PT slot plus catch-up. One-shot plans use their plan-key PT date/hour/minute with a 240-minute catch-up window, run Clean Run State before enqueue, and auto-clear after accepted enqueue.'
+    note:'Production schedule scan runs every minute. Daily/weekly plans use exact PT slot plus catch-up. One-shot plans use their plan-key PT date/hour/minute with a 240-minute catch-up window. A direct one-shot pickup rescue runs every minute, clears stale one-shot rows, enqueues due full-run plans, and auto-clears after accepted enqueue.'
   };
   await refreshOrchestratorEvent(env, {
     event_type:'production_clock_schedule_scan',
@@ -9716,6 +9719,57 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     payload_json:result
   }).catch(() => null);
   return result;
+}
+
+
+async function pickupDueOneShotFullRunPlans(env, cron, input = {}) {
+  await ensureProductionRefreshScheduleTables(env);
+  const pt = getPTScheduleParts();
+  const plans = await sampleRows(env, `
+    SELECT *
+    FROM data_refresh_schedule_plan
+    WHERE enabled=1
+      AND schedule_kind='once'
+      AND plan_key LIKE 'one_shot_full_run_%'
+    ORDER BY datetime(created_at) ASC
+    LIMIT 20
+  `).catch(() => []);
+  const evaluated = plans.map(plan => ({ plan, due_info: productionPlanDueInfo(plan, pt), skip_reason: productionPlanDueInfo(plan, pt) ? null : productionPlanSkipReason(plan, pt) }));
+  const due = evaluated.filter(x => !!x.due_info);
+  const stale = evaluated.filter(x => String(x.skip_reason || '').startsWith('one_shot_expired_'));
+  for (const item of stale) {
+    await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=? AND schedule_kind='once'`).bind(item.plan.plan_key).run().catch(() => null);
+  }
+  if (!due.length) {
+    const out = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'one_shot_full_run_pickup_rescue', status:'no_due_one_shot', cron, pt, one_shot_count:plans.length, stale_cleared:stale.map(x => x.plan.plan_key), evaluated:evaluated.map(x => ({ plan_key:x.plan.plan_key, created_at:x.plan.created_at || null, hour_pt:x.plan.hour_pt, minute_pt:x.plan.minute_pt, due_info:x.due_info || null, skip_reason:x.skip_reason || null })) };
+    await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_pickup_rescue', status:out.status, message:'One-shot pickup rescue found no due one-shot plans.', payload_json:out }).catch(() => null);
+    return out;
+  }
+
+  const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`).catch(() => []);
+  const running = await env.DB.prepare(`SELECT job_key, job_index, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE running_flag=1 LIMIT 1`).first().catch(() => null);
+  const requested = await env.DB.prepare(`SELECT job_key, job_index, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0 LIMIT 1`).first().catch(() => null);
+  const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
+  if (activeQueue.length || running || requested || Number(state?.lock_flag || 0) === 1) {
+    const out = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'one_shot_full_run_pickup_rescue', status:'active_lane_waiting', cron, pt, due_plan_keys:due.map(x => x.plan.plan_key), active_queue:activeQueue, running:running || null, requested:requested || null, global_state:state || null, note:'One-shot is due but a queue/lane is already active. It will retry on the next minute.' };
+    await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_pickup_rescue', status:out.status, message:'One-shot pickup rescue found active lane and did not enqueue duplicate work.', payload_json:out }).catch(() => null);
+    return out;
+  }
+
+  const picked = due[0];
+  let jobKeys = [];
+  try { jobKeys = JSON.parse(picked.plan.selected_job_keys_json || '[]'); } catch (_) { jobKeys = []; }
+  if (!jobKeys.length) jobKeys = productionFullRunJobKeys();
+  const dueKey = picked.due_info?.due_key || `${picked.plan.plan_key}|${pt.date}|${String(picked.plan.hour_pt).padStart(2,'0')}${String(picked.plan.minute_pt).padStart(2,'0')}`;
+  const clean_gate = await refreshOrchestratorCleanRunState({ ...(input || {}), job:'refresh_orchestrator_clean_run_state', trigger:'one_shot_pickup_rescue_clean_gate', slate_mode:'AUTO', allow_when_idle_only:true }, env).catch(e => ({ ok:false, data_ok:false, error:String(e?.message || e) }));
+  const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock_one_shot_pickup_rescue', trigger:'one_shot_pickup_rescue', job_keys:jobKeys, slate_mode:'AUTO', plan_key:picked.plan.plan_key, due_key:dueKey, pt, clean_gate, force:true }, 'cascade');
+  if (enq?.ok !== false && (Number(enq?.enqueued_count || 0) > 0 || String(enq?.status || '') === 'single_lane_cascade_requested')) {
+    await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, picked.plan.plan_key).run().catch(() => null);
+    await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE schedule_kind='once' AND plan_key LIKE 'one_shot_full_run_%'`).run().catch(() => null);
+  }
+  const out = { ...(enq || {}), version:SYSTEM_VERSION, job:'one_shot_full_run_pickup_rescue', status:enq?.status || 'unknown', cron, pt, picked_plan_key:picked.plan.plan_key, due_key:dueKey, due_plan_keys:due.map(x => x.plan.plan_key), stale_cleared:stale.map(x => x.plan.plan_key), clean_gate, auto_cleared_once_plans: enq?.ok !== false && (Number(enq?.enqueued_count || 0) > 0 || String(enq?.status || '') === 'single_lane_cascade_requested') };
+  await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_pickup_rescue', status:out.status, message:'One-shot full-run pickup rescue executed.', payload_json:out }).catch(() => null);
+  return out;
 }
 
 async function productionRefreshClockStatus(input, env) {
