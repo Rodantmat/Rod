@@ -1,0 +1,19 @@
+Build version audit
+
+ZIP target: alphadog_v1.5.09.6_scoring_stable_run_clean_gate.zip
+worker.js SYSTEM_VERSION: v1.5.09.6 - Scoring Stable Run Clean Gate
+control_room.html buttons added: Clean Run State, Schedule One-Shot Full Run +2 Min
+README: README_v1.5.09.6.txt
+Audit file: BUILD_VERSION_AUDIT_v1.5.09.6.txt
+
+Validation performed:
+- node --check worker.js passed.
+- flat-folder ZIP structure preserved.
+- no subdirectories added.
+- no Main UI files added or changed.
+
+Primary patch scope:
+- stable queue-owned scoring run id
+- D1 transient retry handling
+- clean run state function/button
+- pre-full-run clean gate

@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.5 - One-Shot Full Run Scheduler";
-const SYSTEM_CODENAME = "One-Shot Full Run Scheduler";
+const SYSTEM_VERSION = "v1.5.09.6 - Scoring Stable Run Clean Gate";
+const SYSTEM_CODENAME = "Scoring Stable Run Clean Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -134,6 +134,7 @@ const JOB_DISPLAY_LABELS = {
   refresh_orchestrator_cancel_all: "DATA REFRESHING > Cancel Active Queue",
   refresh_orchestrator_schedule_status: "DATA REFRESHING > Production Clock Status",
   refresh_orchestrator_seed_production_clock: "DATA REFRESHING > Init Production Clock",
+  refresh_orchestrator_clean_run_state: "DATA REFRESHING > Clean Run State",
   schedule_one_shot_full_run_plus_2min: "DATA REFRESHING > Schedule One-Shot Full Run +2 Min",
   check_incremental_temp_all: "CHECK TEMP > All Incremental Temp",
   audit_incremental_temp_certification: "CERTIFY TEMP > Audit Incremental Temp",
@@ -776,7 +777,6 @@ const JOBS = {
   check_incremental_derived_metrics: { prompt: null, tables: ["incremental_player_metrics"], note: "check derived incremental metrics coverage" },
   check_incremental_all: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics"], note: "check all incremental base tables" },
   certify_incremental_live_tables: { prompt: null, tables: ["player_game_logs", "ref_player_splits", "incremental_player_metrics", "incremental_live_certification_audits"], note: "hard certify live incremental tables after promotion/derived" },
-  schedule_one_shot_full_run_plus_2min: { prompt: null, tables: ["data_refresh_schedule_plan", "data_refresh_queue", "data_orchestrator_jobs", "data_refresh_events"], note: "schedule one temporary Production Clock full cascade for roughly two minutes from now, then auto-clear the temporary plan after enqueue" },
 
   schedule_everyday_phase1_once: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "schedule one protected everyday phase 1 baseline pipeline test" },
   run_everyday_phase1_tick: { prompt: null, tables: ["games", "markets_current", "starters_current", "bullpens_current", "lineups_current", "player_recent_usage", "edge_candidates_hits", "edge_candidates_rbi", "edge_candidates_rfi"], note: "advance one protected everyday phase 1 baseline pipeline step" },
@@ -1209,14 +1209,6 @@ function oddsApiBindingStatus(env = {}) {
     fatal_when_missing: false,
     rule: 'Health, scheduled jobs, manual jobs, and orchestrator jobs all use getOddsApiKey(env). Missing key is treated as a recoverable config/logic diagnostic and must not trap the queue.'
   };
-}
-
-
-function isRetryableD1TransientError(message) {
-  const msg = String(message || '');
-  if (!msg) return false;
-  if (/SQLITE_AUTH|not authorized|no such table|no such column|unrecognized token|syntax error|too many terms|constraint failed|UNIQUE constraint|FOREIGN KEY constraint/i.test(msg)) return false;
-  return /D1_ERROR|Network connection lost|network connection|database is locked|SQLITE_BUSY|SQLITE_LOCKED|temporarily unavailable|connection reset|internal error|fetch failed|timeout|timed out/i.test(msg);
 }
 
 function readEnvCandidate(env = {}, names = [], options = {}) {
@@ -1806,6 +1798,8 @@ function executableJobNames() {
     "refresh_orchestrator_cancel_all",
     "refresh_orchestrator_schedule_status",
     "refresh_orchestrator_seed_production_clock",
+    "refresh_orchestrator_clean_run_state",
+    "schedule_one_shot_full_run_plus_2min",
     "check_incremental_temp_all",
     "audit_incremental_temp_certification",
     "promote_incremental_temp_to_live",
@@ -9044,7 +9038,6 @@ function singleLaneBlockedDependents(failedJobKey) {
 function singleLaneIsPartialOrWaiting(row, result) {
   if (isIncrementalNoDeltaTerminalSuccess(result) || isIncrementalNoDeltaTerminalSuccess(result?.last_tick) || isIncrementalNoDeltaTerminalSuccess(result?.result)) return false;
   const st = String(result?.status || result?.result_status || '').toLowerCase();
-  if (isScoringPartialContinueResult(row, result)) return true;
   if (refreshResultIsPartial(result)) return true;
   if (String(row?.job_key || '') === 'prizepicks_board' && (st.includes('waiting') || st.includes('dispatched'))) return true;
   return false;
@@ -9054,7 +9047,6 @@ function singleLaneShouldTerminalFail(row, result, attempts) {
   if (result?.terminal_failure === true) return true;
   const jobKey = String(row?.job_key || '');
   const statusText = String(result?.status || result?.result_status || result?.error || '').toLowerCase();
-  if (jobKey === 'scoring_refresh' && isScoringPartialContinueResult(row, result)) return false;
   if (jobKey === 'prizepicks_board') {
     if (statusText.includes('missing_github')) return true;
     if (statusText.includes('waiting') || statusText.includes('dispatched')) return false;
@@ -9227,8 +9219,12 @@ async function ensureProductionRefreshScheduleTables(env) {
   if (stmts.length) await env.DB.batch(stmts);
 }
 
+function productionFullRunJobKeys() {
+  return ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
+}
+
 function productionRefreshSchedulePlans() {
-  const intradayFull = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
+  const intradayFull = productionFullRunJobKeys();
   return [
     { plan_key:'weekly_static_monday_0030_pt', display_name:'Weekly Static Reference Refresh', schedule_kind:'weekly', byday:'Mon', hour_pt:0, minute_pt:30, mode:'selected', job_keys:['static_weekly'], notes:'Monday 12:30 AM PT. Static/reference only; runs before daily incremental and cannot overlap due global queue.' },
     { plan_key:'daily_incremental_0130_pt', display_name:'Daily Incremental Delta', schedule_kind:'daily', hour_pt:1, minute_pt:30, mode:'selected', job_keys:['incremental_daily'], notes:'Daily 1:30 AM PT. True delta when live base is A/A+ certified.' },
@@ -9286,21 +9282,146 @@ async function enqueueProductionPlan(env, plan, pt, input = {}) {
   if ((running || Number(state?.lock_flag || 0) === 1) && input?.force !== true) {
     return { ok:true, data_ok:true, status:'blocked_active_single_lane_waiting', plan_key:plan.plan_key, active:running || state, due_key:dueKey, note:'Production clock will retry this due slot on the next minute. No overlapping refresh jobs are allowed.' };
   }
-  const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock', trigger:'production_refresh_clock', job_keys:jobKeys, slate_mode:'AUTO', plan_key:plan.plan_key, due_key:dueKey, pt }, String(plan.mode || 'selected'));
-  const enqStatus = String(enq?.status || '');
-  const enqueueAccepted = !!(enq && enq.ok !== false && enq.data_ok === true && (enq.chain_id || Number(enq.enqueued_count || 0) > 0 || /requested|enqueued/i.test(enqStatus)));
-  if (enqueueAccepted) {
+  const clean_gate = String(plan.mode || 'selected') === 'cascade' ? await refreshOrchestratorCleanRunState({ ...(input || {}), job:'refresh_orchestrator_clean_run_state', trigger:'production_clock_pre_full_run_clean_gate', slate_mode:'AUTO', allow_when_idle_only:true }, env).catch(e => ({ ok:false, data_ok:false, error:String(e?.message||e) })) : { skipped:true, reason:'selected_plan_not_full_cascade' };
+  const enq = await requestSingleLaneJobs(env, { ...(input || {}), job:'production_refresh_clock', trigger:'production_refresh_clock', job_keys:jobKeys, slate_mode:'AUTO', plan_key:plan.plan_key, due_key:dueKey, pt, clean_gate }, String(plan.mode || 'selected'));
+  if (enq?.ok !== false) {
     await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET last_enqueued_key=?, last_enqueued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(dueKey, plan.plan_key).run();
   }
-  const isOneShot = String(plan.schedule_kind || '').toLowerCase() === 'once' || String(plan.plan_key || '').startsWith('one_shot_full_run_');
-  if (isOneShot && enqueueAccepted) {
-    await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=?`).bind(plan.plan_key).run().catch(async () => {
-      await env.DB.prepare(`UPDATE data_refresh_schedule_plan SET enabled=0, notes=COALESCE(notes,'') || ' | auto-cleared after enqueue', updated_at=CURRENT_TIMESTAMP WHERE plan_key=?`).bind(plan.plan_key).run().catch(() => null);
-    });
-    await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_one_shot_cleared', status:'cleared', message:'One-shot full-run schedule auto-cleared after enqueue.', payload_json:{ plan_key:plan.plan_key, due_key:dueKey, enqueue_status:enqStatus, enqueued_count:enq?.enqueued_count || 0 } }).catch(() => null);
+  await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq } });
+  return { ...enq, plan_key:plan.plan_key, display_name:plan.display_name, due_key:dueKey, note:'Production clock requested independent single-lane jobs in the database. Minute cron will run one stage per tick by job_index.' };
+}
+
+
+function isTransientD1ScoringError(msg) {
+  const s = String(msg || '').toLowerCase();
+  return s.includes('d1_error') && (s.includes('network connection lost') || s.includes('network') || s.includes('database is locked') || s.includes('busy') || s.includes('timeout') || s.includes('temporar'));
+}
+
+async function scheduleOneShotFullRunPlus2Min(input, env) {
+  await ensureProductionRefreshScheduleTables(env);
+  const delayMinutes = Math.max(2, Math.min(10, Number(input?.delay_minutes || 2)));
+  const targetDate = new Date(Date.now() + delayMinutes * 60 * 1000);
+  const targetPT = getPTScheduleParts(targetDate);
+  const suffix = simpleHashText(`${Date.now()}|${crypto.randomUUID()}`).slice(0,8);
+  const planKey = `one_shot_full_run_${String(targetPT.date || '').replace(/-/g,'')}_${String(targetPT.hour).padStart(2,'0')}${String(targetPT.minute).padStart(2,'0')}_${suffix}`;
+  const jobKeys = productionFullRunJobKeys();
+  await env.DB.prepare(`
+    INSERT INTO data_refresh_schedule_plan
+      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, notes, created_at, updated_at)
+    VALUES (?, ?, 1, 'once', NULL, ?, ?, 'cascade', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `).bind(
+    planKey,
+    'One-Shot Full Run +2 Min',
+    Number(targetPT.hour),
+    Number(targetPT.minute),
+    JSON.stringify(jobKeys),
+    'Temporary one-shot full intraday cascade. Auto-clears after first accepted enqueue. Runs the same pre-clean gate as scheduled full runs.'
+  ).run();
+  await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_scheduled', status:'scheduled', message:'One-shot full run scheduled for the next Production Clock minute window.', payload_json:{ version:SYSTEM_VERSION, plan_key:planKey, delay_minutes:delayMinutes, target_pt:targetPT, job_keys:jobKeys, auto_clear_rule:'delete schedule plan after first accepted enqueue; queue chain owns completion/failure' } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'schedule_one_shot_full_run_plus_2min', status:'scheduled', plan_key:planKey, target_pt:targetPT, delay_minutes:delayMinutes, selected_job_keys:jobKeys, next_action:'Do not run manual ticks unless cron is disabled. The minute cron will detect this temporary plan, run the clean gate, enqueue the regular full cascade, and auto-clear the plan after enqueue.', note:'This is a repeatable Production Clock one-shot schedule, not SQL makeup and not a direct long request. It uses the same cascade path as the 9AM/1PM/10PM scheduled full runs.' };
+}
+
+async function refreshOrchestratorCleanRunState(input, env) {
+  await ensureRefreshOrchestratorTables(env);
+  await ensureMlbScoringV1Tables(env).catch(() => null);
+  const slate = resolveSlateDate(input || {});
+  const slateDate = String(input?.slate_date || slate.slate_date);
+  const reason = String(input?.trigger || input?.reason || 'manual_clean_run_state');
+  const out = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_clean_run_state', status:'cleaned_or_verified', slate_date:slateDate, reason, protected_active:false, cleanup_single_lane:null, changes:{}, protected:{}, notes:[] };
+
+  const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`).catch(() => []);
+  if (activeQueue.length && input?.force !== true && input?.allow_when_idle_only !== false) {
+    out.protected_active = true;
+    out.status = 'active_queue_protected_no_destructive_cleanup';
+    out.protected.active_queue = activeQueue;
+    out.cleanup_single_lane = await cleanupSingleLaneStateInconsistencies(env, { reason:`${reason}:protected_active_queue`, trigger:reason }).catch(e => ({ ok:false, error:String(e?.message||e) }));
+    out.notes.push('A live queue exists, so destructive cleanup was skipped. Non-destructive self-heal still ran.');
+    return out;
   }
-  await refreshOrchestratorEvent(env, { chain_id:enq?.chain_id || null, event_type:'production_clock_single_lane_enqueue', status:enq?.status || 'unknown', message:`${plan.display_name} checked`, payload_json:{ plan_key:plan.plan_key, due_key:dueKey, job_keys:jobKeys, pt, enqueue:enq, enqueue_accepted:enqueueAccepted, one_shot_cleared:!!(isOneShot && enqueueAccepted) } });
-  return { ...enq, plan_key:plan.plan_key, display_name:plan.display_name, due_key:dueKey, one_shot: isOneShot, one_shot_cleared: !!(isOneShot && enqueueAccepted), note: isOneShot ? 'One-shot Production Clock full run was accepted into the regular queue and the temporary schedule plan was cleared. Minute cron will run one stage per tick by job_index.' : 'Production clock requested independent single-lane jobs in the database. Minute cron will run one stage per tick by job_index.' };
+
+  out.cleanup_single_lane = await cleanupSingleLaneStateInconsistencies(env, { reason, trigger:reason }).catch(e => ({ ok:false, error:String(e?.message||e) }));
+
+  const terminalOrMissingLocks = await env.DB.prepare(`
+    UPDATE data_orchestrator_enqueue_locks
+    SET status='released', updated_at=CURRENT_TIMESTAMP
+    WHERE status='active'
+      AND (
+        request_id NOT IN (SELECT request_id FROM data_refresh_queue)
+        OR request_id IN (SELECT request_id FROM data_refresh_queue WHERE status IN ('completed','failed','cancelled','blocked'))
+      )
+  `).run().catch(() => null);
+  out.changes.released_terminal_or_missing_enqueue_locks = Number(terminalOrMissingLocks?.meta?.changes || 0);
+
+  const globalState = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
+  if (Number(globalState?.lock_flag || 0) === 1) {
+    const activeForGlobal = await env.DB.prepare(`SELECT request_id, status FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running') LIMIT 1`).bind(globalState.running_request_id || '').first().catch(() => null);
+    if (!activeForGlobal) {
+      await releaseSingleLaneGlobalState(env, 'CLEAN_RUN_STATE_RELEASED_STALE_GLOBAL_LOCK', { reason, previous_state:globalState });
+      out.changes.released_stale_global_lock = 1;
+    } else {
+      out.protected.global_lock = { preserved:true, active_queue:activeForGlobal };
+    }
+  }
+
+  const zombieJobs = await env.DB.prepare(`
+    UPDATE data_orchestrator_jobs
+    SET running_flag=0,
+        run_requested_flag=0,
+        blocked_flag=0,
+        blocked_by_job_key=NULL,
+        last_status=CASE WHEN last_status IN ('running','requested','pending','partial_continue') THEN 'clean_run_state_cleared_stale_flag' ELSE last_status END,
+        last_fail=0,
+        last_error_code=NULL,
+        last_error_message=NULL,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE (running_flag=1 OR run_requested_flag=1 OR blocked_flag=1)
+      AND (current_request_id IS NULL OR current_request_id NOT IN (SELECT request_id FROM data_refresh_queue WHERE status IN ('pending','running')))
+  `).run().catch(() => null);
+  out.changes.cleared_stale_job_flags = Number(zombieJobs?.meta?.changes || 0);
+
+  const badRuns = await sampleRows(env, `
+    SELECT run_id, status, created_at, completed_at, error
+    FROM scoring_runs
+    WHERE slate_date=?
+      AND status NOT IN ('COMPLETED','COMPLETED_WITH_SKIPS')
+    ORDER BY datetime(created_at) DESC
+    LIMIT 100
+  `, [slateDate]).catch(() => []);
+  const badRunIds = badRuns.map(r => String(r.run_id || '')).filter(Boolean);
+  out.protected.completed_scoring_runs_preserved = await sampleRows(env, `SELECT run_id, status, rows_promoted, rows_active, created_at, completed_at FROM scoring_runs WHERE slate_date=? AND status IN ('COMPLETED','COMPLETED_WITH_SKIPS') ORDER BY datetime(COALESCE(completed_at,created_at)) DESC LIMIT 5`, [slateDate]).catch(() => []);
+  out.bad_scoring_runs_seen = badRuns;
+
+  const delByRun = async (table) => {
+    let total = 0;
+    for (const rid of badRunIds) {
+      const r = await env.DB.prepare(`DELETE FROM ${table} WHERE run_id=?`).bind(rid).run().catch(() => null);
+      total += Number(r?.meta?.changes || 0);
+    }
+    return total;
+  };
+  out.changes.deleted_bad_run_active_score_rows = await delByRun('active_score_board');
+  out.changes.deleted_bad_run_candidate_rows = await delByRun('score_candidate_board');
+  out.changes.deleted_bad_run_hits_scores = await delByRun('mlb_hits_scores');
+  out.changes.deleted_bad_run_tb_scores = await delByRun('mlb_total_bases_scores');
+  out.changes.deleted_bad_run_rbi_scores = await delByRun('mlb_rbi_scores');
+  out.changes.deleted_bad_run_scratchpad_rows = await delByRun('mlb_scoring_scratchpad');
+  out.changes.deleted_bad_run_audit_rows = await delByRun('scoring_audit_logs');
+  if (badRunIds.length) {
+    let deletedRuns = 0;
+    for (const rid of badRunIds) {
+      const r = await env.DB.prepare(`DELETE FROM scoring_runs WHERE run_id=? AND status NOT IN ('COMPLETED','COMPLETED_WITH_SKIPS')`).bind(rid).run().catch(() => null);
+      deletedRuns += Number(r?.meta?.changes || 0);
+    }
+    out.changes.deleted_bad_scoring_runs = deletedRuns;
+  } else out.changes.deleted_bad_scoring_runs = 0;
+
+  const openAfter = await sampleRows(env, `SELECT request_id, chain_id, job_key, status FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`).catch(() => []);
+  const locksAfter = await sampleRows(env, `SELECT lock_key, request_id, job_key, status FROM data_orchestrator_enqueue_locks WHERE status='active' ORDER BY datetime(updated_at) DESC LIMIT 20`).catch(() => []);
+  out.after = { active_queue:openAfter, active_locks:locksAfter };
+  out.data_ok = openAfter.length === 0 || input?.allow_when_idle_only === false;
+  out.notes.push('Clean Run State removes abandoned/failed partial scoring artifacts but preserves completed scoring runs and the existing release board unless a bad run owned those rows.');
+  await refreshOrchestratorEvent(env, { event_type:'clean_run_state', status:out.status, message:'Clean Run State executed.', payload_json:out }).catch(() => null);
+  return out;
 }
 
 
@@ -9314,7 +9435,12 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   const duePlans = evaluated.filter(x => !!x.due_info);
   const results = [];
   for (const item of duePlans) {
-    results.push(await enqueueProductionPlan(env, item.plan, pt, { ...(input || {}), due_info: item.due_info }));
+    const one = await enqueueProductionPlan(env, item.plan, pt, { ...(input || {}), due_info: item.due_info });
+    results.push(one);
+    if (String(item.plan.schedule_kind || '').toLowerCase() === 'once' && (Number(one?.enqueued_count || 0) > 0 || String(one?.status || '') === 'single_lane_cascade_requested')) {
+      await env.DB.prepare(`DELETE FROM data_refresh_schedule_plan WHERE plan_key=? AND schedule_kind='once'`).bind(item.plan.plan_key).run().catch(() => null);
+      await refreshOrchestratorEvent(env, { event_type:'production_clock_one_shot_cleared', status:'cleared', message:'One-shot full-run schedule auto-cleared after enqueue.', payload_json:{ plan_key:item.plan.plan_key, due_key:item.due_info?.due_key || null, enqueue_status:one?.status || null, enqueued_count:one?.enqueued_count || 0 } }).catch(() => null);
+    }
   }
   const result = {
     ok:true,
@@ -9340,7 +9466,7 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     stale_recovery,
     self_heal,
     results,
-    note:'Production schedule scan now runs every minute and logs every scan. Daily/weekly plans are eligible on the exact PT slot plus a 30-minute catch-up window so a slow cleanup/tick cannot miss 9AM/1PM/10PM. One-shot plans use a 180-minute catch-up window. Due keys are anchored to the scheduled slot, not the current catch-up minute.'
+    note:'Production schedule scan runs every minute. Daily/weekly plans use exact PT slot plus catch-up. One-shot plans use a 180-minute catch-up window, run Clean Run State before enqueue, and auto-clear after accepted enqueue.'
   };
   await refreshOrchestratorEvent(env, {
     event_type:'production_clock_schedule_scan',
@@ -9351,86 +9477,13 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
   return result;
 }
 
-
-async function scheduleOneShotFullRunPlus2Min(input, env) {
-  await ensureProductionRefreshScheduleTables(env);
-  const delayMinutes = Math.max(1, Math.min(Number(input?.delay_minutes || 2), 10));
-  const runAt = new Date(Date.now() + delayMinutes * 60 * 1000);
-  const pt = getPTScheduleParts(runAt);
-  const intradayFull = ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
-
-  const existing = await env.DB.prepare(`
-    SELECT plan_key, display_name, schedule_kind, enabled, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes, created_at, updated_at
-    FROM data_refresh_schedule_plan
-    WHERE enabled=1
-      AND plan_key LIKE 'one_shot_full_run_%'
-      AND last_enqueued_key IS NULL
-    ORDER BY datetime(updated_at) DESC
-    LIMIT 1
-  `).first().catch(() => null);
-
-  if (existing) {
-    return {
-      ok:true,
-      data_ok:false,
-      version:SYSTEM_VERSION,
-      job:input?.job || 'schedule_one_shot_full_run_plus_2min',
-      status:'already_scheduled',
-      existing_plan:existing,
-      next_action:'Wait for the minute cron to pick up the existing one-shot plan, or cancel it manually before scheduling another.',
-      note:'Duplicate protection blocked a second one-shot full run. Only one temporary full-run schedule can be active at a time.'
-    };
-  }
-
-  await env.DB.prepare(`
-    DELETE FROM data_refresh_schedule_plan
-    WHERE plan_key LIKE 'one_shot_full_run_%'
-      AND (
-        last_enqueued_key IS NOT NULL
-        OR enabled=0
-        OR datetime(updated_at) <= datetime('now','-12 hours')
-      )
-  `).run().catch(() => null);
-
-  const slot = `${String(pt.hour).padStart(2,'0')}${String(pt.minute).padStart(2,'0')}`;
-  const planKey = `one_shot_full_run_${String(pt.date || '').replaceAll('-','')}_${slot}_${crypto.randomUUID().slice(0,8)}`;
-  const notes = `Temporary one-shot full Production Clock cascade scheduled from Control Room. PT target ${pt.date} ${String(pt.hour).padStart(2,'0')}:${String(pt.minute).padStart(2,'0')}. Auto-clears after enqueue; success/failure is owned by data_refresh_queue chain.`;
-
-  await env.DB.prepare(`
-    INSERT INTO data_refresh_schedule_plan
-      (plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, notes, created_at, updated_at)
-    VALUES (?, 'One-Shot Full Run +2 Min', 1, 'once', NULL, ?, ?, 'cascade', ?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `).bind(planKey, Number(pt.hour), Number(pt.minute), JSON.stringify(intradayFull), notes).run();
-
-  await refreshOrchestratorEvent(env, {
-    event_type:'production_clock_one_shot_scheduled',
-    status:'scheduled',
-    message:'One-shot full run scheduled for the next Production Clock minute window.',
-    payload_json:{ version:SYSTEM_VERSION, plan_key:planKey, delay_minutes:delayMinutes, target_pt:pt, job_keys:intradayFull, auto_clear_rule:'delete schedule plan after first accepted enqueue; queue chain owns completion/failure' }
-  }).catch(() => null);
-
-  return {
-    ok:true,
-    data_ok:true,
-    version:SYSTEM_VERSION,
-    job:input?.job || 'schedule_one_shot_full_run_plus_2min',
-    status:'scheduled',
-    plan_key:planKey,
-    target_pt:pt,
-    delay_minutes:delayMinutes,
-    selected_job_keys:intradayFull,
-    next_action:'Do not run manual ticks unless cron is disabled. The minute cron will detect this temporary plan, enqueue the regular full cascade, and auto-clear the plan after enqueue.',
-    note:'This is a repeatable Production Clock one-shot schedule, not SQL makeup and not a direct long request. It uses the same cascade path as the 9AM/1PM/10PM scheduled full runs.'
-  };
-}
-
 async function productionRefreshClockStatus(input, env) {
   await ensureProductionRefreshScheduleTables(env);
   const pt = getPTScheduleParts();
   const plans = await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, byday, hour_pt, minute_pt, mode, selected_job_keys_json, last_enqueued_key, last_enqueued_at, notes FROM data_refresh_schedule_plan ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC`);
   const activeQueue = await sampleRows(env, `SELECT request_id, chain_id, job_key, display_name, status, run_after, created_at, started_at, updated_at, substr(output_json,1,500) AS output_preview, error FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC, sequence_order ASC LIMIT 20`);
   const recentClockEvents = await sampleRows(env, `SELECT created_at, event_type, status, message, substr(payload_json,1,500) AS payload_preview FROM data_refresh_events WHERE event_type LIKE 'production_clock%' ORDER BY datetime(created_at) DESC LIMIT 20`);
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. One-shot full-run plans can be scheduled from Control Room for delayed testing and auto-clear after enqueue. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_schedule_status', status:'pass', pt_now:pt, plans:plans.map(p => ({ ...p, selected_job_keys: (() => { try { return JSON.parse(p.selected_job_keys_json || '[]'); } catch (_) { return []; } })() })), active_queue:activeQueue, recent_clock_events:recentClockEvents, note:'Production clock plans: Static Monday 12:30 AM PT; Incremental daily 1:30 AM PT; Intraday 9:00 AM / 1:00 PM / 10:00 PM PT. Full intraday cascades include both Odds API Morning and Odds API Intraday, and exclude Static Weekly / Incremental Daily. Sleeper board is excluded/manual.' };
 }
 
 async function runStaticTempAutoLoop(input, env) {
@@ -9503,7 +9556,7 @@ async function enqueueBackendScoringRefresh(input, env) {
   if (active) {
     return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'enqueue_backend_scoring_refresh', status:active.job_key === 'scoring_refresh' ? 'scoring_already_queued_or_running' : 'blocked_existing_orchestrator_queue', slate_date:slateDate, active_queue:active, scoring_queue_reaper, backend_orchestrator:true, manual_retry_required:false, note: active.job_key === 'scoring_refresh' ? 'Scoring is already owned by DATA REFRESHING > Production Clock Orchestrator. Do not press Run MLB Scores again; minute cron will continue it in the backend.' : 'A Data Refreshing orchestrator queue is already active. Scoring was not started separately because all refresh/scoring work must run through one backend queue.' };
   }
-  // v1.5.08.9: scoring must enter through the same single-lane request path and live publication must pass same-slate current-context gates.
+  // v1.5.08.8: scoring must enter through the same single-lane request path as scheduled jobs.
   // The previous backend-scoring enqueue inserted only data_refresh_queue. That created orphan pending
   // rows with no data_orchestrator_jobs.current_request_id/run_requested_flag, so minute cron ignored them.
   const requested = await requestSingleLaneJobs(env, {
@@ -9533,7 +9586,7 @@ async function enqueueBackendScoringRefresh(input, env) {
     manual_retry_required:false,
     enqueue_result: requested,
     next_action:'Use DATA REFRESHING > Production Clock Status or Orchestrator Status. The minute cron will pick up scoring_refresh through data_orchestrator_jobs and resume any valid scoring_runs checkpoint.',
-    note:'v1.5.08.9 preserves scoring pickup and adds same-slate current-game context gates before active/candidate publication.'
+    note:'v1.5.08.8 fixes scoring pickup by using requestSingleLaneJobs, so data_refresh_queue and data_orchestrator_jobs are initialized together. Existing RUNNING scoring_runs checkpoints are preserved and resumed by the scorer.'
   };
 }
 
@@ -9544,9 +9597,12 @@ function scoringRequestIsBackendOwned(input) {
 
 async function enqueueRefreshOrchestratorRows(input, env, mode) {
   const enqueue_reaper = await hardFinalizeStaleScoringQueueRows(env, 'schedule_enqueue_preflight').catch(e => ({ ok:false, error:String(e?.message||e) }));
+  const clean_run_gate = String(mode || '').toLowerCase() === 'cascade'
+    ? await refreshOrchestratorCleanRunState({ ...(input || {}), job:'refresh_orchestrator_clean_run_state', trigger:'manual_orchestrator_cascade_pre_full_run_clean_gate', allow_when_idle_only:true }, env).catch(e => ({ ok:false, error:String(e?.message||e) }))
+    : { skipped:true, reason:'selected_only_not_full_cascade' };
   const enqueue_self_heal = await cleanupSingleLaneStateInconsistencies(env, { reason:'schedule_enqueue_preflight', trigger:input?.trigger || input?.job || mode }).catch(e => ({ ok:false, error:String(e?.message||e) }));
-  const requested = await requestSingleLaneJobs(env, input, mode);
-  return { ...requested, enqueue_reaper, enqueue_self_heal };
+  const requested = await requestSingleLaneJobs(env, { ...(input || {}), clean_run_gate }, mode);
+  return { ...requested, enqueue_reaper, enqueue_self_heal, clean_run_gate };
 }
 
 
@@ -10017,7 +10073,6 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
     stale_partial_rows_requeued: 0,
     orphan_pending_rows_released: 0,
     stale_non_scoring_running_requeued: 0,
-    scoring_partial_failures_requeued: 0,
     optional_failures_released_next: 0,
     external_only_failure_policy: ['cloudflare_unavailable','github_unavailable','odds_api_unavailable','gemini_unavailable'],
     note: 'Auto-healing preflight treats queue stalls, duplicate scheduled chains, stale partial_continue rows, orphan pending rows, and optional odds failures as logic recoveries, not terminal pipeline failures.'
@@ -10142,61 +10197,6 @@ async function selfHealRefreshOrchestratorState(env, input = {}) {
     `).bind(row.request_id).run();
     out.orphan_pending_rows_released++;
     await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:row.job_key, event_type:'orphan_pending_released', status:'pending', message:'Pending row had no active predecessor and was released automatically.', payload_json:{ row, reason } });
-  }
-
-  const scoringPartialFailures = await sampleRows(env, `
-    SELECT request_id, chain_id, job_key, display_name, status, error, run_after, started_at, finished_at, updated_at, sequence_order, substr(COALESCE(output_json,''),1,1800) AS output_preview
-    FROM data_refresh_queue
-    WHERE job_key='scoring_refresh'
-      AND status='failed'
-      AND (
-        UPPER(COALESCE(error,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
-        OR UPPER(COALESCE(output_json,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
-      )
-      AND datetime(updated_at) >= datetime('now','-6 hours')
-    ORDER BY datetime(updated_at) DESC
-    LIMIT 10
-  `).catch(() => []);
-  for (const row of scoringPartialFailures) {
-    const payload = JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'refresh_orchestrator_self_heal', status:'scoring_partial_continue_failure_requeued', reason, row }).slice(0,3000);
-    await env.DB.batch([
-      env.DB.prepare(`
-        UPDATE data_refresh_queue
-        SET status='pending',
-            run_after=CURRENT_TIMESTAMP,
-            started_at=NULL,
-            finished_at=NULL,
-            updated_at=CURRENT_TIMESTAMP,
-            error=NULL,
-            output_json=COALESCE(output_json, ?)
-        WHERE request_id=?
-          AND job_key='scoring_refresh'
-          AND status='failed'
-          AND (
-            UPPER(COALESCE(error,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
-            OR UPPER(COALESCE(output_json,'')) LIKE '%SCORING_PARTIAL_CONTINUE%'
-          )
-      `).bind(payload, row.request_id),
-      env.DB.prepare(`
-        UPDATE data_orchestrator_jobs
-        SET run_requested_flag=1,
-            running_flag=0,
-            last_status='scoring_partial_continue_requeued',
-            last_fail=0,
-            last_error_code=NULL,
-            last_error_message=NULL,
-            current_request_id=?,
-            current_chain_id=?,
-            updated_at=CURRENT_TIMESTAMP
-        WHERE job_key='scoring_refresh'
-      `).bind(row.request_id, row.chain_id)
-    ]).catch(async () => {
-      await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, started_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=COALESCE(output_json, ?) WHERE request_id=? AND job_key='scoring_refresh' AND status='failed'`).bind(payload, row.request_id).run().catch(() => null);
-      await env.DB.prepare(`UPDATE data_orchestrator_jobs SET run_requested_flag=1, running_flag=0, last_status='scoring_partial_continue_requeued', last_fail=0, last_error_code=NULL, last_error_message=NULL, current_request_id=?, current_chain_id=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='scoring_refresh'`).bind(row.request_id, row.chain_id).run().catch(() => null);
-    });
-    await releaseSingleLaneEnqueueLock(env, row.request_id, { status:'requeued_scoring_partial_continue', job_key:'scoring_refresh' }).catch(() => null);
-    out.scoring_partial_failures_requeued++;
-    await refreshOrchestratorEvent(env, { request_id:row.request_id, chain_id:row.chain_id, job_key:'scoring_refresh', event_type:'scoring_partial_continue_failure_requeued', status:'pending', message:'Failed scoring row was actually a durable partial_continue and was requeued for the minute cron.', payload_json:{ row, reason } });
   }
 
   const optionalFailures = await sampleRows(env, `
@@ -10327,38 +10327,10 @@ async function productionRefreshWatchdog(env, input = {}) {
   return result;
 }
 
-
-async function releaseNextPendingRefreshQueueRow(env, row, reason = 'terminal_stage_released_next') {
-  try {
-    if (!env?.DB || !row?.chain_id) return { released:false, reason:'missing_db_or_chain' };
-    const seq = Number(row.sequence_order ?? row.job_index ?? 0);
-    const next = await env.DB.prepare(`
-      SELECT request_id, job_key, display_name, sequence_order, run_after
-      FROM data_refresh_queue
-      WHERE chain_id=?
-        AND status='pending'
-        AND sequence_order>?
-        AND (run_after IS NULL OR datetime(run_after) <= datetime('now','-2 minutes'))
-      ORDER BY sequence_order ASC, datetime(created_at) ASC
-      LIMIT 1
-    `).bind(row.chain_id, seq).first().catch(() => null);
-    if (!next?.request_id) return { released:false, reason:'no_pending_downstream_row' };
-    await env.DB.prepare(`
-      UPDATE data_refresh_queue
-      SET run_after=CURRENT_TIMESTAMP,
-          updated_at=CURRENT_TIMESTAMP,
-          output_json=json_set(COALESCE(output_json,'{}'),'$.auto_release_reason',?,'$.auto_release_after_job',?,'$.auto_release_at',CURRENT_TIMESTAMP)
-      WHERE request_id=? AND status='pending'
-    `).bind(String(reason || 'terminal_stage_released_next'), String(row.job_key || ''), next.request_id).run();
-    return { released:true, reason, request_id:next.request_id, job_key:next.job_key, display_name:next.display_name };
-  } catch (e) {
-    return { released:false, reason:'release_next_exception', error:String(e?.message || e) };
-  }
-}
-
 async function markRefreshQueueCompleted(env, row, wrapped) {
   await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,3000), row.request_id).run();
-  await releaseNextPendingRefreshQueueRow(env, row, 'mark_completed_released_next');
+  const next = await env.DB.prepare(`SELECT request_id FROM data_refresh_queue WHERE chain_id=? AND status='pending' AND run_after IS NULL ORDER BY sequence_order ASC, created_at ASC LIMIT 1`).bind(row.chain_id).first().catch(() => null);
+  if (next) await env.DB.prepare(`UPDATE data_refresh_queue SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE request_id=?`).bind(next.request_id).run();
 }
 
 function incrementalNoDeltaTerminalSuccessPayload(input, requestId, modeInfo, extra = {}) {
@@ -10411,23 +10383,6 @@ function isScoringLockWaitResult(row, result) {
   if (String(row?.job_key || '') !== 'scoring_refresh') return false;
   const status = String(result?.status || result?.result_status || result?.error || '').toUpperCase();
   return status === 'SCORING_LOCK_WAIT_RETRY_NEXT_TICK' || status === 'LOCKED_SKIP_SCORING_ALREADY_RUNNING';
-}
-
-function isScoringPartialContinueResult(row, result) {
-  if (String(row?.job_key || '') !== 'scoring_refresh') return false;
-  const statusText = String(
-    result?.status ||
-    result?.result_status ||
-    result?.error ||
-    result?.failure_error ||
-    result?.scoring?.status ||
-    result?.result?.status ||
-    ''
-  ).toUpperCase();
-  if (statusText.includes('SCORING_PARTIAL_CONTINUE')) return true;
-  if (result?.partial === true && statusText.includes('PARTIAL')) return true;
-  if (result?.scoring_partial === true) return true;
-  return false;
 }
 
 async function prizePicksBoardFreshnessGate(env, row) {
@@ -10516,18 +10471,7 @@ async function runRefreshOrchestratorTick(input, env) {
         return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
-    if (lockedJobKey === 'everyday_phase1') {
-      const everydayReconcile = await reconcileEverydayPhase1Runs(env, activeLockedRow?.current_slate_date || state?.current_slate_date || activeLockedRow?.requested_slate_date, { reason:'locked_everyday_phase1_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-      const everydayReaper = await finalizeCompletedEverydayPhase1QueueFromRuns(env, { request_id: state?.running_request_id || activeLockedRow?.current_request_id, chain_id: state?.running_chain_id || activeLockedRow?.current_chain_id, current_slate_date:activeLockedRow?.current_slate_date }, { reason:'locked_everyday_phase1_preflight', job:input.job || 'refresh_orchestrator_tick' }).catch(e => ({ finalized:false, reason:'everyday_reaper_error', error:String(e?.message || e) }));
-      if (everydayReaper?.finalized) {
-        return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_everyday_phase1_completed_by_child_reaper', cleanup, everyday_reconcile:everydayReconcile, everyday_reaper:everydayReaper, active_remaining:1, elapsed_ms:Date.now()-started, note:'Everyday Phase 1 child row had completed; v1.5.09.0 finalized the parent queue row and released the global lane.' };
-      }
-    }
     const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board';
-    // v1.5.09.1: Odds API jobs can be killed after temp rows are written but before certification/promotion.
-    // Continue locked odds rows immediately so the next tick can certify/promote existing temp rows instead of
-    // waiting for a dynamic timeout with a silent RUNNING queue row.
-    const canContinueLockedOddsApi = activeLockedRow && ['odds_api_morning','odds_api_afternoon'].includes(String(activeLockedRow.job_key || ''));
     // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
     // mid-child-step, the parent queue/global lock can remain running with null output_json.
     // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
@@ -10537,7 +10481,7 @@ async function runRefreshOrchestratorTick(input, env) {
     // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
     // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
     const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    if (!canContinueLockedPrizePicks && !canContinueLockedOddsApi && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
+    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
@@ -10608,8 +10552,7 @@ async function runRefreshOrchestratorTick(input, env) {
       } catch (_) {}
       result = await triggerPrizePicksGithubBoardRefresh({ ...body }, env, priorState);
     } else if (row.job_name === 'everyday_phase1_all_direct') {
-      const everydayQueueReconcile = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'orchestrator_before_everyday_phase1_tick' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-      // v1.5.09.0: Queue-owned Everyday Phase 1 must never restart from the beginning when a child row is stale.
+      // v1.5.07.6: Queue-owned Everyday Phase 1 must never run the old multi-step direct wrapper.
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
@@ -10622,7 +10565,6 @@ async function runRefreshOrchestratorTick(input, env) {
         job:'everyday_phase1_all_direct',
         status: tick?.phase1_complete ? 'completed' : 'partial_continue',
         slate_date:slate.slate_date,
-        reconciliation:everydayQueueReconcile,
         scheduled,
         tick,
         check,
@@ -10697,21 +10639,19 @@ async function runRefreshOrchestratorTick(input, env) {
       }
       await releaseSingleLaneEnqueueLock(env, requestId, { status:'failed', job_key:row.job_key, error:err });
       await releaseSingleLaneGlobalState(env, 'FAILED_RELEASED', wrapped);
-      const releasedNext = blocked.length ? { released:false, reason:'required_failure_blocked_downstream' } : await releaseNextPendingRefreshQueueRow(env, row, 'optional_failed_stage_released_downstream_repeatable');
-      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked, released_next:releasedNext } });
-      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked, released_next:releasedNext } });
-      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], released_next:releasedNext, last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and optional failures release downstream repeatably while required failures still block dependents.' };
+      await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'failed', status:'failed', fail:1, error_code:err.slice(0,250), message:err, payload_json:{ wrapped, blocked } });
+      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_failed', status:'failed', message:err, payload_json:{ wrapped, blocked } });
+      return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_failed_released', processed:[{ job_key:row.job_key, status:'failed', error:err, blocked }], last_result:wrapped, active_remaining:0, elapsed_ms:Date.now()-started, note:'The failed stage finalized, released the orchestrator, logged rich details, and blocked dependent downstream jobs when required.' };
     }
 
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_duration_ms=?, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(Date.now()-started, JSON.stringify(wrapped).slice(0,10000), row.job_key).run();
     await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
     await releaseSingleLaneEnqueueLock(env, requestId, { status:'completed', job_key:row.job_key });
     await releaseSingleLaneGlobalState(env, 'IDLE', wrapped);
-    const releasedNext = await releaseNextPendingRefreshQueueRow(env, row, 'completed_stage_released_downstream_repeatable');
-    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:{...wrapped, released_next:releasedNext} });
-    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:{...wrapped, released_next:releasedNext} });
+    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'completed', status:'completed', message:`${row.display_name} completed`, payload_json:wrapped });
+    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'single_lane_complete', status:'completed', message:'Refresh job completed.', payload_json:wrapped });
     const remaining = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 AND COALESCE(blocked_flag,0)=0`).first().catch(() => ({ rows_count:0 }));
-    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], released_next:releasedNext, last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. The next pending downstream queue row is released repeatably when needed; next cron tick starts the next requested stage by job_index.' };
+    return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_completed', processed:[{ job_key:row.job_key, status:'completed' }], last_result:wrapped, active_remaining:Number(remaining?.rows_count || 0), elapsed_ms:Date.now()-started, note:'One independent stage completed. Next cron tick will start the next requested stage by job_index.' };
   } catch (err) {
     const error = String(err?.message || err);
     const wrapped = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', orchestrator:'single_lane_independent', request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, routed_job:row.job_name, status:'failed_exception', error, elapsed_ms:Date.now()-started };
@@ -12490,132 +12430,6 @@ async function ensureEverydayPhase1Tables(env) {
   ).run();
 }
 
-
-async function reconcileEverydayPhase1Runs(env, slateDate, opts = {}) {
-  await ensureEverydayPhase1Tables(env);
-  const d = String(slateDate || '').slice(0, 10);
-  const staleSeconds = Number(opts.stale_seconds || 600);
-  const nowReason = String(opts.reason || 'everyday_phase1_continuation_gate');
-  const summary = {
-    ok: true,
-    version: SYSTEM_VERSION,
-    job: 'reconcile_everyday_phase1_runs',
-    slate_date: d || null,
-    stale_seconds: staleSeconds,
-    old_stale_terminalized: 0,
-    impossible_running_finished_reconciled: 0,
-    duplicate_active_cancelled: 0,
-    current_stale_requeued: 0,
-    active_kept: null,
-    reason: nowReason
-  };
-
-  // Running rows with finished_at are impossible. If they are current-step completed, restore completed;
-  // otherwise terminalize them as recovered so they cannot poison future active-run selection.
-  const impossible = await env.DB.prepare(`
-    UPDATE everyday_phase1_runs
-    SET status = CASE WHEN current_step='completed' THEN 'completed' ELSE 'stale_recovered_impossible_finished_running' END,
-        error = COALESCE(error, 'reconciled_running_with_finished_at'),
-        updated_at = CURRENT_TIMESTAMP
-    WHERE status='running'
-      AND finished_at IS NOT NULL
-  `).run().catch(() => null);
-  summary.impossible_running_finished_reconciled = Number(impossible?.meta?.changes || 0);
-
-  // Previous-slate active child rows are ghosts. They are diagnostic noise and can block active-run
-  // selection if a future query is broadened by mistake. Terminalize without touching live data tables.
-  if (d) {
-    const old = await env.DB.prepare(`
-      UPDATE everyday_phase1_runs
-      SET status='stale_recovered_old_slate',
-          finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP),
-          updated_at=CURRENT_TIMESTAMP,
-          error=COALESCE(error, 'stale_old_slate_child_run_recovered_by_v1_5_09_0')
-      WHERE status IN ('pending','running')
-        AND slate_date < ?
-    `).bind(d).run().catch(() => null);
-    summary.old_stale_terminalized = Number(old?.meta?.changes || 0);
-  }
-
-  if (d) {
-    const activeRows = await env.DB.prepare(`
-      SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, finished_at, error
-      FROM everyday_phase1_runs
-      WHERE slate_date=?
-        AND status IN ('pending','running')
-      ORDER BY datetime(created_at) DESC
-      LIMIT 20
-    `).bind(d).all().catch(() => ({ results: [] }));
-    const active = activeRows?.results || [];
-    const keep = active[0] || null;
-    summary.active_kept = keep ? { request_id: keep.request_id, status: keep.status, current_step: keep.current_step, updated_at: keep.updated_at } : null;
-    const dupes = active.slice(1).map(r => r.request_id).filter(Boolean);
-    if (dupes.length) {
-      const dupSql = `
-        UPDATE everyday_phase1_runs
-        SET status='stale_recovered_duplicate_active_child',
-            finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP),
-            updated_at=CURRENT_TIMESTAMP,
-            error=COALESCE(error, 'duplicate_active_child_cancelled_by_v1_5_09_0')
-        WHERE request_id IN (${dupes.map(() => '?').join(',')})
-      `;
-      const dupRes = await env.DB.prepare(dupSql).bind(...dupes).run().catch(() => null);
-      summary.duplicate_active_cancelled = Number(dupRes?.meta?.changes || 0);
-    }
-
-    // Same-slate stale RUNNING child should continue from current_step, not restart. Requeue it as
-    // pending with started_at cleared; current_step/output_preview stay intact for audit continuity.
-    if (keep && keep.status === 'running' && keep.current_step !== 'completed') {
-      const age = await env.DB.prepare(`SELECT CAST((julianday(CURRENT_TIMESTAMP)-julianday(?))*86400 AS INTEGER) AS seconds_since_update`).bind(keep.updated_at).first().catch(() => null);
-      const seconds = Number(age?.seconds_since_update || 0);
-      if (seconds >= staleSeconds) {
-        const rq = await env.DB.prepare(`
-          UPDATE everyday_phase1_runs
-          SET status='pending',
-              started_at=NULL,
-              updated_at=CURRENT_TIMESTAMP,
-              error=NULL,
-              output_preview=?
-          WHERE request_id=?
-            AND status='running'
-        `).bind(JSON.stringify({ recovered_by:'v1.5.09.0_everyday_phase1_continuation_gate', previous:keep, seconds_since_update:seconds, action:'requeued_same_slate_child_from_current_step' }).slice(0,4000), keep.request_id).run().catch(() => null);
-        summary.current_stale_requeued = Number(rq?.meta?.changes || 0);
-        summary.active_kept = { request_id: keep.request_id, status:'pending', current_step: keep.current_step, updated_at:'CURRENT_TIMESTAMP', seconds_since_update:seconds };
-      }
-    }
-  }
-  return summary;
-}
-
-async function finalizeCompletedEverydayPhase1QueueFromRuns(env, rowLike = {}, opts = {}) {
-  await ensureEverydayPhase1Tables(env);
-  const requestId = rowLike?.request_id || rowLike?.current_request_id || rowLike?.running_request_id || null;
-  const chainId = rowLike?.chain_id || rowLike?.current_chain_id || rowLike?.running_chain_id || null;
-  const slateDate = String(rowLike?.requested_slate_date || rowLike?.current_slate_date || rowLike?.slate_date || '').slice(0,10);
-  const child = requestId
-    ? await env.DB.prepare(`SELECT * FROM everyday_phase1_runs WHERE request_id=? LIMIT 1`).bind(requestId).first().catch(() => null)
-    : null;
-  if (!child || child.status !== 'completed') return { finalized:false, reason:'no_completed_everyday_child_for_queue_request', request_id:requestId, child_status:child?.status || null };
-  const wrapped = {
-    ok:true,
-    data_ok:true,
-    version:SYSTEM_VERSION,
-    job:opts.job || 'refresh_orchestrator_tick',
-    status:'everyday_phase1_completed_by_child_reaper',
-    request_id:requestId,
-    chain_id:chainId,
-    slate_date:child.slate_date || slateDate,
-    child_run:child,
-    note:'v1.5.09.0 finalized parent queue/job state from a completed everyday_phase1_runs child row.'
-  };
-  await env.DB.prepare(`UPDATE data_refresh_queue SET status='completed', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND job_key='everyday_phase1' AND status IN ('pending','running','partial_continue')`).bind(JSON.stringify(wrapped).slice(0,5000), requestId).run().catch(() => null);
-  await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=0, blocked_flag=0, blocked_by_job_key=NULL, last_status='completed', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_finished_at=CURRENT_TIMESTAMP, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='everyday_phase1' AND current_request_id=?`).bind(JSON.stringify(wrapped).slice(0,10000), requestId).run().catch(() => null);
-  await releaseSingleLaneGlobalState(env, 'IDLE', wrapped).catch(() => null);
-  await releaseSingleLaneEnqueueLock(env, requestId, { status:'completed', job_key:'everyday_phase1', reason:'completed_child_reaper' }).catch(() => null);
-  await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:'everyday_phase1', event_type:'everyday_phase1_child_reaper_finalized_parent', status:'completed', message:'Everyday Phase 1 parent finalized from completed child row.', payload_json:wrapped }).catch(() => null);
-  return { finalized:true, request_id:requestId, chain_id:chainId, child_status:child.status, child_step:child.current_step, wrapped };
-}
-
 const EVERYDAY_PHASE1_STEPS = [
   "games_markets",
   "starters",
@@ -12637,12 +12451,11 @@ function nextEverydayPhase1Step(step) {
 async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const reconciliation = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'schedule_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-  const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY datetime(created_at) DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, reconciliation, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. v1.5.09.0 will continue it from current_step through backend minute ticks." };
+  const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
   const requestId = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)").bind(requestId, slate.slate_date).run();
-  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, reconciliation, run_after:"backend minute cron will continue it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"bounded backend minute ticks; no browser queue tick required", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
+  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually or let the scheduler call it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"usually 10-30 seconds after one auto tick; lineups may return retry_later and not block", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
 }
 
 function everydayPhase1JobForStep(step) {
@@ -12684,16 +12497,15 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
 async function runEverydayPhase1Tick(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const reconciliation = await reconcileEverydayPhase1Runs(env, slate.slate_date, { reason:'tick_preflight' }).catch(e => ({ ok:false, error:String(e?.message || e) }));
-  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY datetime(created_at) DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, reconciliation, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
+  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
   const requestId = row.request_id;
   let currentStep = row.current_step || "games_markets";
   const startedAt = Date.now();
   const maxSteps = Number(input?.max_steps || 8);
   const maxMs = Number(input?.max_ms || 22000);
   const processed = [];
-  if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(JSON.stringify({ resumed_by:'v1.5.09.0_everyday_phase1_continuation_gate', current_step:currentStep, previous_row:row }).slice(0,4000), requestId).run();
+  if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
   try {
     for (let i = 0; i < maxSteps; i++) {
       if (currentStep === "completed") break;
@@ -12705,7 +12517,6 @@ async function runEverydayPhase1Tick(input, env) {
         return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_unknown_step", request_id:requestId, step, processed, live_tables_touched:false };
       }
       const t0 = Date.now();
-      await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', current_step=?, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify({ attempting_step:step, routed_job:jobName, started_at:new Date().toISOString(), processed }).slice(0,4000), requestId).run().catch(() => null);
       const alreadySatisfied = await everydayPhase1StepAlreadySatisfied(env, slate.slate_date, step).catch(() => null);
       let result;
       let skippedExecution = false;
@@ -12723,7 +12534,7 @@ async function runEverydayPhase1Tick(input, env) {
           expected_rows:alreadySatisfied.expected,
           inserted:null,
           retry_later:false,
-          note:'v1.5.09.0 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
+          note:'v1.5.07.6 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
         result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
@@ -12739,7 +12550,7 @@ async function runEverydayPhase1Tick(input, env) {
     }
     const complete = currentStep === "completed";
     const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:complete ? "completed" : "partial_continue", request_id:requestId, slate_date:slate.slate_date, reconciliation, processed_steps:processed.length, processed, next_step:currentStep, phase1_complete:complete, final_check:check, elapsed_ms:Date.now()-startedAt, live_tables_touched:processed.length>0, note:complete ? "Everyday Phase 1 auto-run completed and terminalized the child row." : "Everyday Phase 1 auto-run stopped at safety budget. Backend minute cron will continue from next_step." };
+    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:complete ? "completed" : "partial_continue", request_id:requestId, slate_date:slate.slate_date, processed_steps:processed.length, processed, next_step:currentStep, phase1_complete:complete, final_check:check, elapsed_ms:Date.now()-startedAt, live_tables_touched:processed.length>0, note:complete ? "Everyday Phase 1 auto-run completed. Lineups can be retry-later/non-blocking if not posted." : "Everyday Phase 1 auto-run stopped at safety budget. Run Baseline Tick again to continue." };
   } catch (err) {
     const error = String(err?.message || err);
     await env.DB.prepare("UPDATE everyday_phase1_runs SET status='failed', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=? WHERE request_id=?").bind(error, JSON.stringify({ processed, error }).slice(0,4000), requestId).run().catch(() => null);
@@ -13698,7 +13509,8 @@ async function executeTaskJob(jobName, body, slate, env) {
   if (jobName === "refresh_orchestrator_cancel_all") return await cancelRefreshOrchestratorQueue({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_schedule_status") return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env);
   if (jobName === "refresh_orchestrator_seed_production_clock") { await ensureProductionRefreshScheduleTables(env); return await productionRefreshClockStatus({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode }, env); }
-  if (jobName === "schedule_one_shot_full_run_plus_2min") return await scheduleOneShotFullRunPlus2Min({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, delay_minutes: 2 }, env);
+  if (jobName === "refresh_orchestrator_clean_run_state") return await refreshOrchestratorCleanRunState({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_clean_run_state_button" }, env);
+  if (jobName === "schedule_one_shot_full_run_plus_2min") return await scheduleOneShotFullRunPlus2Min({ ...(body || {}), job: jobName, slate_date: slate.slate_date, slate_mode: slate.slate_mode, trigger: "manual_one_shot_full_run_plus_2min" }, env);
 
   // v1.2.94: Everyday Phase 1 jobs are deterministic internal runners.
   // Route them before generic prompt/Gemini fallback to avoid "Missing prompt filename".
@@ -16189,144 +16001,8 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
   await safeDbRun(env, `UPDATE odds_api_run_certifications SET cleaned_at=CURRENT_TIMESTAMP WHERE run_id=?`, [runId]);
   return { cleaned:true, keep_failed_ignored:!!keepFailed, details:out };
 }
-
-async function oddsApiLatestTempRunForQueue(env, slateDate, windowName, queueRequestId = null) {
-  const slate = String(slateDate || '').trim();
-  const win = String(windowName || '').toUpperCase();
-  const qid = String(queueRequestId || '').trim();
-  if (!env?.DB || !slate || !win) return null;
-  if (qid) {
-    const direct = await safeDbFirst(env, `
-      SELECT run_id, MAX(created_at) AS latest_created
-      FROM odds_api_requests_temp
-      WHERE run_id=? AND slate_date=? AND window_name=?
-      GROUP BY run_id
-      LIMIT 1`, [qid, slate, win]);
-    if (direct?.run_id) return direct.run_id;
-  }
-  const row = await safeDbFirst(env, `
-    SELECT run_id, MAX(created_at) AS latest_created, COUNT(*) AS request_rows
-    FROM odds_api_requests_temp
-    WHERE slate_date=? AND window_name=?
-    GROUP BY run_id
-    ORDER BY datetime(MAX(created_at)) DESC
-    LIMIT 1`, [slate, win]);
-  return row?.run_id || null;
-}
-
-async function oddsApiTempRunCounts(env, runId) {
-  if (!env?.DB || !runId) return { request_rows:0, event_rows:0, game_market_rows:0, prop_rows:0, hits_rows:0, rbi_rows:0, total_bases_rows:0 };
-  const r = await safeDbFirst(env, `
-    SELECT
-      (SELECT COUNT(*) FROM odds_api_requests_temp WHERE run_id=?) AS request_rows,
-      (SELECT COUNT(*) FROM odds_api_events_temp WHERE run_id=?) AS event_rows,
-      (SELECT COUNT(*) FROM odds_api_game_markets_temp WHERE run_id=?) AS game_market_rows,
-      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=?) AS prop_rows,
-      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='HITS') AS hits_rows,
-      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='RBI') AS rbi_rows,
-      (SELECT COUNT(*) FROM odds_api_player_props_temp WHERE run_id=? AND prop_family='TOTAL_BASES') AS total_bases_rows`, [runId, runId, runId, runId, runId, runId, runId]);
-  return {
-    request_rows:Number(r?.request_rows || 0),
-    event_rows:Number(r?.event_rows || 0),
-    game_market_rows:Number(r?.game_market_rows || 0),
-    prop_rows:Number(r?.prop_rows || 0),
-    hits_rows:Number(r?.hits_rows || 0),
-    rbi_rows:Number(r?.rbi_rows || 0),
-    total_bases_rows:Number(r?.total_bases_rows || 0)
-  };
-}
-
-async function oddsApiWriteQueueProgress(env, input, status, payload = {}) {
-  const requestId = String(input?.queue_request_id || '').trim();
-  if (!env?.DB || !requestId) return { skipped:true, reason:'missing_queue_request_id' };
-  const out = {
-    ok:true,
-    data_ok:false,
-    version:SYSTEM_VERSION,
-    job:input?.job || 'run_odds_api_market_intel',
-    queue_request_id:requestId,
-    queue_chain_id:input?.queue_chain_id || null,
-    queue_job_key:input?.queue_job_key || input?.orchestrator_job_key || null,
-    status,
-    ...payload,
-    updated_at:new Date().toISOString(),
-    note:'v1.5.09.1 Odds API rows are never allowed to stay RUNNING silently; queue output records fetch/certification/promotion progress.'
-  };
-  await env.DB.prepare(`UPDATE data_refresh_queue SET output_json=?, updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status IN ('pending','running')`).bind(JSON.stringify(out).slice(0,5000), requestId).run().catch(() => null);
-  return { wrote:true, status };
-}
-
-async function finalizeOddsApiTempRunForQueue(env, input, runId, slateDate, windowName, reason = 'odds_api_resume_existing_temp_run') {
-  const counts = await oddsApiTempRunCounts(env, runId);
-  if (counts.request_rows <= 0 && counts.event_rows <= 0 && counts.game_market_rows <= 0 && counts.prop_rows <= 0) {
-    return { finalized:false, reason:'no_temp_rows_for_run', run_id:runId, temp_counts:counts };
-  }
-  await oddsApiWriteQueueProgress(env, input, 'odds_api_certifying_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, resume_reason:reason });
-  const existingCert = await safeDbFirst(env, `SELECT run_id,status,certification_grade,promoted_at,cleaned_at,error FROM odds_api_run_certifications WHERE run_id=?`, [runId]);
-  let certification = existingCert && String(existingCert.status || '').toUpperCase() === 'PROMOTED'
-    ? { ok:true, reused:true, ...existingCert, temp_counts:counts }
-    : await certifyOddsApiTempRun(env, runId, slateDate, windowName, counts.request_rows > 0, counts.event_rows, {
-        resume_reason:reason,
-        queue_request_id:input?.queue_request_id || null,
-        queue_chain_id:input?.queue_chain_id || null,
-        temp_counts:counts,
-        certification_source:'v1.5.09.1_odds_api_finalizer_gate'
-      });
-  if (!certification?.ok) {
-    await oddsApiWriteQueueProgress(env, input, 'odds_api_certification_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
-    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_certification_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, error:certification?.error || 'odds_api_certification_failed' };
-  }
-  await oddsApiWriteQueueProgress(env, input, 'odds_api_promoting_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification });
-  let promotion = { promoted:false, reason:'not_attempted' };
-  let cleanup = { cleaned:false, reason:'not_attempted' };
-  try {
-    promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
-    const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
-    cleanup = await clearOddsApiTempTables(env);
-    cleanup.main_purge = mainPurge;
-  } catch (err) {
-    promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err) };
-    await oddsApiWriteQueueProgress(env, input, 'odds_api_promotion_failed_existing_temp_run', { run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion });
-    return { finalized:true, ok:false, data_ok:false, terminal_failure:true, status:'odds_api_promotion_failed_existing_temp_run', run_id:runId, slate_date:slateDate, window_name:windowName, temp_counts:counts, certification, promotion, error:promotion.error };
-  }
-  const result = {
-    finalized:true,
-    ok:true,
-    data_ok:!!promotion.promoted,
-    version:SYSTEM_VERSION,
-    job:input?.job || 'run_odds_api_market_intel',
-    status:promotion.promoted ? 'odds_api_certified_promoted_from_existing_temp_run' : 'odds_api_existing_temp_run_not_promoted',
-    run_id:runId,
-    slate_date:slateDate,
-    window_name:windowName,
-    temp_counts:counts,
-    certification,
-    promotion,
-    cleanup,
-    resume_reason:reason,
-    note:'Existing Odds API temp rows were certified, promoted, cleaned, and returned as terminal success without refetching.'
-  };
-  await oddsApiWriteQueueProgress(env, input, result.status, result);
-  return result;
-}
-
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
-  const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
-  await ensureOddsApiTables(env);
-  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
-  const slateDate = slateResolution.resolved_slate_date;
-  const windowName = String(input.window_name || 'MORNING').toUpperCase();
-  await oddsApiWriteQueueProgress(env, input, 'odds_api_runner_started', { slate_date:slateDate, window_name:windowName, requested_slate_date:requestedSlateDate });
-
-  // v1.5.09.1: certification/promotion finalizer gate. If a previous Worker request was killed
-  // after fetch/temp writes, do not refetch or wipe temp. Resume at certify -> promote -> complete.
-  const existingTempRunId = await oddsApiLatestTempRunForQueue(env, slateDate, windowName, input?.queue_request_id || null);
-  if (existingTempRunId) {
-    const finalized = await finalizeOddsApiTempRunForQueue(env, input, existingTempRunId, slateDate, windowName, 'existing_temp_detected_before_fetch');
-    if (finalized?.finalized) return finalized;
-  }
-
   const oddsKeyInfo = await getOddsApiKeyForJob(env, input);
   if (!oddsKeyInfo.key) return {
     ok:true,
@@ -16337,10 +16013,14 @@ async function runOddsApiMarketIntel(input, env) {
     odds_api_binding: oddsApiBindingStatus(env),
     note:'Odds API function capsule checked direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, and remote config.txt. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
   };
+  const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
+  await ensureOddsApiTables(env);
+  const slateResolution = await resolveOddsSlateFromActiveBoard(env, requestedSlateDate, input || {});
+  const slateDate = slateResolution.resolved_slate_date;
+  const windowName = String(input.window_name || 'MORNING').toUpperCase();
   const runId = oddsRunId(slateDate, windowName);
-  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp_no_existing_resume_rows' });
+  const overwrite_preflight = await volatileOverwritePreflight(env, slateDate, { oddsTemp:true, oddsMain:false, reason:'odds_api_start_clear_all_temp' });
   await cleanOddsApiTempRun(env, runId).catch(() => null);
-  await oddsApiWriteQueueProgress(env, input, 'odds_api_fetch_started', { slate_date:slateDate, window_name:windowName, run_id:runId, overwrite_preflight });
   const cfg = oddsApiConfig(env);
   const gameUrl = oddsPathWithKey(`/${ODDS_API_SPORT_KEY}/odds`, oddsKeyInfo.key, { regions:cfg.regions, markets:cfg.gameMarkets, oddsFormat:cfg.oddsFormat, bookmakers:cfg.bookmakers });
   const gameResult = await oddsApiFetchJson(gameUrl);
@@ -16383,7 +16063,6 @@ async function runOddsApiMarketIntel(input, env) {
   const zeroSelectedReason = selected.length <= 0 && allEvents.length > 0 && Number(skippedCounts.SKIPPED_OTHER_DATE || 0) > 0
     ? 'SELECTED_EVENTS_ZERO_DUE_TO_SLATE_MISMATCH'
     : 'NO_SELECTED_EVENTS';
-  await oddsApiWriteQueueProgress(env, input, 'odds_api_temp_rows_written_certifying', { slate_date:slateDate, window_name:windowName, run_id:runId, selected_events:selected.length, prop_requests:propRequests, prop_rows:propRows, game_save:gameSave });
   const certification = await certifyOddsApiTempRun(env, runId, slateDate, windowName, gameResult.ok, selected.length, {
     requested_slate_date: requestedSlateDate,
     resolved_slate_date: slateDate,
@@ -16397,12 +16076,10 @@ async function runOddsApiMarketIntel(input, env) {
   let cleanup = { cleaned:false, reason:'not_promoted' };
   if (certification.ok) {
     try {
-      await oddsApiWriteQueueProgress(env, input, 'odds_api_certified_promoting', { slate_date:slateDate, window_name:windowName, run_id:runId, certification });
       promotion = await promoteOddsApiTempRun(env, runId, slateDate, windowName);
       const mainPurge = await purgeOddsApiMainToSlate(env, slateDate);
       cleanup = await clearOddsApiTempTables(env);
       cleanup.main_purge = mainPurge;
-      await oddsApiWriteQueueProgress(env, input, 'odds_api_promoted_cleaned', { slate_date:slateDate, window_name:windowName, run_id:runId, certification, promotion, cleanup });
     } catch (err) {
       promotion = { promoted:false, reason:'promotion_exception', error:String(err?.message || err), idempotency_guard:'v1.3.50' };
       cleanup = await clearOddsApiTempTables(env).catch(cleanErr => ({ cleaned:false, reason:'cleanup_after_promotion_exception_failed', error:String(cleanErr?.message || cleanErr) }));
@@ -16575,38 +16252,13 @@ function rbiUnderMathRiskProfile(player, sample){
 }
 function scoreClamp(v,lo,hi){v=Number(v); if(!Number.isFinite(v))return 0; return Math.max(lo,Math.min(hi,v));}
 async function scoreRowsSafe(env,sql,binds=[]){try{return (await env.DB.prepare(sql).bind(...binds).all()).results||[];}catch(_e){return [];}}
-function scoreDatePrefixFromGameId(gameId){
-  const m = String(gameId || '').match(/^(\d{4}-\d{2}-\d{2})[_T]/);
-  return m ? m[1] : null;
-}
-function scoreGameIdSameSlateOrBlank(gameId, slateDate){
-  const d = scoreDatePrefixFromGameId(gameId);
-  return !d || d === String(slateDate || '');
-}
-function scoreCurrentContextGate(auditOrPayload, slateDate, row){
-  let audit = auditOrPayload || {};
-  if (typeof audit === 'string') { try { audit = JSON.parse(audit || '{}') || {}; } catch(_e) { audit = {}; } }
-  const pc = audit && typeof audit === 'object' ? (audit.player_context || {}) : {};
-  const checks = [];
-  if (row && row.game_id) checks.push({ field:'row.game_id', value:row.game_id });
-  if (row && row.event_id) checks.push({ field:'row.event_id', value:row.event_id });
-  if (pc && pc.game_id) checks.push({ field:'player_context.game_id', value:pc.game_id });
-  for (const c of checks) {
-    const d = scoreDatePrefixFromGameId(c.value);
-    if (d && d !== String(slateDate || '')) return { pass:false, reason:'same_slate_current_game_context_mismatch', field:c.field, value:c.value, found_date:d, slate_date:String(slateDate || '') };
-  }
-  return { pass:true, reason:'same_slate_current_game_context_ok' };
-}
-function scoreActivePublishAllowed(audit, slateDate, row){
-  return scoreCurrentContextGate(audit, slateDate, row).pass;
-}
 async function loadMlbScoringModifierContext(env,slateDate){
-  const ctx={slateDate,lineupsByPlayer:new Map(),rbiByPlayer:new Map(),metricsByPlayer:new Map(),powerByPlayer:new Map(),weatherByHome:new Map(),totalsByEvent:new Map(),totalsByTeamPair:new Map(),startersByGameTeam:new Map(),source_counts:{lineups:0,rbi_edges:0,incremental_metrics:0,power_splits:0,weather:0,game_totals:0,starters:0,stale_context_rejected:0}};
-  const lineups=await scoreRowsSafe(env,`SELECT player_name, team_id, game_id, slot, bats FROM lineups_current WHERE game_id LIKE ?`, [`${slateDate}_%`]);
-  for(const r of lineups){const key=scoreNormName(r.player_name); if(!key)continue; if(!scoreGameIdSameSlateOrBlank(r.game_id, slateDate)){ctx.source_counts.stale_context_rejected++; continue;} if(!ctx.lineupsByPlayer.has(key))ctx.lineupsByPlayer.set(key,[]); ctx.lineupsByPlayer.get(key).push({team:scoreTeamKey(r.team_id),game_id:r.game_id,slot:Number(r.slot),bats:r.bats||null});}
+  const ctx={lineupsByPlayer:new Map(),rbiByPlayer:new Map(),metricsByPlayer:new Map(),powerByPlayer:new Map(),weatherByHome:new Map(),totalsByEvent:new Map(),totalsByTeamPair:new Map(),startersByGameTeam:new Map(),source_counts:{lineups:0,rbi_edges:0,incremental_metrics:0,power_splits:0,weather:0,game_totals:0,starters:0}};
+  const lineups=await scoreRowsSafe(env,`SELECT player_name, team_id, game_id, slot, bats FROM lineups_current`);
+  for(const r of lineups){const key=scoreNormName(r.player_name); if(!key)continue; if(!ctx.lineupsByPlayer.has(key))ctx.lineupsByPlayer.set(key,[]); ctx.lineupsByPlayer.get(key).push({team:scoreTeamKey(r.team_id),game_id:r.game_id,slot:Number(r.slot),bats:r.bats||null});}
   ctx.source_counts.lineups=lineups.length;
-  const rbis=await scoreRowsSafe(env,`SELECT game_id, player_name, team_id, opponent_team, lineup_slot, bats, opposing_throws, player_obp, player_slg, rbi_opportunity_score, lineup_rbi_spot_score, behind_runner_onbase_score, run_environment_flag, candidate_tier FROM edge_candidates_rbi WHERE slate_date=?`,[slateDate]);
-  for(const r of rbis){const key=scoreNormName(r.player_name); if(!key)continue; if(!scoreGameIdSameSlateOrBlank(r.game_id, slateDate)){ctx.source_counts.stale_context_rejected++; continue;} if(!ctx.rbiByPlayer.has(key))ctx.rbiByPlayer.set(key,[]); ctx.rbiByPlayer.get(key).push({team:scoreTeamKey(r.team_id),opponent:scoreTeamKey(r.opponent_team),game_id:r.game_id||null,slot:Number(r.lineup_slot),bats:r.bats||null,throws:r.opposing_throws||null,obp:Number(r.player_obp),slg:Number(r.player_slg),opp:Number(r.rbi_opportunity_score),spot:Number(r.lineup_rbi_spot_score),setter:Number(r.behind_runner_onbase_score),run_flag:r.run_environment_flag||null,tier:r.candidate_tier||null});}
+  const rbis=await scoreRowsSafe(env,`SELECT player_name, team_id, opponent_team, lineup_slot, bats, opposing_throws, player_obp, player_slg, rbi_opportunity_score, lineup_rbi_spot_score, behind_runner_onbase_score, run_environment_flag, candidate_tier FROM edge_candidates_rbi WHERE slate_date=?`,[slateDate]);
+  for(const r of rbis){const key=scoreNormName(r.player_name); if(!key)continue; if(!ctx.rbiByPlayer.has(key))ctx.rbiByPlayer.set(key,[]); ctx.rbiByPlayer.get(key).push({team:scoreTeamKey(r.team_id),opponent:scoreTeamKey(r.opponent_team),slot:Number(r.lineup_slot),bats:r.bats||null,throws:r.opposing_throws||null,obp:Number(r.player_obp),slg:Number(r.player_slg),opp:Number(r.rbi_opportunity_score),spot:Number(r.lineup_rbi_spot_score),setter:Number(r.behind_runner_onbase_score),run_flag:r.run_environment_flag||null,tier:r.candidate_tier||null});}
   ctx.source_counts.rbi_edges=rbis.length;
   const metrics=await scoreRowsSafe(env,`SELECT player_name, team_id, role, games_logged, total_pa, total_ab, total_hits, total_rbi, total_home_runs, total_walks, total_strikeouts, last3_games, last3_hits, last3_ab, last5_games, last5_hits, last5_ab, last10_games, last10_hits, last10_ab, last20_games, last20_hits, last20_ab, updated_at FROM incremental_player_metrics`);
   for(const m of metrics){const key=scoreNormName(m.player_name); if(!key)continue; if(!ctx.metricsByPlayer.has(key))ctx.metricsByPlayer.set(key,[]); ctx.metricsByPlayer.get(key).push({team:scoreTeamKey(m.team_id),role:m.role||null,games:Number(m.games_logged),pa:Number(m.total_pa),ab:Number(m.total_ab),hits:Number(m.total_hits),rbi:Number(m.total_rbi),hr:Number(m.total_home_runs),bb:Number(m.total_walks),k:Number(m.total_strikeouts),last3_games:Number(m.last3_games),last3_hits:Number(m.last3_hits),last3_ab:Number(m.last3_ab),last5_games:Number(m.last5_games),last5_hits:Number(m.last5_hits),last5_ab:Number(m.last5_ab),last10_games:Number(m.last10_games),last10_hits:Number(m.last10_hits),last10_ab:Number(m.last10_ab),last20_games:Number(m.last20_games),last20_hits:Number(m.last20_hits),last20_ab:Number(m.last20_ab),updated_at:m.updated_at||null});}
@@ -16651,31 +16303,20 @@ async function loadMlbScoringModifierContext(env,slateDate){
 }
 function scorePickPlayerContext(s,ctx){
   const key=scoreNormName(s.player_name);
-  const slateDate=String(ctx?.slateDate||'');
   const parsed=scoreParseMatchupTeams(s.opponent || s.matchup || s.game || s.game_label || '');
   const home=scoreValidTeamKey(s.home_team) || parsed.home;
   const away=scoreValidTeamKey(s.away_team) || parsed.away;
   const validTeams=new Set([home,away].filter(Boolean));
-  const exactTeamPick=(arr, field='team')=>{
-    const clean=(arr||[]).filter(x=>scoreGameIdSameSlateOrBlank(x&&x.game_id, slateDate));
-    if(validTeams.size){
-      const exact=clean.find(x=>validTeams.has(scoreValidTeamKey(x&&x[field])));
-      return exact || null;
-    }
-    return clean[0]||null;
-  };
-  const rbi=exactTeamPick(ctx.rbiByPlayer.get(key)||[],'team');
-  const lu=exactTeamPick(ctx.lineupsByPlayer.get(key)||[],'team');
-  const metrics=exactTeamPick(ctx.metricsByPlayer?.get(key)||[],'team');
-  const powerRaw=(ctx.powerByPlayer?.get(key))||null;
-  const power=powerRaw && (!validTeams.size || validTeams.has(scoreValidTeamKey(powerRaw.team))) ? powerRaw : null;
+  const rbi=(ctx.rbiByPlayer.get(key)||[]).find(x=>!validTeams.size||validTeams.has(x.team))||(ctx.rbiByPlayer.get(key)||[])[0]||null;
+  const lu=(ctx.lineupsByPlayer.get(key)||[]).find(x=>!validTeams.size||validTeams.has(x.team))||(ctx.lineupsByPlayer.get(key)||[])[0]||null;
+  const metrics=(ctx.metricsByPlayer?.get(key)||[]).find(x=>!validTeams.size||validTeams.has(x.team))||(ctx.metricsByPlayer?.get(key)||[])[0]||null;
+  const power=(ctx.powerByPlayer?.get(key))||null;
   const rawTeam=(rbi&&rbi.team)||(lu&&lu.team)||(metrics&&metrics.team)||(power&&power.team)||null;
   const team=scoreValidTeamKey(rawTeam) || rawTeam;
   const opponent=team&&home&&away?(team===home?away:home):null;
-  const candidateGameId=(lu&&lu.game_id)||(rbi&&rbi.game_id)||null;
-  const game_id=scoreGameIdSameSlateOrBlank(candidateGameId, slateDate) ? candidateGameId : null;
+  const game_id=(lu&&lu.game_id)||null;
   const opposing_starter=(game_id&&opponent&&ctx.startersByGameTeam)?ctx.startersByGameTeam.get(`${game_id}|${opponent}`)||null:null;
-  return {key,home,away,team,opponent,game_id,opposing_starter,lineup_slot:(rbi&&Number.isFinite(rbi.slot)?rbi.slot:(lu&&Number.isFinite(lu.slot)?lu.slot:null)),bats:(rbi&&rbi.bats)||(lu&&lu.bats)||null,opposing_throws:rbi&&rbi.throws||null,rbi,metrics,power,matchup_home:home,matchup_away:away,context_gate:scoreCurrentContextGate({player_context:{game_id}}, slateDate)};
+  return {key,home,away,team,opponent,game_id,opposing_starter,lineup_slot:(rbi&&Number.isFinite(rbi.slot)?rbi.slot:(lu&&Number.isFinite(lu.slot)?lu.slot:null)),bats:(rbi&&rbi.bats)||(lu&&lu.bats)||null,opposing_throws:rbi&&rbi.throws||null,rbi,metrics,power,matchup_home:home,matchup_away:away};
 }
 function scoreHitsContactProfile(player, probability){
   const metrics = player && player.metrics ? player.metrics : null;
@@ -18095,7 +17736,7 @@ async function buildPrizePicksStandardHitsTbFallbackScoreStatements(env, slateDa
       };
       out.scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO ${table} (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,pp.line_id || null,pp.line_id || null,pp.start_time || null,pp.player_name,scoreNormName(pp.player_name),null,scoreTeamKey(pp.team)||pp.team||null,scoreTeamKey(pp.opponent)||pp.opponent||null,null,fam,fam==='HITS'?'prizepicks_hits_standard':'prizepicks_total_bases_standard',lineType,Number(pp.line_score),dir,'prizepicks_standard_board',source,scoreAmerican(scored.prob),scored.prob,scored.prob,scored.confidence,scored.raw,scored.final,scored.grade,scored.rec,JSON.stringify(scored.mods),JSON.stringify(scored.caps),JSON.stringify(scored.penalties),JSON.stringify(scored.blocks),JSON.stringify(audit),SYSTEM_VERSION));
       out.promoted++; out.scored_rows++;
-      if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec) && scoreActivePublishAllowed(audit, slateDate, { game_id: pp.line_id || null, event_id: pp.line_id || null })) {
+      if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec)) {
         out.activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,pp.line_id || null,pp.line_id || null,pp.start_time || null,pp.player_name,scoreNormName(pp.player_name),scoreTeamKey(pp.team)||pp.team||null,scoreTeamKey(pp.opponent)||pp.opponent||null,fam,fam==='HITS'?'prizepicks_hits_standard':'prizepicks_total_bases_standard',lineType,Number(pp.line_score),dir,'prizepicks_standard_board',source,scored.prob,scored.final,scored.grade,scored.rec,scored.confidence,JSON.stringify(audit),SYSTEM_VERSION));
         out.active++; out.active_rows++;
       }
@@ -18194,7 +17835,7 @@ async function buildRbiBoardFallbackScoreStatements(env, slateDate, runId, modif
     const gameTime = gameTimeResolved || row.start_time || null;
     out.scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO mlb_rbi_scores (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),null,team,opponent,null,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,null,null,scored.conf,scored.raw,scored.final,scored.grade,scored.rec,JSON.stringify(scored.mods),JSON.stringify(audit.caps),JSON.stringify([]),JSON.stringify([]),JSON.stringify(audit),SYSTEM_VERSION));
     out.promoted++;
-    if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec) && scoreActivePublishAllowed(audit, slateDate, { game_id: sourceId, event_id: sourceId })) {
+    if (['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(scored.rec)) {
       out.activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,sourceId,sourceId,gameTime,row.player_name,scoreNormName(row.player_name),team,opponent,'RBI','batter_rbis',lineType,lineNumber,dir,sourceBoard,source,null,scored.final,scored.grade,scored.rec,scored.conf,JSON.stringify(audit),SYSTEM_VERSION));
       out.active++;
     }
@@ -18342,7 +17983,7 @@ async function runFullScoringRefreshV1(input, env) {
         lock_status: queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED',
         output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task output' },
         next_action: 'Wait for the next minute cron tick. The same scoring queue row must continue until scoring completes, then candidate board export runs.',
-        note: 'Scoring made durable progress and returned partial_continue. v1.5.08.9 keeps queue/checkpoint pickup and blocks stale current-game context from live scoring/candidate publishing.'
+        note: 'Scoring made durable progress and returned partial_continue. v1.5.08.8 keeps partial scoring as queue continuation and uses the official single-lane enqueue path for pickup.'
       };
     }
     const scoringOk=!!(scoring?.ok && scoring?.data_ok);
@@ -18351,11 +17992,7 @@ async function runFullScoringRefreshV1(input, env) {
     const failure_error=String((!candidateOk && scoringOk ? (candidate_board?.error||candidate_board?.status||candidate_board?.note) : null)||scoring?.error||scoring?.status||candidate_board?.error||candidate_board?.status||export_board?.error||'');
     return { ok: true, data_ok: !!(scoringOk && candidateOk), version: SYSTEM_VERSION, job: input?.job || 'run_full_scoring_refresh_v1', mode: 'queue_owned_scoring_no_pipeline_lock_volatile_overwrite_finalizer', trigger, requested_slate_date: requestedSlateDate, slate_date: selectedSlateDate, queue_owned: queueOwned, scoring_ok: scoringOk, candidate_board_ok: candidateOk, failure_stage, failure_error: failure_error || null, scoring: scoringResultSummary(scoring), candidate_board: candidateBoardSummary(candidate_board), export_board_summary: export_board && export_board.ok ? { ok: export_board.ok, data_ok: export_board.data_ok, candidates_exported: export_board.candidates_exported || 0, summary: export_board.summary || null, error: export_board.error || null, status: export_board.status || null } : candidateBoardSummary(export_board), lock_status: queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', output_guard: { compact: true, reason: 'prevent browser freeze and D1 SQLITE_TOOBIG task_output' }, next_action: 'Run SCORING V1 > Check MLB Scores, then inspect/export Candidate Board.', note: failure_stage ? `Full scoring refresh did not pass at ${failure_stage}: ${failure_error || 'no detailed error returned'}` : 'Full scoring refresh completed. Queue-owned scoring no longer uses AUTO_SCORING_REFRESH_V1 and cannot wait on its own stale lock.' };
   } catch (e) {
-    const msg = String(e?.message || e);
-    if (queueOwned && isRetryableD1TransientError(msg)) {
-      return { ok:true, data_ok:false, partial:true, retryable:true, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', status:'SCORING_REFRESH_TRANSIENT_D1_RETRY', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:msg, stack:String(e?.stack||'').slice(0,1200), lock_status:'QUEUE_OWNED_NO_PIPELINE_LOCK', note:'Retryable D1/network exception returned partial_continue so the same queue row retries on the next tick without publishing stale candidates.' };
-    }
-    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:msg, stack:String(e?.stack||'').slice(0,1800), lock_status:queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', note:'v1.5.09.4 exposes the real scoring refresh exception; retryable D1/network drops are requeued, non-retryable exceptions still fail safely.' };
+    return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input?.job || 'run_full_scoring_refresh_v1', trigger, requested_slate_date:requestedSlateDate, queue_owned:queueOwned, error:String(e?.message||e), stack:String(e?.stack||'').slice(0,1800), lock_status:queueOwned ? 'QUEUE_OWNED_NO_PIPELINE_LOCK' : 'RELEASED', note:'v1.4.33 exposes the real scoring refresh exception and prevents queue-owned scoring from self-locking.' };
   } finally {
     if (!queueOwned) await releasePipelineLock(env, lockId, lockedBy);
   }
@@ -18581,11 +18218,8 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     rows=res.results||[];
     if(rows.length) candidateSource='promoted_score_tables_fallback';
   }
-  // v1.5.09.3: keep non-selected slate purge, but do not preserve same-slate
-  // candidate rows across a successful rebuild. The old UPSERT-only path could leave
-  // stale selected-slate candidates from a previous scoring run when the newer run
-  // had lower scores or different pickability. Same-slate rows are deleted only after
-  // source rows exist; if source rows are empty, the selected board is preserved.
+  // v1.4.31: keep the existing live selected-slate board visible until the new publish succeeds.
+  // Non-selected slates remain volatile and are purged; selected-slate rows are upserted in place.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
   if(!rows.length){
     return {ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,status:'NO_SCORE_ROWS_AVAILABLE_FOR_CANDIDATE_PUBLISH',candidate_source:candidateSource,active_rows_seen:0,candidates_written:0,summary:{QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0},pickability_summary:null,rollover_guard:{pass:true,active_slate:slateDate,policy:'NO_EMPTY_WINDOW_SELECTED_BOARD_PRESERVED'},slate_replace:{mode:'NO_SOURCE_ROWS_NO_SELECTED_SLATE_DELETE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight},error:'active_score_board_and_promoted_score_tables_empty',next_action:'Run Check MLB Scores and inspect scoring_runs details_json; candidate publish refused to blank selected slate because no score rows existed.',note:'v1.4.34 refuses empty candidate publish and reports the real source-row problem instead of silently returning no detailed error.'};
@@ -18594,7 +18228,7 @@ async function buildMlbScoreCandidateBoardV1(input, env){
   const slate_replace={mode:'VOLATILE_SELECTED_SLATE_UPSERT_NO_EMPTY_WINDOW',active_slate:slateDate,candidate_source:candidateSource,source_rows_seen:rows.length,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight};
   const inserts=[];
   const summary={QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0};
-  const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,context_blocked:0,prizepicks_pickable:0,sleeper_pickable:0,expired_or_started:pickCtx.expired_or_started,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings,rollover_policy:pickCtx.rollover_policy};
+  const pickability_summary={checked:0,pickable:0,deferred_unpickable:0,prizepicks_pickable:0,sleeper_pickable:0,expired_or_started:pickCtx.expired_or_started,source_tables:pickCtx.source_tables,warnings:pickCtx.warnings,rollover_policy:pickCtx.rollover_policy};
   const released=[];
   let rank=0;
   for(const r of rows){
@@ -18607,11 +18241,6 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     const conf=String(r.confidence_grade||'').toUpperCase();
     const mc=Number(r.market_confidence)||0;
     const bookCount=Number(audit.book_count)||0;
-    const contextGate=scoreCurrentContextGate(audit, slateDate, r);
-    if(!contextGate.pass){
-      pickability_summary.context_blocked++;
-      continue;
-    }
     let status='DEFERRED';
     const risks=[];
     if(blocks.length)risks.push('blocked_logic_present');
@@ -18671,19 +18300,9 @@ async function buildMlbScoreCandidateBoardV1(input, env){
       updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,releaseLineType,releaseLineNumber,r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
     if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:releaseLineNumber,line_type:releaseLineType,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
-  const selectedSlateRowsDeletedForFreshPublish = inserts.length > 0
-    ? await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run()
-    : { meta: { changes: 0 }, changes: 0 };
-  slate_replace.selected_slate_fresh_publish_delete = {
-    attempted: inserts.length > 0,
-    deleted_rows: Number(selectedSlateRowsDeletedForFreshPublish?.meta?.changes ?? selectedSlateRowsDeletedForFreshPublish?.changes ?? 0),
-    reason: inserts.length > 0 ? 'fresh_candidate_rows_ready_replace_selected_slate' : 'no_candidate_rows_ready_preserve_selected_slate'
-  };
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
-  const latestRunRows=await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM score_candidate_board WHERE slate_date=? AND run_id=?`).bind(slateDate, rows[0]?.run_id || '').first().catch(()=>({rows_count:0}));
-  const staleRunRows=await env.DB.prepare(`SELECT run_id, COUNT(*) AS rows_count, MAX(updated_at) AS latest_updated FROM score_candidate_board WHERE slate_date=? AND COALESCE(run_id,'')<>? GROUP BY run_id ORDER BY rows_count DESC LIMIT 10`).bind(slateDate, rows[0]?.run_id || '').all().catch(()=>({results:[]}));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
-  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_fresh_selected_slate_publish_pickability_same_slate_context_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,candidate_source:candidateSource,latest_source_run_id:rows[0]?.run_id||null,latest_run_candidate_rows:Number(latestRunRows?.rows_count||0),stale_same_slate_run_rows:staleRunRows.results||[],summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE. Same-slate stale candidates from prior runs are removed after fresh rows are ready.',note:'v1.5.09.3 fixes stale selected-slate candidate persistence by replacing same-slate score_candidate_board rows during a successful rebuild. It preserves the no-empty-publish guard, keeps goblin/demon UNDER blocked, and does not touch scoring math, Odds API, PrizePicks, Phase 1/2A/2B, static, incremental, Gemini, cron, or Main UI.'};
+  return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_volatile_overwrite_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.33 keeps the selected-slate board visible during rebuild, purges only non-selected slate rows before publish, and bridges PrizePicks goblin/demon More-only rows to sportsbook OVER candidates only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
 }
 async function ensureMlbScoringV1Tables(env){
  await env.DB.prepare(`CREATE TABLE IF NOT EXISTS scoring_runs (run_id TEXT PRIMARY KEY, sport TEXT, slate_date TEXT, model_version TEXT, status TEXT, trigger_source TEXT, rows_targeted INTEGER, rows_certified INTEGER, rows_promoted INTEGER, rows_active INTEGER, error TEXT, details_json TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, completed_at TEXT)`).run();
@@ -18756,15 +18375,17 @@ async function runMlbScoringV1(input,env){
  input = input || {};
  let runId=null;
  let slateDate=null;
- const queueOwnedScoringInput = input?.queue_owned_scoring === true || input?.orchestrator_internal === true || input?.backend_orchestrator === true || !!input?.queue_request_id || !!input?.queue_chain_id;
  if(!env.DB)return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',error:'Missing DB binding'};
  const runBatch=async(stmts,size=50)=>{let n=0; for(let i=0;i<stmts.length;i+=size){const chunk=stmts.slice(i,i+size); if(chunk.length){await env.DB.batch(chunk); n+=chunk.length;}} return n;};
  try{
   const scoringSlateGuard=await resolveScoringSlateDate(env,input||{});
   slateDate=scoringSlateGuard.slate_date;
-  runId=`score_v1|${slateDate}|${Date.now()}|${simpleHashText(String(Math.random()))}`;
+  const queueOwnedScoring = input?.queue_owned_scoring === true || input?.orchestrator_internal === true || input?.backend_orchestrator === true || !!input?.queue_request_id || !!input?.queue_chain_id;
+  const queueRequestId = String(input?.queue_request_id || input?.request_id || '').trim();
+  const queueChainId = String(input?.queue_chain_id || input?.chain_id || '').trim();
+  const queueRunId = queueOwnedScoring && queueRequestId ? `score_v1|${slateDate}|queue|${simpleHashText(queueRequestId)}` : null;
+  runId = queueRunId || `score_v1|${slateDate}|${Date.now()}|${simpleHashText(String(Math.random()))}`;
   await ensureOddsApiTables(env); await ensureMlbScoringV1Tables(env);
-  const queueOwnedScoring = queueOwnedScoringInput;
   let resumedRun = false;
   let resumeGroupIndex = 0;
   const parseRunDetails = (txt) => { try { return JSON.parse(String(txt || '{}')); } catch (_e) { return {}; } };
@@ -18784,14 +18405,19 @@ async function runMlbScoringV1(input,env){
   // promotion but has zero durable output is a phantom progress run and must be failed before retry.
   const staleRunning = await env.DB.prepare(`SELECT run_id, rows_promoted, rows_active, details_json, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 5`).bind(slateDate).all().catch(()=>({results:[]}));
   for (const r of (staleRunning.results || [])) {
+    const detailsForStale = parseRunDetails(r.details_json);
+    if (queueOwnedScoring && queueRunId && String(r.run_id) === String(queueRunId)) continue;
+    if (queueOwnedScoring && queueRequestId && String(detailsForStale.queue_request_id || '') === queueRequestId) continue;
     const durable = await countRunDurableRows(r.run_id);
     const age = Number(r.age_minutes || 0);
     const phantom = (Number(r.rows_promoted || 0) > 0 || Number(r.rows_active || 0) > 0) && durable.score_rows === 0 && durable.active_rows === 0;
     if ((age >= 8) || (age >= 3 && phantom)) {
-      await env.DB.prepare(`UPDATE scoring_runs SET status=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(phantom?'FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT':'FAILED_STALE_RUNNING', phantom?'Scoring run claimed promoted/active rows but durable scoring tables were empty. Failed before v1.5.08.6 retry.':'Auto-finalized stale RUNNING scoring run before continuation retry.', JSON.stringify({stage:phantom?'failed_phantom_progress_no_durable_output':'failed_stale_running', durable, previous_details:parseRunDetails(r.details_json), guard:'v1.5.08.9_same_slate_scoring_context_gate'}), r.run_id).run().catch(()=>null);
+      await env.DB.prepare(`UPDATE scoring_runs SET status=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(phantom?'FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT':'FAILED_STALE_RUNNING', phantom?'Scoring run claimed promoted/active rows but durable scoring tables were empty. Failed before v1.5.08.6 retry.':'Auto-finalized stale RUNNING scoring run before continuation retry.', JSON.stringify({stage:phantom?'failed_phantom_progress_no_durable_output':'failed_stale_running', durable, previous_details:parseRunDetails(r.details_json), guard:'v1.5.08.8_scoring_checkpoint_pickup_gate'}), r.run_id).run().catch(()=>null);
     }
   }
-  const activeRun = await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, details_json, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
+  const activeRun = queueRunId
+    ? await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, details_json, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE run_id=? AND status='RUNNING' LIMIT 1`).bind(queueRunId).first().catch(()=>null)
+    : await env.DB.prepare(`SELECT run_id, slate_date, model_version, status, trigger_source, rows_targeted, rows_certified, rows_promoted, rows_active, error, details_json, created_at, completed_at, ROUND((julianday('now') - julianday(created_at)) * 24 * 60, 2) AS age_minutes FROM scoring_runs WHERE slate_date=? AND status='RUNNING' ORDER BY created_at DESC LIMIT 1`).bind(slateDate).first().catch(()=>null);
   if (activeRun && activeRun.run_id) {
     const details = parseRunDetails(activeRun.details_json);
     const durable = await countRunDurableRows(activeRun.run_id);
@@ -18800,10 +18426,10 @@ async function runMlbScoringV1(input,env){
       runId = activeRun.run_id;
       resumedRun = true;
       resumeGroupIndex = Math.max(0, Number(details.durable_group_index || details.group_index || 0));
-      await env.DB.prepare(`UPDATE scoring_runs SET details_json=? WHERE run_id=?`).bind(JSON.stringify({ ...details, stage:'resumed_from_durable_checkpoint', resume_group_index:resumeGroupIndex, durable, guard:'v1.5.08.9_same_slate_scoring_context_gate' }), runId).run().catch(()=>null);
+      await env.DB.prepare(`UPDATE scoring_runs SET details_json=? WHERE run_id=?`).bind(JSON.stringify({ ...details, stage:'resumed_from_durable_checkpoint', resume_group_index:resumeGroupIndex, durable, guard:'v1.5.08.8_scoring_checkpoint_pickup_gate' }), runId).run().catch(()=>null);
     } else {
       if (queueOwnedScoring && phantom) {
-        await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT', error='Scoring run claimed promoted/active rows but durable scoring tables were empty.', details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(JSON.stringify({stage:'failed_phantom_progress_no_durable_output_active_gate', durable, previous_details:details, guard:'v1.5.08.9_same_slate_scoring_context_gate'}), activeRun.run_id).run().catch(()=>null);
+        await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_PHANTOM_PROGRESS_NO_DURABLE_OUTPUT', error='Scoring run claimed promoted/active rows but durable scoring tables were empty.', details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='RUNNING'`).bind(JSON.stringify({stage:'failed_phantom_progress_no_durable_output_active_gate', durable, previous_details:details, guard:'v1.5.08.8_scoring_checkpoint_pickup_gate'}), activeRun.run_id).run().catch(()=>null);
       } else {
         return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job||'run_mlb_scoring_v1', slate_date:slateDate, requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate, status:'SCORING_ALREADY_RUNNING_NO_RESTART', active_run:activeRun, durable, retry_safe:true, next_action:'Let the current run finish or wait for the stale-run reaper. Selected-slate board data is preserved while this waits.', note:'A fresh scoring run is already active. v1.5.08.6 only resumes queued scoring through the orchestrator continuation lane.' };
       }
@@ -18817,13 +18443,13 @@ async function runMlbScoringV1(input,env){
     await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
     await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
     await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',guard:'v1.5.08.9_same_slate_scoring_context_gate'})).run();
-    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',no_external_data:true, guard:'v1.5.08.9_same_slate_scoring_context_gate'})).run().catch(()=>null);
+    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.6_scoring_stable_run_clean_gate'})).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.6_scoring_stable_run_clean_gate'})).run().catch(()=>null);
   }
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,guard:'v1.4.15'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.6_scoring_stable_run_clean_gate'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -18843,7 +18469,7 @@ async function runMlbScoringV1(input,env){
       cert,
       durable.score_rows || promoted,
       durable.active_rows || active,
-      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,resumed_run:resumedRun,guard:'v1.5.08.9_same_slate_scoring_context_gate',...extra}),
+      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.6_scoring_stable_run_clean_gate',...extra}),
       runId
     ).run().catch(()=>null);
     return durable;
@@ -18927,7 +18553,7 @@ async function runMlbScoringV1(input,env){
     const table=scoreTable(fam); if(!table)continue;
     preparedExactKeys.add([scoreNormName(s.player_name), fam, Number(s.outcome_point), dir].join('|'));
     scoreStmts.push(env.DB.prepare(`INSERT OR REPLACE INTO ${table} (score_id,run_id,status,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,player_id,team,opponent,is_home,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,market_odds,no_vig_prob,consensus_prob,market_confidence,raw_score,final_score,confidence_grade,recommendation_status,scoring_modifiers,caps,penalties,blocks,audit_payload,model_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(scoreId,runId,'PROMOTED','MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),null,modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,scoreAmerican(prob),prob,prob,conf,raw,final,grade,rec,JSON.stringify(modBundle.mods),JSON.stringify(caps),JSON.stringify(pen),JSON.stringify(blocks),JSON.stringify(audit),SYSTEM_VERSION)); promoted++;
-    if(['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(rec) && scoreActivePublishAllowed(audit, slateDate, { game_id: s.event_id, event_id: s.event_id })){activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,prob,final,grade,rec,conf,JSON.stringify(audit),SYSTEM_VERSION)); active++;}
+    if(['QUALIFIED','PLAYABLE','WATCHLIST','WEAK'].includes(rec)){activeStmts.push(env.DB.prepare(`INSERT INTO active_score_board (active_key,score_id,run_id,sport,slate_date,game_id,event_id,game_datetime_utc,player_name,normalized_player_name,team,opponent,prop_family,market_key,line_type,line_number,line_direction,source_board,source_line_id,no_vig_prob,final_score,confidence_grade,recommendation_status,market_confidence,audit_payload,model_version,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(active_key) DO UPDATE SET score_id=excluded.score_id,run_id=excluded.run_id,final_score=excluded.final_score,confidence_grade=excluded.confidence_grade,recommendation_status=excluded.recommendation_status,market_confidence=excluded.market_confidence,audit_payload=excluded.audit_payload,model_version=excluded.model_version,updated_at=CURRENT_TIMESTAMP`).bind(source,scoreId,runId,'MLB',slateDate,s.event_id,s.event_id,s.commence_time||null,s.player_name,scoreNormName(s.player_name),modBundle.player_context.team||s.home_team||null,modBundle.player_context.opponent||s.away_team||null,fam,s.market_key,lineType,Number(s.outcome_point),dir,'odds_api_consensus',source,prob,final,grade,rec,conf,JSON.stringify(audit),SYSTEM_VERSION)); active++;}
     // v1.4.33: no per-row scoring_audit_logs insert. active_score_board.audit_payload is the row-level audit source.
    }
    }catch(groupErr){
@@ -18984,37 +18610,17 @@ async function runMlbScoringV1(input,env){
   await env.DB.prepare(`DELETE FROM scoring_audit_logs WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run().catch(()=>null);
   await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND run_id<>?`).bind(slateDate,runId).run().catch(()=>null);
   const finalStatus = durableFinal.score_rows > 0 && durableFinal.active_rows > 0 ? ((skippedOneSided||skippedUnpaired||skippedGroupErrors)?'COMPLETED_WITH_SKIPS':'COMPLETED') : 'FAILED_NO_DURABLE_SCORING_OUTPUT';
-  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(finalStatus,scratch,cert,durableFinal.score_rows,durableFinal.active_rows, finalStatus==='FAILED_NO_DURABLE_SCORING_OUTPUT'?'Scoring completed loop but durable output verification found zero score/active rows.':null, JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_safe_publish:true,compact_audit_only:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',durable_final:durableFinal,rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),guard:'v1.5.08.9_same_slate_scoring_context_gate'}),runId).run();
+  await env.DB.prepare(`UPDATE scoring_runs SET status=?, rows_targeted=?, rows_certified=?, rows_promoted=?, rows_active=?, error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(finalStatus,scratch,cert,durableFinal.score_rows,durableFinal.active_rows, finalStatus==='FAILED_NO_DURABLE_SCORING_OUTPUT'?'Scoring completed loop but durable output verification found zero score/active rows.':null, JSON.stringify({blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),batch_governor:true,active_board_safe_publish:true,compact_audit_only:true,score_calibration_version:'v1.4.15_rbi_sharp_probability_buffer',durable_final:durableFinal,rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback),guard:'v1.5.08.8_scoring_checkpoint_pickup_gate'}),runId).run();
   const dist=await env.DB.prepare(`SELECT prop_family,recommendation_status,confidence_grade,COUNT(*) AS rows_count,ROUND(AVG(final_score),2) AS avg_score,ROUND(MAX(final_score),2) AS max_score FROM active_score_board WHERE slate_date=? GROUP BY prop_family,recommendation_status,confidence_grade ORDER BY prop_family,max_score DESC`).bind(slateDate).all(); const top=await env.DB.prepare(`SELECT prop_family,player_name,line_direction,line_number,final_score,confidence_grade,recommendation_status,market_confidence,no_vig_prob FROM active_score_board WHERE slate_date=? ORDER BY final_score DESC LIMIT 25`).bind(slateDate).all();
   return{ok:true,data_ok:finalStatus!=='FAILED_NO_DURABLE_SCORING_OUTPUT',version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,run_id:runId,status:finalStatus,mode:'scoring_v1_backend_orchestrated_durable_chunked_publish',rows:{odds_rows:rows.length,groups:groups.size,scratch,certified:cert,promoted:durableFinal.score_rows,active:durableFinal.active_rows,blocked_groups:blocked,skipped_one_sided_groups:skippedOneSided,skipped_unpaired_groups:skippedUnpaired,skipped_group_errors:skippedGroupErrors,scratch_left:Number(left?.c||0),rbi_board_fallback:rbiFallbackSummary(rbiBoardFallback),prizepicks_standard_hits_tb_fallback:prizePicksStandardHitsTbFallbackSummary(ppStandardHitsTbFallback)},durable_final:durableFinal,distribution:dist.results||[],top_scores:top.results||[],next_action:'Run SCORING V1 > Check MLB Scores.',note:'v1.5.08.6 chunks scoring through durable checkpoints, resumes via scoring_runs.details_json, and only finalizes from real persisted output rows.'};
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
-  if (queueOwnedScoringInput && isRetryableD1TransientError(msg)) {
-    try {
-      if (runId) {
-        await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=?, details_json=?, completed_at=NULL WHERE run_id=?`).bind(
-          msg,
-          JSON.stringify({ stage:'transient_d1_retry_preserved_for_next_tick', guard:'v1.5.09.4_durable_retry_clean_publish_gate', error:msg, retryable:true }),
-          runId
-        ).run();
-      }
-    } catch (_e) {}
-    return {
-      ok:true,
-      data_ok:false,
-      partial:true,
-      retryable:true,
-      version:SYSTEM_VERSION,
-      job:input.job||'run_mlb_scoring_v1',
-      slate_date:slateDate,
-      run_id:runId,
-      status:'SCORING_TRANSIENT_D1_RETRY',
-      error:msg,
-      note:'Retryable D1/network scoring failure preserved the durable RUNNING checkpoint for the next queue tick instead of finalizing a failed half-run or publishing a candidate board.'
-    };
+  if (queueOwnedScoring && isTransientD1ScoringError(msg)) {
+    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.6_scoring_stable_run_clean_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
+    return{ok:true,data_ok:false,partial:true,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'SCORING_D1_TRANSIENT_RETRY_NEXT_TICK',error:msg,retry_safe:true,note:'Transient D1 failure was preserved as a retryable partial continuation instead of terminally failing the scoring queue.'};
   }
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.4_durable_retry_clean_publish_gate',error:msg,retryable:false}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
-  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught a non-retryable failed run and finalized it. Retryable D1/network drops are now preserved for queue continuation instead of becoming failed half-runs.'};
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.6_scoring_stable_run_clean_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized a non-transient failure. v1.5.09.6 keeps D1 transient failures retryable but still fails true logic/data exceptions.'};
  }
 }
 
