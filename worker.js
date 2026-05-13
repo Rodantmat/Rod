@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.3 - Cron Queue-First Bridge Gate";
+const SYSTEM_VERSION = "v1.5.10.4 - Orchestrator Hard Reset Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1047,7 +1047,12 @@ export default {
           };
         } else {
         const scheduledAdminRefresh = { ok:true, status:'legacy_admin_schedule_disabled_by_v1.3.89', note:'Production Refresh Clock owns scheduled refreshes. Manual admin buttons still work, but old direct 9/12/21 full-refresh slots are disabled to prevent collisions.' };
-        const adminDueTick = await runDueDeferredFullRun(env);
+        const hardResetState = await safeDbFirst(env, `SELECT status FROM data_orchestrator_state WHERE state_key='GLOBAL'`).catch(() => null);
+        const enabledPlanCount = await safeDbFirst(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE enabled=1`).catch(() => ({ rows_count:0 }));
+        const autoUpdatesDisabled = Number(enabledPlanCount?.rows_count || 0) === 0 || String(hardResetState?.status || '').toUpperCase() === 'ORCHESTRATOR_HARD_RESET' || String(hardResetState?.status || '').toUpperCase() === 'MANUAL_GLOBAL_SHUTDOWN';
+        const adminDueTick = autoUpdatesDisabled
+          ? { ok:true, data_ok:true, status:'NO_DEFERRED_FULL_RUN_DUE', skipped:true, reason:'auto_updates_disabled_orchestrator_hard_reset' }
+          : await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
           result = {
             ok: true,
@@ -11116,25 +11121,83 @@ async function runRefreshOrchestratorTick(input, env) {
 
 
 
+async function countRowsForHardReset(env, sql) {
+  const row = await safeDbFirst(env, sql).catch(() => null);
+  return Number(row?.rows_count ?? row?.count ?? row?.rows ?? 0);
+}
+
+async function collectOrchestratorHardResetVerification(env) {
+  await ensureRefreshOrchestratorTables(env).catch(() => null);
+  const globalState = await safeDbFirst(env, `
+    SELECT lock_flag, running_job_key, running_request_id, running_chain_id, status, updated_at
+    FROM data_orchestrator_state
+    WHERE state_key='GLOBAL'
+  `).catch(() => null);
+  const checks = {
+    enabled_schedule_plans: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE enabled=1`),
+    active_queue_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_queue WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_job_flags: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1`),
+    global_lock_flag: Number(globalState?.lock_flag || 0),
+    active_deferred_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM deferred_full_run_once WHERE upper(status) IN ('PENDING','RUNNING','REQUESTED','RETRY_LATER')`),
+    active_incremental_temp_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM incremental_temp_refresh_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_static_temp_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM static_temp_refresh_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_everyday_phase1_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM everyday_phase1_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_phase2c_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM phase2c_market_context_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_prizepicks_scraper_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM prizepicks_scraper_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','in_progress','queued')`),
+    active_odds_certification_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM odds_api_run_certifications WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','staged')`),
+    active_scoring_runs: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM scoring_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_task_runs: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM task_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
+    active_minute_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_scheduled_minute_locks WHERE status='active'`),
+    active_enqueue_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_orchestrator_enqueue_locks WHERE status='active'`),
+    active_pipeline_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM pipeline_locks WHERE status='active'`),
+    one_shot_plans_remaining: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%'`)
+  };
+  const nonZero = Object.entries(checks).filter(([, v]) => Number(v || 0) !== 0).map(([k, v]) => ({ check:k, value:v }));
+  return { ok: nonZero.length === 0, data_ok: nonZero.length === 0, checks, non_zero_checks: nonZero, global_state: globalState || null };
+}
+
+async function hardResetRunTable(env, table, setClause, whereClause, reason, outputPayload) {
+  const sql = `UPDATE ${table} SET ${setClause} WHERE ${whereClause}`;
+  return await safeDbRun(env, sql, [reason, JSON.stringify(outputPayload).slice(0,5000)]);
+}
+
 async function killBrokenRefreshOrchestratorTasks(input, env) {
   await ensureRefreshOrchestratorTables(env);
-  const reason = String(input?.reason || 'manual_killer_cleaner_button').slice(0,500);
-  const before = {
-    queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
-    jobs: await sampleRows(env, `SELECT job_key, run_requested_flag, running_flag, blocked_flag, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 ORDER BY job_index ASC LIMIT 200`).catch(() => []),
-    minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
-    one_shot_plans: await sampleRows(env, `SELECT plan_key, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, created_at, updated_at FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%' ORDER BY datetime(created_at) DESC LIMIT 50`).catch(() => [])
+  const reason = String(input?.reason || 'manual_orchestrator_hard_reset_button').slice(0,500);
+  const shutdownPayload = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:'refresh_orchestrator_kill_broken_tasks',
+    status:'cancelled_by_orchestrator_hard_reset',
+    reason,
+    real_data_preserved:true,
+    logs_preserved:true
   };
-  const queueRes = await env.DB.prepare(`
+  const before = {
+    schedule_plans_enabled: await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, updated_at FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC LIMIT 200`).catch(() => []),
+    queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, finished_at, updated_at, error FROM data_refresh_queue WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
+    jobs: await sampleRows(env, `SELECT job_key, run_requested_flag, running_flag, blocked_flag, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 ORDER BY job_index ASC LIMIT 200`).catch(() => []),
+    global: await sampleRows(env, `SELECT state_key, lock_flag, running_job_key, running_request_id, running_chain_id, status, started_at, updated_at, last_error FROM data_orchestrator_state WHERE state_key='GLOBAL' LIMIT 1`).catch(() => []),
+    minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
+    enqueue_locks: await sampleRows(env, `SELECT lock_key, request_id, chain_id, job_key, status, created_at, updated_at FROM data_orchestrator_enqueue_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
+    pipeline_locks: await sampleRows(env, `SELECT * FROM pipeline_locks WHERE status='active' ORDER BY datetime(COALESCE(updated_at, created_at)) ASC LIMIT 200`).catch(() => []),
+    one_shot_plans: await sampleRows(env, `SELECT plan_key, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, created_at, updated_at FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%' ORDER BY datetime(created_at) DESC LIMIT 100`).catch(() => [])
+  };
+
+  const changes = {};
+  const errors = {};
+  function save(name, res) { changes[name] = Number(res?.changes ?? res?.meta?.changes ?? 0); if (res?.error) errors[name] = res.error; }
+
+  save('schedule_plans_disabled', await safeDbRun(env, `UPDATE data_refresh_schedule_plan SET enabled=0, updated_at=CURRENT_TIMESTAMP WHERE enabled=1`));
+  save('one_shot_plans_deleted', await safeDbRun(env, `DELETE FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%'`));
+  save('queue_cancelled', await safeDbRun(env, `
     UPDATE data_refresh_queue
-    SET status='cancelled',
-        finished_at=CURRENT_TIMESTAMP,
-        updated_at=CURRENT_TIMESTAMP,
-        error=COALESCE(error, ?),
-        output_json=COALESCE(output_json, ?)
-    WHERE status IN ('pending','running')
-  `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_kill_broken_tasks', status:'killed_open_queue_rows', reason }).slice(0,5000)).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const jobRes = await env.DB.prepare(`
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
+        error=?, output_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('jobs_reset', await safeDbRun(env, `
     UPDATE data_orchestrator_jobs
     SET run_requested_flag=0,
         running_flag=0,
@@ -11144,56 +11207,93 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
         current_chain_id=NULL,
         current_slate_date=NULL,
         current_slate_mode=NULL,
-        last_status='killer_cleaner_reset',
+        last_status='orchestrator_hard_reset',
         last_fail=0,
         last_error_code=NULL,
         last_error_message=NULL,
         updated_at=CURRENT_TIMESTAMP
-    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
-  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const enqueueLockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const minuteLockRes = await env.DB.prepare(`UPDATE data_scheduled_minute_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const taskRunsRes = await env.DB.prepare(`
-    UPDATE task_runs
-    SET status='killer_reset',
-        finished_at=CURRENT_TIMESTAMP,
-        error=COALESCE(error, ?)
-    WHERE status IN ('running','pending')
-      AND datetime(COALESCE(started_at, CURRENT_TIMESTAMP)) < datetime('now','-2 minutes')
-  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const deferredRes = await env.DB.prepare(`
+    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 OR current_request_id IS NOT NULL OR current_chain_id IS NOT NULL
+  `));
+  save('global_state_reset', await safeDbRun(env, `
+    UPDATE data_orchestrator_state
+    SET lock_flag=0,
+        running_job_key=NULL,
+        running_job_index=NULL,
+        running_request_id=NULL,
+        running_chain_id=NULL,
+        status='ORCHESTRATOR_HARD_RESET',
+        updated_at=CURRENT_TIMESTAMP,
+        last_error=NULL,
+        state_json=?
+    WHERE state_key='GLOBAL'
+  `, [JSON.stringify({ reason, hard_reset_at:new Date().toISOString(), auto_updates_disabled:true }).slice(0,5000)]));
+  save('minute_locks_released', await safeDbRun(env, `UPDATE data_scheduled_minute_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
+  save('enqueue_locks_released', await safeDbRun(env, `UPDATE data_orchestrator_enqueue_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
+  save('pipeline_locks_released', await safeDbRun(env, `UPDATE pipeline_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
+  save('deferred_rows_cancelled', await safeDbRun(env, `
     UPDATE deferred_full_run_once
-    SET status='cancelled',
-        finished_at=CURRENT_TIMESTAMP,
-        error=COALESCE(error, ?)
-    WHERE status IN ('pending','running')
-  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const oneShotPlanRes = await env.DB.prepare(`
-    DELETE FROM data_refresh_schedule_plan
-    WHERE plan_key LIKE 'one_shot_full_run_%'
-  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  const pipelineLockRes = await env.DB.prepare(`UPDATE pipeline_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  await releaseSingleLaneGlobalState(env, 'KILLER_CLEANER_RESET', { reason, before }).catch(() => null);
-  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), one_shot_plans:Number(oneShotPlanRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, one_shot_plans:oneShotPlanRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
+    SET status='CANCELLED', finished_at=CURRENT_TIMESTAMP, error=?, output_json=?
+    WHERE upper(status) IN ('PENDING','RUNNING','REQUESTED','RETRY_LATER')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('incremental_temp_rows_cancelled', await safeDbRun(env, `
+    UPDATE incremental_temp_refresh_runs
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('static_temp_rows_cancelled', await safeDbRun(env, `
+    UPDATE static_temp_refresh_runs
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('everyday_phase1_rows_cancelled', await safeDbRun(env, `
+    UPDATE everyday_phase1_runs
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('phase2c_rows_cancelled', await safeDbRun(env, `
+    UPDATE phase2c_market_context_runs
+    SET status='cancelled', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, warnings_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [JSON.stringify([{ reason, status:'cancelled_by_orchestrator_hard_reset' }]).slice(0,5000)]));
+  save('prizepicks_scraper_rows_cancelled', await safeDbRun(env, `
+    UPDATE prizepicks_scraper_runs
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error_message=?, payload_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','in_progress','queued')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('odds_certification_rows_cancelled', await safeDbRun(env, `
+    UPDATE odds_api_run_certifications
+    SET status='CANCELLED', error=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','staged')
+  `, [reason]));
+  save('scoring_runs_cancelled', await safeDbRun(env, `
+    UPDATE scoring_runs
+    SET status='CANCELLED', completed_at=CURRENT_TIMESTAMP, error=?, details_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+  save('task_runs_cancelled', await safeDbRun(env, `
+    UPDATE task_runs
+    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, error=?, output_json=?
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
+
+  const verification = await collectOrchestratorHardResetVerification(env);
+  await singleLaneLog(env, { event_type:'orchestrator_hard_reset', status:verification.ok ? 'pass' : 'needs_review', message:'Manual Killer Cleaner performed full orchestrator/cron hard reset and disabled auto schedule plans.', payload_json:{ reason, before, changes, errors, verification, protected_real_data:'not_touched' } }).catch(() => null);
+  await refreshOrchestratorEvent(env, { event_type:'orchestrator_hard_reset', status:verification.ok ? 'pass' : 'needs_review', message:'Manual Killer Cleaner performed full orchestrator/cron hard reset and disabled auto schedule plans.', payload_json:{ reason, changes, errors, verification } }).catch(() => null);
+
   return {
     ok:true,
-    data_ok:true,
+    data_ok:verification.ok,
     version:SYSTEM_VERSION,
     job:input.job || 'refresh_orchestrator_kill_broken_tasks',
-    status:'killer_cleaner_completed',
+    status:verification.ok ? 'orchestrator_hard_reset_completed' : 'orchestrator_hard_reset_completed_needs_review',
     reason,
-    changes:{
-      queue_cancelled:Number(queueRes?.meta?.changes || 0),
-      jobs_reset:Number(jobRes?.meta?.changes || 0),
-      enqueue_locks_released:Number(enqueueLockRes?.meta?.changes || 0),
-      minute_locks_released:Number(minuteLockRes?.meta?.changes || 0),
-      stale_task_runs_reset:Number(taskRunsRes?.meta?.changes || 0),
-      deferred_rows_cancelled:Number(deferredRes?.meta?.changes || 0),
-      one_shot_plans_deleted:Number(oneShotPlanRes?.meta?.changes || 0),
-      pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0)
-    },
+    auto_updates_disabled:true,
+    changes,
+    errors,
     before,
-    note:'Manual killer/cleaner clears open broken orchestration state only. It does not wipe scoring tables, PrizePicks data, odds tables, or completed release board rows.'
+    verification,
+    protected_tables_not_touched:['score_candidate_board','prizepicks_current_market_context','odds_api_events','odds_api_game_markets','odds_api_player_props','games','markets_current','starters_current','lineups_current','incremental_player_metrics','player_game_logs','ref_player_splits','data_refresh_events','data_orchestrator_logs'],
+    note:'Hard reset clears orchestrator/cron execution state only and disables schedule plans. It does not wipe real data tables or logs.'
   };
 }
 

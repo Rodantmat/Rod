@@ -1,0 +1,11 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.10.4 - Orchestrator Hard Reset Gate
+
+Files checked:
+- worker.js SYSTEM_VERSION
+- control_room.html visible version tag and JS version
+- main.py SCRIPT_VERSION
+- README_v1.5.10.4.txt
+
+Release rule:
+All labels must match before deployment.
