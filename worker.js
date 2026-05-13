@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.6 - Scoring Stable Run Clean Gate";
+const SYSTEM_VERSION = "v1.5.09.7 - Odds Resolver Parity Gate";
 const SYSTEM_CODENAME = "Scoring Stable Run Clean Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -1447,7 +1447,55 @@ async function readCapsuleResourceCandidate(env = {}, names = [], options = {}) 
 }
 
 function oddsApiKeyCandidates() {
-  return ["ODDS_API_KEY","THE_ODDS_API_KEY","ODDSAPI_KEY","ODDS_API_TOKEN","ODDS_API","THEODDSAPIKEY","THE_ODDS_API","THEODDS_API_KEY","ODDS_KEY","ODDSAPI_TOKEN","ODDS_API_SECRET","THE_ODDS_API_SECRET"];
+  return [
+    "ODDS_API_KEY",
+    "THE_ODDS_API_KEY",
+    "THEODDS_API_KEY",
+    "THEODDSAPI_KEY",
+    "THEODDSAPIKEY",
+    "THE_ODDS_API",
+    "THE_ODDS_API_KEY",
+    "THE_ODDS_API_TOKEN",
+    "THE_ODDS_API_SECRET",
+    "THEODDS_API_TOKEN",
+    "THEODDS_API_SECRET",
+    "ODDSAPI_KEY",
+    "ODDSAPI_TOKEN",
+    "ODDS_API_TOKEN",
+    "ODDS_API_SECRET",
+    "ODDS_API",
+    "ODDS_KEY",
+    "SPORTS_ODDS_API_KEY",
+    "SPORTSODDS_API_KEY",
+    "THE_ODDS_API_COM_KEY",
+    "THEODDSAPI_COM_KEY"
+  ];
+}
+
+const ALPHADOG_LAST_GOOD_ODDS_API_KEY = { key: "", source: null, resolver: null, checked: [], saved_at: 0 };
+
+function rememberGoodOddsApiKey(info = {}) {
+  const key = typeof info.key === 'string' ? info.key.trim() : (typeof info.value === 'string' ? info.value.trim() : '');
+  if (!key) return;
+  ALPHADOG_LAST_GOOD_ODDS_API_KEY.key = key;
+  ALPHADOG_LAST_GOOD_ODDS_API_KEY.source = info.source || null;
+  ALPHADOG_LAST_GOOD_ODDS_API_KEY.resolver = info.resolver || null;
+  ALPHADOG_LAST_GOOD_ODDS_API_KEY.checked = Array.isArray(info.checked) ? info.checked.slice(-80) : [];
+  ALPHADOG_LAST_GOOD_ODDS_API_KEY.saved_at = Date.now();
+}
+
+function redactedOddsApiKeyInfo(info = {}) {
+  const key = typeof info.key === 'string' ? info.key : (typeof info.value === 'string' ? info.value : '');
+  return {
+    configured: !!key,
+    source: info.source || null,
+    resolver: info.resolver || null,
+    candidate_names_checked: Array.isArray(info.checked) ? info.checked.slice(0,120) : [],
+    key_length: key ? key.length : 0,
+    key_cached_in_isolate: !!ALPHADOG_LAST_GOOD_ODDS_API_KEY.key,
+    fatal_when_missing: false,
+    parity_rule: 'v1.5.09.7 forces Morning and Intraday Odds API jobs through the same async resolver and reports the actual async resolver path, not only direct env aliases.'
+  };
 }
 
 function githubTokenCandidates() {
@@ -1455,10 +1503,38 @@ function githubTokenCandidates() {
 }
 
 async function getOddsApiKeyForJob(env = {}, input = {}) {
+  const candidates = oddsApiKeyCandidates();
+  const checked = [];
+
   const direct = getOddsApiKey(env);
-  if (direct.key) return { ...direct, resolver: direct.resolver || 'direct_env' };
-  const r = await readCapsuleResourceCandidate(env, oddsApiKeyCandidates(), { job:'odds_api', input });
-  return { key: r.value || '', source: r.source || null, configured: !!r.value, checked: r.checked || [], resolver: r.resolver || 'not_found' };
+  checked.push(...(direct.checked || []));
+  if (direct.key) {
+    const out = { ...direct, configured:true, checked, resolver: direct.resolver || 'direct_env' };
+    rememberGoodOddsApiKey(out);
+    return out;
+  }
+
+  const r = await readCapsuleResourceCandidate(env, candidates, { job:'odds_api', purpose:'odds_api_key', input });
+  checked.push(...(r.checked || []));
+  if (r.value) {
+    const out = { key:r.value, source:r.source || null, configured:true, checked, resolver:r.resolver || 'capsule_resource' };
+    rememberGoodOddsApiKey(out);
+    return out;
+  }
+
+  // v1.5.09.7 parity guard: if Morning resolved the key in this isolate, Intraday must reuse
+  // the same resolved key instead of failing from a later remote/config lookup miss.
+  if (ALPHADOG_LAST_GOOD_ODDS_API_KEY.key && Date.now() - Number(ALPHADOG_LAST_GOOD_ODDS_API_KEY.saved_at || 0) < 6 * 60 * 60 * 1000) {
+    return {
+      key: ALPHADOG_LAST_GOOD_ODDS_API_KEY.key,
+      source: ALPHADOG_LAST_GOOD_ODDS_API_KEY.source || 'last_good_odds_api_key',
+      configured: true,
+      checked: [...checked, 'last_good_odds_api_key:isolate_memory'],
+      resolver: 'last_good_odds_api_key_parity_fallback'
+    };
+  }
+
+  return { key:'', source:null, configured:false, checked, resolver:'not_found_after_direct_capsule_and_last_good' };
 }
 
 async function getGithubDispatchConfigForJob(env = {}, input = {}) {
@@ -9415,11 +9491,29 @@ async function refreshOrchestratorCleanRunState(input, env) {
     out.changes.deleted_bad_scoring_runs = deletedRuns;
   } else out.changes.deleted_bad_scoring_runs = 0;
 
+  const latestCompletedRun = await env.DB.prepare(`
+    SELECT run_id, status, completed_at, created_at
+    FROM scoring_runs
+    WHERE slate_date=? AND status IN ('COMPLETED','COMPLETED_WITH_SKIPS')
+    ORDER BY datetime(COALESCE(completed_at,created_at)) DESC
+    LIMIT 1
+  `).bind(slateDate).first().catch(() => null);
+  out.protected.latest_completed_scoring_run = latestCompletedRun || null;
+  if (latestCompletedRun?.run_id) {
+    const staleCandidates = await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=? AND COALESCE(run_id,'')<>?`).bind(slateDate, latestCompletedRun.run_id).run().catch(() => null);
+    const staleActive = await env.DB.prepare(`DELETE FROM active_score_board WHERE slate_date=? AND COALESCE(run_id,'')<>?`).bind(slateDate, latestCompletedRun.run_id).run().catch(() => null);
+    out.changes.deleted_non_latest_candidate_rows = Number(staleCandidates?.meta?.changes || 0);
+    out.changes.deleted_non_latest_active_rows = Number(staleActive?.meta?.changes || 0);
+  } else {
+    out.changes.deleted_non_latest_candidate_rows = 0;
+    out.changes.deleted_non_latest_active_rows = 0;
+  }
+
   const openAfter = await sampleRows(env, `SELECT request_id, chain_id, job_key, status FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 20`).catch(() => []);
   const locksAfter = await sampleRows(env, `SELECT lock_key, request_id, job_key, status FROM data_orchestrator_enqueue_locks WHERE status='active' ORDER BY datetime(updated_at) DESC LIMIT 20`).catch(() => []);
   out.after = { active_queue:openAfter, active_locks:locksAfter };
   out.data_ok = openAfter.length === 0 || input?.allow_when_idle_only === false;
-  out.notes.push('Clean Run State removes abandoned/failed partial scoring artifacts but preserves completed scoring runs and the existing release board unless a bad run owned those rows.');
+  out.notes.push('Clean Run State removes abandoned/failed partial scoring artifacts and removes same-slate release rows that do not belong to the latest completed scoring run while preserving the latest completed board.');
   await refreshOrchestratorEvent(env, { event_type:'clean_run_state', status:out.status, message:'Clean Run State executed.', payload_json:out }).catch(() => null);
   return out;
 }
@@ -16004,14 +16098,15 @@ async function cleanOddsApiTempRun(env, runId, keepFailed = false) {
 async function runOddsApiMarketIntel(input, env) {
   if (!env.DB) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_odds_api_market_intel', error:'Missing DB binding' };
   const oddsKeyInfo = await getOddsApiKeyForJob(env, input);
+  const oddsBindingDiagnostic = redactedOddsApiKeyInfo(oddsKeyInfo);
   if (!oddsKeyInfo.key) return {
     ok:true,
     data_ok:false,
     version:SYSTEM_VERSION,
     job:input.job || 'run_odds_api_market_intel',
     error:'Missing ODDS_API_KEY secret',
-    odds_api_binding: oddsApiBindingStatus(env),
-    note:'Odds API function capsule checked direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, and remote config.txt. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context.'
+    odds_api_binding: oddsBindingDiagnostic,
+    note:'Odds API function capsule checked the shared async resolver used by both Morning and Intraday: direct env, accepted aliases, inline config, Secret/KV bindings, DB resource tables, remote config.txt, and last-good isolate fallback. This is recoverable and must not trap the queue; downstream scoring can continue from current board/context, but the full cascade should be treated as completed_with_warnings.'
   };
   const requestedSlateDate = String(input.slate_date || '').trim() || resolveSlateDate(input || {}).slate_date;
   await ensureOddsApiTables(env);
@@ -16101,7 +16196,7 @@ async function runOddsApiMarketIntel(input, env) {
     overwrite_preflight,
     mode:'odds_api_temp_stage_certify_promote_hits_tb_strong6_rbi_expansion_no_rfi_no_scoring',
     config:{ regions:cfg.regions, game_bookmakers:cfg.bookmakers, game_markets:cfg.gameMarkets, hits_tb_bookmakers:cfg.hitsTbBookmakers, hits_tb_markets:cfg.hitsTbPropMarkets, rbi_bookmakers:cfg.rbiBookmakers, rbi_markets:cfg.rbiPropMarkets, odds_format:cfg.oddsFormat, rfi_nrfi:'DISABLED_PENDING_VALID_MARKET_KEY_OR_GEMINI_FALLBACK' },
-    odds_api_binding: oddsApiBindingStatus(env),
+    odds_api_binding: oddsBindingDiagnostic,
     game_request:{ http_status:gameResult.http_status, ok:gameResult.ok, usage:gameResult.usage, event_count:allEvents.length, staged:gameSave, error_preview:gameResult.ok ? null : JSON.stringify(gameResult.data || null).slice(0,500) },
     selected_events:selected.length,
     skipped_counts:skippedCounts,
@@ -18218,8 +18313,9 @@ async function buildMlbScoreCandidateBoardV1(input, env){
     rows=res.results||[];
     if(rows.length) candidateSource='promoted_score_tables_fallback';
   }
-  // v1.4.31: keep the existing live selected-slate board visible until the new publish succeeds.
-  // Non-selected slates remain volatile and are purged; selected-slate rows are upserted in place.
+  // v1.5.09.7: keep the existing live selected-slate board visible until replacement rows are built.
+  // Non-selected slates remain volatile and are purged immediately; selected-slate rows are deleted
+  // only after a non-empty replacement batch exists so old same-slate run_ids cannot survive a certified publish.
   await env.DB.prepare(`DELETE FROM score_candidate_board WHERE COALESCE(slate_date,'')<>?`).bind(slateDate).run();
   if(!rows.length){
     return {ok:true,data_ok:false,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,status:'NO_SCORE_ROWS_AVAILABLE_FOR_CANDIDATE_PUBLISH',candidate_source:candidateSource,active_rows_seen:0,candidates_written:0,summary:{QUALIFIED:0,PLAYABLE:0,WATCHLIST:0,DEFERRED_UNPICKABLE:0,DEFERRED:0},pickability_summary:null,rollover_guard:{pass:true,active_slate:slateDate,policy:'NO_EMPTY_WINDOW_SELECTED_BOARD_PRESERVED'},slate_replace:{mode:'NO_SOURCE_ROWS_NO_SELECTED_SLATE_DELETE',active_slate:slateDate,selected_slate_rows_before:Number(selectedBefore?.rows_count||0),non_selected_rows_deleted_before:staleBefore,volatile_preflight},error:'active_score_board_and_promoted_score_tables_empty',next_action:'Run Check MLB Scores and inspect scoring_runs details_json; candidate publish refused to blank selected slate because no score rows existed.',note:'v1.4.34 refuses empty candidate publish and reports the real source-row problem instead of silently returning no detailed error.'};
@@ -18300,6 +18396,13 @@ async function buildMlbScoreCandidateBoardV1(input, env){
       updated_at=CURRENT_TIMESTAMP`).bind(key,r.score_id,r.run_id,'MLB',slateDate,r.player_name,r.normalized_player_name,r.team,r.opponent,r.prop_family,releaseLineType,releaseLineNumber,r.line_direction,Number(r.no_vig_prob),score,conf,r.recommendation_status,mc,status,displayRank,JSON.stringify(riskNotes),r.audit_payload,SYSTEM_VERSION));
     if(released.length<50)released.push({rank:displayRank,candidate_status:status,prop_family:r.prop_family,player_name:r.player_name,line_direction:r.line_direction,line_number:releaseLineNumber,line_type:releaseLineType,final_score:score,confidence_grade:conf,market_confidence:mc,no_vig_prob:Number(r.no_vig_prob),risk_notes:riskNotes});
   }
+  let selected_slate_rows_deleted_before_publish = 0;
+  if(inserts.length){
+    const delSelected = await env.DB.prepare(`DELETE FROM score_candidate_board WHERE slate_date=?`).bind(slateDate).run().catch(()=>null);
+    selected_slate_rows_deleted_before_publish = Number(delSelected?.meta?.changes || 0);
+  }
+  slate_replace.selected_slate_rows_deleted_before_publish = selected_slate_rows_deleted_before_publish;
+  slate_replace.mode = inserts.length ? 'VOLATILE_SELECTED_SLATE_REPLACE_AFTER_NONEMPTY_BUILD' : 'NO_REPLACEMENT_ROWS_SELECTED_SLATE_PRESERVED';
   for(let i=0;i<inserts.length;i+=80)await env.DB.batch(inserts.slice(i,i+80));
   const dist=await env.DB.prepare(`SELECT candidate_status, prop_family, COUNT(*) rows_count, ROUND(AVG(final_score),2) avg_score, ROUND(MAX(final_score),2) max_score FROM score_candidate_board WHERE slate_date=? GROUP BY candidate_status, prop_family ORDER BY candidate_status, max_score DESC`).bind(slateDate).all();
   return{ok:true,data_ok:rank>0||pickability_summary.deferred_unpickable>0,version:SYSTEM_VERSION,job:input.job||'build_mlb_score_candidate_board_v1',slate_date:slateDate,requested_slate_date:scoringSlateGuard?.requested_slate_date||slateDate,slate_guard:scoringSlateGuard,mode:'score_candidate_release_board_volatile_overwrite_pickability_gate_no_external_api_no_gemini',active_rows_seen:rows.length,candidates_written:rank,summary,pickability_summary,rollover_guard,slate_replace,distribution:dist.results||[],top_candidates:released,next_action:'Review score_candidate_board. PLAYABLE/WATCHLIST/QUALIFIED now require an exact selectable board side; unavailable sides are retained as DEFERRED_UNPICKABLE.',note:'v1.4.33 keeps the selected-slate board visible during rebuild, purges only non-selected slate rows before publish, and bridges PrizePicks goblin/demon More-only rows to sportsbook OVER candidates only. UNDER is never manufactured from goblin/demon rows. No scoring math, Gemini, external APIs, cron, Phase 1/2A/2B/static/incremental logic was changed.'};
@@ -18443,13 +18546,13 @@ async function runMlbScoringV1(input,env){
     await env.DB.prepare(`DELETE FROM scoring_runs WHERE slate_date=? AND status <> 'RUNNING'`).bind(slateDate).run().catch(()=>null);
     await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_STALE_PENDING', error='Superseded by new scoring run before completion', completed_at=CURRENT_TIMESTAMP WHERE slate_date=? AND status='PENDING'`).bind(slateDate).run();
     await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE slate_date=?`).bind(slateDate).run();
-    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.6_scoring_stable_run_clean_gate'})).run();
-    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.6_scoring_stable_run_clean_gate'})).run().catch(()=>null);
+    await env.DB.prepare(`INSERT INTO scoring_runs (run_id,sport,slate_date,model_version,status,trigger_source,rows_targeted,rows_certified,rows_promoted,rows_active,details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(runId,'MLB',slateDate,SYSTEM_VERSION,'RUNNING',String(input.trigger||'manual'),0,0,0,0,JSON.stringify({stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,guard:'v1.5.09.7_odds_resolver_parity_gate'})).run();
+    await env.DB.prepare(`INSERT OR REPLACE INTO scoring_audit_logs (audit_id,run_id,score_id,scratch_id,slate_date,prop_family,source_line_id,player_name,status,message,audit_payload,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)`).bind(`startup|${runId}`,runId,null,null,slateDate,'SYSTEM','scoring_startup_guard','SYSTEM','STARTED','Scoring V1 startup guard reached before modifier load / scoring loop',JSON.stringify({version:SYSTEM_VERSION,stage:'started',queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,no_external_data:true, guard:'v1.5.09.7_odds_resolver_parity_gate'})).run().catch(()=>null);
   }
   const modifierCtx=await loadMlbScoringModifierContext(env,slateDate);
   const res=await env.DB.prepare(`SELECT * FROM odds_api_player_props WHERE slate_date=? AND prop_family IN ('HITS','TOTAL_BASES','RBI') ORDER BY event_id,market_key,player_name,outcome_point,bookmaker_key,outcome_name`).bind(slateDate).all();
   const rows=res.results||[];
-  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.6_scoring_stable_run_clean_gate'}),runId).run().catch(()=>null);
+  await env.DB.prepare(`UPDATE scoring_runs SET rows_targeted=?, details_json=? WHERE run_id=?`).bind(rows.length,JSON.stringify({stage:'odds_loaded',odds_rows:rows.length,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,guard:'v1.5.09.7_odds_resolver_parity_gate'}),runId).run().catch(()=>null);
   const groups=new Map();
   for(const r of rows){const pt=Number(r.outcome_point); if(!Number.isFinite(pt))continue; const k=[r.event_id,r.market_key,scoreNormName(r.player_name),pt].join('|'); if(!groups.has(k))groups.set(k,{over:[],under:[],sample:r}); const g=groups.get(k); const out=String(r.outcome_name||'').toLowerCase(); if(out.includes('over'))g.over.push(r); if(out.includes('under'))g.under.push(r);}
   let scratch=0,cert=0,promoted=0,active=0,blocked=0,skippedOneSided=0,skippedUnpaired=0,skippedGroupErrors=0;
@@ -18469,7 +18572,7 @@ async function runMlbScoringV1(input,env){
       cert,
       durable.score_rows || promoted,
       durable.active_rows || active,
-      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.6_scoring_stable_run_clean_gate',...extra}),
+      JSON.stringify({stage,durable_group_index:scoringGroupIndex,group_index:scoringGroupIndex,groups_total:groups.size,scratch,cert,promoted:durable.score_rows || promoted,active:durable.active_rows || active,blocked,skipped_one_sided:skippedOneSided,skipped_unpaired:skippedUnpaired,skipped_group_errors:skippedGroupErrors,pending_flushed:pending,durable,queue_owned:queueOwnedScoring,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null,queue_run_id:queueRunId||null,resumed_run:resumedRun,guard:'v1.5.09.7_odds_resolver_parity_gate',...extra}),
       runId
     ).run().catch(()=>null);
     return durable;
@@ -18616,10 +18719,10 @@ async function runMlbScoringV1(input,env){
  }catch(e){
   const msg=String(e&&e.message?e.message:e);
   if (queueOwnedScoring && isTransientD1ScoringError(msg)) {
-    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.6_scoring_stable_run_clean_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
+    try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='RUNNING', error=NULL, details_json=? WHERE run_id=?`).bind(JSON.stringify({stage:'transient_d1_retry_released',guard:'v1.5.09.7_odds_resolver_parity_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run();}}catch(_e){}
     return{ok:true,data_ok:false,partial:true,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'SCORING_D1_TRANSIENT_RETRY_NEXT_TICK',error:msg,retry_safe:true,note:'Transient D1 failure was preserved as a retryable partial continuation instead of terminally failing the scoring queue.'};
   }
-  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.6_scoring_stable_run_clean_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
+  try{if(runId){await env.DB.prepare(`UPDATE scoring_runs SET status='FAILED_EXCEPTION', error=?, details_json=?, completed_at=CURRENT_TIMESTAMP WHERE run_id=?`).bind(msg,JSON.stringify({stage:'failed_exception_finalized',guard:'v1.5.09.7_odds_resolver_parity_gate',error:msg,queue_request_id:queueRequestId||null,queue_chain_id:queueChainId||null}),runId).run(); await env.DB.prepare(`DELETE FROM mlb_scoring_scratchpad WHERE run_id=?`).bind(runId).run();}}catch(_e){}
   return{ok:false,data_ok:false,version:SYSTEM_VERSION,job:input.job||'run_mlb_scoring_v1',slate_date:slateDate,run_id:runId,status:'FAILED_EXCEPTION',error:msg,note:'Scoring V1 caught and finalized a non-transient failure. v1.5.09.6 keeps D1 transient failures retryable but still fails true logic/data exceptions.'};
  }
 }
