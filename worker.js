@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.09.9 - Production Clock Finalizer Killer Gate";
-const SYSTEM_CODENAME = "Production Clock Finalizer Killer Gate";
+const SYSTEM_VERSION = "v1.5.10.0 - One-Shot Schedule Pickup Gate";
+const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -9380,18 +9380,66 @@ function productionRefreshSchedulePlans() {
   ];
 }
 
+function productionPlanTargetDateFromKey(plan) {
+  const key = String(plan?.plan_key || '');
+  const m = key.match(/^one_shot_full_run_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})_/);
+  if (!m) return null;
+  return { date:`${m[1]}-${m[2]}-${m[3]}`, hour:Number(m[4]), minute:Number(m[5]), slot:`${m[4]}${m[5]}` };
+}
+
+function productionDateOrdinal(dateText) {
+  const s = String(dateText || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.floor(d.getTime() / 86400000);
+}
+
 function productionPlanDueInfo(plan, pt) {
   if (!plan || Number(plan.enabled) !== 1) return null;
   const kind = String(plan.schedule_kind || '').toLowerCase();
-  if (kind === 'weekly' && String(pt.weekday || '').slice(0,3).toLowerCase() !== String(plan.byday || '').slice(0,3).toLowerCase()) return null;
-
   const scheduledHour = Number(plan.hour_pt);
   const scheduledMinute = Number(plan.minute_pt);
   if (!Number.isFinite(scheduledHour) || !Number.isFinite(scheduledMinute)) return null;
 
+  const currentHour = Number(pt.hour);
+  const currentMinute = Number(pt.minute);
+  if (!Number.isFinite(currentHour) || !Number.isFinite(currentMinute)) return null;
+
+  if (kind === 'once') {
+    const target = productionPlanTargetDateFromKey(plan) || { date:String(pt.date || ''), hour:scheduledHour, minute:scheduledMinute, slot:`${String(scheduledHour).padStart(2,'0')}${String(scheduledMinute).padStart(2,'0')}` };
+    const targetOrdinal = productionDateOrdinal(target.date);
+    const currentOrdinal = productionDateOrdinal(pt.date);
+    if (targetOrdinal === null || currentOrdinal === null) return null;
+    const scheduledTotalMinutes = (targetOrdinal * 1440) + (Number(target.hour) * 60) + Number(target.minute);
+    const currentTotalMinutes = (currentOrdinal * 1440) + (currentHour * 60) + currentMinute;
+    const catchupWindowMinutes = 240;
+    const minutesLate = currentTotalMinutes - scheduledTotalMinutes;
+    if (minutesLate < 0) return null;
+    if (minutesLate > catchupWindowMinutes) return null;
+    const slot = target.slot || `${String(target.hour).padStart(2,'0')}${String(target.minute).padStart(2,'0')}`;
+    return {
+      due: true,
+      plan_key: plan.plan_key,
+      schedule_kind: 'once',
+      target_date_pt: target.date,
+      scheduled_hour_pt: Number(target.hour),
+      scheduled_minute_pt: Number(target.minute),
+      current_date_pt: String(pt.date || ''),
+      current_hour_pt: currentHour,
+      current_minute_pt: currentMinute,
+      catchup_window_minutes: catchupWindowMinutes,
+      minutes_late: minutesLate,
+      due_key: `${plan.plan_key}|${target.date}|${slot}`,
+      one_shot_pickup_policy: 'v1.5.10.0_key_date_plus_hour_minute'
+    };
+  }
+
+  if (kind === 'weekly' && String(pt.weekday || '').slice(0,3).toLowerCase() !== String(plan.byday || '').slice(0,3).toLowerCase()) return null;
+
   const scheduledMinutes = (scheduledHour * 60) + scheduledMinute;
-  const currentMinutes = (Number(pt.hour) * 60) + Number(pt.minute);
-  const catchupWindowMinutes = kind === 'once' ? 180 : 30;
+  const currentMinutes = (currentHour * 60) + currentMinute;
+  const catchupWindowMinutes = 30;
   if (currentMinutes < scheduledMinutes) return null;
   if ((currentMinutes - scheduledMinutes) > catchupWindowMinutes) return null;
 
@@ -9402,12 +9450,40 @@ function productionPlanDueInfo(plan, pt) {
     schedule_kind: kind || 'daily',
     scheduled_hour_pt: scheduledHour,
     scheduled_minute_pt: scheduledMinute,
-    current_hour_pt: Number(pt.hour),
-    current_minute_pt: Number(pt.minute),
+    current_hour_pt: currentHour,
+    current_minute_pt: currentMinute,
     catchup_window_minutes: catchupWindowMinutes,
     minutes_late: currentMinutes - scheduledMinutes,
     due_key: `${plan.plan_key}|${pt.date}|${slot}`
   };
+}
+
+function productionPlanSkipReason(plan, pt) {
+  if (!plan) return 'missing_plan';
+  if (Number(plan.enabled) !== 1) return 'plan_disabled';
+  const kind = String(plan.schedule_kind || '').toLowerCase();
+  const scheduledHour = Number(plan.hour_pt);
+  const scheduledMinute = Number(plan.minute_pt);
+  const currentHour = Number(pt?.hour);
+  const currentMinute = Number(pt?.minute);
+  if (!Number.isFinite(scheduledHour) || !Number.isFinite(scheduledMinute)) return 'invalid_plan_hour_minute';
+  if (!Number.isFinite(currentHour) || !Number.isFinite(currentMinute)) return 'invalid_current_pt_time';
+  if (kind === 'weekly' && String(pt.weekday || '').slice(0,3).toLowerCase() !== String(plan.byday || '').slice(0,3).toLowerCase()) return 'weekly_byday_not_today';
+  if (kind === 'once') {
+    const target = productionPlanTargetDateFromKey(plan) || { date:String(pt.date || ''), hour:scheduledHour, minute:scheduledMinute };
+    const targetOrdinal = productionDateOrdinal(target.date);
+    const currentOrdinal = productionDateOrdinal(pt.date);
+    if (targetOrdinal === null || currentOrdinal === null) return 'one_shot_invalid_target_or_current_date';
+    const minutesLate = ((currentOrdinal * 1440) + (currentHour * 60) + currentMinute) - ((targetOrdinal * 1440) + (Number(target.hour) * 60) + Number(target.minute));
+    if (minutesLate < 0) return `one_shot_not_due_yet_${Math.abs(minutesLate)}m_early`;
+    if (minutesLate > 240) return `one_shot_expired_${minutesLate}m_late`;
+    return 'one_shot_due_but_not_selected_unexpected';
+  }
+  const scheduledMinutes = (scheduledHour * 60) + scheduledMinute;
+  const currentMinutes = (currentHour * 60) + currentMinute;
+  if (currentMinutes < scheduledMinutes) return `not_due_yet_${scheduledMinutes - currentMinutes}m_early`;
+  if ((currentMinutes - scheduledMinutes) > 30) return `catchup_window_expired_${currentMinutes - scheduledMinutes}m_late`;
+  return 'due_but_not_selected_unexpected';
 }
 
 function productionPlanIsDue(plan, pt) {
@@ -9614,7 +9690,7 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
     status: duePlans.length ? 'due_checked' : 'not_due',
     cron,
     pt,
-    scan_policy:'v1.5.08.3_schedule_scanner_restore_exact_slot_plus_catchup_window',
+    scan_policy:'v1.5.10.0_one_shot_key_date_pickup_gate',
     due_count:duePlans.length,
     due_plan_keys:duePlans.map(x => x.plan.plan_key),
     evaluated_plans:evaluated.map(x => ({
@@ -9625,12 +9701,13 @@ async function enqueueDueProductionRefreshPlans(env, cron, input = {}) {
       hour_pt:x.plan.hour_pt,
       minute_pt:x.plan.minute_pt,
       last_enqueued_key:x.plan.last_enqueued_key || null,
-      due_info:x.due_info || null
+      due_info:x.due_info || null,
+      skip_reason:x.due_info ? null : productionPlanSkipReason(x.plan, pt)
     })),
     stale_recovery,
     self_heal,
     results,
-    note:'Production schedule scan runs every minute. Daily/weekly plans use exact PT slot plus catch-up. One-shot plans use a 180-minute catch-up window, run Clean Run State before enqueue, and auto-clear after accepted enqueue.'
+    note:'Production schedule scan runs every minute. Daily/weekly plans use exact PT slot plus catch-up. One-shot plans use their plan-key PT date/hour/minute with a 240-minute catch-up window, run Clean Run State before enqueue, and auto-clear after accepted enqueue.'
   };
   await refreshOrchestratorEvent(env, {
     event_type:'production_clock_schedule_scan',
