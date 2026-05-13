@@ -1,0 +1,18 @@
+Build Version Audit
+Version: v1.5.10.6 - Incremental Delta Microbatch Gate
+
+Files checked:
+- worker.js: SYSTEM_VERSION = v1.5.10.6 - Incremental Delta Microbatch Gate
+- control_room.html: version label updated from v1.5.10.5 to v1.5.10.6 where present
+- README_v1.5.10.6.txt: version matched
+- BUILD_VERSION_AUDIT_v1.5.10.6.txt: version matched
+
+Node syntax check:
+- node --check worker.js passed.
+
+Primary patch areas:
+- runRefreshOrchestratorTick incremental_daily dispatch
+- runIncrementalTempAutoLoop
+- runIncrementalTempScheduledTick
+- stageIncrementalDeltaGameLogsTemp
+- incremental temp heartbeat helpers

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.5 - Incremental Locked Continuation Gate";
+const SYSTEM_VERSION = "v1.5.10.6 - Incremental Delta Microbatch Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -7983,7 +7983,7 @@ async function runStaticTempScheduledTick(input, env) {
     const complete = nextStep === 'completed';
     const counts = await staticTempCounts(env).catch(() => null);
     const wrapped = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, next_step: nextStep, refresh_complete: complete, step_result: result, counts, live_tables_touched: step === 'promote' ? true : false, note: complete ? 'Weekly static pipeline completed: temp scrape, certification, protected promotion, and temp cleanup finished.' : 'Weekly static pipeline advanced one protected step. Minute cron will continue the next step automatically.' };
-    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped).slice(0,5000), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok: false, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, status: 'failed_exception', error: String(err?.message || err), live_tables_touched: false };
@@ -10930,7 +10930,7 @@ async function runRefreshOrchestratorTick(input, env) {
     // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
     // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
     const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    // v1.5.10.5: Incremental Daily is a queue-owned auto-continue runner. Its first tick may
+    // v1.5.10.6: Incremental Daily is a queue-owned auto-continue runner. Its first tick may
     // schedule/advance a child incremental_temp_refresh_runs row and return auto_continue_scheduled.
     // The parent queue/global lane must continue the same locked job on the next cron tick instead
     // of reporting single_lane_busy forever. This is the root fix for the cron/orchestrator bridge.
@@ -10987,14 +10987,14 @@ async function runRefreshOrchestratorTick(input, env) {
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'incremental_resume_tick', status:'running', message:`${row.display_name} resumed existing continuation`, payload_json:{ row, queue_before_start:queueBeforeStart } });
     }
   }
-  await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(requestId).run().catch(() => null);
+  await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1, output_json=COALESCE(output_json, ?) WHERE request_id=?`).bind(JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'queue_tick_started', request_id:requestId, chain_id:chainId, job_key:row.job_key, routed_job:row.job_name, continuing_locked_job:continuingLockedJob, heartbeat_at:new Date().toISOString() }).slice(0,3000), requestId).run().catch(() => null);
 
   let result = null;
   try {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true }, env);
+      result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_games:1, max_ms:18000, max_ticks:1, force_due:true, force_schedule:true }, env);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
@@ -12029,8 +12029,20 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
   if (!schedule.ok) return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, live_tables_touched:false };
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const progress = await staticProgressMap(env, 'incremental_delta_game_logs', season, 0);
-  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 8), 12));
+  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 1), 2));
   const selected = finalGames.filter(g => !['COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED'].includes(progress.get(Number(g.gamePk || 0)))).slice(0, hardLimit);
+  const heartbeatRequestId = input?.incremental_request_id || await latestActiveIncrementalTempRequestId(env);
+  await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
+    status:'stage_delta_logs_started',
+    current_step:'stage_delta_logs',
+    refresh_mode:'delta',
+    start_date:startDate,
+    end_date:endDate,
+    final_games_total:finalGames.length,
+    selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
+    max_games_this_tick:hardLimit,
+    note:'v1.5.10.6 microbatch heartbeat before external MLB boxscore fetches; no silent running state allowed.'
+  });
 
   const stmt = env.DB.prepare(`
     INSERT OR REPLACE INTO player_game_logs_temp (player_id, game_pk, season, game_date, team_id, opponent_team, group_type, is_home, pa, ab, hits, doubles, triples, home_runs, strikeouts, walks, innings_pitched, raw_json, source_name, source_confidence, updated_at)
@@ -12046,6 +12058,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     if (!gamePk) continue;
     attemptedGames += 1;
     const gameDate = String(game.officialDate || game.gameDate || game.schedule_date || '').slice(0,10);
+    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, { status:'stage_delta_logs_fetching_game', current_step:'stage_delta_logs', game_pk:gamePk, game_date:gameDate, attempted_games:attemptedGames, inserted_rows_so_far:inserted, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches });
     const homeSched = game?.teams?.home?.team || {};
     const awaySched = game?.teams?.away?.team || {};
     const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, {}, 1, `incremental_delta_boxscore_${gamePk}`);
@@ -12113,6 +12126,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
       noDataSamples.push({ game_pk:gamePk, game_date:gameDate });
       await markStaticProgress(env, 'incremental_delta_game_logs', season, 0, { player_id:gamePk, player_name:`game_${gamePk}` }, 'NO_INSERT', 'boxscore returned no recognized player batting/pitching rows');
     }
+    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, { status:'stage_delta_logs_game_done', current_step:'stage_delta_logs', game_pk:gamePk, game_date:gameDate, game_inserted_rows:gameInserted, inserted_rows_so_far:inserted, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches });
   }
 
   const doneRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM static_scrape_progress WHERE scrape_domain='incremental_delta_game_logs' AND season=? AND group_no=0 AND status IN ('COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED')`).bind(season).first().catch(() => ({ c:0 }));
@@ -12348,6 +12362,33 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 }
 
 function nextIncrementalTempStep(step) { return ({ stage_delta_logs:'audit', stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
+
+async function writeIncrementalTempHeartbeat(env, requestId, payload = {}) {
+  if (!requestId) return { ok:false, skipped:true, reason:'missing_request_id' };
+  const body = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'incremental_temp_heartbeat', heartbeat_at:new Date().toISOString(), ...payload };
+  await env.DB.prepare(`
+    UPDATE incremental_temp_refresh_runs
+    SET status='running',
+        started_at=COALESCE(started_at, CURRENT_TIMESTAMP),
+        updated_at=CURRENT_TIMESTAMP,
+        error=NULL,
+        output_json=?
+    WHERE request_id=?
+  `).bind(JSON.stringify(body).slice(0,5000), requestId).run().catch(() => null);
+  return { ok:true, request_id:requestId };
+}
+
+async function latestActiveIncrementalTempRequestId(env) {
+  const row = await env.DB.prepare(`
+    SELECT request_id
+    FROM incremental_temp_refresh_runs
+    WHERE status IN ('pending','running')
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `).first().catch(() => null);
+  return row?.request_id || null;
+}
+
 async function runIncrementalTempScheduledTick(input, env) {
   await ensureIncrementalTempTables(env);
   const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
@@ -12361,6 +12402,7 @@ async function runIncrementalTempScheduledTick(input, env) {
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?`).bind(requestId).run();
   const hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});
   let step = hardReconcile?.step || row.current_step || 'stage_logs';
+  await writeIncrementalTempHeartbeat(env, requestId, { status:'tick_started', current_step:step, trigger, force_due:forceDue, hard_reconcile:hardReconcile || null });
   let result;
   try {
     if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp(input, env);
@@ -12402,7 +12444,7 @@ async function runIncrementalTempScheduledTick(input, env) {
     const compactStep = compactIncrementalStepResult(result);
     const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:compactStep, counts, live_certification:liveCertification, hard_reconcile: hardReconcile || null, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed and live incremental tables passed pristine certification: no duplicate keys, no null keys, metrics synced to latest game logs, and coverage thresholds passed.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and remains immediately due for the auto-runner/minute cron. No manual tick needed.' : 'Daily incremental pipeline advanced one protected step. Auto-runner/minute cron will continue.') };
     const shouldStayDue = !!result?.needs_continue || !!input?.auto_continue;
-    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped).slice(0,5000), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'failed_exception', error:String(err?.message || err), live_tables_touched:false };
@@ -12417,6 +12459,7 @@ async function runIncrementalTempAutoLoop(input, env) {
   const maxMs = Math.max(5000, Math.min(Number(input?.max_ms || 24000), 26000));
   const maxTicks = Math.max(1, Math.min(Number(input?.max_ticks || 3), 4));
   const maxPlayers = Math.max(1, Math.min(Number(input?.max_players || input?.limit || 20), 25));
+  const maxGames = Math.max(1, Math.min(Number(input?.max_games || 1), 2));
   const trigger = String(input?.trigger || 'auto_loop');
   const allowSchedule = input?.force_schedule === true || (
     input?.from_minute_cron !== true && (
@@ -12441,7 +12484,7 @@ async function runIncrementalTempAutoLoop(input, env) {
   let last = null;
   for (let i = 0; i < maxTicks; i++) {
     if (Date.now() - started > maxMs) break;
-    const tick = await runIncrementalTempScheduledTick({ ...(input || {}), job:'run_incremental_temp_refresh_tick', trigger, max_players: maxPlayers, auto_continue: true, force_due: true }, env);
+    const tick = await runIncrementalTempScheduledTick({ ...(input || {}), job:'run_incremental_temp_refresh_tick', trigger, max_players: maxPlayers, max_games: maxGames, auto_continue: true, force_due: true }, env);
     ticks.push(tick);
     last = tick;
     if (!tick || tick.status === 'idle_no_due_temp_refresh' || tick.status === 'pipeline_blocked' || tick.status === 'failed_exception' || tick.refresh_complete) break;
