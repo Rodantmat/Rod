@@ -1,0 +1,14 @@
+Build Version Audit
+Version: v1.5.10.12 - Incremental Hard Reconcile Bypass Gate
+
+Verified labels:
+- worker.js SYSTEM_VERSION = v1.5.10.12 - Incremental Hard Reconcile Bypass Gate
+- control_room.html versionTag/control version = v1.5.10.12 - Incremental Hard Reconcile Bypass Gate
+- main.py SCRIPT_VERSION = v1.5.10.12 - Incremental Hard Reconcile Bypass Gate
+- README filename/version = v1.5.10.12
+- ZIP filename/version = alphadog_v1.5.10.12_incremental_hard_reconcile_bypass_gate.zip
+
+Surgical code change:
+- runIncrementalTempScheduledTick now skips hardReconcileActiveIncrementalStage only when current_step is stage_delta_logs.
+- Non-delta stages still use hard reconcile.
+- Added explicit incremental_child_tick_started_after_reconcile event after the bypass/normal reconcile boundary.

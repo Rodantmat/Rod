@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.11 - Minute Hot Lane Priority Gate"
+SCRIPT_VERSION = "v1.5.10.12 - Incremental Hard Reconcile Bypass Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.11 - Minute Hot Lane Priority Gate";
+const SYSTEM_VERSION = "v1.5.10.12 - Incremental Hard Reconcile Bypass Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -904,7 +904,7 @@ function unauthorized() {
 
 
 async function detectRefreshOrchestratorHotLaneFast(env) {
-  // v1.5.10.11: this is intentionally tiny. The previous hot-lane detector could time out
+  // v1.5.10.12: this is intentionally tiny. The previous hot-lane detector could time out
   // and then the minute cron wasted the lifecycle on production-clock/watchdog scans before
   // advancing a manually selected job. This fast gate checks only the queue/job/global flags.
   await ensureRefreshOrchestratorTables(env).catch(() => null);
@@ -1066,7 +1066,7 @@ export default {
         let oneShotPickup = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
         let orchestratorTick = null;
         if (fastHotLane?.has_work || hotLane?.has_work) {
-          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000, fast_hot_lane:true }, env), 30000, { cron, lock_reaper:lockReaper, hot_lane:hotLane, fast_hot_lane:fastHotLane, priority_gate:'v1.5.10.11_manual_selected_work_first' });
+          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000, fast_hot_lane:true }, env), 30000, { cron, lock_reaper:lockReaper, hot_lane:hotLane, fast_hot_lane:fastHotLane, priority_gate:'v1.5.10.12_manual_selected_work_first' });
         } else {
           productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
           productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
@@ -9436,7 +9436,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   }
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, incremental_preflight, manual_ticks_required:false, next_action:'Minute cron fast-hot-lane gate now advances selected/manual queue work before production-clock scans. Incremental Daily also pre-creates its child temp run at enqueue so progress is visible immediately.', note:'v1.5.10.11 Minute Hot Lane Priority Gate: selected/manual jobs get cron priority, incremental child rows are pre-created at enqueue, and production-clock/watchdog scans cannot starve the active lane.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, incremental_preflight, manual_ticks_required:false, next_action:'Minute cron fast-hot-lane gate now advances selected/manual queue work before production-clock scans. Incremental Daily also pre-creates its child temp run at enqueue so progress is visible immediately.', note:'v1.5.10.12 Incremental Hard Reconcile Bypass Gate: selected/manual jobs get cron priority, incremental child rows are pre-created at enqueue, and production-clock/watchdog scans cannot starve the active lane.' };
 }
 
 
@@ -12074,7 +12074,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     status:'stage_delta_logs_entered_pre_mode',
     current_step:'stage_delta_logs',
     trigger:String(input?.trigger || 'unknown'),
-    note:'v1.5.10.11 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
+    note:'v1.5.10.12 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_entered_pre_mode', status:'running', message:'Incremental delta stage entered before mode detection.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, trigger:String(input?.trigger || 'unknown') } }).catch(() => null);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
@@ -12094,7 +12094,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
-    note:'v1.5.10.11 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+    note:'v1.5.10.12 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
   });
 
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
@@ -12125,7 +12125,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.11 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.12 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`
@@ -12489,12 +12489,30 @@ async function runIncrementalTempScheduledTick(input, env) {
     current_step:row.current_step || 'stage_logs',
     trigger,
     force_due:forceDue,
-    note:'v1.5.10.11 confirms the incremental child tick entered before hard reconcile or any external fetch.'
+    note:'v1.5.10.12 confirms the incremental child tick entered before hard reconcile or any external fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_pre_hard_reconcile', status:'running', message:'Incremental child tick entered before hard reconcile.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:row.current_step || 'stage_logs', trigger, force_due:forceDue } }).catch(() => null);
-  const hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});
-  let step = hardReconcile?.step || row.current_step || 'stage_logs';
+  const initialStep = row.current_step || 'stage_logs';
+  // v1.5.10.12: do NOT run the heavy hard reconciler before stage_delta_logs.
+  // The previous builds proved the child tick entered, then died before the actual
+  // schedule/boxscore fetch. For true-delta staging, the stage function itself owns
+  // schedule fetch, progress counting, selected games, and the pass/continue decision.
+  // This keeps each cron tick a true microstep and prevents the parent orchestrator
+  // from burning the whole worker window before any rows can be staged.
+  let hardReconcile = null;
+  if (initialStep === 'stage_delta_logs') {
+    hardReconcile = {
+      changed:false,
+      step:'stage_delta_logs',
+      reason:'v1.5.10.12_skip_pre_stage_delta_hard_reconcile',
+      note:'Hard reconcile bypassed before true-delta staging. stage_delta_logs now owns schedule fetch, game selection, staging, and pass/continue state.'
+    };
+  } else {
+    hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});
+  }
+  let step = hardReconcile?.step || initialStep;
   await writeIncrementalTempHeartbeat(env, requestId, { status:'tick_started', current_step:step, trigger, force_due:forceDue, hard_reconcile:hardReconcile || null });
+  await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_started_after_reconcile', status:'running', message:'Incremental child tick passed pre-stage reconcile boundary.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:step, trigger, hard_reconcile:hardReconcile || null } }).catch(() => null);
   let result;
   try {
     if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp({ ...(input || {}), incremental_request_id: requestId }, env);
