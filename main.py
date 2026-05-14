@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.5 - Incremental Locked Continuation Gate"
+SCRIPT_VERSION = "v1.5.10.8 - Incremental Preflight Visibility Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

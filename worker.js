@@ -12047,7 +12047,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
-    note:'v1.5.10.7 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+    note:'v1.5.10.8 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
   });
 
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
@@ -12078,7 +12078,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.7 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.8 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`

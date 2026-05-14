@@ -1,4 +1,7 @@
-ZIP: alphadog_v1.5.10.8_incremental_preflight_visibility_gate.zip
+ZIP: alphadog_v1.5.10.8_incremental_preflight_visibility_gate_FIXED.zip
 worker.js SYSTEM_VERSION: v1.5.10.8 - Incremental Preflight Visibility Gate
+control_room.html versionTag: v1.5.10.8 - Incremental Preflight Visibility Gate
+control_room.html JS version: v1.5.10.8 - Incremental Preflight Visibility Gate
+main.py SCRIPT_VERSION: v1.5.10.8 - Incremental Preflight Visibility Gate
 README: README_v1.5.10.8.txt
-Flat folder: yes
+VERIFICATION: previous wrong internal version label removed from deliverable files.
