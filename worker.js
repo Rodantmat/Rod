@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.16 - Everyday Phase 1 Child Binding Gate";
-const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
+const SYSTEM_VERSION = "v1.5.10.17 - Everyday Phase 1 Certification Delta Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Certification Delta Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1047,12 +1047,7 @@ export default {
           };
         } else {
         const scheduledAdminRefresh = { ok:true, status:'legacy_admin_schedule_disabled_by_v1.3.89', note:'Production Refresh Clock owns scheduled refreshes. Manual admin buttons still work, but old direct 9/12/21 full-refresh slots are disabled to prevent collisions.' };
-        const hardResetState = await safeDbFirst(env, `SELECT status FROM data_orchestrator_state WHERE state_key='GLOBAL'`).catch(() => null);
-        const enabledPlanCount = await safeDbFirst(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE enabled=1`).catch(() => ({ rows_count:0 }));
-        const autoUpdatesDisabled = Number(enabledPlanCount?.rows_count || 0) === 0 || String(hardResetState?.status || '').toUpperCase() === 'ORCHESTRATOR_HARD_RESET' || String(hardResetState?.status || '').toUpperCase() === 'MANUAL_GLOBAL_SHUTDOWN';
-        const adminDueTick = autoUpdatesDisabled
-          ? { ok:true, data_ok:true, status:'NO_DEFERRED_FULL_RUN_DUE', skipped:true, reason:'auto_updates_disabled_orchestrator_hard_reset' }
-          : await runDueDeferredFullRun(env);
+        const adminDueTick = await runDueDeferredFullRun(env);
         if (adminDueTick && adminDueTick.status !== 'NO_DEFERRED_FULL_RUN_DUE') {
           result = {
             ok: true,
@@ -7983,7 +7978,7 @@ async function runStaticTempScheduledTick(input, env) {
     const complete = nextStep === 'completed';
     const counts = await staticTempCounts(env).catch(() => null);
     const wrapped = { ok: true, data_ok: true, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, next_step: nextStep, refresh_complete: complete, step_result: result, counts, live_tables_touched: step === 'promote' ? true : false, note: complete ? 'Weekly static pipeline completed: temp scrape, certification, protected promotion, and temp cleanup finished.' : 'Weekly static pipeline advanced one protected step. Minute cron will continue the next step automatically.' };
-    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped).slice(0,5000), requestId).run();
+    await env.DB.prepare(`UPDATE static_temp_refresh_runs SET status=?, current_step=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok: false, data_ok: false, version: SYSTEM_VERSION, job: input.job || 'run_static_temp_refresh_tick', request_id: requestId, processed_step: step, status: 'failed_exception', error: String(err?.message || err), live_tables_touched: false };
@@ -10930,12 +10925,7 @@ async function runRefreshOrchestratorTick(input, env) {
     // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
     // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
     const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    // v1.5.10.6: Incremental Daily is a queue-owned auto-continue runner. Its first tick may
-    // schedule/advance a child incremental_temp_refresh_runs row and return auto_continue_scheduled.
-    // The parent queue/global lane must continue the same locked job on the next cron tick instead
-    // of reporting single_lane_busy forever. This is the root fix for the cron/orchestrator bridge.
-    const canContinueLockedIncremental = activeLockedRow && String(activeLockedRow.job_key || '') === 'incremental_daily';
-    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring && !canContinueLockedIncremental) {
+    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
@@ -10987,21 +10977,14 @@ async function runRefreshOrchestratorTick(input, env) {
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'incremental_resume_tick', status:'running', message:`${row.display_name} resumed existing continuation`, payload_json:{ row, queue_before_start:queueBeforeStart } });
     }
   }
-  await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1, output_json=? WHERE request_id=?`).bind(JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'queue_tick_started', request_id:requestId, chain_id:chainId, job_key:row.job_key, routed_job:row.job_name, continuing_locked_job:continuingLockedJob, heartbeat_at:new Date().toISOString() }).slice(0,3000), requestId).run().catch(() => null);
+  await env.DB.prepare(`UPDATE data_refresh_queue SET status='running', started_at=COALESCE(started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, tick_count=COALESCE(tick_count,0)+1 WHERE request_id=?`).bind(requestId).run().catch(() => null);
 
   let result = null;
   try {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runWithSoftTimeout('incremental_orchestrator_child_tick', 18500, () => runIncrementalTempAutoLoop({ ...body, max_players:5, max_games:1, max_ms:15000, max_ticks:1, force_due:true, force_schedule:true }));
-      if (result?.timed_out) {
-        const temp = await env.DB.prepare(`SELECT request_id, status, current_step, started_at, updated_at, error, substr(output_json,1,2000) AS output_preview FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-        if (temp?.request_id) {
-          await writeIncrementalTempHeartbeat(env, temp.request_id, { status:'incremental_orchestrator_child_tick_soft_timeout', current_step:temp.current_step || 'unknown', queue_request_id:requestId, timeout_ms:18500, note:'v1.5.10.8 released the parent queue tick after a bounded timeout; the next cron tick can continue or fail visibly.' }).catch(() => null);
-        }
-        result = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'run_incremental_temp_refresh_auto', status:'auto_continue_scheduled_soft_timeout', partial:true, auto_continue_active:true, latest_temp_refresh:temp, timeout_ms:18500, note:'Incremental child tick exceeded the orchestrator soft timeout and was safely released/requeued instead of leaving the parent permanently stuck.' };
-      }
+      result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true }, env);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
@@ -11017,33 +11000,28 @@ async function runRefreshOrchestratorTick(input, env) {
       // The direct wrapper can exceed a request lifecycle and strand the parent queue as RUNNING.
       // In the orchestrator, schedule/reuse the child run and advance exactly one child step per tick.
       const scheduled = await scheduleEverydayPhase1Once({ ...body, job:'everyday_phase1_all_direct', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-      let tick = await runWithSoftTimeout('everyday_phase1_child_tick', 14500, () => runEverydayPhase1Tick({ ...body, job:'run_everyday_phase1_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:1, max_ms:11000 }, env));
-      if (tick?.timed_out) {
-        const child = await env.DB.prepare(`SELECT request_id, slate_date, status, current_step, started_at, updated_at, error, substr(output_preview,1,2000) AS output_preview FROM everyday_phase1_runs WHERE request_id=? OR (slate_date=? AND status IN ('pending','running')) ORDER BY CASE WHEN request_id=? THEN 0 ELSE 1 END, datetime(created_at) DESC LIMIT 1`).bind(requestId, slate.slate_date, requestId).first().catch(() => null);
-        tick = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:'run_everyday_phase1_tick', status:'partial_continue_child_soft_timeout', request_id:child?.request_id || requestId, slate_date:slate.slate_date, next_step:child?.current_step || null, phase1_complete:false, timed_out:true, timeout_ms:14500, child_run:child, live_tables_touched:false, note:'Everyday Phase 1 child tick exceeded the parent-safe budget. v1.5.10.16 returns partial_continue and releases the global lane so the next cron tick can continue instead of leaving RUNNING_WAITING_CHECK stuck.' };
-      }
+      const tick = await runEverydayPhase1Tick({ ...body, job:'run_everyday_phase1_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:1, max_ms:18000 }, env);
       const check = await checkEverydayPhase1({ ...body, job:'check_everyday_phase1', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-      const everydayRetryLaterReleased = tick?.non_blocking_retry_later === true || String(tick?.status || '').toLowerCase().includes('retry_later_released');
+      const everydayRetryLaterReleased = false;
       result = {
         ok: tick?.ok !== false,
-        data_ok: everydayRetryLaterReleased ? true : (tick?.phase1_complete ? !!check?.data_ok : true),
+        data_ok: tick?.phase1_complete ? !!check?.data_ok : false,
         version:SYSTEM_VERSION,
         job:'everyday_phase1_all_direct',
-        status: everydayRetryLaterReleased ? 'completed_retry_later_released' : (tick?.phase1_complete ? 'completed' : 'partial_continue'),
+        status: tick?.phase1_complete ? 'completed' : (tick?.status || 'partial_continue'),
         slate_date:slate.slate_date,
         scheduled,
         tick,
         check,
         phase1_complete: !!tick?.phase1_complete,
-        non_blocking_retry_later: everydayRetryLaterReleased,
+        non_blocking_retry_later: false,
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        note: everydayRetryLaterReleased
-          ? 'Queue-owned Everyday Phase 1 hit a child retry_later condition and was finalized as degraded/non-blocking so downstream refresh stages can continue. The child run evidence remains in everyday_phase1_runs for audit/retry.'
-          : (tick?.phase1_complete
-            ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks.'
-            : 'Queue-owned Everyday Phase 1 advanced one bounded child step and released the global lane for the next minute tick.')
+        certification_gate:'v1.5.10.17_no_clean_success_without_child_certification',
+        note: tick?.phase1_complete
+          ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.'
+          : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending until every certification-sensitive step produces real certified output.'
       };
     } else {
       result = await executeTaskJob(row.job_name, body, slate, env);
@@ -11137,83 +11115,25 @@ async function runRefreshOrchestratorTick(input, env) {
 
 
 
-async function countRowsForHardReset(env, sql) {
-  const row = await safeDbFirst(env, sql).catch(() => null);
-  return Number(row?.rows_count ?? row?.count ?? row?.rows ?? 0);
-}
-
-async function collectOrchestratorHardResetVerification(env) {
-  await ensureRefreshOrchestratorTables(env).catch(() => null);
-  const globalState = await safeDbFirst(env, `
-    SELECT lock_flag, running_job_key, running_request_id, running_chain_id, status, updated_at
-    FROM data_orchestrator_state
-    WHERE state_key='GLOBAL'
-  `).catch(() => null);
-  const checks = {
-    enabled_schedule_plans: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE enabled=1`),
-    active_queue_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_queue WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_job_flags: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1`),
-    global_lock_flag: Number(globalState?.lock_flag || 0),
-    active_deferred_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM deferred_full_run_once WHERE upper(status) IN ('PENDING','RUNNING','REQUESTED','RETRY_LATER')`),
-    active_incremental_temp_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM incremental_temp_refresh_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_static_temp_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM static_temp_refresh_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_everyday_phase1_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM everyday_phase1_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_phase2c_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM phase2c_market_context_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_prizepicks_scraper_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM prizepicks_scraper_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','in_progress','queued')`),
-    active_odds_certification_rows: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM odds_api_run_certifications WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','staged')`),
-    active_scoring_runs: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM scoring_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_task_runs: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM task_runs WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')`),
-    active_minute_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_scheduled_minute_locks WHERE status='active'`),
-    active_enqueue_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_orchestrator_enqueue_locks WHERE status='active'`),
-    active_pipeline_locks: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM pipeline_locks WHERE status='active'`),
-    one_shot_plans_remaining: await countRowsForHardReset(env, `SELECT COUNT(*) AS rows_count FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%'`)
-  };
-  const nonZero = Object.entries(checks).filter(([, v]) => Number(v || 0) !== 0).map(([k, v]) => ({ check:k, value:v }));
-  return { ok: nonZero.length === 0, data_ok: nonZero.length === 0, checks, non_zero_checks: nonZero, global_state: globalState || null };
-}
-
-async function hardResetRunTable(env, table, setClause, whereClause, reason, outputPayload) {
-  const sql = `UPDATE ${table} SET ${setClause} WHERE ${whereClause}`;
-  return await safeDbRun(env, sql, [reason, JSON.stringify(outputPayload).slice(0,5000)]);
-}
-
 async function killBrokenRefreshOrchestratorTasks(input, env) {
   await ensureRefreshOrchestratorTables(env);
-  const reason = String(input?.reason || 'manual_orchestrator_hard_reset_button').slice(0,500);
-  const shutdownPayload = {
-    ok:true,
-    data_ok:true,
-    version:SYSTEM_VERSION,
-    job:'refresh_orchestrator_kill_broken_tasks',
-    status:'cancelled_by_orchestrator_hard_reset',
-    reason,
-    real_data_preserved:true,
-    logs_preserved:true
-  };
+  const reason = String(input?.reason || 'manual_killer_cleaner_button').slice(0,500);
   const before = {
-    schedule_plans_enabled: await sampleRows(env, `SELECT plan_key, display_name, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, updated_at FROM data_refresh_schedule_plan WHERE enabled=1 ORDER BY hour_pt ASC, minute_pt ASC, plan_key ASC LIMIT 200`).catch(() => []),
-    queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, finished_at, updated_at, error FROM data_refresh_queue WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
+    queue: await sampleRows(env, `SELECT request_id, chain_id, job_key, status, started_at, updated_at FROM data_refresh_queue WHERE status IN ('pending','running') ORDER BY datetime(updated_at) ASC LIMIT 200`).catch(() => []),
     jobs: await sampleRows(env, `SELECT job_key, run_requested_flag, running_flag, blocked_flag, current_request_id, current_chain_id, last_status, updated_at FROM data_orchestrator_jobs WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 ORDER BY job_index ASC LIMIT 200`).catch(() => []),
-    global: await sampleRows(env, `SELECT state_key, lock_flag, running_job_key, running_request_id, running_chain_id, status, started_at, updated_at, last_error FROM data_orchestrator_state WHERE state_key='GLOBAL' LIMIT 1`).catch(() => []),
     minute_locks: await sampleRows(env, `SELECT lock_key, status, created_at, updated_at FROM data_scheduled_minute_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
-    enqueue_locks: await sampleRows(env, `SELECT lock_key, request_id, chain_id, job_key, status, created_at, updated_at FROM data_orchestrator_enqueue_locks WHERE status='active' ORDER BY datetime(created_at) ASC LIMIT 200`).catch(() => []),
-    pipeline_locks: await sampleRows(env, `SELECT * FROM pipeline_locks WHERE status='active' ORDER BY datetime(COALESCE(updated_at, created_at)) ASC LIMIT 200`).catch(() => []),
-    one_shot_plans: await sampleRows(env, `SELECT plan_key, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, created_at, updated_at FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%' ORDER BY datetime(created_at) DESC LIMIT 100`).catch(() => [])
+    one_shot_plans: await sampleRows(env, `SELECT plan_key, enabled, schedule_kind, hour_pt, minute_pt, last_enqueued_key, last_enqueued_at, created_at, updated_at FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%' ORDER BY datetime(created_at) DESC LIMIT 50`).catch(() => [])
   };
-
-  const changes = {};
-  const errors = {};
-  function save(name, res) { changes[name] = Number(res?.changes ?? res?.meta?.changes ?? 0); if (res?.error) errors[name] = res.error; }
-
-  save('schedule_plans_disabled', await safeDbRun(env, `UPDATE data_refresh_schedule_plan SET enabled=0, updated_at=CURRENT_TIMESTAMP WHERE enabled=1`));
-  save('one_shot_plans_deleted', await safeDbRun(env, `DELETE FROM data_refresh_schedule_plan WHERE plan_key LIKE 'one_shot_full_run_%'`));
-  save('queue_cancelled', await safeDbRun(env, `
+  const queueRes = await env.DB.prepare(`
     UPDATE data_refresh_queue
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP,
-        error=?, output_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('jobs_reset', await safeDbRun(env, `
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?),
+        output_json=COALESCE(output_json, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_kill_broken_tasks', status:'killed_open_queue_rows', reason }).slice(0,5000)).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const jobRes = await env.DB.prepare(`
     UPDATE data_orchestrator_jobs
     SET run_requested_flag=0,
         running_flag=0,
@@ -11223,93 +11143,56 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
         current_chain_id=NULL,
         current_slate_date=NULL,
         current_slate_mode=NULL,
-        last_status='orchestrator_hard_reset',
+        last_status='killer_cleaner_reset',
         last_fail=0,
         last_error_code=NULL,
         last_error_message=NULL,
         updated_at=CURRENT_TIMESTAMP
-    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1 OR current_request_id IS NOT NULL OR current_chain_id IS NOT NULL
-  `));
-  save('global_state_reset', await safeDbRun(env, `
-    UPDATE data_orchestrator_state
-    SET lock_flag=0,
-        running_job_key=NULL,
-        running_job_index=NULL,
-        running_request_id=NULL,
-        running_chain_id=NULL,
-        status='ORCHESTRATOR_HARD_RESET',
-        updated_at=CURRENT_TIMESTAMP,
-        last_error=NULL,
-        state_json=?
-    WHERE state_key='GLOBAL'
-  `, [JSON.stringify({ reason, hard_reset_at:new Date().toISOString(), auto_updates_disabled:true }).slice(0,5000)]));
-  save('minute_locks_released', await safeDbRun(env, `UPDATE data_scheduled_minute_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
-  save('enqueue_locks_released', await safeDbRun(env, `UPDATE data_orchestrator_enqueue_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
-  save('pipeline_locks_released', await safeDbRun(env, `UPDATE pipeline_locks SET status='hard_reset_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`));
-  save('deferred_rows_cancelled', await safeDbRun(env, `
-    UPDATE deferred_full_run_once
-    SET status='CANCELLED', finished_at=CURRENT_TIMESTAMP, error=?, output_json=?
-    WHERE upper(status) IN ('PENDING','RUNNING','REQUESTED','RETRY_LATER')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('incremental_temp_rows_cancelled', await safeDbRun(env, `
-    UPDATE incremental_temp_refresh_runs
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('static_temp_rows_cancelled', await safeDbRun(env, `
-    UPDATE static_temp_refresh_runs
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('everyday_phase1_rows_cancelled', await safeDbRun(env, `
-    UPDATE everyday_phase1_runs
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=?, output_preview=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('phase2c_rows_cancelled', await safeDbRun(env, `
-    UPDATE phase2c_market_context_runs
-    SET status='cancelled', completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, warnings_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [JSON.stringify([{ reason, status:'cancelled_by_orchestrator_hard_reset' }]).slice(0,5000)]));
-  save('prizepicks_scraper_rows_cancelled', await safeDbRun(env, `
-    UPDATE prizepicks_scraper_runs
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error_message=?, payload_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','in_progress','queued')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('odds_certification_rows_cancelled', await safeDbRun(env, `
-    UPDATE odds_api_run_certifications
-    SET status='CANCELLED', error=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue','staged')
-  `, [reason]));
-  save('scoring_runs_cancelled', await safeDbRun(env, `
-    UPDATE scoring_runs
-    SET status='CANCELLED', completed_at=CURRENT_TIMESTAMP, error=?, details_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-  save('task_runs_cancelled', await safeDbRun(env, `
+    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
+  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const enqueueLockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const minuteLockRes = await env.DB.prepare(`UPDATE data_scheduled_minute_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const taskRunsRes = await env.DB.prepare(`
     UPDATE task_runs
-    SET status='cancelled', finished_at=CURRENT_TIMESTAMP, error=?, output_json=?
-    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
-  `, [reason, JSON.stringify(shutdownPayload).slice(0,5000)]));
-
-  const verification = await collectOrchestratorHardResetVerification(env);
-  await singleLaneLog(env, { event_type:'orchestrator_hard_reset', status:verification.ok ? 'pass' : 'needs_review', message:'Manual Killer Cleaner performed full orchestrator/cron hard reset and disabled auto schedule plans.', payload_json:{ reason, before, changes, errors, verification, protected_real_data:'not_touched' } }).catch(() => null);
-  await refreshOrchestratorEvent(env, { event_type:'orchestrator_hard_reset', status:verification.ok ? 'pass' : 'needs_review', message:'Manual Killer Cleaner performed full orchestrator/cron hard reset and disabled auto schedule plans.', payload_json:{ reason, changes, errors, verification } }).catch(() => null);
-
+    SET status='killer_reset',
+        finished_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?)
+    WHERE status IN ('running','pending')
+      AND datetime(COALESCE(started_at, CURRENT_TIMESTAMP)) < datetime('now','-2 minutes')
+  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const deferredRes = await env.DB.prepare(`
+    UPDATE deferred_full_run_once
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const oneShotPlanRes = await env.DB.prepare(`
+    DELETE FROM data_refresh_schedule_plan
+    WHERE plan_key LIKE 'one_shot_full_run_%'
+  `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  const pipelineLockRes = await env.DB.prepare(`UPDATE pipeline_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  await releaseSingleLaneGlobalState(env, 'KILLER_CLEANER_RESET', { reason, before }).catch(() => null);
+  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), one_shot_plans:Number(oneShotPlanRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, one_shot_plans:oneShotPlanRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
   return {
     ok:true,
-    data_ok:verification.ok,
+    data_ok:true,
     version:SYSTEM_VERSION,
     job:input.job || 'refresh_orchestrator_kill_broken_tasks',
-    status:verification.ok ? 'orchestrator_hard_reset_completed' : 'orchestrator_hard_reset_completed_needs_review',
+    status:'killer_cleaner_completed',
     reason,
-    auto_updates_disabled:true,
-    changes,
-    errors,
+    changes:{
+      queue_cancelled:Number(queueRes?.meta?.changes || 0),
+      jobs_reset:Number(jobRes?.meta?.changes || 0),
+      enqueue_locks_released:Number(enqueueLockRes?.meta?.changes || 0),
+      minute_locks_released:Number(minuteLockRes?.meta?.changes || 0),
+      stale_task_runs_reset:Number(taskRunsRes?.meta?.changes || 0),
+      deferred_rows_cancelled:Number(deferredRes?.meta?.changes || 0),
+      one_shot_plans_deleted:Number(oneShotPlanRes?.meta?.changes || 0),
+      pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0)
+    },
     before,
-    verification,
-    protected_tables_not_touched:['score_candidate_board','prizepicks_current_market_context','odds_api_events','odds_api_game_markets','odds_api_player_props','games','markets_current','starters_current','lineups_current','incremental_player_metrics','player_game_logs','ref_player_splits','data_refresh_events','data_orchestrator_logs'],
-    note:'Hard reset clears orchestrator/cron execution state only and disables schedule plans. It does not wipe real data tables or logs.'
+    note:'Manual killer/cleaner clears open broken orchestration state only. It does not wipe scoring tables, PrizePicks data, odds tables, or completed release board rows.'
   };
 }
 
@@ -11996,7 +11879,6 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
       reason:'schedule_fetch_failed'
     };
   }
-  await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_schedule_fetch_done', status:'completed', message:'Incremental delta schedule fetch completed.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, start_date:startDate, end_date:endDate, schedule_games_seen:(schedule.games || []).length } }).catch(() => null);
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const doneRow = await env.DB.prepare(`
     SELECT COUNT(*) AS c
@@ -12026,14 +11908,6 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
 
 async function stageIncrementalDeltaGameLogsTemp(input, env) {
   await ensureIncrementalTempTables(env);
-  const heartbeatRequestId = input?.incremental_request_id || await latestActiveIncrementalTempRequestId(env);
-  await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
-    status:'stage_delta_logs_entered_pre_mode',
-    current_step:'stage_delta_logs',
-    trigger:String(input?.trigger || 'unknown'),
-    note:'v1.5.10.8 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
-  });
-  await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_entered_pre_mode', status:'running', message:'Incremental delta stage entered before mode detection.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, trigger:String(input?.trigger || 'unknown') } }).catch(() => null);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
   const modeInfo = await determineIncrementalRefreshMode(env, input || {});
   const startDate = modeInfo.start_date;
@@ -12045,45 +11919,12 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'delta_mode_not_available', mode_info:modeInfo, live_tables_touched:false, note:'True delta requires a certified live base. Use fallback full-safe rebuild if this blocks.' };
   }
 
-    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
-    status:'stage_delta_logs_schedule_fetch_start',
-    current_step:'stage_delta_logs',
-    refresh_mode:'delta',
-    start_date:startDate,
-    end_date:endDate,
-    note:'v1.5.10.8 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
-  });
-
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
-  if (!schedule.ok) {
-    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
-      status:'stage_delta_logs_schedule_fetch_failed',
-      current_step:'stage_delta_logs',
-      refresh_mode:'delta',
-      start_date:startDate,
-      end_date:endDate,
-      error:schedule.error || 'schedule_fetch_failed',
-      url:schedule.url || null,
-      note:'MLB schedule fetch failed or timed out. The incremental run will fail visibly instead of heartbeat-looping with empty temp rows.'
-    });
-    return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, schedule_url:schedule.url || null, live_tables_touched:false };
-  }
+  if (!schedule.ok) return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, live_tables_touched:false };
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const progress = await staticProgressMap(env, 'incremental_delta_game_logs', season, 0);
-  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 1), 2));
+  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 8), 12));
   const selected = finalGames.filter(g => !['COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED'].includes(progress.get(Number(g.gamePk || 0)))).slice(0, hardLimit);
-  await writeIncrementalTempHeartbeat(env, heartbeatRequestId, {
-    status:'stage_delta_logs_started',
-    current_step:'stage_delta_logs',
-    refresh_mode:'delta',
-    start_date:startDate,
-    end_date:endDate,
-    schedule_games_seen:(schedule.games || []).length,
-    final_games_total:finalGames.length,
-    selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
-    max_games_this_tick:hardLimit,
-    note:'v1.5.10.8 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
-  });
 
   const stmt = env.DB.prepare(`
     INSERT OR REPLACE INTO player_game_logs_temp (player_id, game_pk, season, game_date, team_id, opponent_team, group_type, is_home, pa, ab, hits, doubles, triples, home_runs, strikeouts, walks, innings_pitched, raw_json, source_name, source_confidence, updated_at)
@@ -12099,7 +11940,6 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     if (!gamePk) continue;
     attemptedGames += 1;
     const gameDate = String(game.officialDate || game.gameDate || game.schedule_date || '').slice(0,10);
-    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, { status:'stage_delta_logs_fetching_game', current_step:'stage_delta_logs', game_pk:gamePk, game_date:gameDate, attempted_games:attemptedGames, inserted_rows_so_far:inserted, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches });
     const homeSched = game?.teams?.home?.team || {};
     const awaySched = game?.teams?.away?.team || {};
     const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, {}, 1, `incremental_delta_boxscore_${gamePk}`);
@@ -12167,7 +12007,6 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
       noDataSamples.push({ game_pk:gamePk, game_date:gameDate });
       await markStaticProgress(env, 'incremental_delta_game_logs', season, 0, { player_id:gamePk, player_name:`game_${gamePk}` }, 'NO_INSERT', 'boxscore returned no recognized player batting/pitching rows');
     }
-    await writeIncrementalTempHeartbeat(env, heartbeatRequestId, { status:'stage_delta_logs_game_done', current_step:'stage_delta_logs', game_pk:gamePk, game_date:gameDate, game_inserted_rows:gameInserted, inserted_rows_so_far:inserted, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches });
   }
 
   const doneRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM static_scrape_progress WHERE scrape_domain='incremental_delta_game_logs' AND season=? AND group_no=0 AND status IN ('COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED')`).bind(season).first().catch(() => ({ c:0 }));
@@ -12403,33 +12242,6 @@ async function hardReconcileActiveIncrementalStage(env, row, input = {}) {
 }
 
 function nextIncrementalTempStep(step) { return ({ stage_delta_logs:'audit', stage_logs:'stage_splits', stage_splits:'audit', audit:'promote', promote:'clean', clean:'derived', derived:'completed' })[step] || 'completed'; }
-
-async function writeIncrementalTempHeartbeat(env, requestId, payload = {}) {
-  if (!requestId) return { ok:false, skipped:true, reason:'missing_request_id' };
-  const body = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'incremental_temp_heartbeat', heartbeat_at:new Date().toISOString(), ...payload };
-  await env.DB.prepare(`
-    UPDATE incremental_temp_refresh_runs
-    SET status='running',
-        started_at=COALESCE(started_at, CURRENT_TIMESTAMP),
-        updated_at=CURRENT_TIMESTAMP,
-        error=NULL,
-        output_json=?
-    WHERE request_id=?
-  `).bind(JSON.stringify(body).slice(0,5000), requestId).run().catch(() => null);
-  return { ok:true, request_id:requestId };
-}
-
-async function latestActiveIncrementalTempRequestId(env) {
-  const row = await env.DB.prepare(`
-    SELECT request_id
-    FROM incremental_temp_refresh_runs
-    WHERE status IN ('pending','running')
-    ORDER BY datetime(created_at) DESC
-    LIMIT 1
-  `).first().catch(() => null);
-  return row?.request_id || null;
-}
-
 async function runIncrementalTempScheduledTick(input, env) {
   await ensureIncrementalTempTables(env);
   const stale_finalizer = await finalizeStaleIncrementalTaskState(env);
@@ -12441,20 +12253,11 @@ async function runIncrementalTempScheduledTick(input, env) {
   if (!row) return { ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', status:'idle_no_due_temp_refresh', trigger, force_due:forceDue, stale_finalizer, live_tables_touched:false };
   const requestId = row.request_id;
   await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status='running', started_at=COALESCE(started_at, CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?`).bind(requestId).run();
-  await writeIncrementalTempHeartbeat(env, requestId, {
-    status:'tick_pre_hard_reconcile',
-    current_step:row.current_step || 'stage_logs',
-    trigger,
-    force_due:forceDue,
-    note:'v1.5.10.8 confirms the incremental child tick entered before hard reconcile or any external fetch.'
-  });
-  await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_pre_hard_reconcile', status:'running', message:'Incremental child tick entered before hard reconcile.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:row.current_step || 'stage_logs', trigger, force_due:forceDue } }).catch(() => null);
   const hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});
   let step = hardReconcile?.step || row.current_step || 'stage_logs';
-  await writeIncrementalTempHeartbeat(env, requestId, { status:'tick_started', current_step:step, trigger, force_due:forceDue, hard_reconcile:hardReconcile || null });
   let result;
   try {
-    if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp({ ...(input || {}), incremental_request_id: requestId }, env);
+    if (step === 'stage_delta_logs') result = await stageIncrementalDeltaGameLogsTemp(input, env);
     else if (step === 'stage_logs') result = await stageIncrementalGameLogsTemp(input, env);
     else if (step === 'stage_splits') result = await stageIncrementalSplitsTemp(input, env);
     else if (step === 'audit') result = await auditIncrementalTempCertification({ ...input, job:'audit_incremental_temp_certification' }, env);
@@ -12493,7 +12296,7 @@ async function runIncrementalTempScheduledTick(input, env) {
     const compactStep = compactIncrementalStepResult(result);
     const wrapped = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, next_step:nextStep, refresh_complete:complete, step_result:compactStep, counts, live_certification:liveCertification, hard_reconcile: hardReconcile || null, stale_finalizer, live_tables_touched:['promote','derived'].includes(step), note:complete ? 'Daily incremental pipeline completed and live incremental tables passed pristine certification: no duplicate keys, no null keys, metrics synced to latest game logs, and coverage thresholds passed.' : (result?.needs_continue ? 'Daily incremental pipeline advanced one bounded fetch batch and remains immediately due for the auto-runner/minute cron. No manual tick needed.' : 'Daily incremental pipeline advanced one protected step. Auto-runner/minute cron will continue.') };
     const shouldStayDue = !!result?.needs_continue || !!input?.auto_continue;
-    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped).slice(0,5000), requestId).run();
+    await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET status=?, current_step=?, run_after=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE run_after END, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(complete ? 'completed' : 'running', nextStep, shouldStayDue ? 1 : 0, complete ? 1 : 0, JSON.stringify(wrapped), requestId).run();
     return wrapped;
   } catch (err) {
     const failure = { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'run_incremental_temp_refresh_tick', request_id:requestId, processed_step:step, status:'failed_exception', error:String(err?.message || err), live_tables_touched:false };
@@ -12508,7 +12311,6 @@ async function runIncrementalTempAutoLoop(input, env) {
   const maxMs = Math.max(5000, Math.min(Number(input?.max_ms || 24000), 26000));
   const maxTicks = Math.max(1, Math.min(Number(input?.max_ticks || 3), 4));
   const maxPlayers = Math.max(1, Math.min(Number(input?.max_players || input?.limit || 20), 25));
-  const maxGames = Math.max(1, Math.min(Number(input?.max_games || 1), 2));
   const trigger = String(input?.trigger || 'auto_loop');
   const allowSchedule = input?.force_schedule === true || (
     input?.from_minute_cron !== true && (
@@ -12533,8 +12335,7 @@ async function runIncrementalTempAutoLoop(input, env) {
   let last = null;
   for (let i = 0; i < maxTicks; i++) {
     if (Date.now() - started > maxMs) break;
-    const activeForTick = await env.DB.prepare(`SELECT request_id FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-    const tick = await runIncrementalTempScheduledTick({ ...(input || {}), job:'run_incremental_temp_refresh_tick', trigger, max_players: maxPlayers, max_games: maxGames, auto_continue: true, force_due: true, incremental_request_id: activeForTick?.request_id || input?.incremental_request_id || null }, env);
+    const tick = await runIncrementalTempScheduledTick({ ...(input || {}), job:'run_incremental_temp_refresh_tick', trigger, max_players: maxPlayers, auto_continue: true, force_due: true }, env);
     ticks.push(tick);
     last = tick;
     if (!tick || tick.status === 'idle_no_due_temp_refresh' || tick.status === 'pipeline_blocked' || tick.status === 'failed_exception' || tick.refresh_complete) break;
@@ -13180,26 +12981,11 @@ function nextEverydayPhase1Step(step) {
 async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const preferredRequestId = String(input?.queue_request_id || input?.parent_request_id || '').trim();
-  const orchestratorOwned = !!input?.backend_orchestrator || !!input?.orchestrator_internal || !!preferredRequestId;
   const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (existing) {
-    const sameRequest = preferredRequestId && String(existing.request_id || '') === preferredRequestId;
-    return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, queue_child_bound:sameRequest, live_tables_touched:false, note:sameRequest ? "Everyday Phase 1 child run is bound to the queue request and remains active." : "Everyday Phase 1 baseline already has an active request. The orchestrator will continue that child run instead of creating a duplicate." };
-  }
-  const requestId = (orchestratorOwned && preferredRequestId) ? preferredRequestId : crypto.randomUUID();
-  const seedPreview = {
-    version:SYSTEM_VERSION,
-    job:input.job || "schedule_everyday_phase1_once",
-    status:"scheduled_for_next_tick",
-    request_id:requestId,
-    queue_child_bound:orchestratorOwned && preferredRequestId === requestId,
-    queue_request_id:preferredRequestId || null,
-    queue_chain_id:input?.queue_chain_id || null,
-    note:"v1.5.10.16 binds queue-owned Everyday Phase 1 child progress to the parent queue request_id so SQL/debug output no longer splits parent and child identities."
-  };
-  await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, ?)").bind(requestId, slate.slate_date, JSON.stringify(seedPreview).slice(0,4000)).run();
-  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, queue_child_bound:orchestratorOwned && preferredRequestId === requestId, run_after:"run Run Baseline Tick manually or let the scheduler call it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"bounded one-step ticks; lineup unavailable/timeout is degraded and non-blocking", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. v1.5.10.16 keeps the child run tied to the queue request and makes lineup availability non-blocking so the parent queue cannot hang." };
+  if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
+  const requestId = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)").bind(requestId, slate.slate_date).run();
+  return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"scheduled_for_next_tick", request_id:requestId, slate_date:slate.slate_date, run_after:"run Run Baseline Tick manually or let the scheduler call it", baseline_steps:EVERYDAY_PHASE1_STEPS, live_tables_touched:false, estimated_total_minutes:"usually 10-30 seconds after one auto tick; lineups may return retry_later and not block", note:"Phase 1 baseline uses existing deterministic MLB/API/D1 jobs only. It is today-slate only: no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
 }
 
 function everydayPhase1JobForStep(step) {
@@ -13212,6 +12998,104 @@ function everydayPhase1JobForStep(step) {
   if (step === "candidates_rbi") return "build_edge_candidates_rbi";
   if (step === "candidates_rfi") return "build_edge_candidates_rfi";
   return null;
+}
+
+function everydayPhase1CertificationSensitiveStep(step) {
+  return ["usage", "candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ""));
+}
+
+async function certifyEverydayUsageCoverage(env, slateDate, runStartedAt) {
+  const d = String(slateDate || '').slice(0, 10);
+  if (!d) return { ok:false, data_ok:false, status:'usage_certification_missing_slate_date', expected_players:0, certified_players:0, missing_players:0, coverage_pct:0 };
+  const cutoff = String(runStartedAt || d + ' 00:00:00').slice(0, 19);
+  const totalLineupsRow = await env.DB.prepare(`
+    SELECT COUNT(*) AS expected_players
+    FROM lineups_current l
+    WHERE l.game_id LIKE ?
+  `).bind(d + '_%').first().catch(() => ({ expected_players:0 }));
+  const activeLineupsRow = await env.DB.prepare(`
+    SELECT COUNT(*) AS expected_players
+    FROM lineups_current l
+    JOIN games g ON g.game_id = l.game_id
+    WHERE l.game_id LIKE ?
+      AND (g.start_time_utc IS NULL OR datetime(g.start_time_utc) >= datetime('now','-15 minutes'))
+  `).bind(d + '_%').first().catch(() => null);
+  const expectedPlayers = Number(activeLineupsRow?.expected_players || totalLineupsRow?.expected_players || 0);
+  if (expectedPlayers <= 0) {
+    return { ok:true, data_ok:true, status:'usage_certification_no_posted_pickable_lineups', slate_date:d, expected_players:0, certified_players:0, missing_players:0, coverage_pct:100, cutoff, note:'No current pickable lineup rows were available for usage certification. Earlier lineup step owns retry/partial behavior.' };
+  }
+  const certifiedRow = await env.DB.prepare(`
+    SELECT COUNT(*) AS certified_players
+    FROM lineups_current l
+    JOIN games g ON g.game_id = l.game_id
+    JOIN player_recent_usage u ON u.player_name = l.player_name AND u.team_id = l.team_id
+    WHERE l.game_id LIKE ?
+      AND (g.start_time_utc IS NULL OR datetime(g.start_time_utc) >= datetime('now','-15 minutes'))
+      AND datetime(u.updated_at) >= datetime(?)
+  `).bind(d + '_%', cutoff).first().catch(() => ({ certified_players:0 }));
+  let certifiedPlayers = Number(certifiedRow?.certified_players || 0);
+  if (certifiedPlayers <= 0 && cutoff !== d + ' 00:00:00') {
+    const sameDayRow = await env.DB.prepare(`
+      SELECT COUNT(*) AS certified_players
+      FROM lineups_current l
+      JOIN games g ON g.game_id = l.game_id
+      JOIN player_recent_usage u ON u.player_name = l.player_name AND u.team_id = l.team_id
+      WHERE l.game_id LIKE ?
+        AND (g.start_time_utc IS NULL OR datetime(g.start_time_utc) >= datetime('now','-15 minutes'))
+        AND date(u.updated_at) >= date(?)
+    `).bind(d + '_%', d).first().catch(() => ({ certified_players:0 }));
+    certifiedPlayers = Number(sameDayRow?.certified_players || 0);
+  }
+  const missingPlayers = Math.max(0, expectedPlayers - certifiedPlayers);
+  const coveragePct = expectedPlayers ? Math.round((certifiedPlayers / expectedPlayers) * 10000) / 100 : 100;
+  const missingSample = await env.DB.prepare(`
+    SELECT l.game_id, l.team_id, l.slot, l.player_name
+    FROM lineups_current l
+    JOIN games g ON g.game_id = l.game_id
+    LEFT JOIN player_recent_usage u ON u.player_name = l.player_name AND u.team_id = l.team_id AND datetime(u.updated_at) >= datetime(?)
+    WHERE l.game_id LIKE ?
+      AND (g.start_time_utc IS NULL OR datetime(g.start_time_utc) >= datetime('now','-15 minutes'))
+      AND u.player_name IS NULL
+    ORDER BY l.game_id, l.team_id, l.slot
+    LIMIT 25
+  `).bind(cutoff, d + '_%').all().catch(() => ({ results:[] }));
+  const dataOk = missingPlayers === 0;
+  return {
+    ok:true,
+    data_ok:dataOk,
+    status:dataOk ? 'usage_certified_complete' : 'usage_certification_incomplete',
+    slate_date:d,
+    cutoff,
+    expected_players:expectedPlayers,
+    certified_players:certifiedPlayers,
+    missing_players:missingPlayers,
+    coverage_pct:coveragePct,
+    missing_sample:missingSample.results || [],
+    note:dataOk ? 'Usage rows certify against current pickable slate lineup players.' : 'Usage rows do not yet cover every current pickable slate lineup player; keep the usage step open and continue on the next tick.'
+  };
+}
+
+async function certifyEverydayPhase1StepResult(env, slateDate, step, result, runStartedAt) {
+  const st = String(result?.status || result?.result_status || '').toLowerCase();
+  const timedOut = result?.timed_out === true || st.includes('timeout') || st.includes('degraded');
+  const retryLater = result?.retry_later === true || st.includes('retry_later');
+  const badData = result?.data_ok === false;
+  if (String(step || '') === 'usage') {
+    const usage = await certifyEverydayUsageCoverage(env, slateDate, runStartedAt);
+    const hold = timedOut || retryLater || badData || usage.data_ok === false;
+    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'usage_not_certified_continue' : 'usage_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, usage_certification:usage, note:hold ? 'Usage step is not allowed to advance until coverage certifies. This follows the incremental delta rule: bounded progress may continue, but incomplete data cannot become clean success.' : 'Usage certification passed; Phase 1 may advance.' };
+  }
+  if (["candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ''))) {
+    const fetched = Number(result?.fetched_rows ?? result?.raw_rows ?? 0);
+    const insertedObj = result?.inserted || {};
+    const inserted = Object.values(insertedObj).reduce((a, v) => a + Number(v || 0), 0);
+    const gamesRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM games WHERE game_date=?`).bind(String(slateDate || '').slice(0, 10)).first().catch(() => ({ c:0 }));
+    const games = Number(gamesRow?.c || 0);
+    const hold = timedOut || retryLater || badData || (games > 0 && fetched <= 0 && inserted <= 0);
+    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? `${step}_not_certified_continue` : `${step}_certified_advance`, step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, games, fetched_rows:fetched, inserted_rows:inserted, note:hold ? 'Candidate step did not certify real output for an active slate; keep the step open instead of reporting clean success.' : 'Candidate step produced/certified output and may advance.' };
+  }
+  const hold = timedOut || badData;
+  return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'step_not_certified_continue' : 'step_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false };
 }
 
 async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
@@ -13241,17 +13125,13 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
 async function runEverydayPhase1Tick(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const preferredRequestId = String(input?.queue_request_id || input?.request_id || '').trim();
-  let row = preferredRequestId
-    ? await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? AND status IN ('pending','running') LIMIT 1").bind(preferredRequestId).first().catch(() => null)
-    : null;
-  if (!row) row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, preferred_request_id:preferredRequestId || null, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
+  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
   const requestId = row.request_id;
   let currentStep = row.current_step || "games_markets";
   const startedAt = Date.now();
-  const maxSteps = Number(input?.max_steps || 1);
-  const maxMs = Number(input?.max_ms || 12000);
+  const maxSteps = Number(input?.max_steps || 8);
+  const maxMs = Number(input?.max_ms || 22000);
   const processed = [];
   if (row.status === "pending") await env.DB.prepare("UPDATE everyday_phase1_runs SET status='running', started_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL WHERE request_id=?").bind(requestId).run();
   try {
@@ -13285,49 +13165,45 @@ async function runEverydayPhase1Tick(input, env) {
           note:'v1.5.07.6 skipped re-running this Phase 1 child step because current slate rows already satisfy the deterministic completeness gate.'
         };
       } else {
-        const stepBudgetMs = step === 'lineups' ? Math.min(maxMs, 9000) : Math.min(maxMs, 14000);
-        result = await runWithSoftTimeout(`everyday_phase1_${step}_step`, stepBudgetMs, () => executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env));
+        result = await executeTaskJob(jobName, { ...(input || {}), job:jobName, slate_date:slate.slate_date, slate_mode:slate.slate_mode, phase1_scope:"TODAY_SLATE_ONLY" }, slate, env);
       }
       const duration_ms = Date.now() - t0;
-      if (result?.timed_out) {
-        result = { ok:true, data_ok:true, version:SYSTEM_VERSION, job:jobName, status:`${step}_soft_timeout_degraded`, retry_later:step === 'lineups', timed_out:true, timeout_ms:result.timeout_ms || null, live_tables_touched:false, note:`Everyday Phase 1 ${step} step exceeded its bounded child budget and was degraded instead of allowing the parent orchestrator to hang.` };
-      }
       if (!result || result.ok === false) throw new Error(String(result?.error || result?.status || "step_failed"));
       const nextStep = nextEverydayPhase1Step(step);
-      processed.push({ step, routed_job:jobName, next_step:nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, skipped_execution:skippedExecution, timed_out:!!result.timed_out, live_tables_touched:!skippedExecution && !result.timed_out });
-      currentStep = nextStep;
-      if (result?.retry_later === true) {
-        const retryLaterPayload = {
+      const certification = await certifyEverydayPhase1StepResult(env, slate.slate_date, step, result, row.started_at || row.created_at || null).catch((err) => ({ ok:false, data_ok:false, hold_current_step:everydayPhase1CertificationSensitiveStep(step), status:'certification_exception_continue', error:String(err?.message || err), step }));
+      processed.push({ step, routed_job:jobName, next_step:certification?.hold_current_step ? step : nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, timed_out:!!result.timed_out, certification_status:certification?.status || null, certification_data_ok:certification?.data_ok !== false, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, skipped_execution:skippedExecution, live_tables_touched:skippedExecution ? false : (result.live_tables_touched !== false) });
+      if (certification?.hold_current_step) {
+        const holdPayload = {
           processed,
           last_result:result,
-          non_blocking_retry_later:true,
-          release_reason: step === 'lineups' ? 'lineups_unavailable_or_timeout_continue_to_usage' : 'everyday_phase1_child_retry_later_released_for_downstream',
+          certification,
+          hold_current_step:true,
           preserved_child_request_id:requestId,
-          next_step:currentStep,
-          phase1_complete:false
+          next_step:step,
+          rule:'v1.5.10.17_no_clean_success_without_child_certification'
         };
-        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, JSON.stringify(retryLaterPayload).slice(0,4000), requestId).run();
+        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,4000), requestId).run();
         const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
         return {
           ok:true,
-          data_ok:true,
+          data_ok:false,
           job:input.job || "run_everyday_phase1_tick",
           version:SYSTEM_VERSION,
-          status:"partial_continue_lineups_degraded",
+          status:"partial_continue_not_certified",
           request_id:requestId,
           slate_date:slate.slate_date,
           processed_steps:processed.length,
           processed,
-          next_step:currentStep,
+          next_step:step,
           phase1_complete:false,
-          non_blocking_retry_later:true,
-          retry_later_child:{ step, routed_job:jobName, status:result.status || null, note:result.note || null, timed_out:!!result.timed_out },
+          certification,
           final_check:check,
           elapsed_ms:Date.now()-startedAt,
           live_tables_touched:processed.length>0,
-          note:"Everyday Phase 1 lineup step was unavailable/slow and was degraded without blocking. The child run remains running at the next step so usage/candidate prep can continue on the next cron tick."
+          note:"Everyday Phase 1 child step did not certify real output. The queue remains open for the same step; no downstream stage gets a fake clean success."
         };
       }
+      currentStep = nextStep;
       const complete = currentStep === "completed";
       await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed, last_result:result }).slice(0,4000), requestId).run();
       if (complete) break;
@@ -13369,6 +13245,7 @@ async function checkEverydayPhase1(input, env) {
   await c("rfi_candidates", "SELECT COUNT(*) FROM edge_candidates_rfi WHERE slate_date=?", d);
   await c("board_queue_rows", "SELECT COUNT(*) FROM board_factor_queue WHERE slate_date=?", d);
   const latestRun = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, finished_at, updated_at, error, substr(output_preview,1,1800) AS output_preview FROM everyday_phase1_runs WHERE slate_date=? ORDER BY created_at DESC LIMIT 1").bind(d).first().catch(() => null);
+  const usageCertification = await certifyEverydayUsageCoverage(env, d, latestRun?.started_at || latestRun?.created_at || null).catch((err) => ({ ok:false, data_ok:false, status:'usage_certification_check_exception', error:String(err?.message || err) }));
   const expectedTeams = counts.games * 2;
   const failures = [];
   const warnings = [];
@@ -13379,6 +13256,7 @@ async function checkEverydayPhase1(input, env) {
   if (counts.bullpens < Math.max(1, expectedTeams - 2)) warnings.push("BULLPENS_PARTIAL_OR_EARLY");
   if (counts.lineups <= 0) warnings.push("LINEUPS_NOT_POSTED_YET");
   if (counts.usage_rows <= 0) warnings.push("RECENT_USAGE_EMPTY");
+  if (latestRun && ["usage", "candidates_hits", "candidates_rbi", "candidates_rfi", "completed"].includes(String(latestRun.current_step || '')) && usageCertification?.data_ok === false) failures.push("RECENT_USAGE_NOT_CERTIFIED_FOR_PICKABLE_LINEUPS");
   if (counts.hits_candidates <= 0) warnings.push("HITS_CANDIDATES_EMPTY");
   if (counts.rbi_candidates <= 0) warnings.push("RBI_CANDIDATES_EMPTY");
   if (counts.rfi_candidates <= 0) warnings.push("RFI_CANDIDATES_EMPTY");
@@ -13389,7 +13267,7 @@ async function checkEverydayPhase1(input, env) {
     if (phase1AgeSeconds > 600) warnings.push("PHASE1_RUNNING_LONGER_THAN_EXPECTED_RUN_TICK_AGAIN_OR_PATCH");
   }
   const dataOk = failures.length === 0;
-  return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE_AUTO_RUNNER", counts, expected_teams:expectedTeams, latest_phase1_run:latestRun, phase1_age_seconds:phase1AgeSeconds, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Today-slate only; no static remine, no incremental history, no Gemini, no weather/news, no final scoring. Lineups may be retry-later/non-blocking if not posted." };
+  return { ok:true, data_ok:dataOk, job:input.job || "check_everyday_phase1", version:SYSTEM_VERSION, status:dataOk ? (warnings.length ? "pass_with_warnings" : "pass") : "fail", slate_date:d, check_mode:"EVERYDAY_PHASE1_BASELINE_AUTO_RUNNER", counts, expected_teams:expectedTeams, usage_certification:usageCertification, latest_phase1_run:latestRun, phase1_age_seconds:phase1AgeSeconds, quality:{ failures, warnings }, live_tables_touched:false, note:"Phase 1 validates baseline daily MLB/board data only. Certification-sensitive steps cannot report clean success unless their current slate output is verified. Today-slate only; no static remine, no incremental history, no Gemini, no weather/news, no final scoring." };
 }
 
 
@@ -14822,27 +14700,18 @@ function sleepMs(ms) {
 
 async function fetchJsonWithRetry(url, options = {}, retries = 3, label = "fetch_json") {
   let lastError = null;
-  const timeoutMs = Math.max(1500, Math.min(Number(options.timeout_ms || options.timeoutMs || 7500), 12000));
   for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => { try { controller.abort(`timeout_${timeoutMs}ms`); } catch (_) {} }, timeoutMs);
     try {
-      const fetchOptions = { ...options, headers: { "accept": "application/json", ...(options.headers || {}) }, signal: controller.signal };
-      delete fetchOptions.timeout_ms;
-      delete fetchOptions.timeoutMs;
-      const res = await fetch(url, fetchOptions);
-      clearTimeout(timeout);
-      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt, timeout_ms: timeoutMs };
+      const res = await fetch(url, { headers: { "accept": "application/json", ...(options.headers || {}) }, ...options });
+      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt };
       lastError = new Error(`${label} HTTP ${res.status}`);
       if (![408, 425, 429, 500, 502, 503, 504].includes(Number(res.status))) break;
     } catch (err) {
-      clearTimeout(timeout);
-      const raw = String(err?.message || err || `${label} failed`);
-      lastError = new Error(raw.includes('abort') || raw.includes('timeout') ? `${label} timeout after ${timeoutMs}ms` : raw);
+      lastError = err;
     }
     if (attempt < retries) await sleepMs(250 * attempt);
   }
-  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`), timeout_ms: timeoutMs };
+  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`) };
 }
 
 function decimalInnings(ip) {
