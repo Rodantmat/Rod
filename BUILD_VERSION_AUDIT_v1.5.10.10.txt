@@ -1,0 +1,19 @@
+AlphaDog/OXYGEN-COBALT Build Audit
+Version: v1.5.10.10 - Cron Deploy Target Proof Gate
+
+Required deployment target: prop-ingestion-git
+Required worker entry: worker.js
+Required wrangler config: wrangler.jsonc
+Required cron: * * * * *
+
+Root cause addressed/isolated:
+- v1.5.10.10 HTTP/manual endpoints reported current version, but the cron-written queue output still reported v1.5.10.8.
+- That means the scheduled cron execution path was still running the previous deployed worker bundle or wrong deploy target, not the uploaded/manual HTTP bundle.
+- This build contains no v1.5.10.8 or v1.5.10.10 SYSTEM_VERSION label in worker.js/control_room.html. Any post-deploy cron output showing v1.5.10.8/v1.5.10.10 proves deployment target drift, not runtime logic.
+
+Code-level verification:
+- SYSTEM_VERSION is v1.5.10.10 - Cron Deploy Target Proof Gate.
+- runIncrementalTempAutoLoop is called with env from the orchestrator incremental branch.
+- wrangler.jsonc worker name is prop-ingestion-git and includes cron trigger * * * * *.
+
+Protected data tables are not changed by this package.
