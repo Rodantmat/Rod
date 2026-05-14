@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.17 - Everyday Phase 1 Certification Delta Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Certification Delta Gate";
+const SYSTEM_VERSION = "v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Partial Persistence Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -9252,6 +9252,9 @@ function singleLaneShouldTerminalFail(row, result, attempts) {
     if (statusText.includes('missing_github')) return true;
     if (statusText.includes('waiting') || statusText.includes('dispatched')) return false;
   }
+  if (jobKey === 'everyday_phase1') {
+    if (statusText.includes('partial') || statusText.includes('continue') || result?.phase1_complete === false || result?.partial === true) return false;
+  }
   if (Number(attempts || 0) >= Number(row?.max_attempts || 3)) return true;
   if (isOptionalRefreshDependency(row)) return true;
   return false;
@@ -11018,10 +11021,10 @@ async function runRefreshOrchestratorTick(input, env) {
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        certification_gate:'v1.5.10.17_no_clean_success_without_child_certification',
+        certification_gate:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue',
         note: tick?.phase1_complete
           ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.'
-          : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending until every certification-sensitive step produces real certified output.'
+          : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending across ticks until every certification-sensitive step produces real certified output; partial_continue is not terminal failure.'
       };
     } else {
       result = await executeTaskJob(row.job_name, body, slate, env);
@@ -13180,7 +13183,7 @@ async function runEverydayPhase1Tick(input, env) {
           hold_current_step:true,
           preserved_child_request_id:requestId,
           next_step:step,
-          rule:'v1.5.10.17_no_clean_success_without_child_certification'
+          rule:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue'
         };
         await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,4000), requestId).run();
         const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);

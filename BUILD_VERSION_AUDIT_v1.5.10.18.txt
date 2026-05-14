@@ -1,0 +1,14 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+
+Files updated:
+- worker.js SYSTEM_VERSION = v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+- control_room.html visible version tag = v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+- control_room.html JS version references = v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+- main.py SCRIPT_VERSION = v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+- README_v1.5.10.18.txt = v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate
+
+Patch summary:
+- Incremental delta left locked.
+- Everyday Phase 1 now uses certification-before-complete behavior for usage and candidate steps.
+- No fake clean success for degraded/timeout/retry_later child output.
