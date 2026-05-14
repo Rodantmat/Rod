@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Partial Persistence Gate";
+const SYSTEM_VERSION = "v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Parent Child Fuse Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -12981,9 +12981,57 @@ function nextEverydayPhase1Step(step) {
   return EVERYDAY_PHASE1_STEPS[Math.min(idx + 1, EVERYDAY_PHASE1_STEPS.length - 1)];
 }
 
+function boundEverydayPhase1RequestId(input) {
+  const v = input?.queue_request_id || input?.parent_request_id || input?.orchestrator_request_id || null;
+  return v ? String(v) : null;
+}
+
+async function cancelStaleEverydayPhase1Children(env, slateDate, keepRequestId, reason = 'stale_everyday_phase1_child_cancelled') {
+  await ensureEverydayPhase1Tables(env);
+  const d = String(slateDate || '').slice(0, 10);
+  const keep = keepRequestId ? String(keepRequestId) : '';
+  if (!d || !keep) return { cancelled:0, stale_children:[] };
+  const stale = await sampleRows(env, `SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND request_id<>? AND status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 50`, [d, keep]).catch(() => []);
+  const res = await env.DB.prepare(`
+    UPDATE everyday_phase1_runs
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?),
+        output_preview=COALESCE(output_preview, ?)
+    WHERE slate_date=?
+      AND request_id<>?
+      AND status IN ('pending','running')
+  `).bind(reason, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'cancel_stale_everyday_phase1_children', status:'cancelled_stale_unbound_child', reason, keep_request_id:keep }).slice(0,4000), d, keep).run().catch((e) => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  return { cancelled:Number(res?.meta?.changes || 0), stale_children:stale, error:res?.error || null };
+}
+
+async function ensureBoundEverydayPhase1Child(env, slateDate, requestId, source = 'orchestrator_bound_child') {
+  await ensureEverydayPhase1Tables(env);
+  const d = String(slateDate || '').slice(0, 10);
+  const rid = String(requestId || '');
+  if (!d || !rid) return null;
+  await cancelStaleEverydayPhase1Children(env, d, rid, 'stale_everyday_phase1_child_replaced_by_bound_parent_request');
+  const existing = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
+  if (existing) {
+    if (['cancelled','failed'].includes(String(existing.status || '').toLowerCase())) {
+      await env.DB.prepare("UPDATE everyday_phase1_runs SET status='pending', current_step='games_markets', started_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'ensure_bound_everyday_phase1_child', status:'reopened_bound_child', source }).slice(0,4000), rid).run();
+      return await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
+    }
+    return existing;
+  }
+  await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, ?)").bind(rid, d, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'ensure_bound_everyday_phase1_child', status:'created_bound_child', source, parent_request_id:rid }).slice(0,4000)).run();
+  return await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
+}
+
 async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
+  const boundRequestId = boundEverydayPhase1RequestId(input || {});
+  if (boundRequestId) {
+    const child = await ensureBoundEverydayPhase1Child(env, slate.slate_date, boundRequestId, 'schedule_everyday_phase1_once_bound_parent');
+    return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:child?.status === 'completed' ? 'bound_child_already_completed' : 'bound_child_ready', request_id:boundRequestId, slate_date:slate.slate_date, child_request:child, live_tables_touched:false, parent_child_binding:'parent_request_id_equals_everyday_phase1_runs_request_id', note:'Everyday Phase 1 child is bound to the parent queue request_id. Stale same-slate children are cancelled and never resumed.' };
+  }
   const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
   if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
   const requestId = crypto.randomUUID();
@@ -13128,8 +13176,21 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
 async function runEverydayPhase1Tick(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  const boundRequestId = boundEverydayPhase1RequestId(input || {});
+  let row = null;
+  if (boundRequestId) {
+    row = await ensureBoundEverydayPhase1Child(env, slate.slate_date, boundRequestId, 'run_everyday_phase1_tick_bound_parent');
+  } else {
+    row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
+  }
   if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
+  if (boundRequestId && String(row.request_id) !== String(boundRequestId)) {
+    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_parent_child_binding_mismatch", slate_date:slate.slate_date, expected_request_id:boundRequestId, actual_request_id:row.request_id, live_tables_touched:false, note:"Everyday Phase 1 refuses to run an unbound/stale child. Parent request_id must equal everyday_phase1_runs.request_id." };
+  }
+  if (String(row.status || '').toLowerCase() === 'completed') {
+    const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
+    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"completed", request_id:row.request_id, slate_date:slate.slate_date, processed_steps:0, processed:[], next_step:'completed', phase1_complete:true, final_check:check, live_tables_touched:false, note:"Bound Everyday Phase 1 child was already completed for this parent queue request." };
+  }
   const requestId = row.request_id;
   let currentStep = row.current_step || "games_markets";
   const startedAt = Date.now();

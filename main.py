@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate"
+SCRIPT_VERSION = "v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

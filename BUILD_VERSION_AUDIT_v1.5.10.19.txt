@@ -1,0 +1,11 @@
+BUILD VERSION AUDIT
+Expected version: v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+
+- worker.js SYSTEM_VERSION = v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+- control_room.html visible version tag = v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+- control_room.html JS version references = v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+- main.py SCRIPT_VERSION = v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+- README_v1.5.10.19.txt = v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate
+
+Patch target: Everyday Phase 1 parent/child request binding and stale child selection.
+Incremental delta logic intentionally untouched.
