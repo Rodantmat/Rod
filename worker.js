@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.8 - Incremental Preflight Visibility Gate";
+const SYSTEM_VERSION = "v1.5.10.9 - Incremental DB Capsule Restore Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -10994,11 +10994,11 @@ async function runRefreshOrchestratorTick(input, env) {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runWithSoftTimeout('incremental_orchestrator_child_tick', 18500, () => runIncrementalTempAutoLoop({ ...body, max_players:5, max_games:1, max_ms:15000, max_ticks:1, force_due:true, force_schedule:true }));
+      result = await runWithSoftTimeout('incremental_orchestrator_child_tick', 18500, () => runIncrementalTempAutoLoop({ ...body, max_players:5, max_games:1, max_ms:15000, max_ticks:1, force_due:true, force_schedule:true }, env));
       if (result?.timed_out) {
         const temp = await env.DB.prepare(`SELECT request_id, status, current_step, started_at, updated_at, error, substr(output_json,1,2000) AS output_preview FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
         if (temp?.request_id) {
-          await writeIncrementalTempHeartbeat(env, temp.request_id, { status:'incremental_orchestrator_child_tick_soft_timeout', current_step:temp.current_step || 'unknown', queue_request_id:requestId, timeout_ms:18500, note:'v1.5.10.8 released the parent queue tick after a bounded timeout; the next cron tick can continue or fail visibly.' }).catch(() => null);
+          await writeIncrementalTempHeartbeat(env, temp.request_id, { status:'incremental_orchestrator_child_tick_soft_timeout', current_step:temp.current_step || 'unknown', queue_request_id:requestId, timeout_ms:18500, note:'v1.5.10.9 released the parent queue tick after a bounded timeout; the next cron tick can continue or fail visibly.' }).catch(() => null);
         }
         result = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'run_incremental_temp_refresh_auto', status:'auto_continue_scheduled_soft_timeout', partial:true, auto_continue_active:true, latest_temp_refresh:temp, timeout_ms:18500, note:'Incremental child tick exceeded the orchestrator soft timeout and was safely released/requeued instead of leaving the parent permanently stuck.' };
       }
@@ -11992,7 +11992,7 @@ async function getIncrementalDeltaWindowProgress(env, input = {}) {
       reason:'schedule_fetch_failed'
     };
   }
-  await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_schedule_fetch_done', status:'completed', message:'Incremental delta schedule fetch completed.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, start_date:startDate, end_date:endDate, schedule_games_seen:(schedule.games || []).length } }).catch(() => null);
+  await refreshOrchestratorEvent(env, { request_id:input?.incremental_request_id || null, event_type:'incremental_delta_window_schedule_fetch_done', status:'completed', message:'Incremental delta window schedule fetch completed.', payload_json:{ version:SYSTEM_VERSION, request_id:input?.incremental_request_id || null, start_date:modeInfo.start_date, end_date:modeInfo.end_date, schedule_games_seen:(schedule.games || []).length } }).catch(() => null);
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const doneRow = await env.DB.prepare(`
     SELECT COUNT(*) AS c
@@ -12027,7 +12027,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     status:'stage_delta_logs_entered_pre_mode',
     current_step:'stage_delta_logs',
     trigger:String(input?.trigger || 'unknown'),
-    note:'v1.5.10.8 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
+    note:'v1.5.10.9 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_entered_pre_mode', status:'running', message:'Incremental delta stage entered before mode detection.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, trigger:String(input?.trigger || 'unknown') } }).catch(() => null);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
@@ -12047,7 +12047,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
-    note:'v1.5.10.8 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+    note:'v1.5.10.9 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
   });
 
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
@@ -12078,7 +12078,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.8 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.9 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`
@@ -12442,7 +12442,7 @@ async function runIncrementalTempScheduledTick(input, env) {
     current_step:row.current_step || 'stage_logs',
     trigger,
     force_due:forceDue,
-    note:'v1.5.10.8 confirms the incremental child tick entered before hard reconcile or any external fetch.'
+    note:'v1.5.10.9 confirms the incremental child tick entered before hard reconcile or any external fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_pre_hard_reconcile', status:'running', message:'Incremental child tick entered before hard reconcile.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:row.current_step || 'stage_logs', trigger, force_due:forceDue } }).catch(() => null);
   const hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});

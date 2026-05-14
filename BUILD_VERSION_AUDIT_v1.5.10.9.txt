@@ -1,0 +1,10 @@
+Build Version Audit
+Expected version: v1.5.10.9 - Incremental DB Capsule Restore Gate
+
+Files checked:
+- worker.js SYSTEM_VERSION must equal v1.5.10.9 - Incremental DB Capsule Restore Gate
+- README_v1.5.10.9.txt exists
+- BUILD_VERSION_AUDIT_v1.5.10.9.txt exists
+
+Primary code fix:
+- runIncrementalTempAutoLoop is called with env from refresh_orchestrator_tick.
