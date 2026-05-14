@@ -1,0 +1,18 @@
+AlphaDog Build Version Audit
+Version: v1.5.10.14 - Selected Pending Immediate Pickup Gate
+
+Verified labels:
+- worker.js SYSTEM_VERSION = v1.5.10.14 - Selected Pending Immediate Pickup Gate
+- control_room.html versionTag/control version = v1.5.10.14 - Selected Pending Immediate Pickup Gate
+- main.py SCRIPT_VERSION = v1.5.10.14 - Selected Pending Immediate Pickup Gate
+- README filename/version = README_v1.5.10.14.txt
+- ZIP filename/version = alphadog_v1.5.10.14_selected_pending_immediate_pickup_gate.zip
+
+Primary fix:
+- selected/manual queue rows now insert with run_after=CURRENT_TIMESTAMP
+- selected/manual pending NULL-run_after rows are repaired before cron pickup
+- same-request active enqueue lock is allowed and logged
+
+Validation:
+- worker.js passes node --check
+- ZIP is flat-folder only
