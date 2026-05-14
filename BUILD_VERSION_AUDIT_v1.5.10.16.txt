@@ -1,0 +1,9 @@
+BUILD VERSION AUDIT
+worker.js SYSTEM_VERSION: v1.5.10.16 - Everyday Phase 1 Child Binding Gate
+control_room.html visible tag/JS version: v1.5.10.16 - Everyday Phase 1 Child Binding Gate
+main.py SCRIPT_VERSION: v1.5.10.16 - Everyday Phase 1 Child Binding Gate
+README: README_v1.5.10.16.txt
+ZIP target: alphadog_v1.5.10.16_everyday_phase1_child_binding_gate.zip
+Flat folder: yes
+Incremental delta logic intentionally locked: yes
+Everyday Phase 1 child-binding patch: yes
