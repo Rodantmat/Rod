@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.10 - Cron Deploy Target Proof Gate";
+const SYSTEM_VERSION = "v1.5.10.11 - Minute Hot Lane Priority Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -902,6 +902,45 @@ function unauthorized() {
   return json({ ok: false, error: "Unauthorized" }, { status: 401 });
 }
 
+
+async function detectRefreshOrchestratorHotLaneFast(env) {
+  // v1.5.10.11: this is intentionally tiny. The previous hot-lane detector could time out
+  // and then the minute cron wasted the lifecycle on production-clock/watchdog scans before
+  // advancing a manually selected job. This fast gate checks only the queue/job/global flags.
+  await ensureRefreshOrchestratorTables(env).catch(() => null);
+  const queue = await env.DB.prepare(`
+    SELECT COUNT(*) AS rows_count
+    FROM data_refresh_queue
+    WHERE lower(status) IN ('pending','running','requested','retry_later','partial_continue')
+  `).first().catch(() => ({ rows_count: 0 }));
+  const jobs = await env.DB.prepare(`
+    SELECT COUNT(*) AS rows_count
+    FROM data_orchestrator_jobs
+    WHERE run_requested_flag=1 OR running_flag=1 OR blocked_flag=1
+  `).first().catch(() => ({ rows_count: 0 }));
+  const globalState = await env.DB.prepare(`
+    SELECT lock_flag, running_job_key, running_request_id, status, updated_at
+    FROM data_orchestrator_state
+    WHERE state_key='GLOBAL'
+  `).first().catch(() => null);
+  const activeQueueCount = Number(queue?.rows_count || 0);
+  const activeJobCount = Number(jobs?.rows_count || 0);
+  const globalLocked = Number(globalState?.lock_flag || 0) === 1;
+  return {
+    ok: true,
+    data_ok: true,
+    version: SYSTEM_VERSION,
+    job: 'detect_refresh_orchestrator_hot_lane_fast',
+    status: (activeQueueCount || activeJobCount || globalLocked) ? 'hot_lane' : 'no_hot_lane',
+    has_work: !!(activeQueueCount || activeJobCount || globalLocked),
+    active_queue_count: activeQueueCount,
+    active_job_flags: activeJobCount,
+    global_locked: globalLocked,
+    global_state: globalState || null,
+    note: 'Fast hot-lane gate used before production-clock scans so selected/manual jobs get the minute cron first.'
+  };
+}
+
 export default {
   async fetch(request, env) {
     try {
@@ -1015,14 +1054,19 @@ export default {
         // v1.3.59: the only active cron is the minute poller.
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
-        const lockReaper = await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
-        const hotLane = await scheduledPhase(env, 'orchestrator_hot_lane_check', () => detectRefreshOrchestratorHotLane(env), 2500, { cron, lock_reaper:lockReaper });
+        const fastHotLane = await detectRefreshOrchestratorHotLaneFast(env).catch(e => ({ ok:false, data_ok:false, status:'fast_hot_lane_error', has_work:false, error:String(e?.message || e) }));
+        const lockReaper = fastHotLane?.has_work
+          ? { ok:true, data_ok:true, status:'skipped_fast_hot_lane', note:'Skipped minute-lock reaper until after selected/manual work advances; hard reset still releases active locks.' }
+          : await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
+        const hotLane = fastHotLane?.has_work
+          ? fastHotLane
+          : await scheduledPhase(env, 'orchestrator_hot_lane_check', () => detectRefreshOrchestratorHotLane(env), 2500, { cron, lock_reaper:lockReaper });
         let productionClockWatchdog = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
         let productionClock = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
         let oneShotPickup = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
         let orchestratorTick = null;
-        if (hotLane?.has_work) {
-          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000 }, env), 26000, { cron, lock_reaper:lockReaper, hot_lane:hotLane });
+        if (fastHotLane?.has_work || hotLane?.has_work) {
+          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000, fast_hot_lane:true }, env), 30000, { cron, lock_reaper:lockReaper, hot_lane:hotLane, fast_hot_lane:fastHotLane, priority_gate:'v1.5.10.11_manual_selected_work_first' });
         } else {
           productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
           productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
@@ -1039,6 +1083,7 @@ export default {
             status: hotLane?.has_work ? 'orchestrator_hot_lane_advanced' : (!orchestratorIdle ? 'orchestrator_advanced' : (oneShotPickup && oneShotPickup.status !== 'no_due_one_shot' ? 'one_shot_pickup_checked' : 'production_clock_checked')),
             cron,
             hot_lane: hotLane,
+            fast_hot_lane: fastHotLane,
             production_clock_watchdog: productionClockWatchdog,
             production_clock: productionClock,
             one_shot_pickup_rescue: oneShotPickup,
@@ -9382,9 +9427,16 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   if (legacy.length) await env.DB.batch(legacy);
   if (updates.length) await env.DB.batch(updates);
   const enqueued = lockResult.acquired.map(x => ({ job_key:x.job.job_key, display_name:x.job.display_name, job_name:x.job.job_name, sequence_order:x.job.sequence_order, request_id:x.request_id }));
-  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked } });
-  await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, manual_ticks_required:false, next_action:'Minute cron reads data_orchestrator_jobs and runs exactly one requested job per tick. Each job is independent and reports its own status, failure, and block state.', note:'v1.5.06.9 Capsule Parity Recovery Lock: schedule-backed cascades enqueue only the plan-selected jobs; every queued function self-hydrates its own environment capsule before execution; PrizePicks board queue rows still own one workflow_dispatch request.' };
+  let incremental_preflight = null;
+  if (enqueued.some(x => x.job_key === 'incremental_daily')) {
+    incremental_preflight = await scheduleIncrementalTempRefreshOnce({ ...(input || {}), job:'schedule_incremental_temp_refresh_once', trigger:'selected_enqueue_incremental_preflight', slate_date:slate.slate_date, slate_mode:slate.slate_mode, force_schedule_from_selected_enqueue:true }, env).catch(e => ({ ok:false, data_ok:false, status:'incremental_preflight_exception', error:String(e?.message || e) }));
+    if (incremental_preflight?.request_id || incremental_preflight?.existing_request?.request_id) {
+      await env.DB.prepare(`UPDATE incremental_temp_refresh_runs SET run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE status IN ('pending','running')`).run().catch(() => null);
+    }
+  }
+  await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
+  await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, incremental_preflight, manual_ticks_required:false, next_action:'Minute cron fast-hot-lane gate now advances selected/manual queue work before production-clock scans. Incremental Daily also pre-creates its child temp run at enqueue so progress is visible immediately.', note:'v1.5.10.11 Minute Hot Lane Priority Gate: selected/manual jobs get cron priority, incremental child rows are pre-created at enqueue, and production-clock/watchdog scans cannot starve the active lane.' };
 }
 
 
@@ -10994,14 +11046,9 @@ async function runRefreshOrchestratorTick(input, env) {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runWithSoftTimeout('incremental_orchestrator_child_tick', 18500, () => runIncrementalTempAutoLoop({ ...body, max_players:5, max_games:1, max_ms:15000, max_ticks:1, force_due:true, force_schedule:true }, env));
-      if (result?.timed_out) {
-        const temp = await env.DB.prepare(`SELECT request_id, status, current_step, started_at, updated_at, error, substr(output_json,1,2000) AS output_preview FROM incremental_temp_refresh_runs WHERE status IN ('pending','running') ORDER BY created_at DESC LIMIT 1`).first().catch(() => null);
-        if (temp?.request_id) {
-          await writeIncrementalTempHeartbeat(env, temp.request_id, { status:'incremental_orchestrator_child_tick_soft_timeout', current_step:temp.current_step || 'unknown', queue_request_id:requestId, timeout_ms:18500, note:'v1.5.10.10 released the parent queue tick after a bounded timeout; the next cron tick can continue or fail visibly.' }).catch(() => null);
-        }
-        result = { ok:true, data_ok:false, version:SYSTEM_VERSION, job:'run_incremental_temp_refresh_auto', status:'auto_continue_scheduled_soft_timeout', partial:true, auto_continue_active:true, latest_temp_refresh:temp, timeout_ms:18500, note:'Incremental child tick exceeded the orchestrator soft timeout and was safely released/requeued instead of leaving the parent permanently stuck.' };
-      }
+      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'incremental_orchestrator_before_child_tick', status:'running', message:'Incremental orchestrator is entering bounded child tick.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, chain_id:chainId, trigger:input?.trigger || 'single_lane_orchestrator_tick' } }).catch(() => null);
+      result = await runIncrementalTempAutoLoop({ ...body, max_players:3, max_games:1, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true, fetch_timeout_ms:3000 }, env);
+      await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'incremental_orchestrator_after_child_tick', status:result?.status || 'done', message:'Incremental orchestrator child tick returned.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, chain_id:chainId, result:compactIncrementalStepResult(result), latest_temp_refresh:result?.latest_temp_refresh || null } }).catch(() => null);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
@@ -11930,7 +11977,7 @@ function firstAvailableAbbr(...vals) {
 }
 async function fetchMlbScheduleGamesForWindow(startDate, endDate) {
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
-  const fetched = await fetchJsonWithRetry(url, {}, 1, `incremental_delta_schedule_${startDate}_${endDate}`);
+  const fetched = await fetchJsonWithRetry(url, { timeout_ms: 3000 }, 1, `incremental_delta_schedule_${startDate}_${endDate}`);
   if (!fetched.ok) return { ok:false, games:[], error:fetched.error || 'schedule_fetch_failed', url };
   const games = [];
   for (const d of (fetched.data?.dates || [])) {
@@ -12027,7 +12074,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     status:'stage_delta_logs_entered_pre_mode',
     current_step:'stage_delta_logs',
     trigger:String(input?.trigger || 'unknown'),
-    note:'v1.5.10.10 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
+    note:'v1.5.10.11 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_entered_pre_mode', status:'running', message:'Incremental delta stage entered before mode detection.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, trigger:String(input?.trigger || 'unknown') } }).catch(() => null);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
@@ -12047,7 +12094,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
-    note:'v1.5.10.10 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+    note:'v1.5.10.11 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
   });
 
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
@@ -12078,7 +12125,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.10 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.11 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`
@@ -12098,7 +12145,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     await writeIncrementalTempHeartbeat(env, heartbeatRequestId, { status:'stage_delta_logs_fetching_game', current_step:'stage_delta_logs', game_pk:gamePk, game_date:gameDate, attempted_games:attemptedGames, inserted_rows_so_far:inserted, successful_fetch_count:successfulFetches, failed_fetch_count:failedFetches });
     const homeSched = game?.teams?.home?.team || {};
     const awaySched = game?.teams?.away?.team || {};
-    const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, {}, 1, `incremental_delta_boxscore_${gamePk}`);
+    const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, { timeout_ms: Number(input?.fetch_timeout_ms || 3000) }, 1, `incremental_delta_boxscore_${gamePk}`);
     if (!box.ok) {
       failedFetches += 1;
       errors.push({ game_pk:gamePk, error:box.error || 'boxscore_fetch_failed' });
@@ -12442,7 +12489,7 @@ async function runIncrementalTempScheduledTick(input, env) {
     current_step:row.current_step || 'stage_logs',
     trigger,
     force_due:forceDue,
-    note:'v1.5.10.10 confirms the incremental child tick entered before hard reconcile or any external fetch.'
+    note:'v1.5.10.11 confirms the incremental child tick entered before hard reconcile or any external fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_pre_hard_reconcile', status:'running', message:'Incremental child tick entered before hard reconcile.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:row.current_step || 'stage_logs', trigger, force_due:forceDue } }).catch(() => null);
   const hardReconcile = await hardReconcileActiveIncrementalStage(env, row, input || {});

@@ -1,0 +1,21 @@
+AlphaDog Build Version Audit
+Version: v1.5.10.11 - Minute Hot Lane Priority Gate
+
+Files checked:
+- worker.js SYSTEM_VERSION = v1.5.10.11 - Minute Hot Lane Priority Gate
+- control_room.html versionTag/control version = v1.5.10.11 - Minute Hot Lane Priority Gate
+- main.py SCRIPT_VERSION = v1.5.10.11 - Minute Hot Lane Priority Gate
+
+Patch target:
+- Current uploaded package: 5.zip
+
+Root repair in this build:
+1. Added a tiny fast hot-lane cron gate before production-clock/watchdog/one-shot scans.
+2. If a selected/manual orchestrator job exists, the minute cron now advances that job first.
+3. Incremental Daily selected enqueue pre-creates the child incremental_temp_refresh_runs row, so progress is visible before cron touches it.
+4. Removed the incremental child Promise-race soft-timeout wrapper that could return while the underlying child kept running.
+5. Incremental delta schedule/boxscore fetches are now bounded with short timeout settings for the cron path.
+6. Added before/after child tick events for visibility.
+
+Protected tables not intentionally wiped:
+score_candidate_board, prizepicks_current_market_context, odds_api_events, odds_api_game_markets, odds_api_player_props, games, markets_current, starters_current, lineups_current, incremental_player_metrics, player_game_logs, ref_player_splits, data_refresh_events, data_orchestrator_logs.

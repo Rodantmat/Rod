@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.10 - Cron Deploy Target Proof Gate"
+SCRIPT_VERSION = "v1.5.10.11 - Minute Hot Lane Priority Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
