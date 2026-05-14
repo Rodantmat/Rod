@@ -1,0 +1,4 @@
+ZIP: alphadog_v1.5.10.8_incremental_preflight_visibility_gate.zip
+worker.js SYSTEM_VERSION: v1.5.10.8 - Incremental Preflight Visibility Gate
+README: README_v1.5.10.8.txt
+Flat folder: yes
