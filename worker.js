@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.14 - Selected Pending Immediate Pickup Gate";
+const SYSTEM_VERSION = "v1.5.10.15 - Full Run Orchestrator Parity Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -9608,10 +9608,33 @@ async function ensureProductionRefreshScheduleTables(env) {
       updated_at=CURRENT_TIMESTAMP
   `).bind(pl.plan_key, pl.display_name, pl.schedule_kind, pl.byday || null, pl.hour_pt, pl.minute_pt, pl.mode, JSON.stringify(pl.job_keys), pl.notes || null));
   if (stmts.length) await env.DB.batch(stmts);
+  // v1.5.10.15: the daily incremental delta is now explicitly scheduled again.
+  // Keep all other plans exactly as the Control Room/user left them; only the 1:30 AM PT
+  // incremental plan is force-enabled by this build per operator request.
+  await env.DB.prepare(`
+    UPDATE data_refresh_schedule_plan
+    SET enabled=1,
+        hour_pt=1,
+        minute_pt=30,
+        mode='selected',
+        selected_job_keys_json='["incremental_daily"]',
+        notes='Daily 1:30 AM PT. True delta when live base is A/A+ certified. v1.5.10.15 force-enabled after incremental delta lock.',
+        updated_at=CURRENT_TIMESTAMP
+    WHERE plan_key='daily_incremental_0130_pt'
+  `).run().catch(() => null);
 }
 
 function productionFullRunJobKeys() {
   return ['everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'];
+}
+
+function queueOwnedContinuableJobKeys() {
+  return ['static_weekly','incremental_daily', ...productionFullRunJobKeys()];
+}
+
+function isQueueOwnedContinuableJobKey(jobKey) {
+  const key = String(jobKey || '');
+  return queueOwnedContinuableJobKeys().includes(key);
 }
 
 function productionRefreshSchedulePlans() {
@@ -11105,22 +11128,14 @@ async function runRefreshOrchestratorTick(input, env) {
         return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:'single_lane_scoring_completed_by_reaper', cleanup, scoring_reaper:scoringReaper, active_remaining:0, elapsed_ms:Date.now()-started, note:'Scoring had already completed in scoring_runs. v1.5.07.6 finalized the stuck queue row and released the global lock without waiting for timeout.' };
       }
     }
-    const canContinueLockedPrizePicks = activeLockedRow && String(activeLockedRow.job_key || '') === 'prizepicks_board';
-    // v1.5.07.6: Everyday Phase 1 is a resumable child-runner. If the Worker is killed
-    // mid-child-step, the parent queue/global lock can remain running with null output_json.
-    // Do not wait for a timeout. Continue the locked job on the next minute tick and let the
-    // child run advance/finalize itself in bounded one-step slices.
-    const canContinueLockedEverydayPhase1 = activeLockedRow && String(activeLockedRow.job_key || '') === 'everyday_phase1';
-    // v1.5.08.6: Scoring is also a bounded continuation job. A killed scoring request can leave
-    // GLOBAL locked with a RUNNING queue row and null output_json. Continue it on the next tick
-    // so run_mlb_scoring_v1 can either resume a durable checkpoint or fail a phantom counter run.
-    const canContinueLockedScoring = activeLockedRow && String(activeLockedRow.job_key || '') === 'scoring_refresh';
-    // v1.5.10.6: Incremental Daily is a queue-owned auto-continue runner. Its first tick may
-    // schedule/advance a child incremental_temp_refresh_runs row and return auto_continue_scheduled.
-    // The parent queue/global lane must continue the same locked job on the next cron tick instead
-    // of reporting single_lane_busy forever. This is the root fix for the cron/orchestrator bridge.
-    const canContinueLockedIncremental = activeLockedRow && String(activeLockedRow.job_key || '') === 'incremental_daily';
-    if (!canContinueLockedPrizePicks && !canContinueLockedEverydayPhase1 && !canContinueLockedScoring && !canContinueLockedIncremental) {
+    // v1.5.10.15: Extend the proven incremental-delta continuation contract to every
+    // queue-owned full-run stage. If Cloudflare ends a request while a stage is running, the
+    // next minute tick must re-enter the same job key, preserve the same request/chain, and
+    // let that job finish/partial/fail through the normal single-lane finalizer. This prevents
+    // weather, lineup, market context, odds, or scoring from sitting behind a stale GLOBAL lock.
+    // Incremental Daily remains untouched except for using the same existing continuation path.
+    const canContinueLockedQueueOwnedJob = activeLockedRow && isQueueOwnedContinuableJobKey(activeLockedRow.job_key);
+    if (!canContinueLockedQueueOwnedJob) {
       const staleRequestId = state?.running_request_id || activeLockedRow?.current_request_id || null;
       const staleJobKey = state?.running_job_key || activeLockedRow?.job_key || null;
       const activeQueue = staleRequestId ? await env.DB.prepare(`SELECT request_id, job_key, status, started_at, updated_at, created_at, substr(COALESCE(output_json,''),1,1200) AS output_preview FROM data_refresh_queue WHERE request_id=? AND status IN ('pending','running')`).bind(staleRequestId).first().catch(() => null) : null;
@@ -11169,7 +11184,8 @@ async function runRefreshOrchestratorTick(input, env) {
   await setSingleLaneGlobalState(env, { lock_flag:1, running_job_key:row.job_key, running_job_index:row.job_index, running_request_id:requestId, running_chain_id:chainId, status:continuingLockedJob ? 'RUNNING_WAITING_CHECK' : 'RUNNING', started_at:continuingLockedJob ? null : new Date().toISOString(), state_json:{ job_key:row.job_key, request_id:requestId, chain_id:chainId, continuing_locked_job:continuingLockedJob } });
   if (continuingLockedJob) {
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running_waiting_check', updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();
-    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'wait_check', status:'running', message:`${row.display_name} wait check`, payload_json:{ row } });
+    await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:'wait_check', status:'running', message:`${row.display_name} wait check`, payload_json:{ row, parity_gate:'v1.5.10.15_full_run_orchestrator_parity' } });
+    await refreshOrchestratorEvent(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, event_type:'queue_owned_continuation_reentered', status:'running', message:`${row.display_name} re-entered from existing GLOBAL lock.`, payload_json:{ version:SYSTEM_VERSION, request_id:requestId, chain_id:chainId, job_key:row.job_key, routed_job:row.job_name, parity_gate:'v1.5.10.15_full_run_orchestrator_parity' } }).catch(() => null);
   } else {
     const isIncrementalResumeTick = String(row.job_key || '') === 'incremental_daily' && !!queueBeforeStart?.started_at;
     await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=1, last_status='running', last_started_at=COALESCE(last_started_at,CURRENT_TIMESTAMP), updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(row.job_key).run();

@@ -1,0 +1,17 @@
+BUILD VERSION AUDIT
+Version: v1.5.10.15 - Full Run Orchestrator Parity Gate
+
+Confirmed labels:
+- worker.js SYSTEM_VERSION = v1.5.10.15 - Full Run Orchestrator Parity Gate
+- control_room.html versionTag/control version = v1.5.10.15 - Full Run Orchestrator Parity Gate
+- main.py SCRIPT_VERSION = v1.5.10.15 - Full Run Orchestrator Parity Gate
+- README filename/version = README_v1.5.10.15.txt
+- ZIP filename/version = alphadog_v1.5.10.15_full_run_orchestrator_parity_gate.zip
+
+Patch focus:
+- Daily Incremental Delta plan force-enabled for 1:30 AM PT.
+- Full-run queue-owned stages now share the same continuation/re-entry protection pattern that fixed incremental delta.
+- Incremental delta internals were not rewritten.
+
+Syntax check:
+- node --check worker.js passed.
