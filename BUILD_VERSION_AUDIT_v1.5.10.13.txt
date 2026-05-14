@@ -1,0 +1,13 @@
+AlphaDog Build Version Audit
+Version: v1.5.10.13 - Incremental Parent Release Fuse Gate
+
+Matched files:
+- worker.js SYSTEM_VERSION = v1.5.10.13 - Incremental Parent Release Fuse Gate
+- control_room.html versionTag/control version = v1.5.10.13 - Incremental Parent Release Fuse Gate
+- main.py SCRIPT_VERSION = v1.5.10.13 - Incremental Parent Release Fuse Gate
+- README filename/version = README_v1.5.10.13.txt
+- ZIP filename/version = alphadog_v1.5.10.13_incremental_parent_release_fuse_gate.zip
+
+Validation performed before packaging:
+- node --check worker.js passed.
+- Version string scan confirms the previous build label was removed from active project files.

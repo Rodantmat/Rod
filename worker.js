@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.12 - Incremental Hard Reconcile Bypass Gate";
+const SYSTEM_VERSION = "v1.5.10.13 - Incremental Parent Release Fuse Gate";
 const SYSTEM_CODENAME = "One-Shot Schedule Pickup Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -904,7 +904,7 @@ function unauthorized() {
 
 
 async function detectRefreshOrchestratorHotLaneFast(env) {
-  // v1.5.10.12: this is intentionally tiny. The previous hot-lane detector could time out
+  // v1.5.10.13: this is intentionally tiny. The previous hot-lane detector could time out
   // and then the minute cron wasted the lifecycle on production-clock/watchdog scans before
   // advancing a manually selected job. This fast gate checks only the queue/job/global flags.
   await ensureRefreshOrchestratorTables(env).catch(() => null);
@@ -1055,9 +1055,7 @@ export default {
         // It does no heavy work unless a manual/admin request is pending, a scheduled full-refresh slot is due,
         // or the weekly static-temp refresh is due/in progress.
         const fastHotLane = await detectRefreshOrchestratorHotLaneFast(env).catch(e => ({ ok:false, data_ok:false, status:'fast_hot_lane_error', has_work:false, error:String(e?.message || e) }));
-        const lockReaper = fastHotLane?.has_work
-          ? { ok:true, data_ok:true, status:'skipped_fast_hot_lane', note:'Skipped minute-lock reaper until after selected/manual work advances; hard reset still releases active locks.' }
-          : await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 2500, { cron });
+        const lockReaper = await scheduledPhase(env, 'minute_lock_reaper', () => reapStaleScheduledMinuteLocks(env, 'scheduled_minute_tick_preflight'), 1500, { cron, priority_gate:'v1.5.10.13_reap_90s_minute_locks_even_during_hot_lane' });
         const hotLane = fastHotLane?.has_work
           ? fastHotLane
           : await scheduledPhase(env, 'orchestrator_hot_lane_check', () => detectRefreshOrchestratorHotLane(env), 2500, { cron, lock_reaper:lockReaper });
@@ -1066,7 +1064,7 @@ export default {
         let oneShotPickup = { ok:true, data_ok:true, status:'skipped_hot_lane_clear', note:'Skipped because queued/requested orchestrator work already exists.' };
         let orchestratorTick = null;
         if (fastHotLane?.has_work || hotLane?.has_work) {
-          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000, fast_hot_lane:true }, env), 30000, { cron, lock_reaper:lockReaper, hot_lane:hotLane, fast_hot_lane:fastHotLane, priority_gate:'v1.5.10.12_manual_selected_work_first' });
+          orchestratorTick = await scheduledPhase(env, 'orchestrator_tick_hot_lane', () => runRefreshOrchestratorTick({ cron, trigger: 'scheduled_minute_tick_hot_lane', job: 'refresh_orchestrator_tick', max_ms: 23000, fast_hot_lane:true }, env), 30000, { cron, lock_reaper:lockReaper, hot_lane:hotLane, fast_hot_lane:fastHotLane, priority_gate:'v1.5.10.13_manual_selected_work_first' });
         } else {
           productionClockWatchdog = await scheduledPhase(env, 'watchdog', () => productionRefreshWatchdog(env, { cron, trigger:'scheduled_minute_tick_preflight' }), 8500, { cron });
           productionClock = await scheduledPhase(env, 'production_clock_scan', () => enqueueDueProductionRefreshPlans(env, cron, { trigger:'scheduled_minute_tick' }), 8500, { cron });
@@ -8381,7 +8379,7 @@ async function reapStaleScheduledMinuteLocks(env, reason = 'scheduled_minute_loc
     UPDATE data_scheduled_minute_locks
     SET status='stale_released', updated_at=CURRENT_TIMESTAMP
     WHERE status='active'
-      AND datetime(created_at) < datetime('now','-4 minutes')
+      AND datetime(created_at) < datetime('now','-90 seconds')
   `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   return { ok:!res?.error, reason, stale_released:Number(res?.meta?.changes || 0), error:res?.error || null };
 }
@@ -8969,6 +8967,84 @@ async function recoverStaleIncrementalDailyHeartbeat(env, state, input = {}) {
   return { recovered:true, action:'stale_recovered_continuation_requeued', old_request_id:oldRequestId, new_request_id:newRequestId, temp_request_id:tempRun.request_id, diagnostic:recoveryPayload };
 }
 
+
+async function recoverIncrementalParentReleaseFuse(env, input = {}) {
+  const reason = String(input.reason || input.trigger || 'incremental_parent_release_fuse');
+  const out = { recovered:false, action:'none', reason };
+  await ensureRefreshOrchestratorTables(env).catch(() => null);
+  await ensureIncrementalTempTables(env).catch(() => null);
+
+  const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL' LIMIT 1`).first().catch(() => null);
+  const lockedRequestId = String(state?.running_request_id || '');
+  const globalLockedIncremental = Number(state?.lock_flag || 0) === 1 && String(state?.running_job_key || '') === 'incremental_daily' && !!lockedRequestId;
+
+  const queue = await env.DB.prepare(`
+    SELECT q.request_id, q.chain_id, q.job_key, q.display_name, q.job_name, q.group_name, q.sequence_order,
+           q.status, q.run_after, q.created_at, q.started_at, q.finished_at, q.updated_at, q.error, q.output_json,
+           j.running_flag, j.run_requested_flag, j.current_request_id, j.current_chain_id
+    FROM data_refresh_queue q
+    LEFT JOIN data_orchestrator_jobs j ON j.job_key=q.job_key
+    WHERE q.job_key='incremental_daily'
+      AND q.status='running'
+      AND q.finished_at IS NULL
+      AND (
+        q.request_id=?
+        OR j.current_request_id=q.request_id
+      )
+    ORDER BY datetime(COALESCE(q.updated_at,q.started_at,q.created_at)) ASC
+    LIMIT 1
+  `).bind(lockedRequestId || '__none__').first().catch(() => null);
+  if (!queue) return { ...out, action:'skip_no_running_incremental_parent', state_summary: state ? { lock_flag:state.lock_flag, running_job_key:state.running_job_key, running_request_id:state.running_request_id, status:state.status, updated_at:state.updated_at } : null };
+
+  const queueAge = rowUpdatedAgeSeconds(queue);
+  const stateAge = rowUpdatedAgeSeconds(state || {});
+  if (queueAge != null && queueAge < 120 && (!globalLockedIncremental || stateAge == null || stateAge < 120)) {
+    return { ...out, action:'skip_parent_fresh', queue_seconds_since_update:queueAge, state_seconds_since_update:stateAge };
+  }
+
+  const tempRun = await latestActiveIncrementalTempRun(env).catch(() => null);
+  const tempProgress = tempRun ? extractIncrementalProgressFromOutput(tempRun.output_json) : {};
+  const tempAge = tempRun ? rowUpdatedAgeSeconds(tempRun) : null;
+  const tempRows = await env.DB.prepare(`SELECT COUNT(*) AS rows_count, MIN(game_date) AS min_game_date, MAX(game_date) AS max_game_date, COUNT(DISTINCT player_id) AS distinct_players, COUNT(DISTINCT game_pk) AS distinct_games FROM player_game_logs_temp`).first().catch(() => null);
+  const hasChildEvidence = !!tempRun || Number(tempRows?.rows_count || 0) > 0 || String(queue.output_json || '').toLowerCase().includes('auto_continue_scheduled') || String(queue.output_json || '').toLowerCase().includes('partial_continue');
+  if (!hasChildEvidence) return { ...out, action:'skip_no_child_or_temp_evidence', queue_seconds_since_update:queueAge, state_seconds_since_update:stateAge, temp_rows:tempRows || null };
+
+  const payload = {
+    ok:true,
+    data_ok:true,
+    version:SYSTEM_VERSION,
+    job:'incremental_parent_release_fuse',
+    status:'parent_released_for_next_incremental_tick',
+    reason,
+    recovered_at:new Date().toISOString(),
+    request_id:queue.request_id,
+    chain_id:queue.chain_id,
+    queue_seconds_since_update:queueAge,
+    global_seconds_since_update:stateAge,
+    child_seconds_since_update:tempAge,
+    queue_before:{ request_id:queue.request_id, status:queue.status, started_at:queue.started_at, updated_at:queue.updated_at, tick_count:queue.tick_count || null, error:queue.error || null },
+    global_before:state ? { lock_flag:state.lock_flag, running_job_key:state.running_job_key, running_request_id:state.running_request_id, status:state.status, started_at:state.started_at, updated_at:state.updated_at } : null,
+    temp_run:tempRun ? { request_id:tempRun.request_id, status:tempRun.status, current_step:tempRun.current_step, run_after:tempRun.run_after, started_at:tempRun.started_at, updated_at:tempRun.updated_at, finished_at:tempRun.finished_at, error:tempRun.error || null, progress:tempProgress } : null,
+    temp_rows:tempRows || null,
+    action:'set_parent_queue_pending_clear_global_keep_child_temp_run_untouched'
+  };
+
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND job_key='incremental_daily' AND status='running'`).bind(JSON.stringify(payload).slice(0,5000), queue.request_id),
+    env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, current_request_id=?, current_chain_id=?, last_status='incremental_parent_release_fuse_requeued', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(queue.request_id, queue.chain_id || state?.running_chain_id || null, JSON.stringify(payload).slice(0,10000))
+  ]).catch(async () => {
+    await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', run_after=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=? AND job_key='incremental_daily' AND status='running'`).bind(JSON.stringify(payload).slice(0,5000), queue.request_id).run().catch(() => null);
+    await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, current_request_id=?, current_chain_id=?, last_status='incremental_parent_release_fuse_requeued', last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key='incremental_daily'`).bind(queue.request_id, queue.chain_id || state?.running_chain_id || null, JSON.stringify(payload).slice(0,10000)).run().catch(() => null);
+  });
+
+  if (globalLockedIncremental || Number(state?.lock_flag || 0) === 1) {
+    await releaseSingleLaneGlobalState(env, 'WAITING_NEXT_INCREMENTAL_TICK_PARENT_FUSE', payload).catch(() => null);
+  }
+  await refreshOrchestratorEvent(env, { request_id:queue.request_id, chain_id:queue.chain_id, job_key:'incremental_daily', event_type:'incremental_parent_release_fuse_recovered', status:'requeued_parent', message:'Incremental parent queue/global lock was stale while child/temp evidence existed; parent released to pending for next minute tick.', payload_json:payload }).catch(() => null);
+  await singleLaneLog(env, { request_id:queue.request_id, chain_id:queue.chain_id, job_key:'incremental_daily', job_index:10, event_type:'incremental_parent_release_fuse_recovered', status:'requeued_parent', message:'Incremental parent release fuse requeued the parent and cleared the global lock without touching child temp data.', payload_json:payload }).catch(() => null);
+  return { recovered:true, action:'parent_released_for_next_incremental_tick', request_id:queue.request_id, chain_id:queue.chain_id, temp_request_id:tempRun?.request_id || null, queue_seconds_since_update:queueAge, global_seconds_since_update:stateAge, child_seconds_since_update:tempAge, temp_rows:tempRows || null };
+}
+
 async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
   const reason = String(input.reason || input.trigger || 'orchestrator_preflight_cleanup');
   const out = {
@@ -8987,6 +9063,8 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     incremental_continue_locks_released:0,
     stale_incremental_heartbeat_recovered:0,
     stale_incremental_heartbeat_recovery:null,
+    incremental_parent_release_fuse_recovered:0,
+    incremental_parent_release_fuse:null,
     job_flags_reconciled:0,
     prizepicks_completion_reaper_finalized:0,
     prizepicks_completion_reaper_checks:[]
@@ -9152,6 +9230,14 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     }
   }
 
+  const parentReleaseFuse = await recoverIncrementalParentReleaseFuse(env, { reason }).catch(e => ({ recovered:false, action:'error', error:String(e?.message || e) }));
+  if (parentReleaseFuse?.recovered) {
+    out.incremental_parent_release_fuse_recovered = 1;
+    out.incremental_parent_release_fuse = parentReleaseFuse;
+  } else if (parentReleaseFuse && parentReleaseFuse.action && parentReleaseFuse.action !== 'none') {
+    out.incremental_parent_release_fuse = parentReleaseFuse;
+  }
+
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
   const incrementalHeartbeatRecovery = await recoverStaleIncrementalDailyHeartbeat(env, state, { reason }).catch(e => ({ recovered:false, action:'error', error:String(e?.message || e) }));
   if (incrementalHeartbeatRecovery?.recovered) {
@@ -9214,7 +9300,7 @@ async function cleanupSingleLaneStateInconsistencies(env, input = {}) {
     }
   }
 
-  if (out.duplicate_active_queue_rows_cancelled || out.released_enqueue_locks_purged || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.stale_incremental_heartbeat_recovered || out.job_flags_reconciled) {
+  if (out.duplicate_active_queue_rows_cancelled || out.released_enqueue_locks_purged || out.stale_orphan_pending_rows_cancelled || out.zombie_running_job_flags_cleared || out.stale_active_enqueue_locks_released || out.incremental_continue_locks_released || out.stale_incremental_heartbeat_recovered || out.incremental_parent_release_fuse_recovered || out.job_flags_reconciled) {
     await singleLaneLog(env, { event_type:'single_lane_state_cleanup', status:'recovered', message:'Single-lane queue/job state cleanup repaired inconsistent rows.', payload_json:out });
   }
   return out;
@@ -9436,7 +9522,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   }
   await refreshOrchestratorEvent(env, { chain_id:chainId, event_type:'single_lane_enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, selected_job_keys:enqueued.map(j=>j.job_key), slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
   await singleLaneLog(env, { chain_id:chainId, event_type:'enqueue', status:'requested', message:`${enqueued.length} independent job(s) requested`, payload_json:{ mode, enqueued, slate, cleanup, blocked:lockResult.blocked, incremental_preflight } });
-  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, incremental_preflight, manual_ticks_required:false, next_action:'Minute cron fast-hot-lane gate now advances selected/manual queue work before production-clock scans. Incremental Daily also pre-creates its child temp run at enqueue so progress is visible immediately.', note:'v1.5.10.12 Incremental Hard Reconcile Bypass Gate: selected/manual jobs get cron priority, incremental child rows are pre-created at enqueue, and production-clock/watchdog scans cannot starve the active lane.' };
+  return { ok:true, data_ok:true, version:SYSTEM_VERSION, job:input.job || (mode === 'cascade' ? 'refresh_orchestrator_enqueue_cascade' : 'refresh_orchestrator_enqueue_selected'), status:mode === 'cascade' ? 'single_lane_cascade_requested' : 'single_lane_selected_requested', mode, chain_id:chainId, enqueued_count:enqueued.length, enqueued, duplicate_blocked:lockResult.blocked, cleanup, incremental_preflight, manual_ticks_required:false, next_action:'Minute cron fast-hot-lane gate now advances selected/manual queue work before production-clock scans. Incremental Daily also pre-creates its child temp run at enqueue so progress is visible immediately.', note:'v1.5.10.13 Incremental Parent Release Fuse Gate: selected/manual jobs get cron priority, incremental child rows are pre-created at enqueue, and production-clock/watchdog scans cannot starve the active lane.' };
 }
 
 
@@ -12074,7 +12160,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     status:'stage_delta_logs_entered_pre_mode',
     current_step:'stage_delta_logs',
     trigger:String(input?.trigger || 'unknown'),
-    note:'v1.5.10.12 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
+    note:'v1.5.10.13 proves the stage_delta_logs function was entered before mode detection and external schedule fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:heartbeatRequestId, event_type:'stage_delta_logs_entered_pre_mode', status:'running', message:'Incremental delta stage entered before mode detection.', payload_json:{ version:SYSTEM_VERSION, request_id:heartbeatRequestId, trigger:String(input?.trigger || 'unknown') } }).catch(() => null);
   const season = Number(String(resolveSlateDate(input || {}).slate_date).slice(0,4));
@@ -12094,7 +12180,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     refresh_mode:'delta',
     start_date:startDate,
     end_date:endDate,
-    note:'v1.5.10.12 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
+    note:'v1.5.10.13 writes heartbeat before MLB schedule fetch so this step cannot look silently stuck.'
   });
 
   const schedule = await fetchMlbScheduleGamesForWindow(startDate, endDate);
@@ -12125,7 +12211,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     final_games_total:finalGames.length,
     selected_games_this_tick:selected.map(g => Number(g.gamePk || 0)).filter(Boolean),
     max_games_this_tick:hardLimit,
-    note:'v1.5.10.12 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
+    note:'v1.5.10.13 microbatch heartbeat after schedule fetch and before MLB boxscore fetches; no silent running state allowed.'
   });
 
   const stmt = env.DB.prepare(`
@@ -12489,11 +12575,11 @@ async function runIncrementalTempScheduledTick(input, env) {
     current_step:row.current_step || 'stage_logs',
     trigger,
     force_due:forceDue,
-    note:'v1.5.10.12 confirms the incremental child tick entered before hard reconcile or any external fetch.'
+    note:'v1.5.10.13 confirms the incremental child tick entered before hard reconcile or any external fetch.'
   });
   await refreshOrchestratorEvent(env, { request_id:requestId, event_type:'incremental_child_tick_pre_hard_reconcile', status:'running', message:'Incremental child tick entered before hard reconcile.', payload_json:{ version:SYSTEM_VERSION, request_id:requestId, current_step:row.current_step || 'stage_logs', trigger, force_due:forceDue } }).catch(() => null);
   const initialStep = row.current_step || 'stage_logs';
-  // v1.5.10.12: do NOT run the heavy hard reconciler before stage_delta_logs.
+  // v1.5.10.13: do NOT run the heavy hard reconciler before stage_delta_logs.
   // The previous builds proved the child tick entered, then died before the actual
   // schedule/boxscore fetch. For true-delta staging, the stage function itself owns
   // schedule fetch, progress counting, selected games, and the pass/continue decision.
@@ -12504,7 +12590,7 @@ async function runIncrementalTempScheduledTick(input, env) {
     hardReconcile = {
       changed:false,
       step:'stage_delta_logs',
-      reason:'v1.5.10.12_skip_pre_stage_delta_hard_reconcile',
+      reason:'v1.5.10.13_skip_pre_stage_delta_hard_reconcile',
       note:'Hard reconcile bypassed before true-delta staging. stage_delta_logs now owns schedule fetch, game selection, staging, and pass/continue state.'
     };
   } else {
