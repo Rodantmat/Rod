@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.21 - Everyday Phase 1 Completion Release Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Completion Release Gate";
+const SYSTEM_VERSION = "v1.5.10.22 - Everyday Phase 1 Lineups Cursor Persistence Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Lineups Cursor Persistence Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -11063,7 +11063,7 @@ async function runRefreshOrchestratorTick(input, env) {
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        certification_gate:'v1.5.10.21_parent_completion_release_gate',
+        certification_gate:'v1.5.10.22_lineups_cursor_persistence_gate',
         note: tick?.phase1_complete
           ? (noActionableSlate ? 'Queue-owned Everyday Phase 1 found no actionable slate rows for the selected date and released cleanly without blocking downstream as a false failure.' : 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.')
           : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending across ticks until every certification-sensitive step produces real certified output; partial_continue is not terminal failure.'
@@ -15404,12 +15404,41 @@ async function fetchMlbGameLineupRows(gamePk, gameId) {
   return rows.filter(r => r.player_name);
 }
 
+function extractEverydayLineupProgressFromOutputPreview(outputPreview) {
+  const parsed = safeJsonParseObject(outputPreview);
+  const last = parsed?.last_result || parsed?.result?.last_result || parsed?.tick?.last_result || parsed;
+  const progress = last?.lineup_progress || parsed?.lineup_progress || parsed?.result?.lineup_progress || {};
+  const checked = Array.isArray(progress.checked_game_ids) ? progress.checked_game_ids.map(x => String(x)).filter(Boolean) : [];
+  return {
+    checked_game_ids: Array.from(new Set(checked)).slice(0, 200),
+    cursor_started_at: progress.cursor_started_at || null,
+    full_pass_completed_at: progress.full_pass_completed_at || null,
+    last_cooldown_until: progress.last_cooldown_until || null,
+    pass_number: Number(progress.pass_number || 1) || 1
+  };
+}
+
+async function getEverydayLineupProgressForRequest(env, requestId) {
+  const rid = String(requestId || '').trim();
+  if (!rid) return { checked_game_ids:[], cursor_started_at:null, full_pass_completed_at:null, last_cooldown_until:null, pass_number:1 };
+  const row = await env.DB.prepare(`SELECT output_preview FROM everyday_phase1_runs WHERE request_id=? LIMIT 1`).bind(rid).first().catch(() => null);
+  return extractEverydayLineupProgressFromOutputPreview(row?.output_preview || '');
+}
+
+function d1SecondsSinceMaybe(ts) {
+  const ms = parseD1TimestampMaybe(ts);
+  return ms ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : null;
+}
+
 async function syncMlbApiLineups(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
   const startedAt = Date.now();
   const maxGamesPerTick = Math.max(1, Math.min(3, Number(input?.max_lineup_games_per_tick || 2)));
   const maxMs = Math.max(5000, Math.min(18000, Number(input?.lineup_child_max_ms || 14000)));
+  const cooldownMinutes = Math.max(3, Math.min(30, Number(input?.lineup_empty_pass_cooldown_minutes || 10)));
+  const parentRequestId = String(input?.queue_request_id || input?.parent_request_id || input?.orchestrator_request_id || input?.request_id || '').trim();
+  const priorProgress = await getEverydayLineupProgressForRequest(env, parentRequestId);
   const data = await fetchMlbScheduleProbables(slateDate);
 
   const allGames = [];
@@ -15424,9 +15453,11 @@ async function syncMlbApiLineups(input, env) {
     }
   }
 
-  // v1.5.10.20: lineups must be bounded and resumable. Never scan every slate game in one cron tick.
-  // Only current pickable/unstarted games can block Phase 1. Started/expired games may remain in DB but
-  // they cannot keep the lineups child open forever.
+  // v1.5.10.22: lineups are bounded AND cursor-persistent. The old bounded fetch always
+  // sliced targetGames[0..2], so a future/split slate with no posted lineups could recheck
+  // the same two games forever. This cursor records checked missing games in the bound child
+  // output payload, scans the next missing games on each tick, and uses a short cooldown after
+  // a full empty pass instead of hammering MLB StatsAPI or pretending success.
   const targetGames = [];
   for (const g of allGames.filter(x => x.pickable)) {
     const row = await env.DB.prepare(`
@@ -15439,9 +15470,17 @@ async function syncMlbApiLineups(input, env) {
     if (rows < 18 || teams < 2) targetGames.push({ ...g, existing_lineup_rows:rows, existing_teams:teams });
   }
 
-  const selected = targetGames.slice(0, maxGamesPerTick);
+  const targetIdSet = new Set(targetGames.map(g => String(g.game_id)));
+  let checkedSet = new Set((priorProgress.checked_game_ids || []).filter(id => targetIdSet.has(String(id))).map(String));
+  const fullPassSeconds = d1SecondsSinceMaybe(priorProgress.full_pass_completed_at);
+  const cooldownActive = targetGames.length > 0 && checkedSet.size >= targetGames.length && fullPassSeconds != null && fullPassSeconds < cooldownMinutes * 60;
+  if (targetGames.length === 0) checkedSet = new Set();
+  if (targetGames.length > 0 && checkedSet.size >= targetGames.length && !cooldownActive) checkedSet = new Set();
+
+  const selected = cooldownActive ? [] : targetGames.filter(g => !checkedSet.has(String(g.game_id))).slice(0, maxGamesPerTick);
   const rows = [];
   const game_audit = [];
+  const checkedThisTick = [];
   for (const g of selected) {
     if ((Date.now() - startedAt) > maxMs) {
       game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, skipped_due_budget:true });
@@ -15453,6 +15492,8 @@ async function syncMlbApiLineups(input, env) {
       return [];
     });
     rows.push(...gameRows);
+    checkedSet.add(String(g.game_id));
+    checkedThisTick.push(String(g.game_id));
     game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, existing_lineup_rows:g.existing_lineup_rows, fetched_rows:gameRows.length, duration_ms:Date.now()-t0 });
   }
 
@@ -15462,15 +15503,34 @@ async function syncMlbApiLineups(input, env) {
   const certification = await certifyEverydayLineupCoverage(env, slateDate).catch((err) => ({ ok:false, data_ok:false, status:'lineups_certification_exception', error:String(err?.message || err) }));
   const remainingAfter = Math.max(0, Number(certification?.missing_teams || 0));
   const retryLater = certification?.data_ok === false;
+  const allTargetsCheckedAfterTick = targetGames.length > 0 && checkedSet.size >= targetGames.length;
+  const fullPassCompletedAt = certification?.data_ok === true || targetGames.length === 0 ? null : (allTargetsCheckedAfterTick ? new Date().toISOString() : priorProgress.full_pass_completed_at || null);
+  const lineupProgress = {
+    request_id: parentRequestId || null,
+    cursor_started_at: priorProgress.cursor_started_at || new Date().toISOString(),
+    checked_game_ids: Array.from(checkedSet).filter(id => targetIdSet.has(id)).slice(0, 200),
+    checked_this_tick: checkedThisTick,
+    target_game_ids: targetGames.map(g => g.game_id).slice(0, 100),
+    target_games_before_tick: targetGames.length,
+    remaining_unchecked_game_ids: targetGames.filter(g => !checkedSet.has(String(g.game_id))).map(g => g.game_id).slice(0, 100),
+    all_targets_checked_after_tick: allTargetsCheckedAfterTick,
+    full_pass_completed_at: fullPassCompletedAt,
+    cooldown_minutes: cooldownMinutes,
+    cooldown_active: cooldownActive,
+    full_pass_age_seconds: fullPassSeconds,
+    pass_number: priorProgress.pass_number || 1
+  };
 
   return {
     ok: true,
     data_ok: certification?.data_ok !== false,
     job: input.job || "scrape_lineups_mlb_api",
-    status: certification?.data_ok === true ? "lineups_certified_complete" : (rows.length > 0 ? "lineups_partial_continue" : "lineups_waiting_or_missing_continue"),
+    status: certification?.data_ok === true
+      ? "lineups_certified_complete"
+      : (cooldownActive ? "lineups_waiting_cooldown_continue" : (rows.length > 0 ? "lineups_partial_continue" : (allTargetsCheckedAfterTick ? "lineups_full_pass_waiting_for_posted_lineups" : "lineups_waiting_or_missing_continue"))),
     slate_date: slateDate,
     source: "mlb_statsapi_boxscore_lineup",
-    mode: "bounded_pickable_games_resumable_v1_5_10_20",
+    mode: "bounded_pickable_games_cursor_persistent_v1_5_10_22",
     games_total: allGames.length,
     pickable_games_total: allGames.filter(g => g.pickable).length,
     target_games_before_tick: targetGames.length,
@@ -15481,12 +15541,15 @@ async function syncMlbApiLineups(input, env) {
     retry_later: retryLater,
     partial_continue: retryLater,
     lineup_certification: certification,
+    lineup_progress: lineupProgress,
     remaining_missing_teams_after_tick: remainingAfter,
     game_audit,
     live_tables_touched: inserted > 0,
     note: certification?.data_ok === true
       ? "Lineups are certified for every current pickable slate team."
-      : "Lineups step is bounded and resumable: only missing current pickable games are fetched per tick, and Phase 1 will not advance until lineup certification passes.",
+      : (cooldownActive
+        ? "Lineups remain unavailable after a full bounded pass. Cursor is preserved and API fetches are cooling down; Phase 1 stays open and does not report clean success."
+        : "Lineups step is bounded, resumable, and cursor-persistent: each tick checks the next missing pickable games, and Phase 1 will not advance until lineup certification passes or no pickable games remain."),
     skipped_count: (validated.skipped?.length || 0),
     skipped: (validated.skipped || []).slice(0, 20)
   };
