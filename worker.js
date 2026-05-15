@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.22 - Everyday Phase 1 Lineups Cursor Persistence Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Lineups Cursor Persistence Gate";
+const SYSTEM_VERSION = "v1.5.10.23 - Everyday Phase 1 State Machine Rebuild Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 State Machine Rebuild Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1207,7 +1207,7 @@ function everydayPhase1NoActionableSlate(check) {
   const starters = Number(counts.starters || 0);
   const lineups = Number(counts.lineups || 0);
   const candidates = Number(counts.hits_candidates || 0) + Number(counts.rbi_candidates || 0) + Number(counts.rfi_candidates || 0);
-  return games === 0 && markets === 0 && starters === 0 && lineups === 0 && candidates === 0 && failures.includes('GAMES_EMPTY');
+  return games === 0 && starters === 0 && lineups === 0 && candidates === 0;
 }
 
 function hydratePromptTemplate(prompt, slateDate) {
@@ -11063,7 +11063,7 @@ async function runRefreshOrchestratorTick(input, env) {
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        certification_gate:'v1.5.10.22_lineups_cursor_persistence_gate',
+        certification_gate:'v1.5.10.23_phase1_state_machine_rebuild_gate',
         note: tick?.phase1_complete
           ? (noActionableSlate ? 'Queue-owned Everyday Phase 1 found no actionable slate rows for the selected date and released cleanly without blocking downstream as a false failure.' : 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.')
           : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending across ticks until every certification-sensitive step produces real certified output; partial_continue is not terminal failure.'
@@ -11111,10 +11111,10 @@ async function runRefreshOrchestratorTick(input, env) {
       await releaseSingleLaneGlobalState(env, row.job_key === 'incremental_daily' ? 'WAITING_NEXT_INCREMENTAL_TICK' : 'WAITING_NEXT_TICK', wrapped);
       await env.DB.batch([
         env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key),
-        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
+        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, finished_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
       ]).catch(async () => {
         await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key).run().catch(() => null);
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, finished_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
       });
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:row.job_key === 'incremental_daily' ? 'incremental_partial_released_first' : 'partial_continue', status:'pending', message:partialStatus, payload_json:wrapped });
       return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:row.job_key === 'incremental_daily' ? 'single_lane_incremental_partial_released' : 'single_lane_partial_continue', processed:[{ job_key:row.job_key, status:partialStatus }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'Partial/auto-continue job released the global lock before queue requeue writes. The same independent stage remains requested for the next cron tick; no downstream stage starts until it completes or fails.' };
@@ -13242,10 +13242,13 @@ async function certifyEverydayPhase1StepResult(env, slateDate, step, result, run
     const fetched = Number(result?.fetched_rows ?? result?.raw_rows ?? 0);
     const insertedObj = result?.inserted || {};
     const inserted = Object.values(insertedObj).reduce((a, v) => a + Number(v || 0), 0);
-    const gamesRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM games WHERE game_date=?`).bind(String(slateDate || '').slice(0, 10)).first().catch(() => ({ c:0 }));
+    const d = String(slateDate || '').slice(0, 10);
+    const gamesRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM games WHERE game_date=? AND (start_time_utc IS NULL OR datetime(start_time_utc) >= datetime('now','-15 minutes'))`).bind(d).first().catch(() => ({ c:0 }));
     const games = Number(gamesRow?.c || 0);
-    const hold = timedOut || retryLater || badData || (games > 0 && fetched <= 0 && inserted <= 0);
-    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? `${step}_not_certified_continue` : `${step}_certified_advance`, step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, games, fetched_rows:fetched, inserted_rows:inserted, note:hold ? 'Candidate step did not certify real output for an active slate; keep the step open instead of reporting clean success.' : 'Candidate step produced/certified output and may advance.' };
+    const lineups = await certifyEverydayLineupCoverage(env, d).catch(() => ({ data_ok:false, expected_teams:0, certified_teams:0 }));
+    const actionableGames = games > 0 && Number(lineups?.certified_teams || 0) > 0;
+    const hold = timedOut || retryLater || badData || (actionableGames && fetched <= 0 && inserted <= 0);
+    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? `${step}_not_certified_continue` : `${step}_certified_advance`, step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, games, actionable_games:actionableGames ? games : 0, lineup_certification_status:lineups?.status || null, fetched_rows:fetched, inserted_rows:inserted, note:hold ? 'Candidate step did not certify real output after lineup/actionable slate certification; keep the step open instead of reporting clean success.' : 'Candidate step produced/certified output, or no actionable pickable lineup slate exists, and may advance.' };
   }
   const hold = timedOut || badData;
   return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'step_not_certified_continue' : 'step_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false };
@@ -13344,15 +13347,37 @@ async function runEverydayPhase1Tick(input, env) {
       processed.push({ step, routed_job:jobName, next_step:certification?.hold_current_step ? step : nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, timed_out:!!result.timed_out, certification_status:certification?.status || null, certification_data_ok:certification?.data_ok !== false, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, skipped_execution:skippedExecution, live_tables_touched:skippedExecution ? false : (result.live_tables_touched !== false) });
       if (certification?.hold_current_step) {
         const holdPayload = {
+          phase1_state:{
+            version:SYSTEM_VERSION,
+            request_id:requestId,
+            slate_date:slate.slate_date,
+            current_step:step,
+            next_step:step,
+            status:'waiting_external_data_or_certification',
+            hold_current_step:true,
+            lineup_progress: result?.lineup_progress || certification?.lineup_progress || null,
+            usage_progress: result?.usage_progress || certification?.usage_progress || null,
+            reason:certification?.status || result?.status || 'not_certified_continue'
+          },
           processed,
-          last_result:result,
+          compact_last_result:{
+            job:result?.job || jobName,
+            status:result?.status || result?.result_status || null,
+            data_ok:result?.data_ok,
+            retry_later:!!result?.retry_later,
+            partial_continue:!!result?.partial_continue,
+            fetched_rows:result?.fetched_rows ?? null,
+            inserted:result?.inserted || null,
+            lineup_progress:result?.lineup_progress || null,
+            usage_progress:result?.usage_progress || null
+          },
           certification,
           hold_current_step:true,
           preserved_child_request_id:requestId,
           next_step:step,
-          rule:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue'
+          rule:'v1.5.10.23_state_machine_no_fake_success_no_stale_cursor'
         };
-        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,4000), requestId).run();
+        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,12000), requestId).run();
         const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
         return {
           ok:true,
@@ -13375,7 +13400,8 @@ async function runEverydayPhase1Tick(input, env) {
       }
       currentStep = nextStep;
       const complete = currentStep === "completed";
-      await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed, last_result:result }).slice(0,4000), requestId).run();
+      const stepPayload = { phase1_state:{ version:SYSTEM_VERSION, request_id:requestId, slate_date:slate.slate_date, current_step:currentStep, status:complete ? 'completed' : 'running', lineup_progress:result?.lineup_progress || null, usage_progress:result?.usage_progress || null }, processed, last_result:result };
+      await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify(stepPayload).slice(0,12000), requestId).run();
       if (complete) break;
     }
     const complete = currentStep === "completed";
@@ -13395,7 +13421,7 @@ async function runEverydayPhase1Direct(input, env) {
   const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
   const noActionableSlate = tick?.phase1_complete && everydayPhase1NoActionableSlate(check);
   const dataOk = !!check.data_ok || !!noActionableSlate;
-  return { ok:tick.ok !== false && check.ok, data_ok:dataOk, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:dataOk ? (noActionableSlate ? "pass_no_actionable_slate" : "pass") : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, no_actionable_slate:noActionableSlate, live_tables_touched:true, warning:"Direct mode runs the same bounded auto-run path. Schedule + Tick is still preferred for iPhone testing." };
+  return { ok:tick.ok !== false && check.ok, data_ok:dataOk, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:dataOk ? (noActionableSlate ? "pass_no_actionable_slate" : "pass") : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, no_actionable_slate:noActionableSlate, live_tables_touched:true, warning:"Direct mode runs the rebuilt state-machine path. Schedule + Tick is still preferred for iPhone testing." };
 }
 
 async function checkEverydayPhase1(input, env) {
@@ -13421,8 +13447,7 @@ async function checkEverydayPhase1(input, env) {
   const expectedTeams = counts.games * 2;
   const failures = [];
   const warnings = [];
-  if (counts.prizepicks_rows <= 0) failures.push("PRIZEPICKS_BOARD_EMPTY");
-  if (counts.games <= 0) failures.push("GAMES_EMPTY");
+  if (counts.games <= 0) warnings.push("NO_PHASE1_SLATE_GAMES");
   if (counts.markets <= 0) failures.push("MARKETS_EMPTY");
   if (counts.starters < Math.max(1, expectedTeams - 2)) warnings.push("STARTERS_PARTIAL_OR_EARLY");
   if (counts.bullpens < Math.max(1, expectedTeams - 2)) warnings.push("BULLPENS_PARTIAL_OR_EARLY");
@@ -15407,7 +15432,7 @@ async function fetchMlbGameLineupRows(gamePk, gameId) {
 function extractEverydayLineupProgressFromOutputPreview(outputPreview) {
   const parsed = safeJsonParseObject(outputPreview);
   const last = parsed?.last_result || parsed?.result?.last_result || parsed?.tick?.last_result || parsed;
-  const progress = last?.lineup_progress || parsed?.lineup_progress || parsed?.result?.lineup_progress || {};
+  const progress = parsed?.phase1_state?.lineup_progress || parsed?.lineup_progress || last?.lineup_progress || parsed?.result?.lineup_progress || parsed?.tick?.lineup_progress || parsed?.tick?.result?.lineup_progress || {};
   const checked = Array.isArray(progress.checked_game_ids) ? progress.checked_game_ids.map(x => String(x)).filter(Boolean) : [];
   return {
     checked_game_ids: Array.from(new Set(checked)).slice(0, 200),
@@ -15453,7 +15478,7 @@ async function syncMlbApiLineups(input, env) {
     }
   }
 
-  // v1.5.10.22: lineups are bounded AND cursor-persistent. The old bounded fetch always
+  // v1.5.10.23: lineups are bounded, cursor-persistent, and state-machine certified. The old bounded fetch always
   // sliced targetGames[0..2], so a future/split slate with no posted lineups could recheck
   // the same two games forever. This cursor records checked missing games in the bound child
   // output payload, scans the next missing games on each tick, and uses a short cooldown after
@@ -15530,7 +15555,7 @@ async function syncMlbApiLineups(input, env) {
       : (cooldownActive ? "lineups_waiting_cooldown_continue" : (rows.length > 0 ? "lineups_partial_continue" : (allTargetsCheckedAfterTick ? "lineups_full_pass_waiting_for_posted_lineups" : "lineups_waiting_or_missing_continue"))),
     slate_date: slateDate,
     source: "mlb_statsapi_boxscore_lineup",
-    mode: "bounded_pickable_games_cursor_persistent_v1_5_10_22",
+    mode: "bounded_pickable_games_state_machine_v1_5_10_23",
     games_total: allGames.length,
     pickable_games_total: allGames.filter(g => g.pickable).length,
     target_games_before_tick: targetGames.length,

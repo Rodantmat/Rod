@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.22 - Everyday Phase 1 Lineups Cursor Persistence Gate"
+SCRIPT_VERSION = "v1.5.10.23 - Everyday Phase 1 State Machine Rebuild Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 
