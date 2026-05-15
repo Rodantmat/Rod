@@ -1,0 +1,15 @@
+Build Version Audit
+
+Expected version: v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+
+- worker.js SYSTEM_VERSION = v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+- worker.js SYSTEM_CODENAME = Everyday Phase 1 Lineups Bounded Certification Gate
+- control_room.html visible version tag = v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+- control_room.html JS version references = v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+- main.py SCRIPT_VERSION = v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+- README_v1.5.10.20.txt = v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate
+
+Patch scope:
+- Bounded/resumable MLB lineup step.
+- Lineup coverage certification for current pickable slate teams.
+- No changes to incremental delta logic.

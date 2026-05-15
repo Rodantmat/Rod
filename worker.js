@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.19 - Everyday Phase 1 Parent Child Fuse Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Parent Child Fuse Gate";
+const SYSTEM_VERSION = "v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Lineups Bounded Certification Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -13052,7 +13052,62 @@ function everydayPhase1JobForStep(step) {
 }
 
 function everydayPhase1CertificationSensitiveStep(step) {
-  return ["usage", "candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ""));
+  return ["lineups", "usage", "candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ""));
+}
+
+async function certifyEverydayLineupCoverage(env, slateDate) {
+  const d = String(slateDate || '').slice(0, 10);
+  if (!d) return { ok:false, data_ok:false, status:'lineup_certification_missing_slate_date', expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:0 };
+  const games = await sampleRows(env, `
+    SELECT game_id, away_team, home_team, start_time_utc, status
+    FROM games
+    WHERE game_date=?
+    ORDER BY datetime(COALESCE(start_time_utc, game_date)), game_id
+    LIMIT 100
+  `, [d]).catch(() => []);
+  if (!games.length) return { ok:false, data_ok:false, status:'lineup_certification_no_games', slate_date:d, expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:0 };
+
+  const pickableGames = games.filter(g => !g.start_time_utc || Date.parse(String(g.start_time_utc)) >= Date.now() - (15 * 60 * 1000));
+  const targetGames = pickableGames.length ? pickableGames : [];
+  if (!targetGames.length) {
+    return { ok:true, data_ok:true, status:'lineup_certification_no_pickable_games_remaining', slate_date:d, total_games:games.length, pickable_games:0, expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:100, note:'No unstarted/pickable games remain for this slate. Lineup mining is not required to block downstream refresh.' };
+  }
+
+  const expected = [];
+  for (const g of targetGames) {
+    if (g.away_team) expected.push({ game_id:g.game_id, team_id:g.away_team, start_time_utc:g.start_time_utc || null });
+    if (g.home_team) expected.push({ game_id:g.game_id, team_id:g.home_team, start_time_utc:g.start_time_utc || null });
+  }
+  let certified = 0;
+  const missing = [];
+  for (const e of expected) {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS rows_count, MAX(is_confirmed) AS confirmed, MAX(updated_at) AS max_updated_at
+      FROM lineups_current
+      WHERE game_id=? AND team_id=?
+    `).bind(e.game_id, e.team_id).first().catch(() => ({ rows_count:0, confirmed:0, max_updated_at:null }));
+    const rows = Number(row?.rows_count || 0);
+    if (rows >= 9) certified++;
+    else missing.push({ ...e, lineup_rows:rows, confirmed:Number(row?.confirmed || 0), updated_at:row?.max_updated_at || null });
+  }
+  const expectedTeams = expected.length;
+  const missingTeams = Math.max(0, expectedTeams - certified);
+  const coveragePct = expectedTeams ? Math.round((certified / expectedTeams) * 10000) / 100 : 100;
+  const dataOk = missingTeams === 0;
+  return {
+    ok:true,
+    data_ok:dataOk,
+    status:dataOk ? 'lineups_certified_complete' : 'lineups_certification_incomplete',
+    slate_date:d,
+    total_games:games.length,
+    pickable_games:targetGames.length,
+    expected_teams:expectedTeams,
+    certified_teams:certified,
+    missing_teams:missingTeams,
+    coverage_pct:coveragePct,
+    missing_sample:missing.slice(0, 25),
+    note:dataOk ? 'Lineups certify for every current pickable slate team.' : 'Lineups do not yet cover every current pickable slate team; keep the lineups step open and continue only missing teams on the next tick.'
+  };
 }
 
 async function certifyEverydayUsageCoverage(env, slateDate, runStartedAt) {
@@ -13131,6 +13186,11 @@ async function certifyEverydayPhase1StepResult(env, slateDate, step, result, run
   const timedOut = result?.timed_out === true || st.includes('timeout') || st.includes('degraded');
   const retryLater = result?.retry_later === true || st.includes('retry_later');
   const badData = result?.data_ok === false;
+  if (String(step || '') === 'lineups') {
+    const lineups = await certifyEverydayLineupCoverage(env, slateDate);
+    const hold = timedOut || retryLater || badData || lineups.data_ok === false;
+    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'lineups_not_certified_continue' : 'lineups_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, lineup_certification:lineups, note:hold ? 'Lineups step is not allowed to advance until current pickable slate teams certify. This follows the incremental delta rule: bounded progress may continue, but incomplete data cannot become clean success.' : 'Lineup certification passed; Phase 1 may advance.' };
+  }
   if (String(step || '') === 'usage') {
     const usage = await certifyEverydayUsageCoverage(env, slateDate, runStartedAt);
     const hold = timedOut || retryLater || badData || usage.data_ok === false;
@@ -13169,6 +13229,10 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
     const bullpensRow = await env.DB.prepare(`SELECT COUNT(*) AS rows_count FROM bullpens_current WHERE game_id LIKE ?`).bind(d + '_%').first().catch(() => null);
     const bullpens = Number(bullpensRow?.rows_count || 0);
     if (games > 0 && bullpens >= Math.max(1, expectedTeams - 2)) return { satisfied:true, rows:bullpens, expected:expectedTeams, status:'preexisting_bullpens_satisfied' };
+  }
+  if (step === 'lineups') {
+    const lineups = await certifyEverydayLineupCoverage(env, d).catch(() => null);
+    if (lineups?.data_ok === true) return { satisfied:true, rows:lineups.certified_teams * 9, expected:lineups.expected_teams * 9, status:lineups.status || 'preexisting_lineups_satisfied', certification:lineups };
   }
   return null;
 }
@@ -15299,41 +15363,90 @@ async function fetchMlbGameLineupRows(gamePk, gameId) {
 async function syncMlbApiLineups(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
+  const startedAt = Date.now();
+  const maxGamesPerTick = Math.max(1, Math.min(3, Number(input?.max_lineup_games_per_tick || 2)));
+  const maxMs = Math.max(5000, Math.min(18000, Number(input?.lineup_child_max_ms || 14000)));
   const data = await fetchMlbScheduleProbables(slateDate);
-  const rows = [];
-  let gamesChecked = 0;
 
+  const allGames = [];
   for (const dateBlock of (data.dates || [])) {
     for (const game of (dateBlock.games || [])) {
       const gameId = gameIdFromMlbGame(game, slateDate);
       if (!gameId || !game?.gamePk) continue;
-      gamesChecked++;
-
-      const gameRows = await fetchMlbGameLineupRows(game.gamePk, gameId);
-      rows.push(...gameRows);
+      const startIso = game?.gameDate || null;
+      const startMs = startIso ? Date.parse(String(startIso)) : NaN;
+      const pickable = !Number.isFinite(startMs) || startMs >= Date.now() - (15 * 60 * 1000);
+      allGames.push({ game, gamePk:game.gamePk, game_id:gameId, start_time_utc:startIso, pickable });
     }
+  }
+
+  // v1.5.10.20: lineups must be bounded and resumable. Never scan every slate game in one cron tick.
+  // Only current pickable/unstarted games can block Phase 1. Started/expired games may remain in DB but
+  // they cannot keep the lineups child open forever.
+  const targetGames = [];
+  for (const g of allGames.filter(x => x.pickable)) {
+    const row = await env.DB.prepare(`
+      SELECT COUNT(*) AS lineup_rows, COUNT(DISTINCT team_id) AS teams_with_rows
+      FROM lineups_current
+      WHERE game_id=?
+    `).bind(g.game_id).first().catch(() => ({ lineup_rows:0, teams_with_rows:0 }));
+    const rows = Number(row?.lineup_rows || 0);
+    const teams = Number(row?.teams_with_rows || 0);
+    if (rows < 18 || teams < 2) targetGames.push({ ...g, existing_lineup_rows:rows, existing_teams:teams });
+  }
+
+  const selected = targetGames.slice(0, maxGamesPerTick);
+  const rows = [];
+  const game_audit = [];
+  for (const g of selected) {
+    if ((Date.now() - startedAt) > maxMs) {
+      game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, skipped_due_budget:true });
+      break;
+    }
+    const t0 = Date.now();
+    const gameRows = await fetchMlbGameLineupRows(g.gamePk, g.game_id).catch((err) => {
+      game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, error:String(err?.message || err).slice(0,300) });
+      return [];
+    });
+    rows.push(...gameRows);
+    game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, existing_lineup_rows:g.existing_lineup_rows, fetched_rows:gameRows.length, duration_ms:Date.now()-t0 });
   }
 
   const validated = validateRows("lineups_current", rows);
   if (!validated.ok) throw new Error(`MLB lineup validation failed: ${validated.error}`);
-  const inserted = await upsertRows(env, "lineups_current", validated.rows);
+  const inserted = validated.rows.length ? await upsertRows(env, "lineups_current", validated.rows) : 0;
+  const certification = await certifyEverydayLineupCoverage(env, slateDate).catch((err) => ({ ok:false, data_ok:false, status:'lineups_certification_exception', error:String(err?.message || err) }));
+  const remainingAfter = Math.max(0, Number(certification?.missing_teams || 0));
+  const retryLater = certification?.data_ok === false;
 
   return {
     ok: true,
+    data_ok: certification?.data_ok !== false,
     job: input.job || "scrape_lineups_mlb_api",
-    status: rows.length > 0 ? "pass" : "no_confirmed_lineups_yet",
+    status: certification?.data_ok === true ? "lineups_certified_complete" : (rows.length > 0 ? "lineups_partial_continue" : "lineups_waiting_or_missing_continue"),
     slate_date: slateDate,
     source: "mlb_statsapi_boxscore_lineup",
-    games_checked: gamesChecked,
+    mode: "bounded_pickable_games_resumable_v1_5_10_20",
+    games_total: allGames.length,
+    pickable_games_total: allGames.filter(g => g.pickable).length,
+    target_games_before_tick: targetGames.length,
+    games_checked: selected.length,
+    max_games_per_tick: maxGamesPerTick,
     fetched_rows: rows.length,
     inserted: { lineups_current: inserted },
-    retry_later: rows.length === 0,
-    note: rows.length > 0 ? "Confirmed/available MLB API lineup rows inserted." : "MLB boxscore batting orders were not posted yet. Scheduled task should retry later after lineups are published.",
-    skipped_count: validated.skipped?.length || 0,
+    retry_later: retryLater,
+    partial_continue: retryLater,
+    lineup_certification: certification,
+    remaining_missing_teams_after_tick: remainingAfter,
+    game_audit,
+    live_tables_touched: inserted > 0,
+    note: certification?.data_ok === true
+      ? "Lineups are certified for every current pickable slate team."
+      : "Lineups step is bounded and resumable: only missing current pickable games are fetched per tick, and Phase 1 will not advance until lineup certification passes.",
+    skipped_count: (validated.skipped?.length || 0),
     skipped: (validated.skipped || []).slice(0, 20)
   };
 }
-
 
 async function syncMlbApiBullpens(input, env) {
   const slate = resolveSlateDate(input || {});
