@@ -1,0 +1,12 @@
+BUILD VERSION AUDIT
+
+Expected version: v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+
+- worker.js SYSTEM_VERSION = v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+- worker.js SYSTEM_CODENAME = Everyday Phase 1 Completion Release Gate
+- control_room.html visible version tag = v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+- control_room.html JS version references = v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+- main.py SCRIPT_VERSION = v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+- README_v1.5.10.21.txt = v1.5.10.21 - Everyday Phase 1 Completion Release Gate
+
+Flat ZIP only. No folders.

@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.20 - Everyday Phase 1 Lineups Bounded Certification Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 Lineups Bounded Certification Gate";
+const SYSTEM_VERSION = "v1.5.10.21 - Everyday Phase 1 Completion Release Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Completion Release Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1170,6 +1170,44 @@ function resolveSlateDate(input = {}) {
   if (mode === "TOMORROW") return { slate_date: addDaysISO(pt.date, 1), slate_mode: "TOMORROW", pt_date: pt.date, pt_time: pt.time };
 
   return { slate_date: pt.hour >= 21 ? addDaysISO(pt.date, 1) : pt.date, slate_mode: "AUTO", pt_date: pt.date, pt_time: pt.time };
+}
+
+async function resolveRefreshQueueSlateDate(env, input = {}, selectedJobs = []) {
+  const base = resolveSlateDate(input || {});
+  const mode = String(input?.slate_mode || input?.mode || "AUTO").toUpperCase();
+  const manual = String(input?.manual_slate_date || input?.slate_date || "").trim();
+  if (mode === "MANUAL" || mode === "TODAY" || mode === "TOMORROW" || /^\d{4}-\d{2}-\d{2}$/.test(manual)) return base;
+
+  const keys = (selectedJobs || []).map(j => String(j?.job_key || j || '')).filter(Boolean);
+  const slateSensitive = keys.some(k => [
+    'everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'
+  ].includes(k));
+  if (!slateSensitive) return base;
+
+  const pt = getPTParts();
+  if (base.slate_date === pt.date) return base;
+
+  const candidateGames = await countScalar(env, 'SELECT COUNT(*) AS c FROM games WHERE game_date=?', base.slate_date).catch(() => 0);
+  const candidateBoard = await countScalar(env, 'SELECT COUNT(*) AS c FROM markets_current WHERE game_id LIKE ?', base.slate_date + '_%').catch(() => 0);
+  if (Number(candidateGames || 0) > 0 || Number(candidateBoard || 0) > 0) return base;
+
+  const todayGames = await countScalar(env, 'SELECT COUNT(*) AS c FROM games WHERE game_date=?', pt.date).catch(() => 0);
+  const todayBoard = await countScalar(env, 'SELECT COUNT(*) AS c FROM markets_current WHERE game_id LIKE ?', pt.date + '_%').catch(() => 0);
+  if (Number(todayGames || 0) > 0 || Number(todayBoard || 0) > 0) {
+    return { slate_date: pt.date, slate_mode: 'AUTO_TODAY_FALLBACK_EMPTY_NEXT_SLATE', pt_date: pt.date, pt_time: pt.time, auto_rollover_candidate: base.slate_date, reason: 'AUTO wanted next slate after 9 PM PT, but next slate has no games/market rows yet; using current PT slate until next slate materializes.' };
+  }
+  return base;
+}
+
+function everydayPhase1NoActionableSlate(check) {
+  const counts = check?.counts || {};
+  const failures = check?.quality?.failures || [];
+  const games = Number(counts.games || 0);
+  const markets = Number(counts.markets || 0);
+  const starters = Number(counts.starters || 0);
+  const lineups = Number(counts.lineups || 0);
+  const candidates = Number(counts.hits_candidates || 0) + Number(counts.rbi_candidates || 0) + Number(counts.rfi_candidates || 0);
+  return games === 0 && markets === 0 && starters === 0 && lineups === 0 && candidates === 0 && failures.includes('GAMES_EMPTY');
 }
 
 function hydratePromptTemplate(prompt, slateDate) {
@@ -9327,7 +9365,7 @@ async function releaseSingleLaneGlobalState(env, status = 'IDLE', stateJson = nu
 
 async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   await ensureRefreshOrchestratorTables(env);
-  const slate = resolveSlateDate(input || {});
+  let slate = resolveSlateDate(input || {});
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const catalogRows = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
   const requestedSet = new Set(requested);
@@ -9352,6 +9390,7 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
     selected = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
   }
   if (!selected.length) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'no_jobs_selected', requested_job_keys:requested };
+  slate = await resolveRefreshQueueSlateDate(env, input || {}, selected).catch(() => slate);
 
   const cleanup = await cleanupSingleLaneStateInconsistencies(env, { reason:'enqueue_preflight', trigger:input?.trigger || input?.job || mode });
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
@@ -11006,24 +11045,27 @@ async function runRefreshOrchestratorTick(input, env) {
       const tick = await runEverydayPhase1Tick({ ...body, job:'run_everyday_phase1_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:1, max_ms:18000 }, env);
       const check = await checkEverydayPhase1({ ...body, job:'check_everyday_phase1', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
       const everydayRetryLaterReleased = false;
+      const noActionableSlate = tick?.phase1_complete && everydayPhase1NoActionableSlate(check);
+      const phase1TerminalOk = tick?.phase1_complete && (!!check?.data_ok || noActionableSlate);
       result = {
         ok: tick?.ok !== false,
-        data_ok: tick?.phase1_complete ? !!check?.data_ok : false,
+        data_ok: phase1TerminalOk,
         version:SYSTEM_VERSION,
         job:'everyday_phase1_all_direct',
-        status: tick?.phase1_complete ? 'completed' : (tick?.status || 'partial_continue'),
+        status: tick?.phase1_complete ? (noActionableSlate ? 'completed_no_actionable_slate' : 'completed') : (tick?.status || 'partial_continue'),
         slate_date:slate.slate_date,
         scheduled,
         tick,
         check,
         phase1_complete: !!tick?.phase1_complete,
+        no_actionable_slate: !!noActionableSlate,
         non_blocking_retry_later: false,
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        certification_gate:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue',
+        certification_gate:'v1.5.10.21_parent_completion_release_gate',
         note: tick?.phase1_complete
-          ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.'
+          ? (noActionableSlate ? 'Queue-owned Everyday Phase 1 found no actionable slate rows for the selected date and released cleanly without blocking downstream as a false failure.' : 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.')
           : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending across ticks until every certification-sensitive step produces real certified output; partial_continue is not terminal failure.'
       };
     } else {
@@ -13351,7 +13393,9 @@ async function runEverydayPhase1Direct(input, env) {
   const scheduled = await scheduleEverydayPhase1Once({ ...(input || {}), job:"everyday_phase1_all_direct", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
   const tick = await runEverydayPhase1Tick({ ...(input || {}), job:"run_everyday_phase1_tick", slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:8, max_ms:26000 }, env);
   const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-  return { ok:tick.ok !== false && check.ok, data_ok:!!check.data_ok, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:check.data_ok ? "pass" : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, live_tables_touched:true, warning:"Direct mode runs the same bounded auto-run path. Schedule + Tick is still preferred for iPhone testing." };
+  const noActionableSlate = tick?.phase1_complete && everydayPhase1NoActionableSlate(check);
+  const dataOk = !!check.data_ok || !!noActionableSlate;
+  return { ok:tick.ok !== false && check.ok, data_ok:dataOk, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:dataOk ? (noActionableSlate ? "pass_no_actionable_slate" : "pass") : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, no_actionable_slate:noActionableSlate, live_tables_touched:true, warning:"Direct mode runs the same bounded auto-run path. Schedule + Tick is still preferred for iPhone testing." };
 }
 
 async function checkEverydayPhase1(input, env) {
