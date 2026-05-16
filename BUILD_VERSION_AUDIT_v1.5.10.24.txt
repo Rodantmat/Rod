@@ -1,0 +1,25 @@
+Build Version Audit
+Version: v1.5.10.24 - Incremental Metrics Coverage Gate
+
+Files included flat at ZIP root:
+- worker.js
+- control_room.html
+- main.py
+- package.json
+- scrape.yml
+- wrangler.jsonc
+- README_v1.5.10.24.txt
+- BUILD_VERSION_AUDIT_v1.5.10.24.txt
+
+Version label checks:
+- worker.js SYSTEM_VERSION: v1.5.10.24 - Incremental Metrics Coverage Gate
+- control_room.html visible version tag: v1.5.10.24 - Incremental Metrics Coverage Gate
+- README filename/version: v1.5.10.24
+- BUILD_VERSION_AUDIT filename/version: v1.5.10.24
+
+Primary patch target:
+Incremental Daily / Incremental Delta derived metrics coverage certification.
+
+Validation status before delivery:
+- node --check worker.js passed.
+- ZIP contents are flat, no subfolders.
