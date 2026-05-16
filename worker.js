@@ -1,8 +1,8 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.23 - Everyday Phase 1 State Machine Rebuild Gate";
-const SYSTEM_CODENAME = "Everyday Phase 1 State Machine Rebuild Gate";
+const SYSTEM_VERSION = "v1.5.10.18 - Everyday Phase 1 Partial Persistence Gate";
+const SYSTEM_CODENAME = "Everyday Phase 1 Partial Persistence Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
 const BOARD_QUEUE_AUTO_MINE_LIMIT = 12;
@@ -1170,44 +1170,6 @@ function resolveSlateDate(input = {}) {
   if (mode === "TOMORROW") return { slate_date: addDaysISO(pt.date, 1), slate_mode: "TOMORROW", pt_date: pt.date, pt_time: pt.time };
 
   return { slate_date: pt.hour >= 21 ? addDaysISO(pt.date, 1) : pt.date, slate_mode: "AUTO", pt_date: pt.date, pt_time: pt.time };
-}
-
-async function resolveRefreshQueueSlateDate(env, input = {}, selectedJobs = []) {
-  const base = resolveSlateDate(input || {});
-  const mode = String(input?.slate_mode || input?.mode || "AUTO").toUpperCase();
-  const manual = String(input?.manual_slate_date || input?.slate_date || "").trim();
-  if (mode === "MANUAL" || mode === "TODAY" || mode === "TOMORROW" || /^\d{4}-\d{2}-\d{2}$/.test(manual)) return base;
-
-  const keys = (selectedJobs || []).map(j => String(j?.job_key || j || '')).filter(Boolean);
-  const slateSensitive = keys.some(k => [
-    'everyday_phase1','weather_roof','lineup_context','prizepicks_board','prizepicks_context','odds_api_morning','odds_api_afternoon','scoring_refresh'
-  ].includes(k));
-  if (!slateSensitive) return base;
-
-  const pt = getPTParts();
-  if (base.slate_date === pt.date) return base;
-
-  const candidateGames = await countScalar(env, 'SELECT COUNT(*) AS c FROM games WHERE game_date=?', base.slate_date).catch(() => 0);
-  const candidateBoard = await countScalar(env, 'SELECT COUNT(*) AS c FROM markets_current WHERE game_id LIKE ?', base.slate_date + '_%').catch(() => 0);
-  if (Number(candidateGames || 0) > 0 || Number(candidateBoard || 0) > 0) return base;
-
-  const todayGames = await countScalar(env, 'SELECT COUNT(*) AS c FROM games WHERE game_date=?', pt.date).catch(() => 0);
-  const todayBoard = await countScalar(env, 'SELECT COUNT(*) AS c FROM markets_current WHERE game_id LIKE ?', pt.date + '_%').catch(() => 0);
-  if (Number(todayGames || 0) > 0 || Number(todayBoard || 0) > 0) {
-    return { slate_date: pt.date, slate_mode: 'AUTO_TODAY_FALLBACK_EMPTY_NEXT_SLATE', pt_date: pt.date, pt_time: pt.time, auto_rollover_candidate: base.slate_date, reason: 'AUTO wanted next slate after 9 PM PT, but next slate has no games/market rows yet; using current PT slate until next slate materializes.' };
-  }
-  return base;
-}
-
-function everydayPhase1NoActionableSlate(check) {
-  const counts = check?.counts || {};
-  const failures = check?.quality?.failures || [];
-  const games = Number(counts.games || 0);
-  const markets = Number(counts.markets || 0);
-  const starters = Number(counts.starters || 0);
-  const lineups = Number(counts.lineups || 0);
-  const candidates = Number(counts.hits_candidates || 0) + Number(counts.rbi_candidates || 0) + Number(counts.rfi_candidates || 0);
-  return games === 0 && starters === 0 && lineups === 0 && candidates === 0;
 }
 
 function hydratePromptTemplate(prompt, slateDate) {
@@ -9365,7 +9327,7 @@ async function releaseSingleLaneGlobalState(env, status = 'IDLE', stateJson = nu
 
 async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
   await ensureRefreshOrchestratorTables(env);
-  let slate = resolveSlateDate(input || {});
+  const slate = resolveSlateDate(input || {});
   const requested = Array.isArray(input?.job_keys) ? input.job_keys.map(String) : [];
   const catalogRows = await sampleRows(env, `SELECT job_key, display_name, job_name, group_name, sequence_order, supports_cascade, notes FROM data_refresh_catalog ORDER BY sequence_order ASC`);
   const requestedSet = new Set(requested);
@@ -9390,7 +9352,6 @@ async function requestSingleLaneJobs(env, input = {}, mode = 'selected') {
     selected = catalogRows.filter(r => requestedSet.has(String(r.job_key)));
   }
   if (!selected.length) return { ok:false, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_enqueue_selected', status:'no_jobs_selected', requested_job_keys:requested };
-  slate = await resolveRefreshQueueSlateDate(env, input || {}, selected).catch(() => slate);
 
   const cleanup = await cleanupSingleLaneStateInconsistencies(env, { reason:'enqueue_preflight', trigger:input?.trigger || input?.job || mode });
   const state = await env.DB.prepare(`SELECT * FROM data_orchestrator_state WHERE state_key='GLOBAL'`).first().catch(() => null);
@@ -11045,27 +11006,24 @@ async function runRefreshOrchestratorTick(input, env) {
       const tick = await runEverydayPhase1Tick({ ...body, job:'run_everyday_phase1_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:1, max_ms:18000 }, env);
       const check = await checkEverydayPhase1({ ...body, job:'check_everyday_phase1', slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
       const everydayRetryLaterReleased = false;
-      const noActionableSlate = tick?.phase1_complete && everydayPhase1NoActionableSlate(check);
-      const phase1TerminalOk = tick?.phase1_complete && (!!check?.data_ok || noActionableSlate);
       result = {
         ok: tick?.ok !== false,
-        data_ok: phase1TerminalOk,
+        data_ok: tick?.phase1_complete ? !!check?.data_ok : false,
         version:SYSTEM_VERSION,
         job:'everyday_phase1_all_direct',
-        status: tick?.phase1_complete ? (noActionableSlate ? 'completed_no_actionable_slate' : 'completed') : (tick?.status || 'partial_continue'),
+        status: tick?.phase1_complete ? 'completed' : (tick?.status || 'partial_continue'),
         slate_date:slate.slate_date,
         scheduled,
         tick,
         check,
         phase1_complete: !!tick?.phase1_complete,
-        no_actionable_slate: !!noActionableSlate,
         non_blocking_retry_later: false,
         next_step: tick?.next_step || null,
         partial: !tick?.phase1_complete,
         live_tables_touched: !!tick?.live_tables_touched,
-        certification_gate:'v1.5.10.23_phase1_state_machine_rebuild_gate',
+        certification_gate:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue',
         note: tick?.phase1_complete
-          ? (noActionableSlate ? 'Queue-owned Everyday Phase 1 found no actionable slate rows for the selected date and released cleanly without blocking downstream as a false failure.' : 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.')
+          ? 'Queue-owned Everyday Phase 1 completed through bounded one-step ticks after child certification.'
           : 'Queue-owned Everyday Phase 1 advanced or held one bounded child step. The queue remains pending across ticks until every certification-sensitive step produces real certified output; partial_continue is not terminal failure.'
       };
     } else {
@@ -11111,10 +11069,10 @@ async function runRefreshOrchestratorTick(input, env) {
       await releaseSingleLaneGlobalState(env, row.job_key === 'incremental_daily' ? 'WAITING_NEXT_INCREMENTAL_TICK' : 'WAITING_NEXT_TICK', wrapped);
       await env.DB.batch([
         env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key),
-        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, finished_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
+        env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId)
       ]).catch(async () => {
         await env.DB.prepare(`UPDATE data_orchestrator_jobs SET running_flag=0, run_requested_flag=1, last_status=?, last_fail=0, last_error_code=NULL, last_error_message=NULL, last_output_json=?, updated_at=CURRENT_TIMESTAMP WHERE job_key=?`).bind(partialStatus, JSON.stringify(wrapped).slice(0,10000), row.job_key).run().catch(() => null);
-        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, finished_at=NULL, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
+        await env.DB.prepare(`UPDATE data_refresh_queue SET status='pending', started_at=CASE WHEN ? THEN started_at ELSE NULL END, run_after=datetime('now','+1 minutes'), updated_at=CURRENT_TIMESTAMP, error=NULL, output_json=? WHERE request_id=?`).bind(row.job_key === 'incremental_daily' ? 1 : 0, JSON.stringify(await compactRefreshQueueOutput(wrapped)).slice(0,5000), requestId).run().catch(() => null);
       });
       await singleLaneLog(env, { request_id:requestId, chain_id:chainId, job_key:row.job_key, job_index:row.job_index, event_type:row.job_key === 'incremental_daily' ? 'incremental_partial_released_first' : 'partial_continue', status:'pending', message:partialStatus, payload_json:wrapped });
       return { ok:true, data_ok:false, version:SYSTEM_VERSION, job:input.job || 'refresh_orchestrator_tick', status:row.job_key === 'incremental_daily' ? 'single_lane_incremental_partial_released' : 'single_lane_partial_continue', processed:[{ job_key:row.job_key, status:partialStatus }], last_result:wrapped, active_remaining:1, elapsed_ms:Date.now()-started, note:'Partial/auto-continue job released the global lock before queue requeue writes. The same independent stage remains requested for the next cron tick; no downstream stage starts until it completes or fails.' };
@@ -13023,57 +12981,9 @@ function nextEverydayPhase1Step(step) {
   return EVERYDAY_PHASE1_STEPS[Math.min(idx + 1, EVERYDAY_PHASE1_STEPS.length - 1)];
 }
 
-function boundEverydayPhase1RequestId(input) {
-  const v = input?.queue_request_id || input?.parent_request_id || input?.orchestrator_request_id || null;
-  return v ? String(v) : null;
-}
-
-async function cancelStaleEverydayPhase1Children(env, slateDate, keepRequestId, reason = 'stale_everyday_phase1_child_cancelled') {
-  await ensureEverydayPhase1Tables(env);
-  const d = String(slateDate || '').slice(0, 10);
-  const keep = keepRequestId ? String(keepRequestId) : '';
-  if (!d || !keep) return { cancelled:0, stale_children:[] };
-  const stale = await sampleRows(env, `SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND request_id<>? AND status IN ('pending','running') ORDER BY datetime(created_at) ASC LIMIT 50`, [d, keep]).catch(() => []);
-  const res = await env.DB.prepare(`
-    UPDATE everyday_phase1_runs
-    SET status='cancelled',
-        finished_at=CURRENT_TIMESTAMP,
-        updated_at=CURRENT_TIMESTAMP,
-        error=COALESCE(error, ?),
-        output_preview=COALESCE(output_preview, ?)
-    WHERE slate_date=?
-      AND request_id<>?
-      AND status IN ('pending','running')
-  `).bind(reason, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'cancel_stale_everyday_phase1_children', status:'cancelled_stale_unbound_child', reason, keep_request_id:keep }).slice(0,4000), d, keep).run().catch((e) => ({ error:String(e?.message || e), meta:{ changes:0 } }));
-  return { cancelled:Number(res?.meta?.changes || 0), stale_children:stale, error:res?.error || null };
-}
-
-async function ensureBoundEverydayPhase1Child(env, slateDate, requestId, source = 'orchestrator_bound_child') {
-  await ensureEverydayPhase1Tables(env);
-  const d = String(slateDate || '').slice(0, 10);
-  const rid = String(requestId || '');
-  if (!d || !rid) return null;
-  await cancelStaleEverydayPhase1Children(env, d, rid, 'stale_everyday_phase1_child_replaced_by_bound_parent_request');
-  const existing = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
-  if (existing) {
-    if (['cancelled','failed'].includes(String(existing.status || '').toLowerCase())) {
-      await env.DB.prepare("UPDATE everyday_phase1_runs SET status='pending', current_step='games_markets', started_at=NULL, finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'ensure_bound_everyday_phase1_child', status:'reopened_bound_child', source }).slice(0,4000), rid).run();
-      return await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
-    }
-    return existing;
-  }
-  await env.DB.prepare("INSERT INTO everyday_phase1_runs (request_id, slate_date, status, current_step, created_at, updated_at, error, output_preview) VALUES (?, ?, 'pending', 'games_markets', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, ?)").bind(rid, d, JSON.stringify({ ok:true, data_ok:true, version:SYSTEM_VERSION, job:'ensure_bound_everyday_phase1_child', status:'created_bound_child', source, parent_request_id:rid }).slice(0,4000)).run();
-  return await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, finished_at, updated_at, error FROM everyday_phase1_runs WHERE request_id=? LIMIT 1").bind(rid).first().catch(() => null);
-}
-
 async function scheduleEverydayPhase1Once(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const boundRequestId = boundEverydayPhase1RequestId(input || {});
-  if (boundRequestId) {
-    const child = await ensureBoundEverydayPhase1Child(env, slate.slate_date, boundRequestId, 'schedule_everyday_phase1_once_bound_parent');
-    return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:child?.status === 'completed' ? 'bound_child_already_completed' : 'bound_child_ready', request_id:boundRequestId, slate_date:slate.slate_date, child_request:child, live_tables_touched:false, parent_child_binding:'parent_request_id_equals_everyday_phase1_runs_request_id', note:'Everyday Phase 1 child is bound to the parent queue request_id. Stale same-slate children are cancelled and never resumed.' };
-  }
   const existing = await env.DB.prepare("SELECT request_id, status, current_step, created_at, started_at, updated_at FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
   if (existing) return { ok:true, data_ok:true, job:input.job || "schedule_everyday_phase1_once", version:SYSTEM_VERSION, status:"already_scheduled_or_running", slate_date:slate.slate_date, existing_request:existing, live_tables_touched:false, note:"Everyday Phase 1 baseline already has an active request. Run Baseline Tick to auto-advance the remaining slate-only steps." };
   const requestId = crypto.randomUUID();
@@ -13094,62 +13004,7 @@ function everydayPhase1JobForStep(step) {
 }
 
 function everydayPhase1CertificationSensitiveStep(step) {
-  return ["lineups", "usage", "candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ""));
-}
-
-async function certifyEverydayLineupCoverage(env, slateDate) {
-  const d = String(slateDate || '').slice(0, 10);
-  if (!d) return { ok:false, data_ok:false, status:'lineup_certification_missing_slate_date', expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:0 };
-  const games = await sampleRows(env, `
-    SELECT game_id, away_team, home_team, start_time_utc, status
-    FROM games
-    WHERE game_date=?
-    ORDER BY datetime(COALESCE(start_time_utc, game_date)), game_id
-    LIMIT 100
-  `, [d]).catch(() => []);
-  if (!games.length) return { ok:false, data_ok:false, status:'lineup_certification_no_games', slate_date:d, expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:0 };
-
-  const pickableGames = games.filter(g => !g.start_time_utc || Date.parse(String(g.start_time_utc)) >= Date.now() - (15 * 60 * 1000));
-  const targetGames = pickableGames.length ? pickableGames : [];
-  if (!targetGames.length) {
-    return { ok:true, data_ok:true, status:'lineup_certification_no_pickable_games_remaining', slate_date:d, total_games:games.length, pickable_games:0, expected_teams:0, certified_teams:0, missing_teams:0, coverage_pct:100, note:'No unstarted/pickable games remain for this slate. Lineup mining is not required to block downstream refresh.' };
-  }
-
-  const expected = [];
-  for (const g of targetGames) {
-    if (g.away_team) expected.push({ game_id:g.game_id, team_id:g.away_team, start_time_utc:g.start_time_utc || null });
-    if (g.home_team) expected.push({ game_id:g.game_id, team_id:g.home_team, start_time_utc:g.start_time_utc || null });
-  }
-  let certified = 0;
-  const missing = [];
-  for (const e of expected) {
-    const row = await env.DB.prepare(`
-      SELECT COUNT(*) AS rows_count, MAX(is_confirmed) AS confirmed, MAX(updated_at) AS max_updated_at
-      FROM lineups_current
-      WHERE game_id=? AND team_id=?
-    `).bind(e.game_id, e.team_id).first().catch(() => ({ rows_count:0, confirmed:0, max_updated_at:null }));
-    const rows = Number(row?.rows_count || 0);
-    if (rows >= 9) certified++;
-    else missing.push({ ...e, lineup_rows:rows, confirmed:Number(row?.confirmed || 0), updated_at:row?.max_updated_at || null });
-  }
-  const expectedTeams = expected.length;
-  const missingTeams = Math.max(0, expectedTeams - certified);
-  const coveragePct = expectedTeams ? Math.round((certified / expectedTeams) * 10000) / 100 : 100;
-  const dataOk = missingTeams === 0;
-  return {
-    ok:true,
-    data_ok:dataOk,
-    status:dataOk ? 'lineups_certified_complete' : 'lineups_certification_incomplete',
-    slate_date:d,
-    total_games:games.length,
-    pickable_games:targetGames.length,
-    expected_teams:expectedTeams,
-    certified_teams:certified,
-    missing_teams:missingTeams,
-    coverage_pct:coveragePct,
-    missing_sample:missing.slice(0, 25),
-    note:dataOk ? 'Lineups certify for every current pickable slate team.' : 'Lineups do not yet cover every current pickable slate team; keep the lineups step open and continue only missing teams on the next tick.'
-  };
+  return ["usage", "candidates_hits", "candidates_rbi", "candidates_rfi"].includes(String(step || ""));
 }
 
 async function certifyEverydayUsageCoverage(env, slateDate, runStartedAt) {
@@ -13228,11 +13083,6 @@ async function certifyEverydayPhase1StepResult(env, slateDate, step, result, run
   const timedOut = result?.timed_out === true || st.includes('timeout') || st.includes('degraded');
   const retryLater = result?.retry_later === true || st.includes('retry_later');
   const badData = result?.data_ok === false;
-  if (String(step || '') === 'lineups') {
-    const lineups = await certifyEverydayLineupCoverage(env, slateDate);
-    const hold = timedOut || retryLater || badData || lineups.data_ok === false;
-    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'lineups_not_certified_continue' : 'lineups_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, lineup_certification:lineups, note:hold ? 'Lineups step is not allowed to advance until current pickable slate teams certify. This follows the incremental delta rule: bounded progress may continue, but incomplete data cannot become clean success.' : 'Lineup certification passed; Phase 1 may advance.' };
-  }
   if (String(step || '') === 'usage') {
     const usage = await certifyEverydayUsageCoverage(env, slateDate, runStartedAt);
     const hold = timedOut || retryLater || badData || usage.data_ok === false;
@@ -13242,13 +13092,10 @@ async function certifyEverydayPhase1StepResult(env, slateDate, step, result, run
     const fetched = Number(result?.fetched_rows ?? result?.raw_rows ?? 0);
     const insertedObj = result?.inserted || {};
     const inserted = Object.values(insertedObj).reduce((a, v) => a + Number(v || 0), 0);
-    const d = String(slateDate || '').slice(0, 10);
-    const gamesRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM games WHERE game_date=? AND (start_time_utc IS NULL OR datetime(start_time_utc) >= datetime('now','-15 minutes'))`).bind(d).first().catch(() => ({ c:0 }));
+    const gamesRow = await env.DB.prepare(`SELECT COUNT(*) AS c FROM games WHERE game_date=?`).bind(String(slateDate || '').slice(0, 10)).first().catch(() => ({ c:0 }));
     const games = Number(gamesRow?.c || 0);
-    const lineups = await certifyEverydayLineupCoverage(env, d).catch(() => ({ data_ok:false, expected_teams:0, certified_teams:0 }));
-    const actionableGames = games > 0 && Number(lineups?.certified_teams || 0) > 0;
-    const hold = timedOut || retryLater || badData || (actionableGames && fetched <= 0 && inserted <= 0);
-    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? `${step}_not_certified_continue` : `${step}_certified_advance`, step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, games, actionable_games:actionableGames ? games : 0, lineup_certification_status:lineups?.status || null, fetched_rows:fetched, inserted_rows:inserted, note:hold ? 'Candidate step did not certify real output after lineup/actionable slate certification; keep the step open instead of reporting clean success.' : 'Candidate step produced/certified output, or no actionable pickable lineup slate exists, and may advance.' };
+    const hold = timedOut || retryLater || badData || (games > 0 && fetched <= 0 && inserted <= 0);
+    return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? `${step}_not_certified_continue` : `${step}_certified_advance`, step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false, games, fetched_rows:fetched, inserted_rows:inserted, note:hold ? 'Candidate step did not certify real output for an active slate; keep the step open instead of reporting clean success.' : 'Candidate step produced/certified output and may advance.' };
   }
   const hold = timedOut || badData;
   return { ok:!hold, data_ok:!hold, hold_current_step:hold, status:hold ? 'step_not_certified_continue' : 'step_certified_advance', step, timed_out:timedOut, retry_later:retryLater, child_data_ok:result?.data_ok !== false };
@@ -13275,31 +13122,14 @@ async function everydayPhase1StepAlreadySatisfied(env, slateDate, step) {
     const bullpens = Number(bullpensRow?.rows_count || 0);
     if (games > 0 && bullpens >= Math.max(1, expectedTeams - 2)) return { satisfied:true, rows:bullpens, expected:expectedTeams, status:'preexisting_bullpens_satisfied' };
   }
-  if (step === 'lineups') {
-    const lineups = await certifyEverydayLineupCoverage(env, d).catch(() => null);
-    if (lineups?.data_ok === true) return { satisfied:true, rows:lineups.certified_teams * 9, expected:lineups.expected_teams * 9, status:lineups.status || 'preexisting_lineups_satisfied', certification:lineups };
-  }
   return null;
 }
 
 async function runEverydayPhase1Tick(input, env) {
   await ensureEverydayPhase1Tables(env);
   const slate = resolveSlateDate(input || {});
-  const boundRequestId = boundEverydayPhase1RequestId(input || {});
-  let row = null;
-  if (boundRequestId) {
-    row = await ensureBoundEverydayPhase1Child(env, slate.slate_date, boundRequestId, 'run_everyday_phase1_tick_bound_parent');
-  } else {
-    row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
-  }
+  const row = await env.DB.prepare("SELECT request_id, slate_date, status, current_step, created_at, started_at, updated_at, error FROM everyday_phase1_runs WHERE slate_date=? AND status IN ('pending','running') ORDER BY created_at ASC LIMIT 1").bind(slate.slate_date).first().catch(() => null);
   if (!row) return { ok:true, data_ok:true, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"idle_no_due_phase1_run", slate_date:slate.slate_date, live_tables_touched:false, note:"No pending/running Everyday Phase 1 baseline request." };
-  if (boundRequestId && String(row.request_id) !== String(boundRequestId)) {
-    return { ok:false, data_ok:false, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"failed_parent_child_binding_mismatch", slate_date:slate.slate_date, expected_request_id:boundRequestId, actual_request_id:row.request_id, live_tables_touched:false, note:"Everyday Phase 1 refuses to run an unbound/stale child. Parent request_id must equal everyday_phase1_runs.request_id." };
-  }
-  if (String(row.status || '').toLowerCase() === 'completed') {
-    const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-    return { ok:true, data_ok:!!check.data_ok, job:input.job || "run_everyday_phase1_tick", version:SYSTEM_VERSION, status:"completed", request_id:row.request_id, slate_date:slate.slate_date, processed_steps:0, processed:[], next_step:'completed', phase1_complete:true, final_check:check, live_tables_touched:false, note:"Bound Everyday Phase 1 child was already completed for this parent queue request." };
-  }
   const requestId = row.request_id;
   let currentStep = row.current_step || "games_markets";
   const startedAt = Date.now();
@@ -13347,37 +13177,15 @@ async function runEverydayPhase1Tick(input, env) {
       processed.push({ step, routed_job:jobName, next_step:certification?.hold_current_step ? step : nextStep, duration_ms, result_status:result.status || (result.data_ok === false ? "needs_review" : "pass"), retry_later:!!result.retry_later, timed_out:!!result.timed_out, certification_status:certification?.status || null, certification_data_ok:certification?.data_ok !== false, inserted:result.inserted || null, fetched_rows:result.fetched_rows ?? null, skipped_execution:skippedExecution, live_tables_touched:skippedExecution ? false : (result.live_tables_touched !== false) });
       if (certification?.hold_current_step) {
         const holdPayload = {
-          phase1_state:{
-            version:SYSTEM_VERSION,
-            request_id:requestId,
-            slate_date:slate.slate_date,
-            current_step:step,
-            next_step:step,
-            status:'waiting_external_data_or_certification',
-            hold_current_step:true,
-            lineup_progress: result?.lineup_progress || certification?.lineup_progress || null,
-            usage_progress: result?.usage_progress || certification?.usage_progress || null,
-            reason:certification?.status || result?.status || 'not_certified_continue'
-          },
           processed,
-          compact_last_result:{
-            job:result?.job || jobName,
-            status:result?.status || result?.result_status || null,
-            data_ok:result?.data_ok,
-            retry_later:!!result?.retry_later,
-            partial_continue:!!result?.partial_continue,
-            fetched_rows:result?.fetched_rows ?? null,
-            inserted:result?.inserted || null,
-            lineup_progress:result?.lineup_progress || null,
-            usage_progress:result?.usage_progress || null
-          },
+          last_result:result,
           certification,
           hold_current_step:true,
           preserved_child_request_id:requestId,
           next_step:step,
-          rule:'v1.5.10.23_state_machine_no_fake_success_no_stale_cursor'
+          rule:'v1.5.10.18_no_terminal_fail_on_certified_partial_continue'
         };
-        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', finished_at=NULL, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,12000), requestId).run();
+        await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status='running', updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(step, JSON.stringify(holdPayload).slice(0,4000), requestId).run();
         const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
         return {
           ok:true,
@@ -13400,8 +13208,7 @@ async function runEverydayPhase1Tick(input, env) {
       }
       currentStep = nextStep;
       const complete = currentStep === "completed";
-      const stepPayload = { phase1_state:{ version:SYSTEM_VERSION, request_id:requestId, slate_date:slate.slate_date, current_step:currentStep, status:complete ? 'completed' : 'running', lineup_progress:result?.lineup_progress || null, usage_progress:result?.usage_progress || null }, processed, last_result:result };
-      await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify(stepPayload).slice(0,12000), requestId).run();
+      await env.DB.prepare("UPDATE everyday_phase1_runs SET current_step=?, status=?, finished_at=CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE finished_at END, updated_at=CURRENT_TIMESTAMP, error=NULL, output_preview=? WHERE request_id=?").bind(currentStep, complete ? "completed" : "running", complete ? 1 : 0, JSON.stringify({ processed, last_result:result }).slice(0,4000), requestId).run();
       if (complete) break;
     }
     const complete = currentStep === "completed";
@@ -13419,9 +13226,7 @@ async function runEverydayPhase1Direct(input, env) {
   const scheduled = await scheduleEverydayPhase1Once({ ...(input || {}), job:"everyday_phase1_all_direct", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
   const tick = await runEverydayPhase1Tick({ ...(input || {}), job:"run_everyday_phase1_tick", slate_date:slate.slate_date, slate_mode:slate.slate_mode, max_steps:8, max_ms:26000 }, env);
   const check = await checkEverydayPhase1({ ...(input || {}), job:"check_everyday_phase1", slate_date:slate.slate_date, slate_mode:slate.slate_mode }, env);
-  const noActionableSlate = tick?.phase1_complete && everydayPhase1NoActionableSlate(check);
-  const dataOk = !!check.data_ok || !!noActionableSlate;
-  return { ok:tick.ok !== false && check.ok, data_ok:dataOk, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:dataOk ? (noActionableSlate ? "pass_no_actionable_slate" : "pass") : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, no_actionable_slate:noActionableSlate, live_tables_touched:true, warning:"Direct mode runs the rebuilt state-machine path. Schedule + Tick is still preferred for iPhone testing." };
+  return { ok:tick.ok !== false && check.ok, data_ok:!!check.data_ok, job:input.job || "everyday_phase1_all_direct", version:SYSTEM_VERSION, status:check.data_ok ? "pass" : "needs_review", slate_date:slate.slate_date, scheduled, tick, check, live_tables_touched:true, warning:"Direct mode runs the same bounded auto-run path. Schedule + Tick is still preferred for iPhone testing." };
 }
 
 async function checkEverydayPhase1(input, env) {
@@ -13447,7 +13252,8 @@ async function checkEverydayPhase1(input, env) {
   const expectedTeams = counts.games * 2;
   const failures = [];
   const warnings = [];
-  if (counts.games <= 0) warnings.push("NO_PHASE1_SLATE_GAMES");
+  if (counts.prizepicks_rows <= 0) failures.push("PRIZEPICKS_BOARD_EMPTY");
+  if (counts.games <= 0) failures.push("GAMES_EMPTY");
   if (counts.markets <= 0) failures.push("MARKETS_EMPTY");
   if (counts.starters < Math.max(1, expectedTeams - 2)) warnings.push("STARTERS_PARTIAL_OR_EARLY");
   if (counts.bullpens < Math.max(1, expectedTeams - 2)) warnings.push("BULLPENS_PARTIAL_OR_EARLY");
@@ -15429,156 +15235,44 @@ async function fetchMlbGameLineupRows(gamePk, gameId) {
   return rows.filter(r => r.player_name);
 }
 
-function extractEverydayLineupProgressFromOutputPreview(outputPreview) {
-  const parsed = safeJsonParseObject(outputPreview);
-  const last = parsed?.last_result || parsed?.result?.last_result || parsed?.tick?.last_result || parsed;
-  const progress = parsed?.phase1_state?.lineup_progress || parsed?.lineup_progress || last?.lineup_progress || parsed?.result?.lineup_progress || parsed?.tick?.lineup_progress || parsed?.tick?.result?.lineup_progress || {};
-  const checked = Array.isArray(progress.checked_game_ids) ? progress.checked_game_ids.map(x => String(x)).filter(Boolean) : [];
-  return {
-    checked_game_ids: Array.from(new Set(checked)).slice(0, 200),
-    cursor_started_at: progress.cursor_started_at || null,
-    full_pass_completed_at: progress.full_pass_completed_at || null,
-    last_cooldown_until: progress.last_cooldown_until || null,
-    pass_number: Number(progress.pass_number || 1) || 1
-  };
-}
-
-async function getEverydayLineupProgressForRequest(env, requestId) {
-  const rid = String(requestId || '').trim();
-  if (!rid) return { checked_game_ids:[], cursor_started_at:null, full_pass_completed_at:null, last_cooldown_until:null, pass_number:1 };
-  const row = await env.DB.prepare(`SELECT output_preview FROM everyday_phase1_runs WHERE request_id=? LIMIT 1`).bind(rid).first().catch(() => null);
-  return extractEverydayLineupProgressFromOutputPreview(row?.output_preview || '');
-}
-
-function d1SecondsSinceMaybe(ts) {
-  const ms = parseD1TimestampMaybe(ts);
-  return ms ? Math.max(0, Math.round((Date.now() - ms) / 1000)) : null;
-}
-
 async function syncMlbApiLineups(input, env) {
   const slate = resolveSlateDate(input || {});
   const slateDate = slate.slate_date;
-  const startedAt = Date.now();
-  const maxGamesPerTick = Math.max(1, Math.min(3, Number(input?.max_lineup_games_per_tick || 2)));
-  const maxMs = Math.max(5000, Math.min(18000, Number(input?.lineup_child_max_ms || 14000)));
-  const cooldownMinutes = Math.max(3, Math.min(30, Number(input?.lineup_empty_pass_cooldown_minutes || 10)));
-  const parentRequestId = String(input?.queue_request_id || input?.parent_request_id || input?.orchestrator_request_id || input?.request_id || '').trim();
-  const priorProgress = await getEverydayLineupProgressForRequest(env, parentRequestId);
   const data = await fetchMlbScheduleProbables(slateDate);
+  const rows = [];
+  let gamesChecked = 0;
 
-  const allGames = [];
   for (const dateBlock of (data.dates || [])) {
     for (const game of (dateBlock.games || [])) {
       const gameId = gameIdFromMlbGame(game, slateDate);
       if (!gameId || !game?.gamePk) continue;
-      const startIso = game?.gameDate || null;
-      const startMs = startIso ? Date.parse(String(startIso)) : NaN;
-      const pickable = !Number.isFinite(startMs) || startMs >= Date.now() - (15 * 60 * 1000);
-      allGames.push({ game, gamePk:game.gamePk, game_id:gameId, start_time_utc:startIso, pickable });
+      gamesChecked++;
+
+      const gameRows = await fetchMlbGameLineupRows(game.gamePk, gameId);
+      rows.push(...gameRows);
     }
-  }
-
-  // v1.5.10.23: lineups are bounded, cursor-persistent, and state-machine certified. The old bounded fetch always
-  // sliced targetGames[0..2], so a future/split slate with no posted lineups could recheck
-  // the same two games forever. This cursor records checked missing games in the bound child
-  // output payload, scans the next missing games on each tick, and uses a short cooldown after
-  // a full empty pass instead of hammering MLB StatsAPI or pretending success.
-  const targetGames = [];
-  for (const g of allGames.filter(x => x.pickable)) {
-    const row = await env.DB.prepare(`
-      SELECT COUNT(*) AS lineup_rows, COUNT(DISTINCT team_id) AS teams_with_rows
-      FROM lineups_current
-      WHERE game_id=?
-    `).bind(g.game_id).first().catch(() => ({ lineup_rows:0, teams_with_rows:0 }));
-    const rows = Number(row?.lineup_rows || 0);
-    const teams = Number(row?.teams_with_rows || 0);
-    if (rows < 18 || teams < 2) targetGames.push({ ...g, existing_lineup_rows:rows, existing_teams:teams });
-  }
-
-  const targetIdSet = new Set(targetGames.map(g => String(g.game_id)));
-  let checkedSet = new Set((priorProgress.checked_game_ids || []).filter(id => targetIdSet.has(String(id))).map(String));
-  const fullPassSeconds = d1SecondsSinceMaybe(priorProgress.full_pass_completed_at);
-  const cooldownActive = targetGames.length > 0 && checkedSet.size >= targetGames.length && fullPassSeconds != null && fullPassSeconds < cooldownMinutes * 60;
-  if (targetGames.length === 0) checkedSet = new Set();
-  if (targetGames.length > 0 && checkedSet.size >= targetGames.length && !cooldownActive) checkedSet = new Set();
-
-  const selected = cooldownActive ? [] : targetGames.filter(g => !checkedSet.has(String(g.game_id))).slice(0, maxGamesPerTick);
-  const rows = [];
-  const game_audit = [];
-  const checkedThisTick = [];
-  for (const g of selected) {
-    if ((Date.now() - startedAt) > maxMs) {
-      game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, skipped_due_budget:true });
-      break;
-    }
-    const t0 = Date.now();
-    const gameRows = await fetchMlbGameLineupRows(g.gamePk, g.game_id).catch((err) => {
-      game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, error:String(err?.message || err).slice(0,300) });
-      return [];
-    });
-    rows.push(...gameRows);
-    checkedSet.add(String(g.game_id));
-    checkedThisTick.push(String(g.game_id));
-    game_audit.push({ game_id:g.game_id, gamePk:g.gamePk, existing_lineup_rows:g.existing_lineup_rows, fetched_rows:gameRows.length, duration_ms:Date.now()-t0 });
   }
 
   const validated = validateRows("lineups_current", rows);
   if (!validated.ok) throw new Error(`MLB lineup validation failed: ${validated.error}`);
-  const inserted = validated.rows.length ? await upsertRows(env, "lineups_current", validated.rows) : 0;
-  const certification = await certifyEverydayLineupCoverage(env, slateDate).catch((err) => ({ ok:false, data_ok:false, status:'lineups_certification_exception', error:String(err?.message || err) }));
-  const remainingAfter = Math.max(0, Number(certification?.missing_teams || 0));
-  const retryLater = certification?.data_ok === false;
-  const allTargetsCheckedAfterTick = targetGames.length > 0 && checkedSet.size >= targetGames.length;
-  const fullPassCompletedAt = certification?.data_ok === true || targetGames.length === 0 ? null : (allTargetsCheckedAfterTick ? new Date().toISOString() : priorProgress.full_pass_completed_at || null);
-  const lineupProgress = {
-    request_id: parentRequestId || null,
-    cursor_started_at: priorProgress.cursor_started_at || new Date().toISOString(),
-    checked_game_ids: Array.from(checkedSet).filter(id => targetIdSet.has(id)).slice(0, 200),
-    checked_this_tick: checkedThisTick,
-    target_game_ids: targetGames.map(g => g.game_id).slice(0, 100),
-    target_games_before_tick: targetGames.length,
-    remaining_unchecked_game_ids: targetGames.filter(g => !checkedSet.has(String(g.game_id))).map(g => g.game_id).slice(0, 100),
-    all_targets_checked_after_tick: allTargetsCheckedAfterTick,
-    full_pass_completed_at: fullPassCompletedAt,
-    cooldown_minutes: cooldownMinutes,
-    cooldown_active: cooldownActive,
-    full_pass_age_seconds: fullPassSeconds,
-    pass_number: priorProgress.pass_number || 1
-  };
+  const inserted = await upsertRows(env, "lineups_current", validated.rows);
 
   return {
     ok: true,
-    data_ok: certification?.data_ok !== false,
     job: input.job || "scrape_lineups_mlb_api",
-    status: certification?.data_ok === true
-      ? "lineups_certified_complete"
-      : (cooldownActive ? "lineups_waiting_cooldown_continue" : (rows.length > 0 ? "lineups_partial_continue" : (allTargetsCheckedAfterTick ? "lineups_full_pass_waiting_for_posted_lineups" : "lineups_waiting_or_missing_continue"))),
+    status: rows.length > 0 ? "pass" : "no_confirmed_lineups_yet",
     slate_date: slateDate,
     source: "mlb_statsapi_boxscore_lineup",
-    mode: "bounded_pickable_games_state_machine_v1_5_10_23",
-    games_total: allGames.length,
-    pickable_games_total: allGames.filter(g => g.pickable).length,
-    target_games_before_tick: targetGames.length,
-    games_checked: selected.length,
-    max_games_per_tick: maxGamesPerTick,
+    games_checked: gamesChecked,
     fetched_rows: rows.length,
     inserted: { lineups_current: inserted },
-    retry_later: retryLater,
-    partial_continue: retryLater,
-    lineup_certification: certification,
-    lineup_progress: lineupProgress,
-    remaining_missing_teams_after_tick: remainingAfter,
-    game_audit,
-    live_tables_touched: inserted > 0,
-    note: certification?.data_ok === true
-      ? "Lineups are certified for every current pickable slate team."
-      : (cooldownActive
-        ? "Lineups remain unavailable after a full bounded pass. Cursor is preserved and API fetches are cooling down; Phase 1 stays open and does not report clean success."
-        : "Lineups step is bounded, resumable, and cursor-persistent: each tick checks the next missing pickable games, and Phase 1 will not advance until lineup certification passes or no pickable games remain."),
-    skipped_count: (validated.skipped?.length || 0),
+    retry_later: rows.length === 0,
+    note: rows.length > 0 ? "Confirmed/available MLB API lineup rows inserted." : "MLB boxscore batting orders were not posted yet. Scheduled task should retry later after lineups are published.",
+    skipped_count: validated.skipped?.length || 0,
     skipped: (validated.skipped || []).slice(0, 20)
   };
 }
+
 
 async function syncMlbApiBullpens(input, env) {
   const slate = resolveSlateDate(input || {});
