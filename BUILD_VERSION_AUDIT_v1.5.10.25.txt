@@ -1,0 +1,24 @@
+Build Version Audit
+Version: v1.5.10.25 - Incremental Continuation Release Gate
+
+Files included in flat ZIP:
+- worker.js
+- control_room.html
+- main.py
+- package.json
+- scrape.yml
+- wrangler.jsonc
+- README_v1.5.10.25.txt
+- BUILD_VERSION_AUDIT_v1.5.10.25.txt
+
+Version checks:
+- ZIP filename: alphadog_v1.5.10.25_incremental_continuation_release_gate.zip
+- worker.js SYSTEM_VERSION: v1.5.10.25 - Incremental Continuation Release Gate
+- control_room.html version tag: v1.5.10.25 - Incremental Continuation Release Gate
+- main.py SCRIPT_VERSION: v1.5.10.25 - Incremental Continuation Release Gate
+- README filename/version: v1.5.10.25
+- BUILD_VERSION_AUDIT filename/version: v1.5.10.25
+
+Validation:
+- node --check worker.js
+- python3 -m py_compile main.py

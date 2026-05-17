@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.24 - Incremental Metrics Coverage Gate";
+const SYSTEM_VERSION = "v1.5.10.25 - Incremental Continuation Release Gate";
 const SYSTEM_CODENAME = "Everyday Phase 1 State Machine Rebuild Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11027,7 +11027,7 @@ async function runRefreshOrchestratorTick(input, env) {
     const slate = resolveSlateDate({ slate_date:row.current_slate_date, slate_mode:row.current_slate_mode });
     const body = withFunctionCapsule(row.job_name, { job:row.job_name, trigger:input?.trigger || 'single_lane_orchestrator_tick', slate_date:slate.slate_date, slate_mode:slate.slate_mode, backend_orchestrator:true, orchestrator_internal:true, queue_request_id:requestId, queue_chain_id:chainId, queue_job_key:row.job_key, orchestrator_job_key:row.job_key }, env);
     if (row.job_name === 'run_incremental_temp_refresh_auto') {
-      result = await runIncrementalTempAutoLoop({ ...body, max_players:5, max_ms:12000, max_ticks:1, force_due:true, force_schedule:true }, env);
+      result = await runIncrementalTempAutoLoop({ ...body, max_players:2, max_games:2, max_ms:8000, max_ticks:1, force_due:true, force_schedule:true }, env);
     } else if (row.job_name === 'run_static_temp_refresh_auto') {
       result = await runStaticTempAutoLoop({ ...body, max_ms:22000, max_ticks:3 }, env);
     } else if (row.job_name === 'trigger_prizepicks_github_board_refresh') {
@@ -12013,7 +12013,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
   if (!schedule.ok) return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, live_tables_touched:false };
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const progress = await staticProgressMap(env, 'incremental_delta_game_logs', season, 0);
-  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || 8), 12));
+  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || input?.max_players || 3), 4));
   const selected = finalGames.filter(g => !['COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED'].includes(progress.get(Number(g.gamePk || 0)))).slice(0, hardLimit);
 
   const stmt = env.DB.prepare(`
@@ -12917,7 +12917,7 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
     samples:samples.results || [],
     source_tables:['player_game_logs','ref_players_left_join_identity_only'],
     live_tables_touched:true,
-    note:'v1.5.10.24 rebuilds hitter derived metrics from player_game_logs where group_type=hitting as the source of truth. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
+    note:'v1.5.10.25 preserves the hitter metrics source-of-truth fix: rebuild metrics from player_game_logs where group_type=hitting. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
   };
 }
 async function repairMissingRefPlayers(input, env) {
