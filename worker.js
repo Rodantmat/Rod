@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.26 - Incremental Fetch Timeout Fuse Gate";
+const SYSTEM_VERSION = "v1.5.10.27 - Incremental Child Cleaner Gate";
 const SYSTEM_CODENAME = "Everyday Phase 1 State Machine Rebuild Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11198,6 +11198,18 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
   `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   const enqueueLockRes = await env.DB.prepare(`UPDATE data_orchestrator_enqueue_locks SET status='released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   const minuteLockRes = await env.DB.prepare(`UPDATE data_scheduled_minute_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
+  // v1.5.10.27: Killer Cleaner must clear incremental child execution state too.
+  // Prior builds cancelled parent queue rows but left incremental_temp_refresh_runs pending/running,
+  // causing every new parent to bind back to the same stale child and loop forever.
+  const incrementalChildRes = await env.DB.prepare(`
+    UPDATE incremental_temp_refresh_runs
+    SET status='cancelled',
+        finished_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP,
+        error=COALESCE(error, ?),
+        output_json=COALESCE(output_json, ?)
+    WHERE status IN ('pending','running')
+  `).bind(reason, JSON.stringify({ ok:true, data_ok:false, version:SYSTEM_VERSION, job:'refresh_orchestrator_kill_broken_tasks', status:'cancelled_active_incremental_child_runs', reason, real_data_preserved:true, temp_execution_state_only:true }).slice(0,5000)).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   const taskRunsRes = await env.DB.prepare(`
     UPDATE task_runs
     SET status='killer_reset',
@@ -11219,7 +11231,7 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
   `).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   const pipelineLockRes = await env.DB.prepare(`UPDATE pipeline_locks SET status='killer_released', updated_at=CURRENT_TIMESTAMP WHERE status='active'`).run().catch(e => ({ error:String(e?.message || e), meta:{ changes:0 } }));
   await releaseSingleLaneGlobalState(env, 'KILLER_CLEANER_RESET', { reason, before }).catch(() => null);
-  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), one_shot_plans:Number(oneShotPlanRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, one_shot_plans:oneShotPlanRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
+  await singleLaneLog(env, { event_type:'killer_cleaner_reset', status:'killer_released', message:'Manual killer/cleaner reset open broken orchestrator tasks, locks, queue rows, and stale task rows.', payload_json:{ reason, before, changes:{ queue:Number(queueRes?.meta?.changes || 0), jobs:Number(jobRes?.meta?.changes || 0), enqueue_locks:Number(enqueueLockRes?.meta?.changes || 0), minute_locks:Number(minuteLockRes?.meta?.changes || 0), task_runs:Number(taskRunsRes?.meta?.changes || 0), deferred:Number(deferredRes?.meta?.changes || 0), one_shot_plans:Number(oneShotPlanRes?.meta?.changes || 0), pipeline_locks:Number(pipelineLockRes?.meta?.changes || 0), incremental_child_runs:Number(incrementalChildRes?.meta?.changes || 0) }, errors:{ queue:queueRes?.error || null, jobs:jobRes?.error || null, enqueue_locks:enqueueLockRes?.error || null, minute_locks:minuteLockRes?.error || null, incremental_child_runs:incrementalChildRes?.error || null, task_runs:taskRunsRes?.error || null, deferred:deferredRes?.error || null, one_shot_plans:oneShotPlanRes?.error || null, pipeline_locks:pipelineLockRes?.error || null } } }).catch(() => null);
   return {
     ok:true,
     data_ok:true,
@@ -11235,10 +11247,11 @@ async function killBrokenRefreshOrchestratorTasks(input, env) {
       stale_task_runs_reset:Number(taskRunsRes?.meta?.changes || 0),
       deferred_rows_cancelled:Number(deferredRes?.meta?.changes || 0),
       one_shot_plans_deleted:Number(oneShotPlanRes?.meta?.changes || 0),
-      pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0)
+      pipeline_locks_released:Number(pipelineLockRes?.meta?.changes || 0),
+      incremental_child_runs_cancelled:Number(incrementalChildRes?.meta?.changes || 0)
     },
     before,
-    note:'Manual killer/cleaner clears open broken orchestration state only. It does not wipe scoring tables, PrizePicks data, odds tables, or completed release board rows.'
+    note:'Manual killer/cleaner clears open broken orchestration state and active incremental child execution rows only. It does not wipe scoring tables, PrizePicks data, odds tables, completed release board rows, player_game_logs, ref_player_splits, or incremental_player_metrics.'
   };
 }
 
@@ -12917,7 +12930,7 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
     samples:samples.results || [],
     source_tables:['player_game_logs','ref_players_left_join_identity_only'],
     live_tables_touched:true,
-    note:'v1.5.10.26 preserves the hitter metrics source-of-truth fix: rebuild metrics from player_game_logs where group_type=hitting. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
+    note:'v1.5.10.27 preserves the hitter metrics source-of-truth fix: rebuild metrics from player_game_logs where group_type=hitting. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
   };
 }
 async function repairMissingRefPlayers(input, env) {

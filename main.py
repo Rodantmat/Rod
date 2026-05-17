@@ -2,7 +2,7 @@ import os
 import sys
 import uuid
 
-SCRIPT_VERSION = "v1.5.10.26 - Incremental Fetch Timeout Fuse Gate"
+SCRIPT_VERSION = "v1.5.10.27 - Incremental Child Cleaner Gate"
 from datetime import datetime, timezone
 from curl_cffi import requests
 

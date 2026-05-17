@@ -1,0 +1,17 @@
+Build Version Audit
+Version: v1.5.10.27 - Incremental Child Cleaner Gate
+
+Files expected in flat ZIP:
+- worker.js
+- control_room.html
+- main.py
+- package.json
+- scrape.yml
+- wrangler.jsonc
+- README_v1.5.10.27.txt
+- BUILD_VERSION_AUDIT_v1.5.10.27.txt
+
+Validation:
+- node --check worker.js
+- python3 -m py_compile main.py
+- flat ZIP only, no folders
