@@ -1,7 +1,7 @@
 // AlphaDog v1.3.58 - PrizePicks GitHub Dispatch Bridge compatible worker
 // RFI GUARDED TIER CAP ACTIVE
 // DEPLOY_MARKER: ALPHADOG_BACKEND_V1_3_94_SCORING_STARTUP_GUARD
-const SYSTEM_VERSION = "v1.5.10.25 - Incremental Continuation Release Gate";
+const SYSTEM_VERSION = "v1.5.10.26 - Incremental Fetch Timeout Fuse Gate";
 const SYSTEM_CODENAME = "Everyday Phase 1 State Machine Rebuild Gate";
 const BOARD_QUEUE_BUILD_CHUNK_LIMIT = 12;
 const BOARD_QUEUE_AUTO_BUILD_CHUNK_LIMIT = 96;
@@ -11907,7 +11907,7 @@ function firstAvailableAbbr(...vals) {
 }
 async function fetchMlbScheduleGamesForWindow(startDate, endDate) {
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
-  const fetched = await fetchJsonWithRetry(url, {}, 1, `incremental_delta_schedule_${startDate}_${endDate}`);
+  const fetched = await fetchJsonWithRetry(url, { timeout_ms: 2500 }, 1, `incremental_delta_schedule_${startDate}_${endDate}`);
   if (!fetched.ok) return { ok:false, games:[], error:fetched.error || 'schedule_fetch_failed', url };
   const games = [];
   for (const d of (fetched.data?.dates || [])) {
@@ -12013,7 +12013,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
   if (!schedule.ok) return { ok:false, data_ok:false, job:input.job || 'run_incremental_temp_refresh_tick', version:SYSTEM_VERSION, status:'schedule_fetch_failed', error:schedule.error, mode_info:modeInfo, live_tables_touched:false };
   const finalGames = (schedule.games || []).filter(isFinalMlbGame);
   const progress = await staticProgressMap(env, 'incremental_delta_game_logs', season, 0);
-  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || input?.max_players || 3), 4));
+  const hardLimit = Math.max(1, Math.min(Number(input?.max_games || input?.max_players || 1), 1));
   const selected = finalGames.filter(g => !['COMPLETED','NO_DATA','NO_INSERT','ERROR_SKIPPED'].includes(progress.get(Number(g.gamePk || 0)))).slice(0, hardLimit);
 
   const stmt = env.DB.prepare(`
@@ -12032,7 +12032,7 @@ async function stageIncrementalDeltaGameLogsTemp(input, env) {
     const gameDate = String(game.officialDate || game.gameDate || game.schedule_date || '').slice(0,10);
     const homeSched = game?.teams?.home?.team || {};
     const awaySched = game?.teams?.away?.team || {};
-    const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, {}, 1, `incremental_delta_boxscore_${gamePk}`);
+    const box = await fetchJsonWithRetry(`https://statsapi.mlb.com/api/v1/game/${gamePk}/boxscore`, { timeout_ms: 2500 }, 1, `incremental_delta_boxscore_${gamePk}`);
     if (!box.ok) {
       failedFetches += 1;
       errors.push({ game_pk:gamePk, error:box.error || 'boxscore_fetch_failed' });
@@ -12917,7 +12917,7 @@ async function buildIncrementalBaseDerivedMetrics(input, env) {
     samples:samples.results || [],
     source_tables:['player_game_logs','ref_players_left_join_identity_only'],
     live_tables_touched:true,
-    note:'v1.5.10.25 preserves the hitter metrics source-of-truth fix: rebuild metrics from player_game_logs where group_type=hitting. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
+    note:'v1.5.10.26 preserves the hitter metrics source-of-truth fix: rebuild metrics from player_game_logs where group_type=hitting. ref_players is left-joined only for identity enrichment and no active-player filter can drop logged hitters.'
   };
 }
 async function repairMissingRefPlayers(input, env) {
@@ -15093,18 +15093,35 @@ function sleepMs(ms) {
 
 async function fetchJsonWithRetry(url, options = {}, retries = 3, label = "fetch_json") {
   let lastError = null;
+  const { timeout_ms, ...fetchOptions } = options || {};
+  const labelText = String(label || '');
+  const defaultTimeoutMs = labelText.startsWith('incremental_delta_') ? 2500 : 0;
+  const timeoutMs = Math.max(0, Math.min(Number(timeout_ms || defaultTimeoutMs || 0), 15000));
   for (let attempt = 1; attempt <= Math.max(1, retries); attempt++) {
+    let controller = null;
+    let timer = null;
     try {
-      const res = await fetch(url, { headers: { "accept": "application/json", ...(options.headers || {}) }, ...options });
-      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt };
+      if (timeoutMs > 0) {
+        controller = new AbortController();
+        timer = setTimeout(() => { try { controller.abort(`timeout_${timeoutMs}ms`); } catch (_) {} }, timeoutMs);
+      }
+      const res = await fetch(url, {
+        headers: { "accept": "application/json", ...(fetchOptions.headers || {}) },
+        ...fetchOptions,
+        ...(controller ? { signal: controller.signal } : {})
+      });
+      if (timer) clearTimeout(timer);
+      if (res.ok) return { ok: true, status: res.status, data: await res.json(), attempt, timeout_ms: timeoutMs || null };
       lastError = new Error(`${label} HTTP ${res.status}`);
       if (![408, 425, 429, 500, 502, 503, 504].includes(Number(res.status))) break;
     } catch (err) {
-      lastError = err;
+      if (timer) clearTimeout(timer);
+      const msg = String(err?.message || err || 'fetch_failed');
+      lastError = new Error(timeoutMs > 0 && (msg.includes('abort') || msg.includes('timeout')) ? `${label} timeout after ${timeoutMs}ms` : msg);
     }
     if (attempt < retries) await sleepMs(250 * attempt);
   }
-  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`) };
+  return { ok: false, status: null, data: null, error: String(lastError?.message || lastError || `${label} failed`), timeout_ms: timeoutMs || null };
 }
 
 function decimalInnings(ip) {

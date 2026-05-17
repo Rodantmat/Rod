@@ -1,0 +1,20 @@
+AlphaDog Build Version Audit
+Version: v1.5.10.26 - Incremental Fetch Timeout Fuse Gate
+
+Files included:
+- worker.js
+- control_room.html
+- main.py
+- package.json
+- scrape.yml
+- wrangler.jsonc
+- README_v1.5.10.26.txt
+- BUILD_VERSION_AUDIT_v1.5.10.26.txt
+
+Version checks:
+- ZIP filename: alphadog_v1.5.10.26_incremental_fetch_timeout_fuse_gate.zip
+- worker.js SYSTEM_VERSION: v1.5.10.26 - Incremental Fetch Timeout Fuse Gate
+- control_room.html version tag: v1.5.10.26 - Incremental Fetch Timeout Fuse Gate
+- main.py SCRIPT_VERSION: v1.5.10.26 - Incremental Fetch Timeout Fuse Gate
+- README filename/version: v1.5.10.26
+- BUILD_VERSION_AUDIT filename/version: v1.5.10.26
